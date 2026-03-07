@@ -4,7 +4,7 @@ import { check, Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { open } from "@tauri-apps/plugin-shell"
 import { toast } from "sonner"
-import { RefreshCw, Download, SkipForward, Info, Heart, Code, Cpu, ChevronDown, ChevronRight, ExternalLink, Settings } from "lucide-react"
+import { RefreshCw, Download, SkipForward, Info, Heart, ExternalLink, Settings } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
@@ -19,11 +19,6 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -33,35 +28,22 @@ import {
 } from "@/components/ui/dialog"
 import ReactMarkdown from "react-markdown"
 
-interface Inspiration {
+interface Credit {
   name: string
-  license: string
+  license?: string
   url: string
-  description: string
+  description?: string
 }
 
-interface Dependency {
-  name: string
-  license: string
-  url: string
-}
-
-const inspirations: Inspiration[] = [
-  {
-    name: "RouteLLM",
-    license: "Apache-2.0",
-    url: "https://github.com/lm-sys/RouteLLM",
-    description: "ML-based intelligent routing framework. LocalRouter's Strong/Weak feature is a Rust reimplementation of their approach.",
-  },
-  {
-    name: "Microsoft MCP Gateway",
-    license: "MIT",
-    url: "https://github.com/microsoft/mcp-gateway",
-    description: "Inspiration for MCP gateway architecture and unified proxy design patterns.",
-  },
-]
-
-const rustDependencies: Dependency[] = [
+const credits: Credit[] = [
+  // Inspirations & runtime resources
+  { name: "RouteLLM", license: "Apache-2.0", url: "https://github.com/lm-sys/RouteLLM", description: "ML-based intelligent routing framework. LocalRouter's Strong/Weak feature is a Rust reimplementation of their approach." },
+  { name: "routellm/mf_gpt4_augmented", license: "Apache-2.0", url: "https://github.com/lm-sys/RouteLLM", description: "Matrix factorization router model downloaded when using Strong/Weak intelligent routing." },
+  { name: "Microsoft MCP Gateway", license: "MIT", url: "https://github.com/microsoft/mcp-gateway", description: "Inspiration for MCP gateway architecture and unified proxy design patterns." },
+  { name: "Microsoft Presidio", license: "MIT", url: "https://github.com/microsoft/presidio", description: "PII detection regex patterns downloaded when guardrails are enabled." },
+  { name: "LLM Guard (ProtectAI)", license: "MIT", url: "https://github.com/protectai/llm-guard", description: "Secret detection patterns downloaded when guardrails are enabled." },
+  { name: "models.dev (OpenCode)", license: "MIT", url: "https://models.dev", description: "Community-maintained model catalog providing pricing, capabilities, and metadata for AI models." },
+  // Backend (Rust)
   { name: "Tauri", license: "MIT/Apache-2.0", url: "https://tauri.app" },
   { name: "Axum", license: "MIT", url: "https://github.com/tokio-rs/axum" },
   { name: "Tokio", license: "MIT", url: "https://tokio.rs" },
@@ -78,19 +60,24 @@ const rustDependencies: Dependency[] = [
   { name: "UUID", license: "MIT/Apache-2.0", url: "https://github.com/uuid-rs/uuid" },
   { name: "OAuth2", license: "MIT/Apache-2.0", url: "https://github.com/ramosbugs/oauth2-rs" },
   { name: "Keyring", license: "MIT/Apache-2.0", url: "https://github.com/hwchen/keyring-rs" },
-]
-
-const frontendDependencies: Dependency[] = [
+  // Frontend (TypeScript/React)
   { name: "React", license: "MIT", url: "https://react.dev" },
   { name: "Radix UI", license: "MIT", url: "https://radix-ui.com" },
   { name: "Tailwind CSS", license: "MIT", url: "https://tailwindcss.com" },
+  { name: "MCP SDK", license: "MIT", url: "https://github.com/modelcontextprotocol/typescript-sdk" },
+  { name: "OpenAI SDK", license: "Apache-2.0", url: "https://github.com/openai/openai-node" },
+  { name: "Vercel AI SDK", license: "Apache-2.0", url: "https://github.com/vercel/ai" },
   { name: "Recharts", license: "MIT", url: "https://recharts.org" },
   { name: "React Flow", license: "MIT", url: "https://reactflow.dev" },
+  { name: "TanStack Table", license: "MIT", url: "https://tanstack.com/table" },
+  { name: "dnd kit", license: "MIT", url: "https://dndkit.com" },
+  { name: "react-markdown", license: "MIT", url: "https://github.com/remarkjs/react-markdown" },
+  { name: "React Resizable Panels", license: "MIT", url: "https://github.com/bvaughn/react-resizable-panels" },
   { name: "Lucide Icons", license: "ISC", url: "https://lucide.dev" },
   { name: "Heroicons", license: "MIT", url: "https://heroicons.com" },
   { name: "cmdk", license: "MIT", url: "https://cmdk.paco.me" },
   { name: "Sonner", license: "MIT", url: "https://sonner.emilkowal.ski" },
-  { name: "OpenAI SDK", license: "Apache-2.0", url: "https://github.com/openai/openai-node" },
+  { name: "WinXP", license: "MIT", url: "https://github.com/nicholasyang/winXP" },
 ]
 
 interface UpdateConfig {
@@ -113,9 +100,6 @@ export function UpdatesTab() {
   const [isDownloading, setIsDownloading] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [inspirationsExpanded, setInspirationsExpanded] = useState(false)
-  const [routellmExpanded, setRoutellmExpanded] = useState(false)
-  const [dependenciesExpanded, setDependenciesExpanded] = useState(false)
 
   const handleOpenUrl = (url: string) => {
     open(url)
@@ -519,141 +503,27 @@ export function UpdatesTab() {
       {/* Licenses & Credits */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm">Licenses & Credits</CardTitle>
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Heart className="h-4 w-4" />
+            Licenses & Credits
+          </CardTitle>
           <CardDescription>
-            Open source projects and dependencies used in LocalRouter
+            Open source projects, inspirations, and runtime resources used by LocalRouter.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-2">
-          {/* Inspirations & Credits */}
-          <Collapsible open={inspirationsExpanded} onOpenChange={setInspirationsExpanded}>
-            <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors">
-              <div className="flex items-center gap-2">
-                <Heart className="h-4 w-4" />
-                <span className="text-sm font-medium">Inspirations & Credits</span>
-              </div>
-              {inspirationsExpanded ? (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        <CardContent className="grid grid-cols-2 gap-2">
+          {credits.map((credit) => (
+            <button
+              key={credit.name}
+              onClick={() => handleOpenUrl(credit.url)}
+              className="flex items-center justify-between p-2 bg-muted/50 rounded border hover:bg-muted text-left text-xs"
+            >
+              <span>{credit.name}</span>
+              {credit.license && (
+                <span className="text-muted-foreground">{credit.license}</span>
               )}
-            </CollapsibleTrigger>
-            <CollapsibleContent className="pt-2 space-y-2">
-              <p className="text-xs text-muted-foreground px-1">
-                This project was inspired by the following projects. No code was directly used, but their ideas influenced the design.
-              </p>
-              {inspirations.map((inspiration) => (
-                <div
-                  key={inspiration.name}
-                  className="p-3 bg-muted/30 rounded-lg border"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-sm">{inspiration.name}</span>
-                      <Badge variant="secondary" className="text-xs">
-                        {inspiration.license}
-                      </Badge>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleOpenUrl(inspiration.url)}
-                    >
-                      <ExternalLink className="h-3 w-3" />
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {inspiration.description}
-                  </p>
-                </div>
-              ))}
-            </CollapsibleContent>
-          </Collapsible>
-
-          {/* Strong/Weak Model Licenses */}
-          <Collapsible open={routellmExpanded} onOpenChange={setRoutellmExpanded}>
-            <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors">
-              <div className="flex items-center gap-2">
-                <Cpu className="h-4 w-4" />
-                <span className="text-sm font-medium">Strong/Weak Model Licenses</span>
-              </div>
-              {routellmExpanded ? (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
-              )}
-            </CollapsibleTrigger>
-            <CollapsibleContent className="pt-2">
-              <p className="text-xs text-muted-foreground px-1 mb-2">
-                When using Strong/Weak intelligent routing, the following model weights are downloaded.
-              </p>
-              <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="font-medium text-sm">routellm/mf_gpt4_augmented</span>
-                  <Badge variant="outline" className="text-xs bg-amber-100 dark:bg-amber-900/50">
-                    Apache-2.0
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Matrix factorization router model trained on GPT-4 preference data. Hosted on Hugging Face.
-                </p>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-
-          {/* Open Source Dependencies */}
-          <Collapsible open={dependenciesExpanded} onOpenChange={setDependenciesExpanded}>
-            <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors">
-              <div className="flex items-center gap-2">
-                <Code className="h-4 w-4" />
-                <span className="text-sm font-medium">Open Source Dependencies</span>
-              </div>
-              {dependenciesExpanded ? (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
-              )}
-            </CollapsibleTrigger>
-            <CollapsibleContent className="pt-2 space-y-4">
-              {/* Rust Dependencies */}
-              <div>
-                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 px-1">
-                  Backend (Rust)
-                </h4>
-                <div className="grid grid-cols-2 gap-2">
-                  {rustDependencies.map((dep) => (
-                    <button
-                      key={dep.name}
-                      onClick={() => handleOpenUrl(dep.url)}
-                      className="flex items-center justify-between p-2 bg-muted/50 rounded border hover:bg-muted text-left text-xs"
-                    >
-                      <span>{dep.name}</span>
-                      <span className="text-muted-foreground">{dep.license}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Frontend Dependencies */}
-              <div>
-                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 px-1">
-                  Frontend (TypeScript/React)
-                </h4>
-                <div className="grid grid-cols-2 gap-2">
-                  {frontendDependencies.map((dep) => (
-                    <button
-                      key={dep.name}
-                      onClick={() => handleOpenUrl(dep.url)}
-                      className="flex items-center justify-between p-2 bg-muted/50 rounded border hover:bg-muted text-left text-xs"
-                    >
-                      <span>{dep.name}</span>
-                      <span className="text-muted-foreground">{dep.license}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
+            </button>
+          ))}
         </CardContent>
       </Card>
 
