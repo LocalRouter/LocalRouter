@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
+use zeroize::Zeroizing;
 
 /// Trait for keychain operations
 pub trait KeychainStorage: Send + Sync {
@@ -237,8 +238,8 @@ pub struct CachedKeychain {
     /// The underlying keychain implementation
     inner: Arc<dyn KeychainStorage>,
     /// In-memory cache of retrieved values
-    /// Key: "service:account", Value: secret
-    cache: Arc<RwLock<HashMap<String, String>>>,
+    /// Key: "service:account", Value: secret (zeroized on drop)
+    cache: Arc<RwLock<HashMap<String, Zeroizing<String>>>>,
 }
 
 impl CachedKeychain {
@@ -339,7 +340,7 @@ impl KeychainStorage for CachedKeychain {
         // Update cache
         let cache_key = Self::make_cache_key(service, account);
         let mut cache = self.cache.write();
-        cache.insert(cache_key, secret.to_string());
+        cache.insert(cache_key, Zeroizing::new(secret.to_string()));
         trace!("CachedKeychain: cached {}:{} after store", service, account);
 
         Ok(())
@@ -353,7 +354,7 @@ impl KeychainStorage for CachedKeychain {
             let cache = self.cache.read();
             if let Some(cached_value) = cache.get(&cache_key) {
                 debug!("CachedKeychain: cache hit for {}:{}", service, account);
-                return Ok(Some(cached_value.clone()));
+                return Ok(Some(String::clone(cached_value)));
             }
         }
 
@@ -369,7 +370,7 @@ impl KeychainStorage for CachedKeychain {
         // Cache the result if found
         if let Some(ref value) = result {
             let mut cache = self.cache.write();
-            cache.insert(cache_key, value.clone());
+            cache.insert(cache_key, Zeroizing::new(value.clone()));
             debug!("CachedKeychain: cached {}:{} after fetch", service, account);
         }
 
