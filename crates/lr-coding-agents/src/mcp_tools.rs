@@ -244,9 +244,13 @@ async fn handle_start(
 
     let working_dir = args["workingDirectory"]
         .as_str()
+        .filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from);
 
-    let model = args["model"].as_str().map(String::from);
+    let model = args["model"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
 
     let permission_mode = args["permissionMode"]
         .as_str()
