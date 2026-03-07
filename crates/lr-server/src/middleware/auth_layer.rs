@@ -136,7 +136,12 @@ where
                 tracing::debug!("Authenticating bearer token with client manager");
                 match state.client_manager.verify_secret(bearer_token) {
                     Ok(Some(client)) => {
-                        tracing::debug!("Authenticated as client: {}", client.id);
+                        tracing::info!(
+                            event = "auth_success",
+                            client_id = %client.id,
+                            method = "client_secret",
+                            "Client authenticated"
+                        );
 
                         // Also inject ClientAuthContext for guardrails and other client-aware features
                         req.extensions_mut().insert(ClientAuthContext {
@@ -150,7 +155,11 @@ where
                         }
                     }
                     Ok(None) => {
-                        tracing::warn!("Invalid bearer token - client not found");
+                        tracing::warn!(
+                            event = "auth_failed",
+                            reason = "invalid_token",
+                            "Authentication failed: invalid bearer token"
+                        );
                         return Ok(create_error_response(
                             StatusCode::UNAUTHORIZED,
                             "authentication_error",
