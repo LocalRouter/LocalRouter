@@ -68,7 +68,7 @@
     ],
     "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://github.com https://api.github.com https://objects.githubusercontent.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; script-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://github.com https://api.github.com https://objects.githubusercontent.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
     }
   }
 }
