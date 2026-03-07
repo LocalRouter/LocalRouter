@@ -18,7 +18,7 @@ use tauri::{Emitter, State};
 // ============================================================================
 
 /// Frontend auth config format (with raw secrets)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FrontendAuthConfig {
     None,
@@ -63,6 +63,19 @@ pub enum FrontendAuthConfig {
     },
 }
 
+impl std::fmt::Debug for FrontendAuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FrontendAuthConfig::None => write!(f, "None"),
+            FrontendAuthConfig::BearerToken { .. } => write!(f, "BearerToken {{ token: [REDACTED] }}"),
+            FrontendAuthConfig::CustomHeaders { .. } => write!(f, "CustomHeaders {{ headers: [REDACTED] }}"),
+            FrontendAuthConfig::OAuth { .. } => write!(f, "OAuth {{ [REDACTED] }}"),
+            FrontendAuthConfig::EnvVars { .. } => write!(f, "EnvVars {{ env: [REDACTED] }}"),
+            FrontendAuthConfig::OAuthBrowser { .. } => write!(f, "OAuthBrowser {{ [REDACTED] }}"),
+        }
+    }
+}
+
 /// Process frontend auth config and store secrets in keychain
 /// Returns the backend McpAuthConfig with keychain references
 fn process_auth_config(
@@ -74,13 +87,13 @@ fn process_auth_config(
         return Ok(None);
     };
 
-    tracing::debug!("Processing auth config: {}", auth_value);
+    tracing::debug!("Processing auth config");
 
     // Parse frontend format
     let frontend_auth: FrontendAuthConfig =
         serde_json::from_value(auth_value.clone()).map_err(|e| {
             tracing::error!("Failed to deserialize frontend auth config: {}", e);
-            tracing::error!("Auth value was: {}", auth_value);
+            tracing::error!("Failed to parse auth config");
             format!("Invalid auth config format: {}", e)
         })?;
 
