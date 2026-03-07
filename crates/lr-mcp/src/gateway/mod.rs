@@ -18,6 +18,10 @@ pub mod sampling;
 pub mod session;
 pub mod streaming_notifications;
 pub mod types;
+pub mod virtual_coding_agents;
+pub mod virtual_marketplace;
+pub mod virtual_server;
+pub mod virtual_skills;
 
 #[cfg(test)]
 mod tests;

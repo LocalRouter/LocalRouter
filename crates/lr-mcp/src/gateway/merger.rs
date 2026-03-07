@@ -3,13 +3,6 @@
 use super::types::*;
 use crate::protocol::{McpPrompt, McpResource, McpTool};
 
-/// Information about a skill, used when building gateway instructions
-pub struct SkillInfo {
-    pub name: String,
-    pub description: Option<String>,
-    pub get_info_tool: String,
-}
-
 /// An MCP server's info for instruction building (using human-readable names, not UUIDs)
 pub struct McpServerInstructionInfo {
     /// Human-readable name (e.g., "My Filesystem" as configured by the user)
@@ -34,23 +27,16 @@ pub struct UnavailableServerInfo {
     pub error: String,
 }
 
-/// Information about a coding agent for instruction building
-pub struct CodingAgentInfo {
-    pub name: String,
-}
-
 /// Context for building gateway instructions
 pub struct InstructionsContext {
     /// Available MCP servers with their info
     pub servers: Vec<McpServerInstructionInfo>,
     /// Unavailable MCP servers
     pub unavailable_servers: Vec<UnavailableServerInfo>,
-    /// Skills accessible to this client
-    pub skills: Vec<SkillInfo>,
     /// Whether deferred loading is enabled
     pub deferred_loading: bool,
-    /// Coding agents accessible to this client
-    pub coding_agents: Vec<CodingAgentInfo>,
+    /// Instructions from virtual servers
+    pub virtual_instructions: Vec<super::virtual_server::VirtualInstructions>,
 }
 
 /// Merge initialize results from multiple servers
@@ -170,21 +156,20 @@ fn build_server_description(
 /// 3. Per-server instructions in XML tags
 pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     let has_servers = !ctx.servers.is_empty();
-    let has_skills = !ctx.skills.is_empty();
     let has_unavailable = !ctx.unavailable_servers.is_empty();
-    let has_agents = !ctx.coding_agents.is_empty();
+    let has_virtual = !ctx.virtual_instructions.is_empty();
 
     // Nothing to describe
-    if !has_servers && !has_skills && !has_unavailable && !has_agents {
+    if !has_servers && !has_unavailable && !has_virtual {
         return None;
     }
 
     let mut inst = String::new();
 
     // --- 1. Header ---
-    build_header(&mut inst, has_servers, has_skills, ctx.deferred_loading);
+    build_header(&mut inst, has_servers, has_virtual, ctx.deferred_loading);
 
-    // --- 2. Tool listing grouped by server, then skills ---
+    // --- 2. Tool listing grouped by server ---
     build_tool_listing(&mut inst, ctx);
 
     // --- 3. Per-server instructions in XML tags ---
@@ -192,18 +177,13 @@ pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
         build_server_instructions_section(&mut inst, &ctx.servers);
     }
 
-    // --- 4. Coding agents section ---
-    if has_agents {
-        inst.push_str("\n## AI Coding Agent\n\n");
-        if let Some(agent) = ctx.coding_agents.first() {
-            inst.push_str(&format!(
-                "You have access to **{}** as a coding agent. Use the unified tools: `coding_agent_start`, `coding_agent_say`, `coding_agent_status`, `coding_agent_respond`, `coding_agent_interrupt`, `coding_agent_list`.\n",
-                agent.name,
-            ));
+    // --- 4. Virtual server instructions ---
+    for vsi in &ctx.virtual_instructions {
+        inst.push_str(&format!("\n## {}\n\n", vsi.section_title));
+        inst.push_str(&vsi.content);
+        if !vsi.content.ends_with('\n') {
+            inst.push('\n');
         }
-        inst.push_str(
-            "\nWorkflow: Start a session → poll status → respond to questions → get results.\n",
-        );
     }
 
     Some(inst)
@@ -309,19 +289,6 @@ fn build_tool_listing(inst: &mut String, ctx: &InstructionsContext) {
             "**{}** — unavailable: {}\n\n",
             server.name, server.error
         ));
-    }
-
-    // Skills
-    if !ctx.skills.is_empty() {
-        inst.push_str("**Skills**\n");
-        for skill in &ctx.skills {
-            inst.push_str(&format!("- **{}**: `{}`", skill.name, skill.get_info_tool));
-            if let Some(desc) = &skill.description {
-                inst.push_str(&format!(" — {}", desc));
-            }
-            inst.push('\n');
-        }
-        inst.push('\n');
     }
 }
 
@@ -670,9 +637,9 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            skills: Vec::new(),
-            coding_agents: Vec::new(),
+
             deferred_loading: false,
+            virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -702,9 +669,9 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            skills: Vec::new(),
-            coding_agents: Vec::new(),
+
             deferred_loading: false,
+            virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -726,9 +693,9 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            skills: Vec::new(),
-            coding_agents: Vec::new(),
+
             deferred_loading: false,
+            virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -740,23 +707,23 @@ mod tests {
     }
 
     #[test]
-    fn test_build_gateway_instructions_skills_only() {
+    fn test_build_gateway_instructions_virtual_only() {
+        use crate::gateway::virtual_server::VirtualInstructions;
+
         let ctx = InstructionsContext {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
-            skills: vec![SkillInfo {
-                name: "code-review".to_string(),
-                description: Some("Automated code review".to_string()),
-                get_info_tool: "skill_code_review_get_info".to_string(),
-            }],
-            coding_agents: Vec::new(),
             deferred_loading: false,
+            virtual_instructions: vec![VirtualInstructions {
+                section_title: "Skills".to_string(),
+                content: "**code-review**: `skill_code_review_get_info` — Automated code review\n"
+                    .to_string(),
+            }],
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Header should mention skills
-        assert!(instructions.contains("skills"));
-        // Skill listing
+        // Virtual instructions section
+        assert!(instructions.contains("## Skills"));
         assert!(instructions.contains("`skill_code_review_get_info`"));
         assert!(instructions.contains("Automated code review"));
         // No server XML tags
@@ -778,9 +745,9 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            skills: Vec::new(),
-            coding_agents: Vec::new(),
+
             deferred_loading: true,
+            virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -794,7 +761,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_gateway_instructions_both_servers_and_skills() {
+    fn test_build_gateway_instructions_both_servers_and_virtual() {
+        use crate::gateway::virtual_server::VirtualInstructions;
+
         let ctx = InstructionsContext {
             servers: vec![McpServerInstructionInfo {
                 name: "github".to_string(),
@@ -805,13 +774,11 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            skills: vec![SkillInfo {
-                name: "deploy".to_string(),
-                description: None,
-                get_info_tool: "skill_deploy_get_info".to_string(),
-            }],
-            coding_agents: Vec::new(),
             deferred_loading: false,
+            virtual_instructions: vec![VirtualInstructions {
+                section_title: "Skills".to_string(),
+                content: "**deploy**: `skill_deploy_get_info`\n".to_string(),
+            }],
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -821,8 +788,8 @@ mod tests {
         // Tool listing for server
         assert!(instructions.contains("**github**"));
         assert!(instructions.contains("`github__create_issue`"));
-        // Skill listing
-        assert!(instructions.contains("**Skills**"));
+        // Virtual instructions
+        assert!(instructions.contains("## Skills"));
         assert!(instructions.contains("`skill_deploy_get_info`"));
         // Server instructions in XML
         assert!(instructions.contains("<github>"));
@@ -833,9 +800,9 @@ mod tests {
         let ctx = InstructionsContext {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
-            skills: Vec::new(),
-            coding_agents: Vec::new(),
+
             deferred_loading: false,
+            virtual_instructions: Vec::new(),
         };
 
         assert!(build_gateway_instructions(&ctx).is_none());
@@ -849,13 +816,8 @@ mod tests {
                 name: "broken-server".to_string(),
                 error: "Connection refused".to_string(),
             }],
-            skills: vec![SkillInfo {
-                name: "test".to_string(),
-                description: None,
-                get_info_tool: "skill_test_get_info".to_string(),
-            }],
-            coding_agents: Vec::new(),
             deferred_loading: false,
+            virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -876,9 +838,9 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            skills: Vec::new(),
-            coding_agents: Vec::new(),
+
             deferred_loading: false,
+            virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -899,9 +861,9 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            skills: Vec::new(),
-            coding_agents: Vec::new(),
+
             deferred_loading: false,
+            virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -923,9 +885,9 @@ mod tests {
                 prompt_names: vec!["knowledge__summarize".to_string()],
             }],
             unavailable_servers: Vec::new(),
-            skills: Vec::new(),
-            coding_agents: Vec::new(),
+
             deferred_loading: false,
+            virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();

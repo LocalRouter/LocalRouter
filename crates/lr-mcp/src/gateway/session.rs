@@ -4,10 +4,10 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use super::types::*;
+use super::virtual_server::VirtualSessionState;
 use crate::protocol::Root;
 
 /// Gateway session (one per client)
-#[derive(Debug)]
 pub struct GatewaySession {
     /// Client ID
     pub client_id: String,
@@ -84,12 +84,6 @@ pub struct GatewaySession {
     /// Skills permissions for this client (hierarchical Allow/Ask/Off)
     pub skills_permissions: lr_config::SkillsPermissions,
 
-    /// Skills that have had get_info called (enables per-skill run/read tools)
-    pub skills_info_loaded: HashSet<String>,
-
-    /// Whether async skill tools are enabled
-    pub skills_async_enabled: bool,
-
     /// Human-readable client name (for firewall approval display)
     pub client_name: String,
 
@@ -99,14 +93,8 @@ pub struct GatewaySession {
     /// Tools denied during this session via "Deny for Session" action
     pub firewall_session_denials: HashSet<String>,
 
-    /// Marketplace permission state for this client
-    pub marketplace_permission: lr_config::PermissionState,
-
-    /// Coding agent permission state for this client
-    pub coding_agent_permission: lr_config::PermissionState,
-
-    /// Which coding agent type this client uses
-    pub coding_agent_type: Option<lr_config::CodingAgentType>,
+    /// Per-virtual-server session state (server_id -> state)
+    pub virtual_server_state: HashMap<String, Box<dyn VirtualSessionState>>,
 }
 
 impl GatewaySession {
@@ -152,14 +140,10 @@ impl GatewaySession {
             subscribed_resources: HashMap::new(),
             mcp_permissions: lr_config::McpPermissions::default(),
             skills_permissions: lr_config::SkillsPermissions::default(),
-            skills_info_loaded: HashSet::new(),
-            skills_async_enabled: false,
             client_name: String::new(),
             firewall_session_approvals: HashSet::new(),
             firewall_session_denials: HashSet::new(),
-            marketplace_permission: lr_config::PermissionState::default(),
-            coding_agent_permission: lr_config::PermissionState::default(),
-            coding_agent_type: None,
+            virtual_server_state: HashMap::new(),
         }
     }
 
@@ -314,16 +298,6 @@ impl GatewaySession {
             .filter(|(_, sid)| *sid == server_id)
             .map(|(uri, _)| uri.clone())
             .collect()
-    }
-
-    /// Mark a skill as having had get_info called
-    pub fn mark_skill_info_loaded(&mut self, name: &str) {
-        self.skills_info_loaded.insert(name.to_string());
-    }
-
-    /// Check if a skill has had get_info called
-    pub fn is_skill_info_loaded(&self, name: &str) -> bool {
-        self.skills_info_loaded.contains(name)
     }
 
     /// Get all subscribed resources

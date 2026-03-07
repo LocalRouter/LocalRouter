@@ -133,8 +133,13 @@ async fn test_skills_e2e_all_tool_commands() {
     let server_manager = Arc::new(McpServerManager::new());
     let router = create_test_router();
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
-    gateway.set_skill_support(skill_manager, script_executor);
-    gateway.set_skills_async_enabled(true);
+    gateway.register_virtual_server(Arc::new(
+        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
+            skill_manager,
+            script_executor,
+            true,
+        ),
+    ));
     let gateway = Arc::new(gateway);
 
     let client_id = "test-skills-client";
@@ -549,7 +554,13 @@ async fn setup_gateway_with_skill() -> (Arc<McpGateway>, TempDir) {
     let server_manager = Arc::new(McpServerManager::new());
     let router = create_test_router();
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
-    gateway.set_skill_support(skill_manager, script_executor);
+    gateway.register_virtual_server(Arc::new(
+        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
+            skill_manager,
+            script_executor,
+            false,
+        ),
+    ));
 
     (Arc::new(gateway), temp_dir)
 }
@@ -559,7 +570,7 @@ async fn setup_gateway_without_skills() -> Arc<McpGateway> {
     let server_manager = Arc::new(McpServerManager::new());
     let router = create_test_router();
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
-    // Intentionally NOT calling set_skill_support
+    // No virtual servers registered — no skills
     Arc::new(gateway)
 }
 

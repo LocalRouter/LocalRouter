@@ -396,6 +396,11 @@ pub async fn mcp_gateway_handler(
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_string());
 
+    let coding_agent_access_header = headers
+        .get("x-coding-agent-access")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string());
+
     // Get all server IDs for later use
     let all_server_ids: Vec<String> = state
         .config_manager
@@ -470,6 +475,27 @@ pub async fn mcp_gateway_handler(
             test_client.marketplace_permission = lr_config::PermissionState::Off;
         }
 
+        // Coding agents:
+        // - "All" mode: enable coding agents if any agent is available
+        // - Direct mode with specific agent type: enable that agent
+        // - Otherwise: disabled
+        match &coding_agent_access_header {
+            Some(agent_type_str) if !agent_type_str.is_empty() => {
+                if let Ok(agent_type) =
+                    serde_json::from_value::<lr_config::CodingAgentType>(
+                        serde_json::Value::String(agent_type_str.clone()),
+                    )
+                {
+                    test_client.coding_agent_permission = lr_config::PermissionState::Allow;
+                    test_client.coding_agent_type = Some(agent_type);
+                }
+            }
+            _ => {
+                test_client.coding_agent_permission = lr_config::PermissionState::Off;
+                test_client.coding_agent_type = None;
+            }
+        }
+
         // Deferred loading:
         // - "All" mode: use header setting
         // - Direct mode: always off
@@ -478,11 +504,12 @@ pub async fn mcp_gateway_handler(
         }
 
         tracing::info!(
-            "Internal test client: deferred_loading={}, mcp_access={}, skills_access={:?}, marketplace={:?}, is_all_mode={}",
+            "Internal test client: deferred_loading={}, mcp_access={}, skills_access={:?}, marketplace={:?}, coding_agent={:?}, is_all_mode={}",
             test_client.mcp_deferred_loading,
             mcp_access_header,
             skills_access_header,
             test_client.marketplace_permission,
+            coding_agent_access_header,
             is_all_mode,
         );
         (test_client, allowed)

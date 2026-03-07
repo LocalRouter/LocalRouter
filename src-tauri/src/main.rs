@@ -8,7 +8,7 @@ mod updater;
 
 use std::sync::Arc;
 
-use tauri::{Listener, Manager};
+use tauri::{Emitter, Listener, Manager};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -534,14 +534,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             if let Some(app_state) = server_manager.get_state() {
                 info!("Managing AppState for Tauri commands");
 
-                // Wire skill support into MCP gateway (OnceLock for legacy compatibility)
-                app_state
-                    .mcp_gateway
-                    .set_skill_support(skill_manager.clone(), script_executor.clone());
-                if skills_config.async_enabled {
-                    app_state.mcp_gateway.set_skills_async_enabled(true);
-                }
-
                 // Register skills virtual server
                 let skills_vs = Arc::new(
                     lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
@@ -553,13 +545,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 app_state.mcp_gateway.register_virtual_server(skills_vs);
                 info!("Skills virtual server registered");
 
-                // Wire marketplace service into MCP gateway if available
+                // Register marketplace virtual server if available
                 if let Some(ref service) = marketplace_service {
-                    app_state
-                        .mcp_gateway
-                        .set_marketplace_service(service.clone());
-
-                    // Register marketplace virtual server
                     let marketplace_vs = Arc::new(
                         lr_mcp::gateway::virtual_marketplace::MarketplaceVirtualServer::new(
                             service.clone(),
@@ -577,10 +564,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     let coding_agent_manager = Arc::new(
                         lr_coding_agents::manager::CodingAgentManager::new(coding_agents_config),
                     );
-                    app_state
-                        .mcp_gateway
-                        .set_coding_agent_support(coding_agent_manager.clone());
-
                     // Register coding agents virtual server
                     let coding_agents_vs = Arc::new(
                         lr_mcp::gateway::virtual_coding_agents::CodingAgentVirtualServer::new(
@@ -590,6 +573,17 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     app_state
                         .mcp_gateway
                         .register_virtual_server(coding_agents_vs);
+
+                    // Subscribe to session changes and forward as Tauri events
+                    {
+                        let mut rx = coding_agent_manager.subscribe_changes();
+                        let app_handle = app.handle().clone();
+                        tokio::spawn(async move {
+                            while rx.recv().await.is_ok() {
+                                let _ = app_handle.emit("coding-agents-changed", ());
+                            }
+                        });
+                    }
 
                     app.manage(coding_agent_manager);
                     info!("Coding agents virtual server registered");
@@ -1595,6 +1589,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Coding agents commands
             ui::commands_coding_agents::list_coding_agents,
             ui::commands_coding_agents::list_coding_sessions,
+            ui::commands_coding_agents::get_coding_session_detail,
             ui::commands_coding_agents::get_coding_agent_version,
             ui::commands_coding_agents::end_coding_session,
             ui::commands_coding_agents::get_max_coding_sessions,

@@ -15,12 +15,12 @@ use super::router::{broadcast_request, separate_results};
 use super::session::GatewaySession;
 use super::types::*;
 
-use super::access_control::{self, AccessDecision, FirewallCheckContext, FirewallCheckResult};
+use super::access_control::{self, FirewallCheckContext, FirewallCheckResult};
 use super::firewall::{self, FirewallApprovalAction};
 use super::gateway::McpGateway;
 
 /// Result of a firewall access decision check
-pub(crate) enum FirewallDecisionResult {
+pub enum FirewallDecisionResult {
     /// Proceed with the original request unchanged
     Proceed,
     /// Proceed but apply edits from the user
@@ -63,23 +63,9 @@ impl McpGateway {
                     }
                 }
 
-                let skills_permissions = session_read.skills_permissions.clone();
-                let info_loaded = session_read.skills_info_loaded.clone();
-                let async_enabled = session_read.skills_async_enabled;
-                let marketplace_permission = session_read.marketplace_permission.clone();
-                let coding_agent_perm = session_read.coding_agent_permission.clone();
-                let coding_agent_type = session_read.coding_agent_type;
+                // Append tools from virtual servers
+                self.append_virtual_server_tools(&mut tools, &session_read);
                 drop(session_read);
-
-                self.append_skill_tools(
-                    &mut tools,
-                    &skills_permissions,
-                    &info_loaded,
-                    async_enabled,
-                    true,
-                );
-                self.append_marketplace_tools(&mut tools, &marketplace_permission);
-                self.append_coding_agent_tools(&mut tools, &coding_agent_perm, coding_agent_type);
 
                 let tool_names: Vec<String> = tools
                     .iter()
@@ -107,24 +93,9 @@ impl McpGateway {
                     .map(|t| serde_json::to_value(t).unwrap_or_default())
                     .collect();
 
-                let skills_permissions = session_read.skills_permissions.clone();
-                let info_loaded = session_read.skills_info_loaded.clone();
-                let async_enabled = session_read.skills_async_enabled;
-                let marketplace_permission = session_read.marketplace_permission.clone();
-                let coding_agent_perm = session_read.coding_agent_permission.clone();
-                let coding_agent_type = session_read.coding_agent_type;
+                // Append tools from virtual servers
+                self.append_virtual_server_tools(&mut tools, &session_read);
                 drop(session_read);
-
-                // Skills always use their own deferred loading (get_info unlocks run/read)
-                self.append_skill_tools(
-                    &mut tools,
-                    &skills_permissions,
-                    &info_loaded,
-                    async_enabled,
-                    true,
-                );
-                self.append_marketplace_tools(&mut tools, &marketplace_permission);
-                self.append_coding_agent_tools(&mut tools, &coding_agent_perm, coding_agent_type);
 
                 tracing::info!("handle_tools_list CACHED: returning {} tools", tools.len(),);
 
@@ -161,29 +132,14 @@ impl McpGateway {
         } else {
             None
         };
-        let skills_permissions = session_read.skills_permissions.clone();
-        let info_loaded = session_read.skills_info_loaded.clone();
-        let async_enabled = session_read.skills_async_enabled;
-        let marketplace_permission = session_read.marketplace_permission.clone();
-        let coding_agent_perm = session_read.coding_agent_permission.clone();
-        let coding_agent_type = session_read.coding_agent_type;
-        drop(session_read);
-
         let mut all_tools: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| serde_json::to_value(t).unwrap_or_default())
             .collect();
 
-        // Skills always use their own deferred loading (get_info unlocks run/read)
-        self.append_skill_tools(
-            &mut all_tools,
-            &skills_permissions,
-            &info_loaded,
-            async_enabled,
-            true,
-        );
-        self.append_marketplace_tools(&mut all_tools, &marketplace_permission);
-        self.append_coding_agent_tools(&mut all_tools, &coding_agent_perm, coding_agent_type);
+        // Append tools from virtual servers
+        self.append_virtual_server_tools(&mut all_tools, &session_read);
+        drop(session_read);
 
         let mut result = json!({"tools": all_tools});
         if let Some(failures) = failures {
@@ -279,48 +235,17 @@ impl McpGateway {
             return self.handle_search_tool(session, request).await;
         }
 
-        // Check if it's a marketplace tool
-        if lr_marketplace::is_marketplace_tool(&tool_name) {
+        // Check virtual servers
+        let matching_vs = {
+            let virtual_servers = self.virtual_servers.read();
+            virtual_servers
+                .iter()
+                .find(|vs| vs.owns_tool(&tool_name))
+                .cloned()
+        };
+        if let Some(vs) = matching_vs {
             return self
-                .handle_marketplace_tool_call(session, &tool_name, request)
-                .await;
-        }
-
-        // Check if it's a skill tool
-        if self.is_skill_tool(&tool_name) {
-            // Firewall check for skill tools
-            let skill_firewall_result = self
-                .check_firewall_skill_tool(&session, &tool_name, &request)
-                .await?;
-
-            match skill_firewall_result {
-                FirewallDecisionResult::Blocked(resp) => return Ok(resp),
-                FirewallDecisionResult::ProceedWithEdits {
-                    edited_arguments: Some(new_args),
-                } => {
-                    // Apply edited arguments to the request before handling
-                    let mut edited_request = request.clone();
-                    if let Some(params) = edited_request.params.as_mut() {
-                        if let Some(obj) = params.as_object_mut() {
-                            obj.insert("arguments".to_string(), new_args);
-                        }
-                    }
-                    return self
-                        .handle_skill_tool_call(session, &tool_name, edited_request)
-                        .await;
-                }
-                _ => {}
-            }
-
-            return self
-                .handle_skill_tool_call(session, &tool_name, request)
-                .await;
-        }
-
-        // Check if it's a coding agent tool
-        if lr_coding_agents::mcp_tools::is_coding_agent_tool(&tool_name) {
-            return self
-                .handle_coding_agent_tool_call(session, &tool_name, request)
+                .dispatch_virtual_tool_call(vs, session, &tool_name, request)
                 .await;
         }
 
@@ -431,38 +356,6 @@ impl McpGateway {
         drop(session_read);
 
         self.apply_firewall_result(session, result, &client_id, tool_name, server_id, request)
-            .await
-    }
-
-    /// Check access control for a skill tool call.
-    /// Returns a `FirewallDecisionResult` indicating whether to proceed, apply edits, or block.
-    async fn check_firewall_skill_tool(
-        &self,
-        session: &Arc<RwLock<GatewaySession>>,
-        tool_name: &str,
-        request: &JsonRpcRequest,
-    ) -> AppResult<FirewallDecisionResult> {
-        let skill_name = extract_skill_name_from_tool(tool_name);
-
-        // Global utility tools (e.g. skill_get_async_status) have no skill name.
-        // These don't execute skill code, so skip permission checks.
-        if skill_name.is_empty() {
-            return Ok(FirewallDecisionResult::Proceed);
-        }
-
-        let session_read = session.read().await;
-        let ctx = FirewallCheckContext::SkillTool {
-            permissions: &session_read.skills_permissions,
-            skill_name: &skill_name,
-            tool_name,
-            session_approved: session_read.firewall_session_approvals.contains(tool_name),
-            session_denied: session_read.firewall_session_denials.contains(tool_name),
-        };
-        let result = access_control::check_needs_approval(&ctx);
-        let client_id = session_read.client_id.clone();
-        drop(session_read);
-
-        self.apply_firewall_result(session, result, &client_id, tool_name, &skill_name, request)
             .await
     }
 
@@ -777,339 +670,167 @@ impl McpGateway {
         ))
     }
 
-    /// Append skill tools to a tools list if the client has skills access
-    pub(crate) fn append_skill_tools(
+    /// Append tools from all registered virtual servers to the tools list.
+    fn append_virtual_server_tools(
         &self,
         tools: &mut Vec<serde_json::Value>,
-        permissions: &lr_config::SkillsPermissions,
-        info_loaded: &std::collections::HashSet<String>,
-        async_enabled: bool,
-        deferred_loading: bool,
+        session: &GatewaySession,
     ) {
-        let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
-        if has_any_access {
-            if let Some(sm) = self.skill_manager.get() {
-                let skill_tools = lr_skills::mcp_tools::build_skill_tools(
-                    sm,
-                    permissions,
-                    info_loaded,
-                    async_enabled,
-                    deferred_loading,
-                );
-                for st in skill_tools {
-                    tools.push(serde_json::to_value(&st).unwrap_or_default());
+        let virtual_servers = self.virtual_servers.read();
+        for vs in virtual_servers.iter() {
+            if let Some(state) = session.virtual_server_state.get(vs.id()) {
+                let virtual_tools = vs.list_tools(state.as_ref());
+                for tool in virtual_tools {
+                    tools.push(serde_json::to_value(&tool).unwrap_or_default());
                 }
             }
         }
     }
 
-    /// Check if a tool name matches a skill tool pattern
-    pub(crate) fn is_skill_tool(&self, tool_name: &str) -> bool {
-        lr_skills::mcp_tools::is_skill_tool(tool_name)
-    }
-
-    /// Handle a skill tool call
-    pub(crate) async fn handle_skill_tool_call(
+    /// Dispatch a tool call to a virtual server with firewall checks.
+    async fn dispatch_virtual_tool_call(
         &self,
+        vs: Arc<dyn super::virtual_server::VirtualMcpServer>,
         session: Arc<RwLock<GatewaySession>>,
         tool_name: &str,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
-        let (skill_manager, script_executor) =
-            match (self.skill_manager.get(), self.script_executor.get()) {
-                (Some(sm), Some(se)) => (sm, se),
-                _ => {
+        use super::virtual_server::*;
+
+        // 1. Permission check (read lock, then drop)
+        let (firewall_result, client_id, client_name) = {
+            let session_read = session.read().await;
+            let state = match session_read.virtual_server_state.get(vs.id()) {
+                Some(s) => s,
+                None => {
                     return Ok(JsonRpcResponse::error(
                         request.id.unwrap_or(Value::Null),
                         JsonRpcError::custom(
                             -32601,
-                            "Skills support is not configured".to_string(),
+                            format!(
+                                "Virtual server '{}' has no session state",
+                                vs.display_name()
+                            ),
                             None,
                         ),
                     ));
                 }
             };
-
-        // Get skills permissions and info_loaded from session
-        let session_read = session.read().await;
-        let skills_permissions = session_read.skills_permissions.clone();
-        let info_loaded = session_read.skills_info_loaded.clone();
-        let async_enabled = session_read.skills_async_enabled;
-        drop(session_read);
-
-        // Extract arguments from params
-        let arguments = request
-            .params
-            .as_ref()
-            .and_then(|p| p.get("arguments"))
-            .cloned()
-            .unwrap_or(json!({}));
-
-        match lr_skills::mcp_tools::handle_skill_tool_call(
-            tool_name,
-            &arguments,
-            skill_manager,
-            script_executor,
-            &skills_permissions,
-            &info_loaded,
-            async_enabled,
-        )
-        .await
-        {
-            Ok(Some(result)) => {
-                use lr_skills::mcp_tools::SkillToolResult;
-                match result {
-                    SkillToolResult::Response(response) => Ok(JsonRpcResponse::success(
-                        request.id.unwrap_or(Value::Null),
-                        response,
-                    )),
-                    SkillToolResult::InfoLoaded {
-                        skill_name,
-                        response,
-                    } => {
-                        // Mark skill as info-loaded and invalidate tools cache
-                        {
-                            let mut session_write = session.write().await;
-                            session_write.mark_skill_info_loaded(&skill_name);
-                            session_write.invalidate_tools_cache();
-                        }
-
-                        // Send tools/list_changed notification if broadcast channel exists
-                        if let Some(broadcast) = &self.notification_broadcast {
-                            let notification = JsonRpcNotification {
-                                jsonrpc: "2.0".to_string(),
-                                method: "notifications/tools/list_changed".to_string(),
-                                params: None,
-                            };
-                            let _ = broadcast.send(("_skills".to_string(), notification));
-                        }
-
-                        Ok(JsonRpcResponse::success(
-                            request.id.unwrap_or(Value::Null),
-                            response,
-                        ))
-                    }
-                }
-            }
-            Ok(None) => Ok(JsonRpcResponse::error(
-                request.id.unwrap_or(Value::Null),
-                JsonRpcError::tool_not_found(tool_name),
-            )),
-            Err(e) => Ok(JsonRpcResponse::success(
-                request.id.unwrap_or(Value::Null),
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!("Error: {}", e)
-                    }],
-                    "isError": true
-                }),
-            )),
-        }
-    }
-
-    /// Append marketplace tools to a tools list if the client has marketplace access
-    pub(crate) fn append_marketplace_tools(
-        &self,
-        tools: &mut Vec<serde_json::Value>,
-        marketplace_permission: &lr_config::PermissionState,
-    ) {
-        if !marketplace_permission.is_enabled() {
-            return;
-        }
-        if let Some(service) = self.marketplace_service.get() {
-            if service.is_enabled() {
-                let marketplace_tools = service.list_tools();
-                tools.extend(marketplace_tools);
-            }
-        }
-    }
-
-    /// Handle a marketplace tool call
-    pub(crate) async fn handle_marketplace_tool_call(
-        &self,
-        session: Arc<RwLock<GatewaySession>>,
-        tool_name: &str,
-        request: JsonRpcRequest,
-    ) -> AppResult<JsonRpcResponse> {
-        let marketplace_service = match self.marketplace_service.get() {
-            Some(service) => service,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(-32601, "Marketplace is not configured".to_string(), None),
-                ));
-            }
-        };
-
-        // Check marketplace access control
-        let session_read = session.read().await;
-        let decision =
-            access_control::check_marketplace_access(&session_read.marketplace_permission);
-        let already_approved = session_read.firewall_session_approvals.contains(tool_name);
-        let already_denied = session_read.firewall_session_denials.contains(tool_name);
-        let client_id = session_read.client_id.clone();
-        let client_name = session_read.client_name.clone();
-        drop(session_read);
-
-        // Convert marketplace AccessDecision + session state to FirewallCheckResult
-        let firewall_result = match decision {
-            AccessDecision::Allow => FirewallCheckResult::Allow,
-            AccessDecision::Deny => FirewallCheckResult::Deny,
-            AccessDecision::Ask => {
-                if already_denied {
-                    FirewallCheckResult::Deny
-                } else if already_approved {
-                    FirewallCheckResult::Allow
-                } else {
-                    FirewallCheckResult::Ask
-                }
-            }
-        };
-
-        let marketplace_firewall = self
-            .apply_firewall_result(
-                &session,
-                firewall_result,
-                &client_id,
-                tool_name,
-                "marketplace",
-                &request,
+            let approved = session_read.firewall_session_approvals.contains(tool_name);
+            let denied = session_read.firewall_session_denials.contains(tool_name);
+            let result = vs.check_permissions(state.as_ref(), tool_name, approved, denied);
+            (
+                result,
+                session_read.client_id.clone(),
+                session_read.client_name.clone(),
             )
-            .await?;
+        };
 
-        if let FirewallDecisionResult::Blocked(resp) = marketplace_firewall {
-            return Ok(resp);
-        }
-
-        // Extract arguments from params
-        let arguments = request
-            .params
-            .as_ref()
-            .and_then(|p| p.get("arguments"))
-            .cloned()
-            .unwrap_or(json!({}));
-
-        match marketplace_service
-            .handle_tool_call(tool_name, arguments, &client_id, &client_name)
-            .await
-        {
-            Ok(result) => Ok(JsonRpcResponse::success(
-                request.id.unwrap_or(Value::Null),
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
-                    }]
-                }),
-            )),
-            Err(e) => Ok(JsonRpcResponse::success(
-                request.id.unwrap_or(Value::Null),
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!("Error: {}", e)
-                    }],
-                    "isError": true
-                }),
-            )),
-        }
-    }
-
-    /// Append coding agent tools to the tool list
-    pub(crate) fn append_coding_agent_tools(
-        &self,
-        tools: &mut Vec<serde_json::Value>,
-        permission: &lr_config::PermissionState,
-        agent_type: Option<lr_config::CodingAgentType>,
-    ) {
-        if !permission.is_enabled() {
-            return;
-        }
-        if let Some(manager) = self.coding_agent_manager.get() {
-            let agent_tools = lr_coding_agents::mcp_tools::build_coding_agent_tools(
-                manager, permission, agent_type,
-            );
-            for tool in agent_tools {
-                tools.push(serde_json::to_value(&tool).unwrap_or_default());
+        // 2. Apply firewall
+        let decision = match firewall_result {
+            VirtualFirewallResult::Standard(check) => {
+                self.apply_firewall_result(
+                    &session,
+                    check,
+                    &client_id,
+                    tool_name,
+                    vs.id(),
+                    &request,
+                )
+                .await?
             }
-        }
-    }
+            VirtualFirewallResult::Handled(d) => d,
+        };
 
-    /// Handle a coding agent tool call
-    pub(crate) async fn handle_coding_agent_tool_call(
-        &self,
-        session: Arc<RwLock<GatewaySession>>,
-        tool_name: &str,
-        request: JsonRpcRequest,
-    ) -> AppResult<JsonRpcResponse> {
-        let manager = match self.coding_agent_manager.get() {
-            Some(m) => m,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(
-                        -32601,
-                        "Coding agents support is not configured".to_string(),
-                        None,
-                    ),
-                ));
+        // Handle Blocked / ProceedWithEdits
+        let arguments = match decision {
+            FirewallDecisionResult::Blocked(resp) => return Ok(resp),
+            FirewallDecisionResult::ProceedWithEdits {
+                edited_arguments: Some(new_args),
+            } => new_args,
+            _ => request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("arguments"))
+                .cloned()
+                .unwrap_or(json!({})),
+        };
+
+        // 3. Clone state out of session (can't hold lock across await)
+        let state = {
+            let session_read = session.read().await;
+            match session_read.virtual_server_state.get(vs.id()) {
+                Some(s) => s.clone_box(),
+                None => {
+                    return Ok(JsonRpcResponse::error(
+                        request.id.unwrap_or(Value::Null),
+                        JsonRpcError::tool_not_found(tool_name),
+                    ));
+                }
             }
         };
 
-        // Get client_id and agent type from session
-        let session_read = session.read().await;
-        let client_id = session_read.client_id.clone();
-        let permission = session_read.coding_agent_permission.clone();
-        let agent_type = session_read.coding_agent_type;
-        drop(session_read);
-
-        // Check permission
-        if !permission.is_enabled() {
-            return Ok(JsonRpcResponse::error(
-                request.id.unwrap_or(Value::Null),
-                JsonRpcError::custom(-32601, "Coding agent access denied".to_string(), None),
-            ));
-        }
-
-        let agent_type = match agent_type {
-            Some(at) => at,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(
-                        -32601,
-                        "No coding agent type selected for this client".to_string(),
-                        None,
-                    ),
-                ));
-            }
+        // 4. Call handler
+        let display_client_name = if client_name.is_empty() {
+            client_id.clone()
+        } else {
+            client_name
         };
+        let result = vs
+            .handle_tool_call(
+                state,
+                tool_name,
+                arguments,
+                &client_id,
+                &display_client_name,
+            )
+            .await;
 
-        // Extract arguments from params
-        let arguments = request
-            .params
-            .as_ref()
-            .and_then(|p| p.get("arguments"))
-            .cloned()
-            .unwrap_or(serde_json::json!({}));
-
-        match lr_coding_agents::mcp_tools::handle_coding_agent_tool_call(
-            tool_name, &arguments, manager, &client_id, agent_type,
-        )
-        .await
-        {
-            Ok(Some(response)) => Ok(JsonRpcResponse::success(
+        // 5. Apply result
+        match result {
+            VirtualToolCallResult::Success(response) => Ok(JsonRpcResponse::success(
                 request.id.unwrap_or(Value::Null),
                 response,
             )),
-            Ok(None) => Ok(JsonRpcResponse::error(
+            VirtualToolCallResult::SuccessWithSideEffects {
+                response,
+                invalidate_cache,
+                send_list_changed,
+                state_update,
+            } => {
+                if state_update.is_some() || invalidate_cache {
+                    let mut sw = session.write().await;
+                    if let Some(updater) = state_update {
+                        if let Some(state) = sw.virtual_server_state.get_mut(vs.id()) {
+                            updater(state.as_mut());
+                        }
+                    }
+                    if invalidate_cache {
+                        sw.invalidate_tools_cache();
+                    }
+                }
+                if send_list_changed {
+                    if let Some(broadcast) = &self.notification_broadcast {
+                        let notification = JsonRpcNotification {
+                            jsonrpc: "2.0".to_string(),
+                            method: "notifications/tools/list_changed".to_string(),
+                            params: None,
+                        };
+                        let _ = broadcast.send((vs.id().to_string(), notification));
+                    }
+                }
+                Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    response,
+                ))
+            }
+            VirtualToolCallResult::NotHandled => Ok(JsonRpcResponse::error(
                 request.id.unwrap_or(Value::Null),
                 JsonRpcError::tool_not_found(tool_name),
             )),
-            Err(e) => Ok(JsonRpcResponse::success(
+            VirtualToolCallResult::ToolError(e) => Ok(JsonRpcResponse::success(
                 request.id.unwrap_or(Value::Null),
-                serde_json::json!({
+                json!({
                     "content": [{
                         "type": "text",
                         "text": format!("Error: {}", e)
@@ -1119,39 +840,4 @@ impl McpGateway {
             )),
         }
     }
-}
-
-/// Extract skill name from a skill tool name.
-///
-/// Skill tools follow the pattern `skill_{sanitized_name}_{action}` where action is
-/// one of: `get_info`, `run_{file}`, `run_async_{file}`, `read_{file}`, `get_async_status`.
-///
-/// This is a best-effort extraction for firewall rule matching. It strips the `skill_` prefix
-/// and tries to identify the skill name portion before the action suffix.
-fn extract_skill_name_from_tool(tool_name: &str) -> String {
-    let rest = tool_name.strip_prefix("skill_").unwrap_or(tool_name);
-
-    // Try to find known action suffixes and extract the name before them
-    // Order matters: check longer patterns first
-    for suffix in &[
-        "_get_async_status",
-        "_get_info",
-        "_run_async_",
-        "_run_",
-        "_read_",
-    ] {
-        if let Some(pos) = rest.find(suffix) {
-            if pos > 0 {
-                return rest[..pos].to_string();
-            }
-        }
-    }
-
-    // If the tool name is exactly `skill_get_async_status` (global), return empty
-    if rest == "get_async_status" {
-        return String::new();
-    }
-
-    // Fallback: return the rest as the skill name
-    rest.to_string()
 }

@@ -1,29 +1,24 @@
-#![allow(dead_code)]
-
 use dashmap::DashMap;
 use serde_json::{json, Value};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::manager::McpServerManager;
 use crate::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
-use lr_coding_agents::manager::CodingAgentManager;
-use lr_marketplace::MarketplaceService;
 use lr_router::Router;
-use lr_skills::executor::ScriptExecutor;
-use lr_skills::manager::SkillManager;
 use lr_types::{AppError, AppResult};
 
 use super::elicitation::ElicitationManager;
 use super::firewall::FirewallManager;
 use super::merger::{
     build_gateway_instructions, merge_initialize_results, InstructionsContext,
-    McpServerInstructionInfo, SkillInfo, UnavailableServerInfo,
+    McpServerInstructionInfo, UnavailableServerInfo,
 };
 use super::router::{broadcast_request, separate_results, should_broadcast};
 use super::session::GatewaySession;
 use super::types::*;
+use super::virtual_server::VirtualMcpServer;
 
 /// MCP Gateway - Unified endpoint for multiple MCP servers
 pub struct McpGateway {
@@ -54,23 +49,8 @@ pub struct McpGateway {
     /// Firewall manager for tool call approval flow
     pub firewall_manager: Arc<FirewallManager>,
 
-    /// Skill manager (optional, for AgentSkills.io support)
-    /// Uses OnceLock so it can be set after Arc construction via &self
-    pub(crate) skill_manager: OnceLock<Arc<SkillManager>>,
-
-    /// Script executor for running skill scripts (optional)
-    pub(crate) script_executor: OnceLock<Arc<ScriptExecutor>>,
-
-    /// Override for skills async enabled (set via set_skills_async_enabled)
-    pub(crate) skills_async_override: OnceLock<bool>,
-
-    /// Marketplace service (optional, for MCP server/skill discovery)
-    /// Uses OnceLock so it can be set after Arc construction via &self
-    pub(crate) marketplace_service: OnceLock<Arc<MarketplaceService>>,
-
-    /// Coding agent manager (optional, for AI coding agent orchestration)
-    /// Uses OnceLock so it can be set after Arc construction via &self
-    pub(crate) coding_agent_manager: OnceLock<Arc<CodingAgentManager>>,
+    /// Virtual MCP servers (skills, marketplace, coding agents)
+    pub(crate) virtual_servers: parking_lot::RwLock<Vec<Arc<dyn VirtualMcpServer>>>,
 }
 
 impl McpGateway {
@@ -119,105 +99,37 @@ impl McpGateway {
             router,
             elicitation_manager,
             firewall_manager,
-            skill_manager: OnceLock::new(),
-            script_executor: OnceLock::new(),
-            skills_async_override: OnceLock::new(),
-            marketplace_service: OnceLock::new(),
-            coding_agent_manager: OnceLock::new(),
+            virtual_servers: parking_lot::RwLock::new(Vec::new()),
         }
     }
 
-    /// Set skill manager and script executor for AgentSkills.io support.
-    /// Uses OnceLock so this can be called on `&self` (gateway is behind Arc).
-    pub fn set_skill_support(
-        &self,
-        skill_manager: Arc<SkillManager>,
-        script_executor: Arc<ScriptExecutor>,
-    ) {
-        let _ = self.skill_manager.set(skill_manager);
-        let _ = self.script_executor.set(script_executor);
+    /// Register a virtual MCP server (skills, marketplace, coding agents, etc.)
+    pub fn register_virtual_server(&self, server: Arc<dyn VirtualMcpServer>) {
+        self.virtual_servers.write().push(server);
     }
 
-    /// Enable or disable async skill script execution.
-    ///
-    /// Updates the gateway config's `skills_async_enabled` flag.
-    /// This is applied to new sessions and existing sessions on their next request.
-    pub fn set_skills_async_enabled(&self, enabled: bool) {
-        // Note: config is not behind a lock since it's set at construction time.
-        // This is a best-effort update for the async flag; new sessions will
-        // pick it up via handle_request_with_skills.
-        // For existing sessions, it's propagated when skills_permissions is set.
-        //
-        // Since GatewayConfig is in a plain field (not Arc/RwLock), we can't
-        // mutate it after construction. Instead, we store the flag on the gateway
-        // struct itself and check it in handle_request_with_skills.
-        let _ = self.skills_async_override.set(enabled);
-    }
-
-    /// Set marketplace service for MCP server/skill discovery.
-    /// Uses OnceLock so this can be called on `&self` (gateway is behind Arc).
-    pub fn set_marketplace_service(&self, service: Arc<MarketplaceService>) {
-        let _ = self.marketplace_service.set(service);
-    }
-
-    /// Set coding agent manager for AI coding agent orchestration.
-    /// Uses OnceLock so this can be called on `&self` (gateway is behind Arc).
-    pub fn set_coding_agent_support(&self, manager: Arc<CodingAgentManager>) {
-        let _ = self.coding_agent_manager.set(manager);
-    }
-
-    /// Check if skill support has been configured
+    /// Check if skill support has been configured (via virtual server)
     pub fn has_skill_support(&self) -> bool {
-        self.skill_manager.get().is_some() && self.script_executor.get().is_some()
+        self.virtual_servers
+            .read()
+            .iter()
+            .any(|vs| vs.id() == "_skills")
     }
 
-    /// Collect skill info for building gateway instructions.
-    /// Returns skill metadata for all skills accessible to the given permissions.
-    fn collect_skill_info(&self, permissions: &lr_config::SkillsPermissions) -> Vec<SkillInfo> {
-        // Check if any skills access is enabled
-        let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
-        if !has_any_access {
-            return Vec::new();
-        }
-        let Some(sm) = self.skill_manager.get() else {
-            return Vec::new();
-        };
-        let all_skills = sm.get_all();
-        all_skills
+    /// Collect instructions from all registered virtual servers.
+    async fn collect_virtual_instructions(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+    ) -> Vec<super::virtual_server::VirtualInstructions> {
+        let session_read = session.read().await;
+        self.virtual_servers
+            .read()
             .iter()
-            .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
-            .map(|s| {
-                let sname = lr_skills::types::sanitize_name(&s.metadata.name);
-                SkillInfo {
-                    name: s.metadata.name.clone(),
-                    description: s.metadata.description.clone(),
-                    get_info_tool: format!("skill_{}_get_info", sname),
-                }
+            .filter_map(|vs| {
+                let state = session_read.virtual_server_state.get(vs.id())?;
+                vs.build_instructions(state.as_ref())
             })
             .collect()
-    }
-
-    /// Collect enabled coding agent info for gateway instructions
-    fn collect_coding_agent_info(
-        &self,
-        permission: &lr_config::PermissionState,
-        agent_type: Option<lr_config::CodingAgentType>,
-    ) -> Vec<super::merger::CodingAgentInfo> {
-        if !permission.is_enabled() {
-            return Vec::new();
-        }
-        let Some(at) = agent_type else {
-            return Vec::new();
-        };
-        let Some(cam) = self.coding_agent_manager.get() else {
-            return Vec::new();
-        };
-        if !cam.is_agent_enabled(at) {
-            return Vec::new();
-        }
-        vec![super::merger::CodingAgentInfo {
-            name: at.display_name().to_string(),
-        }]
     }
 
     /// Build `McpServerInstructionInfo` list from init results and catalogs.
@@ -384,28 +296,35 @@ impl McpGateway {
             .get_or_create_session(client_id, allowed_servers, enable_deferred_loading, roots)
             .await?;
 
-        // Update mcp_permissions, skills permissions and async config on session
+        // Build a synthetic Client for virtual server state updates
+        let synthetic_client = {
+            let mut c = lr_config::Client::new_with_strategy(client_name.clone(), String::new());
+            c.mcp_permissions = mcp_permissions.clone();
+            c.skills_permissions = skills_permissions.clone();
+            c.marketplace_permission = marketplace_permission.clone();
+            c.coding_agent_permission = coding_agent_permission.clone();
+            c.coding_agent_type = coding_agent_type;
+            c
+        };
+
+        // Update permissions and virtual server states on session
         {
             let mut session_write = session.write().await;
             session_write.mcp_permissions = mcp_permissions;
-            if skills_permissions.global.is_enabled() || !skills_permissions.skills.is_empty() {
-                let async_enabled = self
-                    .skills_async_override
-                    .get()
-                    .copied()
-                    .unwrap_or(self.config.skills_async_enabled);
-                session_write.skills_permissions = skills_permissions;
-                session_write.skills_async_enabled = async_enabled;
-            }
-        }
-
-        // Update client name and marketplace permission on session (always refresh from config)
-        {
-            let mut session_write = session.write().await;
+            session_write.skills_permissions = skills_permissions;
             session_write.client_name = client_name;
-            session_write.marketplace_permission = marketplace_permission;
-            session_write.coding_agent_permission = coding_agent_permission;
-            session_write.coding_agent_type = coding_agent_type;
+
+            // Update virtual server states
+            for vs in self.virtual_servers.read().iter() {
+                if let Some(state) = session_write.virtual_server_state.get_mut(vs.id()) {
+                    vs.update_session_state(state.as_mut(), &synthetic_client);
+                } else {
+                    let state = vs.create_session_state(&synthetic_client);
+                    session_write
+                        .virtual_server_state
+                        .insert(vs.id().to_string(), state);
+                }
+            }
         }
 
         // Update last activity
@@ -936,21 +855,13 @@ impl McpGateway {
                 );
             }
 
-            let session_read = session.read().await;
-            let skills_permissions = session_read.skills_permissions.clone();
-            let ca_permission = session_read.coding_agent_permission.clone();
-            let ca_type = session_read.coding_agent_type;
-            drop(session_read);
-
-            let skill_infos = self.collect_skill_info(&skills_permissions);
-            let coding_agent_infos = self.collect_coding_agent_info(&ca_permission, ca_type);
+            let virtual_instructions = self.collect_virtual_instructions(&session).await;
             let unavailable = self.build_unavailable_server_infos(&start_failures);
             let instructions = build_gateway_instructions(&InstructionsContext {
                 servers: Vec::new(),
                 unavailable_servers: unavailable,
-                skills: skill_infos,
                 deferred_loading: false,
-                coding_agents: coding_agent_infos,
+                virtual_instructions,
             });
 
             let merged = MergedCapabilities {
@@ -1046,34 +957,22 @@ impl McpGateway {
             })
             .collect();
 
-        // If all servers failed, check if skills can serve as fallback
+        // If all servers failed, check if virtual servers can serve as fallback
         if init_results.is_empty() && !failures.is_empty() {
-            let session_read = session.read().await;
-            let has_skills = (session_read.skills_permissions.global.is_enabled()
-                || !session_read.skills_permissions.skills.is_empty())
-                && self.has_skill_support();
-            drop(session_read);
+            let has_virtual = !self.virtual_servers.read().is_empty();
 
-            if has_skills {
+            if has_virtual {
                 tracing::info!(
-                    "All MCP servers failed to initialize, but skills are configured — proceeding in skills-only mode"
+                    "All MCP servers failed to initialize, but virtual servers are configured — proceeding in fallback mode"
                 );
 
-                let session_read = session.read().await;
-                let skills_permissions = session_read.skills_permissions.clone();
-                let ca_permission = session_read.coding_agent_permission.clone();
-                let ca_type = session_read.coding_agent_type;
-                drop(session_read);
-
-                let skill_infos = self.collect_skill_info(&skills_permissions);
-                let coding_agent_infos = self.collect_coding_agent_info(&ca_permission, ca_type);
+                let virtual_instructions = self.collect_virtual_instructions(&session).await;
                 let unavailable = self.build_unavailable_server_infos(&failures);
                 let instructions = build_gateway_instructions(&InstructionsContext {
                     servers: Vec::new(),
                     unavailable_servers: unavailable,
-                    skills: skill_infos,
                     deferred_loading: false,
-                    coding_agents: coding_agent_infos,
+                    virtual_instructions,
                 });
 
                 let merged = MergedCapabilities {
@@ -1270,23 +1169,15 @@ impl McpGateway {
         } // end of if should_enable_deferred
 
         // Build gateway instructions based on the full context
-        let session_read = session.read().await;
-        let skills_permissions = session_read.skills_permissions.clone();
-        let ca_permission = session_read.coding_agent_permission.clone();
-        let ca_type = session_read.coding_agent_type;
-        let deferred_state = session_read.deferred_loading.clone();
-        let active_server_ids = session_read.allowed_servers.clone();
-        drop(session_read);
-
-        let has_skills = (skills_permissions.global.is_enabled()
-            || !skills_permissions.skills.is_empty())
-            && self.has_skill_support();
-        let skill_infos = if has_skills {
-            self.collect_skill_info(&skills_permissions)
-        } else {
-            Vec::new()
+        let (deferred_state, active_server_ids) = {
+            let session_read = session.read().await;
+            (
+                session_read.deferred_loading.clone(),
+                session_read.allowed_servers.clone(),
+            )
         };
-        let coding_agent_infos = self.collect_coding_agent_info(&ca_permission, ca_type);
+
+        let virtual_instructions = self.collect_virtual_instructions(&session).await;
 
         let deferred_enabled = deferred_state.as_ref().map(|d| d.enabled).unwrap_or(false);
 
@@ -1353,9 +1244,8 @@ impl McpGateway {
         let instructions = build_gateway_instructions(&InstructionsContext {
             servers: server_infos,
             unavailable_servers: unavailable,
-            skills: skill_infos,
             deferred_loading: deferred_enabled,
-            coding_agents: coding_agent_infos,
+            virtual_instructions,
         });
 
         // Store instructions in merged capabilities
