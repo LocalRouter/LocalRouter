@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { BookText, Info, RefreshCw, CheckCircle2, XCircle, Loader2 } from "lucide-react"
+import { BookText, Info, RefreshCw, CheckCircle2, XCircle, Loader2, Download } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -29,6 +29,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
   const [saving, setSaving] = useState(false)
   const [modeInfo, setModeInfo] = useState<ContextModeInfo | null>(null)
   const [modeInfoLoading, setModeInfoLoading] = useState(true)
+  const [installing, setInstalling] = useState(false)
 
   const tab = activeSubTab || "info"
 
@@ -237,10 +238,37 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                           {modeInfo.contextModeVersion
                             ? "Installed and ready. Will be spawned per-session when enabled."
                             : modeInfo.npxAvailable
-                              ? "Will be auto-installed via npx on first use."
+                              ? "Not yet installed. Install now or it will be auto-installed on first use."
                               : "Requires npx to be available."}
                         </p>
                       </div>
+                      {!modeInfo.contextModeVersion && modeInfo.npxAvailable && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0 ml-2"
+                          disabled={installing}
+                          onClick={async () => {
+                            setInstalling(true)
+                            try {
+                              const version = await invoke<string>("install_context_mode")
+                              toast.success(`context-mode v${version} installed`)
+                              await loadModeInfo()
+                            } catch (err) {
+                              toast.error(`Install failed: ${err}`)
+                            } finally {
+                              setInstalling(false)
+                            }
+                          }}
+                        >
+                          {installing ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                          ) : (
+                            <Download className="h-3.5 w-3.5 mr-1.5" />
+                          )}
+                          {installing ? "Installing..." : "Install"}
+                        </Button>
+                      )}
                     </div>
                   </div>
                 ) : null}
@@ -277,12 +305,11 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                     </div>
                     <div>
                       <span className="text-muted-foreground">Active Sessions:</span>{" "}
-                      <span className="font-medium">{sessions.length}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">CM Active Sessions:</span>{" "}
                       <span className="font-medium">
-                        {sessions.filter((s) => s.context_management_enabled).length}
+                        {sessions.filter((s) => s.context_management_enabled).length} / {sessions.length}
+                        {sessions.length > 0 && (
+                          <span className="text-muted-foreground font-normal"> with CM</span>
+                        )}
                       </span>
                     </div>
                   </div>

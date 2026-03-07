@@ -911,6 +911,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     npxVersion: '10.8.2',
     contextModeVersion: '1.2.0',
   }),
+  'install_context_mode': () => '1.2.0',
   'get_context_management_config': () => ({
     enabled: true,
     indexing_tools: true,

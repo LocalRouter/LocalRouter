@@ -1563,6 +1563,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::list_skills,
             ui::commands::get_skill,
             ui::commands::get_context_mode_info,
+            ui::commands::install_context_mode,
             ui::commands::get_context_management_config,
             ui::commands::update_context_management_config,
             ui::commands::list_active_sessions,

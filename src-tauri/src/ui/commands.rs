@@ -1649,9 +1649,10 @@ pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
         None
     };
 
+    // Use --no-install to avoid triggering a slow install
     let context_mode_version = if npx_available {
         tokio::process::Command::new("npx")
-            .args(["context-mode", "--version"])
+            .args(["--no-install", "context-mode", "--version"])
             .output()
             .await
             .ok()
@@ -1675,6 +1676,25 @@ pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
         npx_version,
         context_mode_version,
     })
+}
+
+/// Install context-mode via npx -y and return the installed version.
+#[tauri::command]
+pub async fn install_context_mode() -> Result<String, String> {
+    let output = tokio::process::Command::new("npx")
+        .args(["-y", "context-mode", "--version"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run npx: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Installation failed: {stderr}"));
+    }
+
+    String::from_utf8(output.stdout)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("Failed to parse version: {e}"))
 }
 
 /// Get context management configuration
