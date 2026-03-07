@@ -22,7 +22,6 @@ use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
 use localrouter::providers::registry::ProviderRegistry;
 use localrouter::router::{RateLimiterManager, Router};
-use localrouter::skills::executor::ScriptExecutor;
 use localrouter::skills::SkillManager;
 use serde_json::json;
 use std::collections::HashSet;
@@ -127,7 +126,7 @@ async fn test_skills_e2e_all_tool_commands() {
     assert_eq!(skills[0].name, "get-current-time");
 
     // ScriptExecutor
-    let script_executor = Arc::new(ScriptExecutor::new());
+
 
     // McpServerManager + Gateway (with async enabled for testing)
     let server_manager = Arc::new(McpServerManager::new());
@@ -136,8 +135,6 @@ async fn test_skills_e2e_all_tool_commands() {
     gateway.register_virtual_server(Arc::new(
         lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
             skill_manager,
-            script_executor,
-            true,
         ),
     ));
     let gateway = Arc::new(gateway);
@@ -550,15 +547,13 @@ async fn setup_gateway_with_skill() -> (Arc<McpGateway>, TempDir) {
         &[],
     );
 
-    let script_executor = Arc::new(ScriptExecutor::new());
+
     let server_manager = Arc::new(McpServerManager::new());
     let router = create_test_router();
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
     gateway.register_virtual_server(Arc::new(
         lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
             skill_manager,
-            script_executor,
-            false,
         ),
     ));
 

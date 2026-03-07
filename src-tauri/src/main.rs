@@ -538,8 +538,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 let skills_vs = Arc::new(
                     lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
                         skill_manager.clone(),
-                        script_executor.clone(),
-                        skills_config.async_enabled,
                     ),
                 );
                 app_state.mcp_gateway.register_virtual_server(skills_vs);

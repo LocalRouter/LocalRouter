@@ -1,7 +1,6 @@
 //! Skills virtual MCP server implementation.
 
 use std::any::Any;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -11,28 +10,17 @@ use super::access_control::{self, FirewallCheckContext};
 use super::gateway_tools::FirewallDecisionResult;
 use super::virtual_server::*;
 use crate::protocol::McpTool;
-use lr_skills::executor::ScriptExecutor;
 use lr_skills::manager::SkillManager;
 use lr_skills::types::sanitize_name;
 
 /// Virtual MCP server for AgentSkills.io skills.
 pub struct SkillsVirtualServer {
     skill_manager: Arc<SkillManager>,
-    script_executor: Arc<ScriptExecutor>,
-    async_enabled: bool,
 }
 
 impl SkillsVirtualServer {
-    pub fn new(
-        skill_manager: Arc<SkillManager>,
-        script_executor: Arc<ScriptExecutor>,
-        async_enabled: bool,
-    ) -> Self {
-        Self {
-            skill_manager,
-            script_executor,
-            async_enabled,
-        }
+    pub fn new(skill_manager: Arc<SkillManager>) -> Self {
+        Self { skill_manager }
     }
 }
 
@@ -40,8 +28,6 @@ impl SkillsVirtualServer {
 #[derive(Clone)]
 pub struct SkillsSessionState {
     pub permissions: lr_config::SkillsPermissions,
-    pub info_loaded: HashSet<String>,
-    pub async_enabled: bool,
 }
 
 impl VirtualSessionState for SkillsSessionState {
@@ -60,23 +46,10 @@ impl VirtualSessionState for SkillsSessionState {
 fn extract_skill_name_from_tool(tool_name: &str) -> String {
     let rest = tool_name.strip_prefix("skill_").unwrap_or(tool_name);
 
-    for suffix in &[
-        "_get_async_status",
-        "_get_info",
-        "_run_async_",
-        "_run_",
-        "_read_",
-    ] {
-        if let Some(pos) = rest.find(suffix) {
-            if pos > 0 {
-                return rest[..pos].to_string();
-            }
+    if let Some(pos) = rest.find("_get_info") {
+        if pos > 0 {
+            return rest[..pos].to_string();
         }
-    }
-
-    // Global utility tool (e.g. skill_get_async_status)
-    if rest == "get_async_status" {
-        return String::new();
     }
 
     rest.to_string()
@@ -107,18 +80,9 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
-        let has_any_access =
-            state.permissions.global.is_enabled() || !state.permissions.skills.is_empty();
-        if !has_any_access {
-            return Vec::new();
-        }
-
         lr_skills::mcp_tools::build_skill_tools(
             &self.skill_manager,
             &state.permissions,
-            &state.info_loaded,
-            state.async_enabled,
-            true, // deferred_loading (skills always use their own deferred loading via get_info)
         )
     }
 
@@ -169,10 +133,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             tool_name,
             &arguments,
             &self.skill_manager,
-            &self.script_executor,
             &state.permissions,
-            &state.info_loaded,
-            state.async_enabled,
         )
         .await
         {
@@ -180,20 +141,6 @@ impl VirtualMcpServer for SkillsVirtualServer {
                 use lr_skills::mcp_tools::SkillToolResult;
                 match result {
                     SkillToolResult::Response(response) => VirtualToolCallResult::Success(response),
-                    SkillToolResult::InfoLoaded {
-                        skill_name,
-                        response,
-                    } => VirtualToolCallResult::SuccessWithSideEffects {
-                        response,
-                        invalidate_cache: true,
-                        send_list_changed: true,
-                        state_update: Some(Box::new(move |state| {
-                            if let Some(s) = state.as_any_mut().downcast_mut::<SkillsSessionState>()
-                            {
-                                s.info_loaded.insert(skill_name);
-                            }
-                        })),
-                    },
                 }
             }
             Ok(None) => VirtualToolCallResult::NotHandled,
@@ -230,7 +177,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
         }
 
         let mut content = String::from(
-            "Call a skill's `get_info` tool to view its full instructions and unlock its run/read tools.\n\n",
+            "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n\n",
         );
         for skill in &accessible {
             let sname = sanitize_name(&skill.metadata.name);
@@ -254,8 +201,6 @@ impl VirtualMcpServer for SkillsVirtualServer {
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {
         Box::new(SkillsSessionState {
             permissions: client.skills_permissions.clone(),
-            info_loaded: HashSet::new(),
-            async_enabled: self.async_enabled,
         })
     }
 
@@ -266,7 +211,6 @@ impl VirtualMcpServer for SkillsVirtualServer {
     ) {
         if let Some(s) = state.as_any_mut().downcast_mut::<SkillsSessionState>() {
             s.permissions = client.skills_permissions.clone();
-            s.async_enabled = self.async_enabled;
         }
     }
 }
