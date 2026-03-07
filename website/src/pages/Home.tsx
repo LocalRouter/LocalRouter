@@ -1201,7 +1201,7 @@ export default function Home() {
                 <span className="text-sm font-medium text-violet-500 uppercase tracking-wide">Skills</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Skills as MCP Tools
+                Skills via MCP
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
                 Multi-step workflows exposed as callable MCP tools. Web search, code review, document summarization—each skill chains multiple operations behind a single tool call.
@@ -1328,14 +1328,14 @@ export default function Home() {
                 AI Coding Agents via MCP
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Orchestrate AI coding agents as MCP tools. Any MCP client can spawn, interact with, and manage coding sessions across Claude Code, Gemini CLI, Codex, and more.
+                Orchestrate AI coding agents as MCP tools. Each client can be assigned a coding agent — Claude Code, Gemini CLI, Codex, and more — and manage sessions through a unified set of MCP tools.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Multi-agent orchestration</span>
-                    <p className="text-sm text-muted-foreground">10 coding agents supported. Each gets 6 MCP tools for full session lifecycle management</p>
+                    <span className="font-medium">10 supported agents</span>
+                    <p className="text-sm text-muted-foreground">Claude Code, Gemini CLI, Codex, Amp, Aider, Cursor, Opencode, Qwen Code, Copilot, and Droid — auto-detected from PATH</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
