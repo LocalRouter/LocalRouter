@@ -406,10 +406,29 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
                 .collect()
         })
         .unwrap_or_default();
-    let deferred_servers: std::collections::HashSet<&str> = plan
+    let deferred_tools_servers: std::collections::HashSet<&str> = plan
         .map(|p| {
             p.deferred_items
                 .iter()
+                .filter(|d| d.item_type == DeferredItemType::Tools)
+                .map(|d| d.server_slug.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let deferred_resources_servers: std::collections::HashSet<&str> = plan
+        .map(|p| {
+            p.deferred_items
+                .iter()
+                .filter(|d| d.item_type == DeferredItemType::Resources)
+                .map(|d| d.server_slug.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let deferred_prompts_servers: std::collections::HashSet<&str> = plan
+        .map(|p| {
+            p.deferred_items
+                .iter()
+                .filter(|d| d.item_type == DeferredItemType::Prompts)
                 .map(|d| d.server_slug.as_str())
                 .collect()
         })
@@ -454,45 +473,69 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
 
         inst.push_str(&format!("**{}**\n", server.name));
 
-        // List tools (compressed or full)
-        for name in &server.tool_names {
-            if compressed_names.contains(name.as_str()) {
-                inst.push_str(&format!(
-                    "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
-                    name,
-                    name.rsplit("__").next().unwrap_or(name),
-                    name
-                ));
-            } else {
-                inst.push_str(&format!("- `{}` (tool)\n", name));
+        // List tools (skip deferred, mark compressed, or show full)
+        if deferred_tools_servers.contains(server_slug.as_str()) {
+            inst.push_str(&format!(
+                "- {} tools — [deferred] ctx_search(source=\"catalog:{}\") to discover\n",
+                server.tool_names.len(),
+                server_slug
+            ));
+        } else {
+            for name in &server.tool_names {
+                if compressed_names.contains(name.as_str()) {
+                    inst.push_str(&format!(
+                        "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
+                        name,
+                        name.rsplit("__").next().unwrap_or(name),
+                        name
+                    ));
+                } else {
+                    inst.push_str(&format!("- `{}` (tool)\n", name));
+                }
             }
         }
 
-        // List resources (compressed or full)
-        for name in &server.resource_names {
-            if compressed_names.contains(name.as_str()) {
-                inst.push_str(&format!(
-                    "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
-                    name,
-                    name.rsplit("__").next().unwrap_or(name),
-                    name
-                ));
-            } else {
-                inst.push_str(&format!("- `{}` (resource)\n", name));
+        // List resources (skip deferred, mark compressed, or show full)
+        if deferred_resources_servers.contains(server_slug.as_str()) {
+            inst.push_str(&format!(
+                "- {} resources — [deferred] ctx_search(source=\"catalog:{}\") to discover\n",
+                server.resource_names.len(),
+                server_slug
+            ));
+        } else {
+            for name in &server.resource_names {
+                if compressed_names.contains(name.as_str()) {
+                    inst.push_str(&format!(
+                        "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
+                        name,
+                        name.rsplit("__").next().unwrap_or(name),
+                        name
+                    ));
+                } else {
+                    inst.push_str(&format!("- `{}` (resource)\n", name));
+                }
             }
         }
 
-        // List prompts (compressed or full)
-        for name in &server.prompt_names {
-            if compressed_names.contains(name.as_str()) {
-                inst.push_str(&format!(
-                    "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
-                    name,
-                    name.rsplit("__").next().unwrap_or(name),
-                    name
-                ));
-            } else {
-                inst.push_str(&format!("- `{}` (prompt)\n", name));
+        // List prompts (skip deferred, mark compressed, or show full)
+        if deferred_prompts_servers.contains(server_slug.as_str()) {
+            inst.push_str(&format!(
+                "- {} prompts — [deferred] ctx_search(source=\"catalog:{}\") to discover\n",
+                server.prompt_names.len(),
+                server_slug
+            ));
+        } else {
+            for name in &server.prompt_names {
+                if compressed_names.contains(name.as_str()) {
+                    inst.push_str(&format!(
+                        "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
+                        name,
+                        name.rsplit("__").next().unwrap_or(name),
+                        name
+                    ));
+                } else {
+                    inst.push_str(&format!("- `{}` (prompt)\n", name));
+                }
             }
         }
 
@@ -730,15 +773,6 @@ pub fn compute_catalog_compression_plan(
     }
 
     // Phase 2: Defer items entirely (hide from listing)
-    // Group remaining items by server, defer the server with the most items
-    let mut server_item_counts: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::new();
-    for server in &ctx.servers {
-        let slug = slugify(&server.name);
-        let count = server.tool_names.len() + server.resource_names.len() + server.prompt_names.len();
-        server_item_counts.insert(Box::leak(slug.into_boxed_str()), count);
-    }
-
     // Sort servers by item count descending
     let mut server_slugs: Vec<String> = ctx.servers.iter().map(|s| slugify(&s.name)).collect();
     server_slugs.sort_by(|a, b| {
@@ -2136,6 +2170,74 @@ mod tests {
         // Virtual instructions always inline
         assert!(inst.contains("<context-management>"));
         assert!(inst.contains("Use ctx_search to find things"));
+    }
+
+    #[test]
+    fn test_cm_instructions_with_deferred_items() {
+        let plan = CatalogCompressionPlan {
+            compressed_descriptions: vec![],
+            deferred_items: vec![
+                DeferredItem {
+                    server_slug: "filesystem".to_string(),
+                    item_type: DeferredItemType::Tools,
+                },
+                DeferredItem {
+                    server_slug: "filesystem".to_string(),
+                    item_type: DeferredItemType::Resources,
+                },
+            ],
+            truncated_servers: vec![],
+        };
+
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "filesystem".to_string(),
+                description: None,
+                instructions: None,
+                tool_names: vec![
+                    "filesystem__read_file".to_string(),
+                    "filesystem__write_file".to_string(),
+                ],
+                resource_names: vec!["filesystem__config".to_string()],
+                prompt_names: vec!["filesystem__ask".to_string()],
+            }],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: Some(plan),
+            virtual_instructions: vec![],
+        };
+
+        let inst = build_context_managed_instructions(&ctx).unwrap();
+        // Tools should be deferred — not listed individually
+        assert!(
+            !inst.contains("`filesystem__read_file`"),
+            "Deferred tools should not be listed. Got:\n{}",
+            inst
+        );
+        assert!(
+            inst.contains("2 tools — [deferred]"),
+            "Should show deferred count for tools. Got:\n{}",
+            inst
+        );
+        // Resources also deferred
+        assert!(
+            !inst.contains("`filesystem__config`"),
+            "Deferred resources should not be listed. Got:\n{}",
+            inst
+        );
+        assert!(
+            inst.contains("1 resources — [deferred]"),
+            "Should show deferred count for resources. Got:\n{}",
+            inst
+        );
+        // Prompts NOT deferred — should be listed normally
+        assert!(
+            inst.contains("`filesystem__ask` (prompt)"),
+            "Non-deferred prompts should be listed. Got:\n{}",
+            inst
+        );
     }
 
     #[test]

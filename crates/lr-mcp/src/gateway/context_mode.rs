@@ -435,21 +435,25 @@ impl VirtualMcpServer for ContextModeVirtualServer {
                     } else {
                         // Append activation message to result
                         let mut modified_result = result.clone();
+                        let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
                         let activation_msg = format!(
                             "\n\n---\nActivated: {}\nThese items are now available for use.",
-                            activated.join(", ")
+                            names.join(", ")
                         );
                         append_text_to_mcp_result(&mut modified_result, &activation_msg);
 
-                        // Build state updater to mark items as activated
+                        // Build state updater to mark items as activated by their correct type
                         let activated_clone = activated.clone();
                         let state_update: Box<dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send> =
                             Box::new(move |s| {
                                 if let Some(cm) = s.as_any_mut().downcast_mut::<ContextModeSessionState>() {
-                                    for name in &activated_clone {
-                                        cm.activated_tools.insert(name.clone());
-                                        cm.activated_resources.insert(name.clone());
-                                        cm.activated_prompts.insert(name.clone());
+                                    for (name, item_type) in &activated_clone {
+                                        match item_type {
+                                            CatalogItemType::Tool => { cm.activated_tools.insert(name.clone()); }
+                                            CatalogItemType::Resource => { cm.activated_resources.insert(name.clone()); }
+                                            CatalogItemType::Prompt => { cm.activated_prompts.insert(name.clone()); }
+                                            CatalogItemType::ServerWelcome => {} // No activation needed
+                                        }
                                     }
                                 }
                             });
@@ -526,13 +530,14 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 
 /// Extract catalog items that should be activated based on ctx_search results.
 /// Parses source labels from the result text and identifies newly activatable items.
+/// Returns (name, type) pairs so the caller can update the correct activation set.
 fn extract_catalog_activations(
     result: &Value,
     catalog_sources: &HashMap<String, CatalogItemType>,
     activated_tools: &HashSet<String>,
     activated_resources: &HashSet<String>,
     activated_prompts: &HashSet<String>,
-) -> Vec<String> {
+) -> Vec<(String, CatalogItemType)> {
     let mut newly_activated = Vec::new();
 
     // Extract text content from MCP result
@@ -565,7 +570,7 @@ fn extract_catalog_activations(
                     CatalogItemType::ServerWelcome => true, // Server welcome doesn't need activation
                 };
                 if !already_active {
-                    newly_activated.push(name.to_string());
+                    newly_activated.push((name.to_string(), item_type.clone()));
                 }
             }
         }
@@ -788,8 +793,13 @@ mod tests {
         );
 
         assert_eq!(activated.len(), 2);
-        assert!(activated.contains(&"filesystem__read_file".to_string()));
-        assert!(activated.contains(&"filesystem__write_file".to_string()));
+        let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"filesystem__read_file"));
+        assert!(names.contains(&"filesystem__write_file"));
+        // Both should be Tool type
+        for (_, item_type) in &activated {
+            assert_eq!(*item_type, CatalogItemType::Tool);
+        }
     }
 
     #[test]
@@ -835,8 +845,14 @@ mod tests {
         );
 
         assert_eq!(activated.len(), 2);
-        assert!(activated.contains(&"db__users".to_string()));
-        assert!(activated.contains(&"db__query".to_string()));
+        let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"db__users"));
+        assert!(names.contains(&"db__query"));
+        // Check correct types
+        let resource = activated.iter().find(|(n, _)| n == "db__users").unwrap();
+        assert_eq!(resource.1, CatalogItemType::Resource);
+        let prompt = activated.iter().find(|(n, _)| n == "db__query").unwrap();
+        assert_eq!(prompt.1, CatalogItemType::Prompt);
     }
 
     #[test]
