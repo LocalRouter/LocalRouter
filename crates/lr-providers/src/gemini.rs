@@ -30,7 +30,10 @@ impl GeminiProvider {
     /// Creates a new Gemini provider with the given API key
     pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap_or_default(),
             api_key,
             base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
         }
@@ -39,7 +42,10 @@ impl GeminiProvider {
     /// Creates a new Gemini provider with custom base URL
     pub fn with_base_url(api_key: String, base_url: String) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap_or_default(),
             api_key,
             base_url,
         }

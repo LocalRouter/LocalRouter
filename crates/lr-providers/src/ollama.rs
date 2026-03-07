@@ -37,7 +37,10 @@ impl OllamaProvider {
 
         Self {
             sdk_client,
-            http_client: Client::new(),
+            http_client: Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap_or_default(),
             base_url,
         }
     }
@@ -54,7 +57,10 @@ impl OllamaProvider {
 
         Self {
             sdk_client,
-            http_client: Client::new(),
+            http_client: Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap_or_default(),
             base_url,
         }
     }

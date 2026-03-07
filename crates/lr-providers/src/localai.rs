@@ -35,7 +35,10 @@ impl LocalAIProvider {
         Self {
             base_url: "http://localhost:8080/v1".to_string(),
             api_key: None,
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap_or_default(),
         }
     }
 
@@ -44,7 +47,10 @@ impl LocalAIProvider {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: None,
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap_or_default(),
         }
     }
 

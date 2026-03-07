@@ -69,7 +69,10 @@ impl GitHubCopilotOAuthProvider {
     /// Create a new GitHub Copilot OAuth provider
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap_or_default(),
             current_flow: Arc::new(RwLock::new(None)),
         }
     }

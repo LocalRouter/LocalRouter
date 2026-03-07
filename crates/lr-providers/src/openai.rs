@@ -32,7 +32,10 @@ impl OpenAIProvider {
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap_or_default(),
         }
     }
 
