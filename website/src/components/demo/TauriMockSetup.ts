@@ -909,6 +909,32 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     catalog_threshold_bytes: 50000,
     response_threshold_bytes: 10000,
   }),
+  'list_active_sessions': () => ([
+    {
+      client_id: 'cursor-ide',
+      client_name: 'Cursor',
+      duration_secs: 3420,
+      initialized_servers: 3,
+      failed_servers: 0,
+      total_tools: 24,
+      context_management_enabled: false,
+      cm_indexed_sources: 0,
+      cm_activated_tools: 0,
+      cm_total_tools: 0,
+    },
+    {
+      client_id: 'claude-code',
+      client_name: 'Claude Code',
+      duration_secs: 890,
+      initialized_servers: 3,
+      failed_servers: 0,
+      total_tools: 12,
+      context_management_enabled: true,
+      cm_indexed_sources: 18,
+      cm_activated_tools: 8,
+      cm_total_tools: 24,
+    },
+  ]),
   'update_context_management_config': (args) => {
     toast.success('Context management config updated (demo)')
     return null

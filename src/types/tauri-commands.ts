@@ -602,6 +602,23 @@ export interface ToggleClientContextManagementParams {
   enabled: boolean | null
 }
 
+/**
+ * Active gateway session info.
+ * Rust: crates/lr-mcp/src/gateway/gateway.rs - ActiveSessionInfo struct
+ */
+export interface ActiveSessionInfo {
+  client_id: string
+  client_name: string
+  duration_secs: number
+  initialized_servers: number
+  failed_servers: number
+  total_tools: number
+  context_management_enabled: boolean
+  cm_indexed_sources: number
+  cm_activated_tools: number
+  cm_total_tools: number
+}
+
 // =============================================================================
 // Statistics & Metrics Types
 // Rust: crates/lr-server/src/state.rs, crates/lr-monitoring/src/graphs.rs

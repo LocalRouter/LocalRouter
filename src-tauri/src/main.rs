@@ -1562,6 +1562,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_skill,
             ui::commands::get_context_management_config,
             ui::commands::update_context_management_config,
+            ui::commands::list_active_sessions,
             ui::commands::get_skills_config,
             ui::commands::add_skill_source,
             ui::commands::remove_skill_source,

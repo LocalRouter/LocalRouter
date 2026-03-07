@@ -1655,6 +1655,14 @@ pub async fn update_context_management_config(
     Ok(())
 }
 
+/// List active MCP gateway sessions
+#[tauri::command]
+pub async fn list_active_sessions(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Vec<lr_mcp::gateway::ActiveSessionInfo>, String> {
+    Ok(state.mcp_gateway.list_active_sessions().await)
+}
+
 /// Get skills configuration
 #[tauri::command]
 pub async fn get_skills_config(

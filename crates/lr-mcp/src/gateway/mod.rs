@@ -28,5 +28,5 @@ pub mod virtual_skills;
 mod tests;
 
 // Re-export public API
-pub use gateway::McpGateway;
+pub use gateway::{ActiveSessionInfo, McpGateway};
 pub use types::GatewayConfig;

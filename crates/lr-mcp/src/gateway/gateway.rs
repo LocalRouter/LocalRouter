@@ -1774,4 +1774,68 @@ impl McpGateway {
     pub fn get_session(&self, client_id: &str) -> Option<Arc<RwLock<GatewaySession>>> {
         self.sessions.get(client_id).map(|s| s.clone())
     }
+
+    /// List all active sessions with stats for the UI.
+    pub async fn list_active_sessions(&self) -> Vec<ActiveSessionInfo> {
+        let mut sessions = Vec::new();
+        for entry in self.sessions.iter() {
+            let session = entry.value().read().await;
+            if session.is_expired() {
+                continue;
+            }
+
+            let duration_secs = session.created_at.elapsed().as_secs();
+
+            // Extract context management stats
+            let (cm_enabled, cm_indexed_sources, cm_activated_tools, cm_total_tools) = {
+                if let Some(state) = session.virtual_server_state.get("_context_mode") {
+                    if let Some(cm) = state.as_any().downcast_ref::<super::context_mode::ContextModeSessionState>() {
+                        (
+                            cm.enabled,
+                            cm.catalog_sources.len(),
+                            cm.activated_tools.len(),
+                            cm.full_tool_catalog.len(),
+                        )
+                    } else {
+                        (false, 0, 0, 0)
+                    }
+                } else {
+                    (false, 0, 0, 0)
+                }
+            };
+
+            let initialized_servers = session.get_initialized_servers().len();
+            let failed_servers = session.get_failed_servers().len();
+            let total_tools = session.tool_mapping.len();
+
+            sessions.push(ActiveSessionInfo {
+                client_id: session.client_id.clone(),
+                client_name: session.client_name.clone(),
+                duration_secs,
+                initialized_servers,
+                failed_servers,
+                total_tools,
+                context_management_enabled: cm_enabled,
+                cm_indexed_sources,
+                cm_activated_tools,
+                cm_total_tools,
+            });
+        }
+        sessions
+    }
+}
+
+/// Info about an active gateway session (for UI display).
+#[derive(serde::Serialize, Clone)]
+pub struct ActiveSessionInfo {
+    pub client_id: String,
+    pub client_name: String,
+    pub duration_secs: u64,
+    pub initialized_servers: usize,
+    pub failed_servers: usize,
+    pub total_tools: usize,
+    pub context_management_enabled: bool,
+    pub cm_indexed_sources: usize,
+    pub cm_activated_tools: usize,
+    pub cm_total_tools: usize,
 }

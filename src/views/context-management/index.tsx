@@ -1,23 +1,38 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { BookText, Info } from "lucide-react"
+import { BookText, Info, RefreshCw } from "lucide-react"
+import { Badge } from "@/components/ui/Badge"
+import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
 import { Input } from "@/components/ui/Input"
-import type { ContextManagementConfig } from "@/types/tauri-commands"
+import type { ContextManagementConfig, ActiveSessionInfo } from "@/types/tauri-commands"
 
 export function ContextManagementView() {
   const [config, setConfig] = useState<ContextManagementConfig | null>(null)
+  const [sessions, setSessions] = useState<ActiveSessionInfo[]>([])
   const [saving, setSaving] = useState(false)
   const catalogRef = useRef<HTMLInputElement>(null)
   const responseRef = useRef<HTMLInputElement>(null)
+
+  const loadSessions = useCallback(async () => {
+    try {
+      const data = await invoke<ActiveSessionInfo[]>("list_active_sessions")
+      setSessions(data)
+    } catch (err) {
+      console.error("Failed to load sessions:", err)
+    }
+  }, [])
 
   useEffect(() => {
     invoke<ContextManagementConfig>("get_context_management_config")
       .then(setConfig)
       .catch((err) => console.error("Failed to load context management config:", err))
-  }, [])
+    loadSessions()
+    const interval = setInterval(loadSessions, 5000)
+    return () => clearInterval(interval)
+  }, [loadSessions])
 
   const updateField = async (field: string, value: unknown) => {
     try {
@@ -37,9 +52,12 @@ export function ContextManagementView() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <BookText className="h-6 w-6" />Context Management
-        </h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <BookText className="h-6 w-6" />Context Management
+          </h1>
+          <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
+        </div>
         <p className="text-sm text-muted-foreground">
           Compress MCP catalogs and tool responses using FTS5 search indexing
         </p>
@@ -73,12 +91,7 @@ export function ContextManagementView() {
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <CardTitle className="text-base">Enable Context Management</CardTitle>
-                <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-900 dark:text-purple-300 font-medium">
-                  EXPERIMENTAL
-                </span>
-              </div>
+              <CardTitle className="text-base">Enable Context Management</CardTitle>
               <Switch
                 checked={config.enabled}
                 onCheckedChange={(enabled) => updateField("enabled", enabled)}
@@ -183,7 +196,76 @@ export function ContextManagementView() {
             </p>
           </CardContent>
         </Card>
+
+        {/* Active Sessions */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">Active Sessions</CardTitle>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={loadSessions}
+                className="h-7 w-7 p-0"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <CardDescription>
+              Live MCP gateway sessions and their context management state.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {sessions.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No active sessions</p>
+            ) : (
+              <div className="space-y-3">
+                {sessions.map((s) => (
+                  <div
+                    key={s.client_id}
+                    className="flex items-center justify-between p-3 rounded-lg border bg-muted/30"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{s.client_name || s.client_id}</span>
+                        {s.context_management_enabled ? (
+                          <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-700 dark:text-green-400">
+                            CM active
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px]">
+                            CM off
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex gap-4 text-xs text-muted-foreground">
+                        <span>{formatDuration(s.duration_secs)}</span>
+                        <span>{s.initialized_servers} server{s.initialized_servers !== 1 ? "s" : ""}{s.failed_servers > 0 ? ` (${s.failed_servers} failed)` : ""}</span>
+                        <span>{s.total_tools} tools</span>
+                      </div>
+                    </div>
+                    {s.context_management_enabled && (
+                      <div className="text-right text-xs text-muted-foreground space-y-0.5">
+                        <div>{s.cm_indexed_sources} indexed</div>
+                        <div>{s.cm_activated_tools}/{s.cm_total_tools} activated</div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   )
+}
+
+function formatDuration(secs: number): string {
+  if (secs < 60) return `${secs}s`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  const remainMins = mins % 60
+  return `${hrs}h ${remainMins}m`
 }
