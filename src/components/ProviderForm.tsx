@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-shell'
+import { isValidHttpUrl } from '@/utils/url'
 import Button from './ui/Button'
 import Input from './ui/Input'
 import { EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline'
@@ -141,7 +142,7 @@ export default function ProviderForm({
       } else if (result.type === 'pending' && result.verification_url) {
         // Automatically open the browser for OAuth (for PKCE flows)
         // Device code flows (like GitHub Copilot) show a code instead
-        if (!result.user_code) {
+        if (!result.user_code && isValidHttpUrl(result.verification_url)) {
           try {
             await open(result.verification_url)
           } catch (e) {
@@ -258,14 +259,18 @@ export default function ProviderForm({
                       {oauthResult.verification_url && (
                         <p className="text-muted-foreground">
                           Visit:{' '}
-                          <a
-                            href={oauthResult.verification_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-500 hover:underline"
-                          >
-                            {oauthResult.verification_url}
-                          </a>
+                          {isValidHttpUrl(oauthResult.verification_url) ? (
+                            <a
+                              href={oauthResult.verification_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-500 hover:underline"
+                            >
+                              {oauthResult.verification_url}
+                            </a>
+                          ) : (
+                            <span>{oauthResult.verification_url}</span>
+                          )}
                         </p>
                       )}
                     </>

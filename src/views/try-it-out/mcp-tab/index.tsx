@@ -260,9 +260,18 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     return parts[0] || "welcome"
   }
 
-  const activeSubtab = parseInnerPath(innerPath)
+  // Local subtab state — needed because some callers pass a no-op onPathChange
+  const [localSubtab, setLocalSubtab] = useState(() => parseInnerPath(innerPath))
+
+  // Sync from prop when it changes externally
+  useEffect(() => {
+    setLocalSubtab(parseInnerPath(innerPath))
+  }, [innerPath])
+
+  const activeSubtab = localSubtab
 
   const handleSubtabChange = (tab: string) => {
+    setLocalSubtab(tab)
     onPathChange(tab)
     // Clear notifications for the tab being viewed
     if (tab === "resources") {

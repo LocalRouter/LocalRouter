@@ -32,6 +32,7 @@ import { Switch } from "@/components/ui/switch"
 import { CLIENT_TEMPLATES, resolveTemplatePlaceholders } from "./ClientTemplates"
 import type { ClientTemplate } from "./ClientTemplates"
 import ServiceIcon from "@/components/ServiceIcon"
+import { isValidHttpUrl } from "@/utils/url"
 import type { ClientMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams } from "@/types/tauri-commands"
 
 interface ServerConfig {
@@ -337,7 +338,7 @@ function QuickSetupTab({
           <div className="flex items-center gap-2 text-sm">
             <XCircle className="h-4 w-4 text-yellow-500" />
             <span>Not detected</span>
-            {template.docsUrl && (
+            {template.docsUrl && isValidHttpUrl(template.docsUrl) && (
               <a
                 href={template.docsUrl}
                 target="_blank"
@@ -444,7 +445,7 @@ function QuickSetupTab({
             </p>
           )}
 
-          {template.docsUrl && (
+          {template.docsUrl && isValidHttpUrl(template.docsUrl) && (
             <a
               href={template.docsUrl}
               target="_blank"

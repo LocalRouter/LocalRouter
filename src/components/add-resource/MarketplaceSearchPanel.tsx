@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
+import { isValidHttpUrl } from "@/utils/url"
 import {
   Search,
   Loader2,
@@ -312,7 +313,7 @@ export function MarketplaceSearchPanel({
                               </Badge>
                             )}
                           </div>
-                          {server.homepage && (
+                          {server.homepage && isValidHttpUrl(server.homepage) && (
                             <a
                               href={server.homepage}
                               target="_blank"

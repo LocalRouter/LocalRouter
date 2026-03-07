@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { isValidHttpUrl } from '@/utils/url';
 
 interface OAuthModalProps {
   isOpen: boolean;
@@ -103,7 +104,7 @@ export const OAuthModal: React.FC<OAuthModalProps> = ({
   };
 
   const handleOpenUrl = () => {
-    if (flowResult?.verification_url) {
+    if (flowResult?.verification_url && isValidHttpUrl(flowResult.verification_url)) {
       window.open(flowResult.verification_url, '_blank');
     }
   };
