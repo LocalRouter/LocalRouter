@@ -17,7 +17,7 @@ use lr_api_keys::{CachedKeychain, KeychainStorage};
 use lr_config::McpOAuthConfig;
 use lr_types::{AppError, AppResult};
 use parking_lot::{Mutex, RwLock};
-use rand::{thread_rng, Rng};
+use ring::rand::{SecureRandom, SystemRandom};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -192,19 +192,14 @@ pub struct OAuthCallbackResult {
 ///
 /// # Returns
 /// * PKCE challenge containing verifier and challenge
-pub fn generate_pkce_challenge() -> PkceChallenge {
-    // Generate random code_verifier (43-128 characters, URL-safe)
-    let mut rng = thread_rng();
-    let code_verifier: String = (0..64)
-        .map(|_| {
-            let idx = rng.gen_range(0..62);
-            match idx {
-                0..=25 => (b'A' + idx) as char,
-                26..=51 => (b'a' + (idx - 26)) as char,
-                _ => (b'0' + (idx - 52)) as char,
-            }
-        })
-        .collect();
+pub fn generate_pkce_challenge() -> Result<PkceChallenge, &'static str> {
+    // Generate random code_verifier (64 bytes, base64url-encoded = 86 characters)
+    // RFC 7636 specifies 43-128 characters from unreserved URI characters
+    let rng = SystemRandom::new();
+    let mut verifier_bytes = [0u8; 64];
+    rng.fill(&mut verifier_bytes)
+        .map_err(|_| "Failed to generate random PKCE verifier")?;
+    let code_verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
 
     // Generate code_challenge = BASE64URL(SHA256(code_verifier))
     let mut hasher = Sha256::new();
@@ -212,26 +207,20 @@ pub fn generate_pkce_challenge() -> PkceChallenge {
     let hash = hasher.finalize();
     let code_challenge = URL_SAFE_NO_PAD.encode(hash);
 
-    PkceChallenge {
+    Ok(PkceChallenge {
         code_verifier,
         code_challenge,
         code_challenge_method: "S256".to_string(),
-    }
+    })
 }
 
 /// Generate a random state string for CSRF protection
-pub fn generate_state() -> String {
-    let mut rng = thread_rng();
-    (0..32)
-        .map(|_| {
-            let idx = rng.gen_range(0..62);
-            match idx {
-                0..=25 => (b'A' + idx) as char,
-                26..=51 => (b'a' + (idx - 26)) as char,
-                _ => (b'0' + (idx - 52)) as char,
-            }
-        })
-        .collect()
+pub fn generate_state() -> Result<String, &'static str> {
+    let rng = SystemRandom::new();
+    let mut state_bytes = [0u8; 32];
+    rng.fill(&mut state_bytes)
+        .map_err(|_| "Failed to generate random state")?;
+    Ok(URL_SAFE_NO_PAD.encode(state_bytes))
 }
 
 /// Build a well-known URL for OAuth protected resource discovery per RFC 8615
@@ -1158,16 +1147,16 @@ mod tests {
 
     #[test]
     fn test_pkce_generation() {
-        let pkce = generate_pkce_challenge();
+        let pkce = generate_pkce_challenge().unwrap();
 
-        // Verify code_verifier length (should be 64 characters)
-        assert_eq!(pkce.code_verifier.len(), 64);
+        // Verify code verifier is base64url-encoded 64 bytes (86 characters)
+        assert_eq!(pkce.code_verifier.len(), 86);
 
-        // Verify code_verifier contains only valid characters
+        // Verify code_verifier contains only base64url characters
         assert!(pkce
             .code_verifier
             .chars()
-            .all(|c| c.is_ascii_alphanumeric()));
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
 
         // Verify code_challenge is base64url encoded
         assert!(!pkce.code_challenge.is_empty());
@@ -1186,9 +1175,9 @@ mod tests {
     #[test]
     fn test_pkce_uniqueness() {
         // Generate multiple PKCE challenges and verify they're all unique
-        let pkce1 = generate_pkce_challenge();
-        let pkce2 = generate_pkce_challenge();
-        let pkce3 = generate_pkce_challenge();
+        let pkce1 = generate_pkce_challenge().unwrap();
+        let pkce2 = generate_pkce_challenge().unwrap();
+        let pkce3 = generate_pkce_challenge().unwrap();
 
         assert_ne!(pkce1.code_verifier, pkce2.code_verifier);
         assert_ne!(pkce1.code_verifier, pkce3.code_verifier);
@@ -1201,7 +1190,7 @@ mod tests {
 
     #[test]
     fn test_build_authorization_url() {
-        let pkce = generate_pkce_challenge();
+        let pkce = generate_pkce_challenge().unwrap();
         let auth_url = "https://auth.example.com/authorize";
         let client_id = "test_client_id";
         let redirect_uri = "http://localhost:8080/callback";

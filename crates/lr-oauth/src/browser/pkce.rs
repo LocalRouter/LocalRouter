@@ -3,7 +3,7 @@
 //! Implements PKCE as defined in RFC 7636 with S256 (SHA-256) challenge method.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::{thread_rng, Rng};
+use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -38,20 +38,14 @@ pub struct PkceChallenge {
 /// // Use pkce.code_challenge in authorization URL
 /// // Use pkce.code_verifier in token exchange
 /// ```
-pub fn generate_pkce_challenge() -> PkceChallenge {
-    // Generate random code_verifier (64 characters, URL-safe)
-    // RFC 7636 specifies 43-128 characters from [A-Z] [a-z] [0-9] - . _ ~
-    let mut rng = thread_rng();
-    let code_verifier: String = (0..64)
-        .map(|_| {
-            let idx = rng.gen_range(0..62);
-            match idx {
-                0..=25 => (b'A' + idx) as char,
-                26..=51 => (b'a' + (idx - 26)) as char,
-                _ => (b'0' + (idx - 52)) as char,
-            }
-        })
-        .collect();
+pub fn generate_pkce_challenge() -> Result<PkceChallenge, &'static str> {
+    // Generate random code_verifier (64 bytes, base64url-encoded = 86 characters)
+    // RFC 7636 specifies 43-128 characters from unreserved URI characters
+    let rng = SystemRandom::new();
+    let mut verifier_bytes = [0u8; 64];
+    rng.fill(&mut verifier_bytes)
+        .map_err(|_| "Failed to generate random PKCE verifier")?;
+    let code_verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
 
     // Generate code_challenge = BASE64URL(SHA256(code_verifier))
     let mut hasher = Sha256::new();
@@ -59,11 +53,11 @@ pub fn generate_pkce_challenge() -> PkceChallenge {
     let hash = hasher.finalize();
     let code_challenge = URL_SAFE_NO_PAD.encode(hash);
 
-    PkceChallenge {
+    Ok(PkceChallenge {
         code_verifier,
         code_challenge,
         code_challenge_method: "S256".to_string(),
-    }
+    })
 }
 
 /// Generate a random state string for CSRF protection
@@ -84,18 +78,12 @@ pub fn generate_pkce_challenge() -> PkceChallenge {
 /// // Include state in authorization URL
 /// // Verify state matches when callback is received
 /// ```
-pub fn generate_state() -> String {
-    let mut rng = thread_rng();
-    (0..32)
-        .map(|_| {
-            let idx = rng.gen_range(0..62);
-            match idx {
-                0..=25 => (b'A' + idx) as char,
-                26..=51 => (b'a' + (idx - 26)) as char,
-                _ => (b'0' + (idx - 52)) as char,
-            }
-        })
-        .collect()
+pub fn generate_state() -> Result<String, &'static str> {
+    let rng = SystemRandom::new();
+    let mut state_bytes = [0u8; 32];
+    rng.fill(&mut state_bytes)
+        .map_err(|_| "Failed to generate random state")?;
+    Ok(URL_SAFE_NO_PAD.encode(state_bytes))
 }
 
 #[cfg(test)]
@@ -104,16 +92,16 @@ mod tests {
 
     #[test]
     fn test_generate_pkce_challenge() {
-        let pkce = generate_pkce_challenge();
+        let pkce = generate_pkce_challenge().unwrap();
 
-        // Verify code verifier length (64 characters)
-        assert_eq!(pkce.code_verifier.len(), 64);
+        // Verify code verifier is base64url-encoded 64 bytes (86 characters)
+        assert_eq!(pkce.code_verifier.len(), 86);
 
-        // Verify code verifier uses only allowed characters
+        // Verify code verifier uses only base64url characters
         assert!(pkce
             .code_verifier
             .chars()
-            .all(|c| c.is_ascii_alphanumeric()));
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
 
         // Verify code challenge is not empty
         assert!(!pkce.code_challenge.is_empty());
@@ -127,8 +115,8 @@ mod tests {
 
     #[test]
     fn test_pkce_challenge_uniqueness() {
-        let pkce1 = generate_pkce_challenge();
-        let pkce2 = generate_pkce_challenge();
+        let pkce1 = generate_pkce_challenge().unwrap();
+        let pkce2 = generate_pkce_challenge().unwrap();
 
         // Each call should generate different values
         assert_ne!(pkce1.code_verifier, pkce2.code_verifier);
@@ -153,19 +141,21 @@ mod tests {
 
     #[test]
     fn test_generate_state() {
-        let state = generate_state();
+        let state = generate_state().unwrap();
 
-        // Verify length (32 characters)
-        assert_eq!(state.len(), 32);
+        // Verify length: base64url-encoded 32 bytes = 43 characters
+        assert_eq!(state.len(), 43);
 
-        // Verify uses only allowed characters
-        assert!(state.chars().all(|c| c.is_ascii_alphanumeric()));
+        // Verify uses only base64url characters
+        assert!(state
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 
     #[test]
     fn test_state_uniqueness() {
-        let state1 = generate_state();
-        let state2 = generate_state();
+        let state1 = generate_state().unwrap();
+        let state2 = generate_state().unwrap();
 
         // Each call should generate different values
         assert_ne!(state1, state2);
@@ -176,7 +166,7 @@ mod tests {
         // Generate multiple states and verify they're all different
         let mut states = std::collections::HashSet::new();
         for _ in 0..100 {
-            let state = generate_state();
+            let state = generate_state().unwrap();
             assert!(states.insert(state), "Generated duplicate state");
         }
         assert_eq!(states.len(), 100);
@@ -187,7 +177,7 @@ mod tests {
         // Generate multiple PKCE challenges and verify they're all different
         let mut verifiers = std::collections::HashSet::new();
         for _ in 0..100 {
-            let pkce = generate_pkce_challenge();
+            let pkce = generate_pkce_challenge().unwrap();
             assert!(
                 verifiers.insert(pkce.code_verifier),
                 "Generated duplicate PKCE verifier"

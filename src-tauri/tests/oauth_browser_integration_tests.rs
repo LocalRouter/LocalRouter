@@ -15,16 +15,16 @@ use std::collections::HashMap;
 
 #[test]
 fn test_pkce_generation() {
-    let pkce = generate_pkce_challenge();
+    let pkce = generate_pkce_challenge().unwrap();
 
-    // Verify code verifier length (64 characters)
-    assert_eq!(pkce.code_verifier.len(), 64);
+    // Verify code verifier is base64url-encoded 64 bytes (86 characters)
+    assert_eq!(pkce.code_verifier.len(), 86);
 
-    // Verify code verifier uses only URL-safe characters
+    // Verify code verifier uses only base64url characters
     assert!(pkce
         .code_verifier
         .chars()
-        .all(|c| c.is_ascii_alphanumeric()));
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
 
     // Verify code challenge is not empty
     assert!(!pkce.code_challenge.is_empty());
@@ -38,8 +38,8 @@ fn test_pkce_generation() {
 
 #[test]
 fn test_pkce_uniqueness() {
-    let pkce1 = generate_pkce_challenge();
-    let pkce2 = generate_pkce_challenge();
+    let pkce1 = generate_pkce_challenge().unwrap();
+    let pkce2 = generate_pkce_challenge().unwrap();
 
     // Each call should generate different values
     assert_ne!(pkce1.code_verifier, pkce2.code_verifier);
@@ -53,7 +53,7 @@ fn test_pkce_batch_uniqueness() {
     let mut challenges = std::collections::HashSet::new();
 
     for _ in 0..100 {
-        let pkce = generate_pkce_challenge();
+        let pkce = generate_pkce_challenge().unwrap();
         assert!(
             verifiers.insert(pkce.code_verifier.clone()),
             "Generated duplicate PKCE verifier"
@@ -70,19 +70,21 @@ fn test_pkce_batch_uniqueness() {
 
 #[test]
 fn test_state_generation() {
-    let state = generate_state();
+    let state = generate_state().unwrap();
 
-    // Verify length (32 characters)
-    assert_eq!(state.len(), 32);
+    // Verify length: base64url-encoded 32 bytes = 43 characters
+    assert_eq!(state.len(), 43);
 
-    // Verify uses only alphanumeric characters
-    assert!(state.chars().all(|c| c.is_ascii_alphanumeric()));
+    // Verify uses only base64url characters
+    assert!(state
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
 }
 
 #[test]
 fn test_state_uniqueness() {
-    let state1 = generate_state();
-    let state2 = generate_state();
+    let state1 = generate_state().unwrap();
+    let state2 = generate_state().unwrap();
 
     // Each call should generate different values
     assert_ne!(state1, state2);
@@ -94,7 +96,7 @@ fn test_state_batch_uniqueness() {
     let mut states = std::collections::HashSet::new();
 
     for _ in 0..100 {
-        let state = generate_state();
+        let state = generate_state().unwrap();
         assert!(states.insert(state), "Generated duplicate state");
     }
 
