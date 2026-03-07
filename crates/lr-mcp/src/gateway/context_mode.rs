@@ -259,17 +259,43 @@ impl VirtualSessionState for ContextModeSessionState {
 }
 
 /// Spawn a context-mode STDIO process via npx.
+///
+/// First checks if context-mode is already cached via `npx --no-install --version`.
+/// If cached, spawns without install (fast, no network). Otherwise falls back to
+/// `npx -y` to auto-install on first use.
 async fn spawn_context_mode_process() -> Result<StdioTransport, String> {
     let env = crate::manager::shell_env();
 
-    // Use npx to run context-mode (auto-installs if needed)
-    let command = "npx".to_string();
-    let args = vec!["-y".to_string(), "context-mode".to_string()];
+    // Quick check: is context-mode already in the npx cache?
+    let is_cached = tokio::process::Command::new("npx")
+        .args(["--no-install", "context-mode", "--version"])
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
 
-    tracing::info!("Spawning context-mode STDIO process");
-    StdioTransport::spawn(command, args, env)
+    if is_cached {
+        tracing::info!("Spawning context-mode STDIO process (cached)");
+        StdioTransport::spawn(
+            "npx".to_string(),
+            vec!["--no-install".to_string(), "context-mode".to_string()],
+            env,
+        )
         .await
         .map_err(|e| format!("Failed to spawn context-mode: {e}"))
+    } else {
+        tracing::info!("context-mode not cached, installing via npx -y");
+        StdioTransport::spawn(
+            "npx".to_string(),
+            vec!["-y".to_string(), "context-mode".to_string()],
+            env,
+        )
+        .await
+        .map_err(|e| format!("Failed to spawn context-mode: {e}"))
+    }
 }
 
 /// Initialize the MCP connection with the context-mode process.
