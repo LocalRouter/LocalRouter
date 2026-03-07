@@ -1488,13 +1488,25 @@ pub async fn open_path(path: String, app: tauri::AppHandle) -> Result<(), String
     use tauri_plugin_shell::ShellExt;
 
     let path = std::path::PathBuf::from(&path);
+
     if !path.exists() {
         return Err(format!("Path does not exist: {}", path.display()));
     }
 
+    // Resolve to canonical path to prevent symlink attacks
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve path: {}", e))?;
+
+    // Validate path doesn't contain suspicious patterns
+    let path_str = canonical.to_string_lossy();
+    if path_str.contains("..") {
+        return Err("Path traversal not allowed".to_string());
+    }
+
     #[allow(deprecated)]
     app.shell()
-        .open(path.to_string_lossy().as_ref(), None)
+        .open(canonical.to_string_lossy().as_ref(), None)
         .map_err(|e| format!("Failed to open path: {}", e))?;
 
     Ok(())
