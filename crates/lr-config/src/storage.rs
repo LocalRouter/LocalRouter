@@ -11,6 +11,9 @@ use tracing::{debug, error, info, warn};
 /// Maximum number of timestamped backups to keep
 const MAX_BACKUPS: usize = 3;
 
+/// Maximum allowed config file size (10 MB)
+const MAX_CONFIG_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
 /// Load configuration from a file
 ///
 /// If the file doesn't exist, returns a default configuration.
@@ -82,6 +85,18 @@ pub async fn load_config(path: &Path) -> AppResult<AppConfig> {
 async fn load_config_from_file(path: &Path) -> AppResult<AppConfig> {
     debug!("Loading configuration from {:?}", path);
 
+    // Check file size before reading to prevent excessive memory usage
+    let metadata = fs::metadata(path)
+        .await
+        .map_err(|e| AppError::Config(format!("Failed to read config metadata: {}", e)))?;
+    if metadata.len() > MAX_CONFIG_FILE_SIZE {
+        return Err(AppError::Config(format!(
+            "Config file too large: {} bytes (max {} bytes)",
+            metadata.len(),
+            MAX_CONFIG_FILE_SIZE
+        )));
+    }
+
     // Read file contents
     let contents = fs::read_to_string(path)
         .await
@@ -133,6 +148,17 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
                 warn!("Failed to create backup: {}", e);
             } else {
                 debug!("Created timestamped backup at {:?}", backup_path);
+
+                // Set restrictive file permissions on backup file (Unix only)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let permissions = std::fs::Permissions::from_mode(0o600);
+                    if let Err(e) = std::fs::set_permissions(&backup_path, permissions) {
+                        warn!("Failed to set backup file permissions: {}", e);
+                    }
+                }
+
                 // Clean up old backups
                 cleanup_old_backups(parent).await;
             }
@@ -197,6 +223,16 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
         )));
     }
 
+    // Set restrictive file permissions on Unix (owner read/write only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        if let Err(e) = std::fs::set_permissions(path, permissions) {
+            warn!("Failed to set config file permissions: {}", e);
+        }
+    }
+
     info!("Configuration saved successfully to {:?}", path);
     Ok(())
 }
@@ -244,7 +280,11 @@ async fn cleanup_old_backups(dir: &Path) {
     if backups.len() > MAX_BACKUPS {
         for backup_path in backups.into_iter().skip(MAX_BACKUPS) {
             if let Err(e) = fs::remove_file(&backup_path).await {
-                debug!("Failed to remove old backup {:?}: {}", backup_path, e);
+                debug!(
+                    "Failed to remove old backup {}: {} (may have been cleaned up by another process)",
+                    backup_path.display(),
+                    e
+                );
             } else {
                 debug!("Removed old backup: {:?}", backup_path);
             }
