@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { Activity, DollarSign, Zap, CheckCircle, RefreshCw, Plus, LayoutDashboard } from "lucide-react"
+import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { StatsCard, StatsRow } from "@/components/shared/stats-card"
 import { MetricsChart } from "@/components/shared/metrics-chart"
 import { useMetricsSubscription } from "@/hooks/useMetricsSubscription"
@@ -81,7 +82,8 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
   // Entity lists for selectors
   const [clients, setClients] = useState<Client[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
-  const [models, setModels] = useState<Model[]>([])
+  const { models: rawModels } = useIncrementalModels({ refreshOnMount: false })
+  const models = useMemo<Model[]>(() => rawModels.map(m => ({ model_id: m.id, provider_instance: m.provider })), [rawModels])
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
 
   useEffect(() => {
@@ -108,16 +110,14 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
 
   const loadEntities = async () => {
     try {
-      const [clientList, providerList, modelList, mcpServerList] = await Promise.all([
+      const [clientList, providerList, mcpServerList] = await Promise.all([
         invoke<Client[]>("list_clients").catch(() => []),
         invoke<Provider[]>("list_provider_instances").catch(() => []),
-        invoke<Array<{ id: string; provider: string }>>("list_all_models").catch(() => []),
         invoke<McpServer[]>("list_mcp_servers").catch(() => []),
       ])
 
       setClients(clientList)
       setProviders(providerList)
-      setModels(modelList.map(m => ({ model_id: m.id, provider_instance: m.provider })))
       setMcpServers(mcpServerList)
     } catch (error) {
       console.error("Failed to load entities:", error)

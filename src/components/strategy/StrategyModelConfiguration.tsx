@@ -18,7 +18,8 @@ import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
 import {listen} from "@tauri-apps/api/event"
 import {toast} from "sonner"
-import {Bot, Brain, Download, ExternalLink, MessageSquareWarning} from "lucide-react"
+import {Bot, Brain, Download, ExternalLink, Loader2, MessageSquareWarning} from "lucide-react"
+import {useIncrementalModels} from "@/hooks/useIncrementalModels"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/Select"
 import {Switch} from "@/components/ui/Toggle"
@@ -27,7 +28,7 @@ import {Button} from "@/components/ui/Button"
 import {Progress} from "@/components/ui/progress"
 import {Label} from "@/components/ui/label"
 import {cn} from "@/lib/utils"
-import {AllowedModelsSelection, AllowedModelsSelector, Model,} from "./AllowedModelsSelector"
+import {AllowedModelsSelection, AllowedModelsSelector} from "./AllowedModelsSelector"
 import {UnifiedModelsSelector} from "./UnifiedModelsSelector"
 import type { ModelPermissions } from "@/components/permissions"
 import { PermissionStateButton } from "@/components/permissions"
@@ -108,7 +109,7 @@ export function StrategyModelConfiguration({
                                                onTabChange,
                                            }: StrategyModelConfigurationProps) {
     const [strategy, setStrategy] = useState<StrategyConfig | null>(null)
-    const [models, setModels] = useState<Model[]>([])
+    const { models, loadingProviders, isFullyLoaded } = useIncrementalModels()
     const [loading, setLoading] = useState(true)
     const [saving, setSaving] = useState(false)
     const [modelPricing, setModelPricing] = useState<Record<string, ModelPricingInfo>>({})
@@ -204,12 +205,8 @@ export function StrategyModelConfiguration({
     const loadData = async () => {
         setLoading(true)
         try {
-            const [strategyData, modelsData] = await Promise.all([
-                invoke<StrategyConfig>("get_strategy", {strategyId}),
-                invoke<Model[]>("list_all_models"),
-            ])
+            const strategyData = await invoke<StrategyConfig>("get_strategy", {strategyId})
             setStrategy(strategyData)
-            setModels(modelsData)
             // Set routing mode based on loaded strategy
             setRoutingMode(strategyData.auto_config?.permission !== 'off' ? 'auto' : 'allowed')
 
@@ -516,6 +513,12 @@ export function StrategyModelConfiguration({
                                             : "Select which models the client can access"
                                         }
                                     </CardDescription>
+                                    {!isFullyLoaded && loadingProviders.size > 0 && (
+                                        <div className="flex items-center gap-2 text-xs text-muted-foreground mt-2">
+                                            <Loader2 className="h-3 w-3 animate-spin" />
+                                            <span>Loading models from {loadingProviders.size} provider{loadingProviders.size > 1 ? 's' : ''}...</span>
+                                        </div>
+                                    )}
                                 </CardHeader>
                                 <CardContent>
                                     {clientContext ? (
@@ -599,6 +602,12 @@ export function StrategyModelConfiguration({
                                                         <CardDescription>
                                                             Models to try in order. Falls back to next on failures (outage, context limit, policy violation).
                                                         </CardDescription>
+                                                        {!isFullyLoaded && loadingProviders.size > 0 && (
+                                                            <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                                                                <Loader2 className="h-3 w-3 animate-spin" />
+                                                                <span>Loading models from {loadingProviders.size} provider{loadingProviders.size > 1 ? 's' : ''}...</span>
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 </div>
                                             </CardHeader>

@@ -4,6 +4,7 @@ import Card from '../ui/Card'
 import Button from '../ui/Button'
 import Toggle from '../ui/Toggle'
 import ModelSelectionTable, { Model, ModelSelectionValue } from '../ModelSelectionTable'
+import { useIncrementalModels } from '@/hooks/useIncrementalModels'
 import RateLimitEditor, { StrategyRateLimit } from './RateLimitEditor'
 
 export interface Strategy {
@@ -42,7 +43,7 @@ export default function StrategyConfigEditor({
   onSave,
 }: StrategyConfigEditorProps) {
   const [strategy, setStrategy] = useState<Strategy | null>(null)
-  const [models, setModels] = useState<Model[]>([])
+  const { models } = useIncrementalModels({ refreshOnMount: false })
   const [selectedModels, setSelectedModels] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -54,13 +55,8 @@ export default function StrategyConfigEditor({
   const loadData = async () => {
     setLoading(true)
     try {
-      const [strategyData, modelsData] = await Promise.all([
-        invoke<Strategy>('get_strategy', { strategyId }),
-        invoke<any[]>('list_all_models'),
-      ])
-
+      const strategyData = await invoke<Strategy>('get_strategy', { strategyId })
       setStrategy(strategyData)
-      setModels(modelsData.map((m) => ({ id: m.id, provider: m.provider })))
     } catch (error) {
       console.error('Failed to load strategy:', error)
     } finally {

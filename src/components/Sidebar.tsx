@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import ProviderIcon from './ProviderIcon'
+import { useIncrementalModels } from '@/hooks/useIncrementalModels'
 
 type MainTab = 'home' | 'clients' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'routing' | 'logs' | 'documentation' | 'settings'
 
@@ -22,11 +23,6 @@ interface Client {
   name: string
   client_id: string
   enabled: boolean
-}
-
-interface Model {
-  id: string
-  provider: string
 }
 
 interface OAuthClient {
@@ -51,7 +47,7 @@ interface McpServer {
 export default function Sidebar({ activeTab, activeSubTab, onTabChange }: SidebarProps) {
   const [providers, setProviders] = useState<ProviderInstance[]>([])
   const [clients, setClients] = useState<Client[]>([])
-  const [models, setModels] = useState<Model[]>([])
+  const { models } = useIncrementalModels({ refreshOnMount: false })
   const [oauthClients, setOauthClients] = useState<OAuthClient[]>([])
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
@@ -59,12 +55,9 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    // Initial load - use cached models for instant display
+    // Initial load
     loadProviders()
     loadClients()
-    invoke<Model[]>('get_cached_models')
-      .then(cached => { if (cached.length > 0) setModels(cached) })
-      .catch(() => {})
     loadOAuthClients()
     loadMcpServers()
     // DEPRECATED: loadStrategies()
@@ -76,10 +69,6 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
 
     const unsubscribeClients = listen('clients-changed', () => {
       loadClients()
-    })
-
-    const unsubscribeModels = listen('models-changed', () => {
-      loadModels()
     })
 
     const unsubscribeOAuthClients = listen('oauth-clients-changed', () => {
@@ -98,7 +87,6 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     return () => {
       unsubscribeProviders.then((fn: any) => fn())
       unsubscribeClients.then((fn: any) => fn())
-      unsubscribeModels.then((fn: any) => fn())
       unsubscribeOAuthClients.then((fn: any) => fn())
       unsubscribeMcpServers.then((fn: any) => fn())
       // DEPRECATED: unsubscribeStrategies.then((fn: any) => fn())
@@ -123,15 +111,6 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     }
   }
 
-
-  const loadModels = async () => {
-    try {
-      const modelList = await invoke<Model[]>('list_all_models')
-      setModels(modelList)
-    } catch (err) {
-      console.error('Failed to load models:', err)
-    }
-  }
 
   const loadOAuthClients = async () => {
     try {

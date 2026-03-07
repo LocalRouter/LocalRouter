@@ -898,6 +898,12 @@ struct ProviderModelsPayload {
     models: Vec<lr_providers::ModelInfo>,
 }
 
+/// Payload for the models-refresh-started event
+#[derive(Clone, serde::Serialize)]
+struct ModelsRefreshStartedPayload {
+    providers: Vec<String>,
+}
+
 /// Trigger an incremental model refresh in the background
 ///
 /// Spawns parallel per-provider fetch tasks. As each provider completes,
@@ -919,6 +925,14 @@ pub async fn refresh_models_incremental(
 
     tokio::spawn(async move {
         let enabled_instances = registry.get_enabled_instance_names();
+
+        // Notify frontend which providers are being refreshed
+        let _ = app.emit(
+            "models-refresh-started",
+            ModelsRefreshStartedPayload {
+                providers: enabled_instances.clone(),
+            },
+        );
 
         // Spawn a task per provider for true parallelism
         let handles: Vec<_> = enabled_instances

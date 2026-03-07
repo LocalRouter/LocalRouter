@@ -6,6 +6,7 @@ import { Sidebar, type View } from "./sidebar"
 import { Header } from "./header"
 import { CommandPalette } from "./command-palette"
 import { Toaster } from "@/components/ui/sonner"
+import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 
 interface Client {
   id: string
@@ -33,11 +34,6 @@ interface McpServer {
   enabled: boolean
 }
 
-interface Model {
-  id: string
-  provider: string
-}
-
 // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
 // interface Strategy {
 //   id: string
@@ -63,7 +59,7 @@ export function AppShell({
   const [providers, setProviders] = useState<ProviderInstance[]>([])
   const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
-  const [models, setModels] = useState<Model[]>([])
+  const { models } = useIncrementalModels()
   // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
   // const [strategies, setStrategies] = useState<Strategy[]>([])
 
@@ -71,19 +67,11 @@ export function AppShell({
   useEffect(() => {
     loadData()
 
-    // Subscribe to data changes
+    // Subscribe to data changes (models handled by useIncrementalModels hook)
     const unsubscribers = [
       listen('clients-changed', loadClients),
       listen('providers-changed', loadProviders),
       listen('mcp-servers-changed', loadMcpServers),
-      listen('models-changed', loadModels),
-      listen<{ provider: string; models: Model[] }>('models-provider-loaded', (event) => {
-        // Incrementally merge models as each provider completes
-        setModels(prev => [
-          ...prev.filter(m => m.provider !== event.payload.provider),
-          ...event.payload.models,
-        ])
-      }),
       // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
       // listen('strategies-changed', loadStrategies),
     ]
@@ -97,18 +85,12 @@ export function AppShell({
   }, [])
 
   const loadData = async () => {
-    // Show cached models instantly, then trigger background refresh
-    invoke<Model[]>('get_cached_models')
-      .then(cached => { if (cached.length > 0) setModels(cached) })
-      .catch(() => {})
-    invoke('refresh_models_incremental').catch(() => {})
-
     await Promise.all([
       loadClients(),
       loadProviders(),
       loadProviderTypes(),
       loadMcpServers(),
-      // Models loaded incrementally above, no need for blocking loadModels()
+      // Models loaded incrementally via useIncrementalModels hook
       // DEPRECATED: loadStrategies(),
     ])
   }
@@ -146,15 +128,6 @@ export function AppShell({
       setMcpServers(serverList)
     } catch (err) {
       console.error('Failed to load MCP servers:', err)
-    }
-  }
-
-  const loadModels = async () => {
-    try {
-      const modelList = await invoke<Model[]>('list_all_models')
-      setModels(modelList)
-    } catch (err) {
-      console.error('Failed to load models:', err)
     }
   }
 

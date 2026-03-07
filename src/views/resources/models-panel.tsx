@@ -1,8 +1,8 @@
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
-import { Cpu, ExternalLink } from "lucide-react"
+import { Cpu, ExternalLink, Loader2 } from "lucide-react"
+import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -48,7 +48,8 @@ export function ModelsPanel({
   onSelect,
   onViewChange,
 }: ModelsPanelProps) {
-  const [models, setModels] = useState<Model[]>([])
+  const { models: incrementalModels, loadingProviders, isFullyLoaded } = useIncrementalModels()
+  const [detailedModels, setDetailedModels] = useState<Model[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState("")
   const [filterCapability, setFilterCapability] = useState<string>("all")
@@ -56,39 +57,61 @@ export function ModelsPanel({
   const [filterFreeTier, setFilterFreeTier] = useState<string>("all")
   const [freeTierStatuses, setFreeTierStatuses] = useState<Record<string, ProviderFreeTierStatus>>({})
 
-  useEffect(() => {
-    loadModels()
-    loadFreeTierStatuses()
+  // Merge: use detailed models when available, fill in basic models from incremental loading
+  const models = useMemo<Model[]>(() => {
+    const merged: Model[] = []
+    const seen = new Set<string>()
 
-    const unsubscribe = listen("models-changed", () => {
-      loadModels()
-    })
-
-    return () => {
-      unsubscribe.then((fn) => fn())
+    // Add all detailed models first
+    for (const m of detailedModels) {
+      const key = `${m.provider_instance}/${m.model_id}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        merged.push(m)
+      }
     }
-  }, [])
 
-  const loadModels = async () => {
-    try {
-      setLoading(true)
-      const modelList = await invoke<Model[]>("list_all_models_detailed")
-      setModels(modelList)
-    } catch (error) {
-      console.error("Failed to load models:", error)
-      try {
-        const basicList = await invoke<Array<{ id: string; provider: string }>>("list_all_models")
-        setModels(basicList.map((m) => ({
+    // Add incremental models not yet in detailed set
+    for (const m of incrementalModels) {
+      const key = `${m.provider}/${m.id}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        merged.push({
           model_id: m.id,
           provider_instance: m.provider,
           provider_type: m.provider.split("/")[0] || "unknown",
           capabilities: [],
           context_window: 0,
           supports_streaming: true,
-        })))
-      } catch (fallbackError) {
-        console.error("Failed to load models (fallback):", fallbackError)
+        })
       }
+    }
+
+    return merged
+  }, [incrementalModels, detailedModels])
+
+  // Show content as soon as we have any models
+  useEffect(() => {
+    if (models.length > 0) setLoading(false)
+  }, [models.length])
+
+  useEffect(() => {
+    loadFreeTierStatuses()
+  }, [])
+
+  // Fetch detailed data once all providers are loaded
+  useEffect(() => {
+    if (isFullyLoaded && incrementalModels.length > 0) {
+      loadDetailedModels()
+    }
+  }, [isFullyLoaded])
+
+  const loadDetailedModels = async () => {
+    try {
+      const modelList = await invoke<Model[]>("list_all_models_detailed")
+      setDetailedModels(modelList)
+    } catch (error) {
+      console.error("Failed to load detailed models:", error)
     } finally {
       setLoading(false)
     }
@@ -245,6 +268,12 @@ export function ModelsPanel({
           </ScrollArea>
           <div className="p-3 border-t text-xs text-muted-foreground text-center">
             {filteredModels.length} of {models.length} models
+            {!isFullyLoaded && loadingProviders.size > 0 && (
+              <span className="inline-flex items-center gap-1 ml-2">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                loading {loadingProviders.size} provider{loadingProviders.size > 1 ? 's' : ''}...
+              </span>
+            )}
           </div>
         </div>
       </ResizablePanel>

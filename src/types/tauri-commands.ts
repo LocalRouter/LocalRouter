@@ -1521,6 +1521,11 @@ export interface ProviderModelsPayload {
   models: Array<{ id: string; provider: string }>
 }
 
+/** Event payload for models-refresh-started */
+export interface ModelsRefreshStartedPayload {
+  providers: string[]
+}
+
 // =============================================================================
 // MCP Server Commands
 // Rust: src-tauri/src/ui/commands_mcp.rs

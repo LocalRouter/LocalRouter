@@ -8,10 +8,11 @@
  * Also allows adding a provider if none exist.
  */
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Loader2, Info, Plus, Bot, Brain, Server } from "lucide-react"
+import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { Label } from "@/components/ui/label"
@@ -76,31 +77,14 @@ export function StepModels({
   onRouteLLMThresholdChange,
   onWeakModelsChange,
 }: StepModelsProps) {
-  const [models, setModels] = useState<Model[]>([])
-  const [loading, setLoading] = useState(true)
+  const { models, isFullyLoaded } = useIncrementalModels()
+  const loading = models.length === 0 && !isFullyLoaded
 
   // Provider creation state
   const [showAddProvider, setShowAddProvider] = useState(false)
   const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
   const [selectedProviderType, setSelectedProviderType] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  useEffect(() => {
-    loadModels()
-  }, [])
-
-  const loadModels = async () => {
-    try {
-      setLoading(true)
-      const modelList = await invoke<Array<{ id: string; provider: string }>>("list_all_models")
-      setModels(modelList.map(m => ({ id: m.id, provider: m.provider })))
-    } catch (error) {
-      console.error("Failed to load models:", error)
-      setModels([])
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const loadProviderTypes = async () => {
     try {
@@ -127,8 +111,7 @@ export function StepModels({
       toast.success("Provider created")
       setShowAddProvider(false)
       setSelectedProviderType("")
-      // Reload models after adding provider
-      await loadModels()
+      // Models will update automatically via incremental loading events
     } catch (error) {
       toast.error(`Failed to create provider: ${error}`)
     } finally {

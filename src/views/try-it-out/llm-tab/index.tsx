@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 // DEPRECATED: Route unused - Strategy mode hidden
 import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Loader2, ChevronsUpDown, Check, Search } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
+import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
@@ -291,7 +292,8 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
   // Direct mode state
   const [providers, setProviders] = useState<Provider[]>([])
   const [selectedProvider, setSelectedProvider] = useState<string>("")
-  const [providerModels, setProviderModels] = useState<ProviderModel[]>([])
+  const { models: incrementalModels } = useIncrementalModels({ refreshOnMount: false })
+  const providerModels = useMemo<ProviderModel[]>(() => incrementalModels.map(m => ({ id: m.id, provider: m.provider })), [incrementalModels])
   const [internalTestToken, setInternalTestToken] = useState<string | null>(null)
 
   // Shared model state
@@ -317,23 +319,15 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
         // Load all needed data
         // DEPRECATED: Strategy loading removed - 1:1 client-to-strategy relationship
-        const [clientsList, /* strategiesList, */ providersList, allModels] = await Promise.all([
+        const [clientsList, /* strategiesList, */ providersList] = await Promise.all([
           invoke<Client[]>("list_clients"),
           // invoke<Strategy[]>("list_strategies"),
           invoke<Provider[]>("list_provider_instances"),
-          invoke<{ id: string; provider: string }[]>("list_all_models"),
         ])
-
-        // Convert to ProviderModel format
-        const providerModelsList: ProviderModel[] = allModels.map(m => ({
-          id: m.id,
-          provider: m.provider,
-        }))
 
         setClients(clientsList.filter(c => c.enabled))
         // DEPRECATED: setStrategies(strategiesList)
         setProviders(providersList.filter(p => p.enabled))
-        setProviderModels(providerModelsList)
 
         // Set default selections
         if (clientsList.length > 0) {
