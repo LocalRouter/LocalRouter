@@ -201,7 +201,6 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
           <GuardrailsPanel
             models={config.safety_models}
             loadErrors={loadErrors}
-            existingModelIds={config.safety_models.map(m => m.id)}
             onPickerSelect={handlePickerSelect}
             onRemoveModel={handleRemoveModel}
           />

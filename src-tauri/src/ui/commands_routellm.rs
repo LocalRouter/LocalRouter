@@ -116,6 +116,49 @@ pub async fn routellm_download_models(
     Ok(())
 }
 
+/// Delete RouteLLM model files from disk
+#[tauri::command]
+pub async fn routellm_delete_model(
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    info!("Deleting RouteLLM model files via Tauri command");
+
+    // Unload models first if loaded
+    if let Some(service) = state.router.get_routellm_service() {
+        service.unload().await;
+
+        let (model_path, tokenizer_path) = service.get_paths();
+
+        // Delete model directory
+        if model_path.exists() {
+            std::fs::remove_dir_all(&model_path)
+                .map_err(|e| format!("Failed to delete model directory: {}", e))?;
+        }
+
+        // Delete tokenizer directory
+        if tokenizer_path.exists() {
+            std::fs::remove_dir_all(&tokenizer_path)
+                .map_err(|e| format!("Failed to delete tokenizer directory: {}", e))?;
+        }
+
+        info!("RouteLLM model files deleted successfully");
+    } else {
+        // Service not available, try to delete based on config dir
+        let config_dir =
+            lr_utils::paths::config_dir().map_err(|e| format!("Failed to get config dir: {}", e))?;
+        let routellm_dir = config_dir.join("routellm");
+
+        if routellm_dir.exists() {
+            std::fs::remove_dir_all(&routellm_dir)
+                .map_err(|e| format!("Failed to delete routellm directory: {}", e))?;
+        }
+
+        info!("RouteLLM directory deleted successfully");
+    }
+
+    Ok(())
+}
+
 /// Open the RouteLLM folder in the system file manager
 #[tauri::command]
 pub async fn open_routellm_folder(app: AppHandle) -> Result<(), String> {

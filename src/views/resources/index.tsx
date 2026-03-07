@@ -6,7 +6,6 @@ import { ProvidersIcon } from "@/components/icons/category-icons"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
 import { ModelsPanel } from "./models-panel"
-import { LlmTab } from "@/views/try-it-out/llm-tab"
 
 interface LlmProvidersViewProps {
   activeSubTab: string | null
@@ -94,13 +93,11 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   }, [])
 
   // Parse subTab to determine which resource type and item is selected
-  // Format: "providers" or "models" or "try-it-out" or "try-it-out/init/..."
+  // Format: "providers" or "models"
   // Or: "providers/instance-name" or "models/provider/model-id"
   // Or: "providers/add/provider-type" for opening add dialog
   const parseSubTab = (subTab: string | null) => {
     if (!subTab) return { resourceType: "providers", itemId: null, addType: null }
-    if (subTab === "try-it-out") return { resourceType: "try-it-out", itemId: null, addType: null }
-    if (subTab.startsWith("try-it-out/")) return { resourceType: "try-it-out", itemId: null, addType: null }
     const parts = subTab.split("/")
     const resourceType = parts[0] || "providers"
 
@@ -114,8 +111,6 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   }
 
   const { resourceType, itemId, addType } = parseSubTab(activeSubTab)
-
-  // tryItOutInit parsing no longer needed — global Try It Out is always "all" mode
 
   const handleResourceChange = (type: string) => {
     onTabChange("resources", type)
@@ -145,7 +140,6 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="models">All Models</TabsTrigger>
-          <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
         </TabsList>
 
         <TabsContent value="providers" className="flex-1 min-h-0 mt-4">
@@ -171,10 +165,6 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
             onSelect={(id) => handleItemSelect("models", id)}
             onViewChange={onTabChange}
           />
-        </TabsContent>
-
-        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
-          <LlmTab initialMode="all" hideModeSwitcher />
         </TabsContent>
 
       </Tabs>

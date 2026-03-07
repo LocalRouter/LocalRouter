@@ -1058,6 +1058,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       latency_ms: Math.floor(Math.random() * 50) + 20,
     }
   },
+  'routellm_delete_model': () => {
+    toast.success('Strong/Weak model deleted (demo)')
+    return null
+  },
   'open_routellm_folder': () => {
     toast.info('Opening RouteLLM folder (demo)')
     return null

@@ -18,7 +18,6 @@ import { McpIcon } from "@/components/icons/category-icons"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { McpServersPanel, McpHealthStatus, McpHealthCheckEvent } from "../resources/mcp-servers-panel"
 import { MarketplaceSearchPanel, type McpServerListing } from "@/components/add-resource"
-import { McpTab } from "@/views/try-it-out/mcp-tab"
 
 interface MarketplaceConfig {
   mcp_enabled: boolean
@@ -44,8 +43,6 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
   // Format: "try-it-out" or "try-it-out/init/..." or "marketplace" or "settings" or "server-id" or "add/template-id"
   const parseSubTab = (subTab: string | null) => {
     if (!subTab) return { topTab: "servers", selectedId: null, addTemplateId: null }
-    if (subTab === "try-it-out") return { topTab: "try-it-out", selectedId: null, addTemplateId: null }
-    if (subTab.startsWith("try-it-out/")) return { topTab: "try-it-out", selectedId: null, addTemplateId: null }
     if (subTab === "marketplace") return { topTab: "marketplace", selectedId: null, addTemplateId: null }
     if (subTab === "settings") return { topTab: "settings", selectedId: null, addTemplateId: null }
     if (subTab.startsWith("add/")) {
@@ -242,8 +239,6 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
     return new Date(date).toLocaleString()
   }
 
-  // tryItOutInit parsing no longer needed — global Try It Out is always "all" mode
-
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
@@ -265,7 +260,6 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
           <TabsTrigger value="servers">Servers</TabsTrigger>
           <TabsTrigger value="marketplace">Marketplace</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
-          <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
         </TabsList>
 
         <TabsContent value="servers" className="flex-1 min-h-0 mt-4">
@@ -392,14 +386,6 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
           </div>
         </TabsContent>
 
-        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
-          <McpTab
-            innerPath={null}
-            onPathChange={() => {}}
-            initialMode="all"
-            hideModeSwitcher
-          />
-        </TabsContent>
       </Tabs>
     </div>
   )

@@ -27,7 +27,6 @@ import type {
 interface GuardrailsPanelProps {
   models: SafetyModelConfig[]
   loadErrors: Record<string, string>
-  existingModelIds: string[]
   onPickerSelect: (selection: PickerSelection) => void
   onRemoveModel: (modelId: string) => void
 }
@@ -35,7 +34,6 @@ interface GuardrailsPanelProps {
 export function GuardrailsPanel({
   models,
   loadErrors,
-  existingModelIds,
   onPickerSelect,
   onRemoveModel,
 }: GuardrailsPanelProps) {
@@ -43,6 +41,9 @@ export function GuardrailsPanel({
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState("info")
   const [pickerOpen, setPickerOpen] = useState(false)
+
+  // Build keys for already-added models so the picker can disable them
+  const existingModelKeys = models.map(m => `provider:${m.model_type}:${m.provider_id}`)
 
   const filteredModels = models.filter((m) =>
     m.label.toLowerCase().includes(search.toLowerCase()) ||
@@ -185,21 +186,24 @@ export function GuardrailsPanel({
                       </CardContent>
                     </Card>
 
-                    {/* Danger Zone */}
-                    <Card className="border-destructive/50">
+                    {/* Unlink */}
+                    <Card>
                       <CardHeader className="pb-3">
-                        <CardTitle className="text-sm text-destructive">Remove Model</CardTitle>
+                        <CardTitle className="text-sm">Unlink Model</CardTitle>
                       </CardHeader>
-                      <CardContent>
+                      <CardContent className="space-y-2">
+                        <p className="text-xs text-muted-foreground">
+                          Remove this model from GuardRails. The model itself remains available on the provider and can be re-added later.
+                        </p>
                         <Button
-                          variant="destructive"
+                          variant="outline"
                           size="sm"
                           onClick={() => {
                             onRemoveModel(selectedModel.id)
                             setSelectedModelId(null)
                           }}
                         >
-                          Remove
+                          Unlink
                         </Button>
                       </CardContent>
                     </Card>
@@ -234,7 +238,7 @@ export function GuardrailsPanel({
             <DialogTitle>Add Safety Model</DialogTitle>
           </DialogHeader>
           <SafetyModelPicker
-            existingModelIds={existingModelIds}
+            existingModelIds={existingModelKeys}
             onSelect={handlePickerSelect}
           />
         </DialogContent>

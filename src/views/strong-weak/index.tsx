@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Download, FolderOpen, Cpu } from "lucide-react"
+import { Download, FolderOpen, Cpu, Trash2, Loader2 } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -16,6 +16,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
 import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
 import type { RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
@@ -29,6 +40,7 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
   const [status, setStatus] = useState<RouteLLMStatus | null>(null)
   const [idleTimeout, setIdleTimeout] = useState(600)
   const [isDownloading, setIsDownloading] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
   const [testThreshold, setTestThreshold] = useState(0.3)
 
@@ -87,14 +99,26 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
     }
   }
 
-  const updateSettings = async () => {
+  const updateSettings = async (newTimeout: number) => {
     try {
       await invoke("routellm_update_settings", {
-        idleTimeoutSecs: idleTimeout,
+        idleTimeoutSecs: newTimeout,
       })
-      toast.success("Strong/Weak settings updated")
     } catch (error: any) {
       toast.error(`Failed to update: ${error.message || error}`)
+    }
+  }
+
+  const handleDeleteModel = async () => {
+    setIsDeleting(true)
+    try {
+      await invoke("routellm_delete_model")
+      toast.success("Strong/Weak model deleted from disk")
+      loadStatus()
+    } catch (error: any) {
+      toast.error(`Failed to delete: ${error.message || error}`)
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -270,7 +294,11 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
                   <Label>Auto-Unload After Idle</Label>
                   <Select
                     value={idleTimeout.toString()}
-                    onValueChange={(value) => setIdleTimeout(parseInt(value))}
+                    onValueChange={(value) => {
+                      const timeout = parseInt(value)
+                      setIdleTimeout(timeout)
+                      updateSettings(timeout)
+                    }}
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -287,10 +315,45 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
                     Automatically unload models after inactivity to save RAM ({ROUTELLM_REQUIREMENTS.MEMORY_GB} GB)
                   </p>
                 </div>
+              </CardContent>
+            </Card>
 
-                <Button size="sm" onClick={updateSettings}>
-                  Save Settings
-                </Button>
+            {/* Delete Model */}
+            <Card className="border-destructive/50">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm text-destructive">Delete Model</CardTitle>
+                <CardDescription>
+                  Permanently delete the downloaded model files from disk ({ROUTELLM_REQUIREMENTS.DISK_GB} GB). You can re-download later.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={isDeleting || status?.state === "not_downloaded" || isDownloading}
+                    >
+                      {isDeleting ? (
+                        <><Loader2 className="h-3 w-3 mr-1 animate-spin" />Deleting...</>
+                      ) : (
+                        <><Trash2 className="h-3 w-3 mr-1" />Delete from Disk</>
+                      )}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete Strong/Weak model?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will permanently delete the model files from disk. You will need to download them again to use Strong/Weak routing.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={handleDeleteModel}>Delete</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               </CardContent>
             </Card>
           </div>

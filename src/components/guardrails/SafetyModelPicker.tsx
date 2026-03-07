@@ -45,7 +45,7 @@ interface ProviderModelEntry {
   available: boolean
 }
 
-export function SafetyModelPicker({ onSelect }: SafetyModelPickerProps) {
+export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPickerProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderInstanceInfo[]>([])
   const [providerEntries, setProviderEntries] = useState<ProviderModelEntry[]>([])
@@ -157,24 +157,29 @@ export function SafetyModelPicker({ onSelect }: SafetyModelPickerProps) {
                   {entries.length > 0 ? (
                     entries.map((entry) => {
                       const key = `provider:${group.modelType}:${entry.provider.instance_name}`
+                      const alreadyAdded = existingModelIds.includes(key)
 
                       if (entry.available) {
                         return (
-                          <SelectItem key={key} value={key} className="text-xs pl-6">
+                          <SelectItem key={key} value={key} className="text-xs pl-6" disabled={alreadyAdded}>
                             <span>{entry.modelName}</span>
-                            <span className="text-muted-foreground"> — Ready on {entry.provider.instance_name}</span>
+                            <span className="text-muted-foreground">
+                              {alreadyAdded ? " — Already added" : ` — Ready on ${entry.provider.instance_name}`}
+                            </span>
                           </SelectItem>
                         )
                       }
 
                       const canPull = PULLABLE_PROVIDER_TYPES.has(entry.provider.provider_type)
                       return (
-                        <SelectItem key={key} value={key} className="text-xs pl-6">
+                        <SelectItem key={key} value={key} className="text-xs pl-6" disabled={alreadyAdded}>
                           <span>{entry.modelName}</span>
                           <span className="text-muted-foreground">
-                            {canPull
-                              ? ` — Pull via ${entry.provider.instance_name}`
-                              : ` — Not found on ${entry.provider.instance_name}`}
+                            {alreadyAdded
+                              ? " — Already added"
+                              : canPull
+                                ? ` — Pull via ${entry.provider.instance_name}`
+                                : ` — Not found on ${entry.provider.instance_name}`}
                           </span>
                         </SelectItem>
                       )

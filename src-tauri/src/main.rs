@@ -1513,6 +1513,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_routellm::routellm_unload,
             ui::commands_routellm::routellm_download_models,
             ui::commands_routellm::routellm_update_settings,
+            ui::commands_routellm::routellm_delete_model,
             ui::commands_routellm::open_routellm_folder,
             // Debug commands (dev only)
             ui::commands::debug_trigger_firewall_popup,
