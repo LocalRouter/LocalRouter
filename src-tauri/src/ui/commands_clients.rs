@@ -2,7 +2,9 @@
 //!
 //! Unified client management and routing strategy commands.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use lr_config::{
     client_strategy_name, ClientMode, CodingAgentType, ConfigManager, McpPermissions,
@@ -416,6 +418,18 @@ pub async fn get_client_value(
     id: String,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
 ) -> Result<String, String> {
+    // Simple rate limiter: allow at most 1 request per second
+    static LAST_SECRET_REQUEST: AtomicU64 = AtomicU64::new(0);
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last = LAST_SECRET_REQUEST.swap(now, Ordering::Relaxed);
+    if now == last {
+        return Err("Rate limited - please try again".to_string());
+    }
+
     // Get the client to verify it exists and get its internal ID
     let client = client_manager
         .get_client(&id)
