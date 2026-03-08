@@ -6,7 +6,8 @@
  * 1. Template - Select an app template (Claude Code, Cursor, etc.)
  * 2. Name + Mode - Name the client and select LLM / MCP / Both
  * 3. Models - Configure model access using StrategyModelConfiguration (skipped for mcp_only)
- * 4. Credentials - View and copy the generated credentials
+ * 4. Extensions - MCP servers, Skills, Coding Agents, Marketplace (skipped for llm_only)
+ * 5. Credentials - View and copy the generated credentials
  *
  * The client is created after step 2 (Name + Mode) so that step 3 (Models)
  * can use the real StrategyModelConfiguration component which saves directly
@@ -31,13 +32,14 @@ import { StepWelcome } from "./steps/StepWelcome"
 import { StepTemplate } from "./steps/StepTemplate"
 import { StepNameAndMode } from "./steps/StepNameAndMode"
 import { StepCredentials } from "./steps/StepCredentials"
+import { StepExtensions } from "./steps/StepExtensions"
 import { StrategyModelConfiguration } from "@/components/strategy/StrategyModelConfiguration"
 import { CLIENT_TEMPLATES, type ClientTemplate } from "@/components/client/ClientTemplates"
-import type { ClientMode, SetClientModeParams, SetClientTemplateParams } from "@/types/tauri-commands"
-import type { ModelPermissions } from "@/components/permissions/types"
+import type { ClientMode, CodingAgentType, SetClientModeParams, SetClientTemplateParams } from "@/types/tauri-commands"
+import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions/types"
 
 // Logical step identifiers
-type StepId = "welcome" | "template" | "name_mode" | "models" | "credentials"
+type StepId = "welcome" | "template" | "name_mode" | "models" | "extensions" | "credentials"
 
 interface StepDef {
   id: StepId
@@ -57,6 +59,11 @@ interface WizardState {
   clientSecret?: string
   strategyId?: string
   modelPermissions?: ModelPermissions
+  mcpPermissions?: McpPermissions
+  skillsPermissions?: SkillsPermissions
+  codingAgentPermission?: PermissionState
+  codingAgentType?: CodingAgentType | null
+  marketplacePermission?: PermissionState
 }
 
 interface ClientCreationWizardProps {
@@ -75,6 +82,11 @@ interface ClientInfo {
   strategy_id: string
   name: string
   model_permissions: ModelPermissions
+  mcp_permissions: McpPermissions
+  skills_permissions: SkillsPermissions
+  coding_agent_permission: PermissionState
+  coding_agent_type: CodingAgentType | null
+  marketplace_permission: PermissionState
 }
 
 const INITIAL_STATE: WizardState = {
@@ -130,6 +142,11 @@ export function ClientCreationWizard({
       steps.push({ id: "models", title: "Configure Models", description: "Choose how models are selected and accessed." })
     }
 
+    // Extensions step: skipped for llm_only
+    if (state.clientMode !== "llm_only") {
+      steps.push({ id: "extensions", title: "Extensions", description: "Configure MCP servers, skills, and more." })
+    }
+
     steps.push({ id: "credentials", title: "Your Credentials", description: "Save your credentials securely." })
 
     return steps
@@ -141,8 +158,6 @@ export function ClientCreationWizard({
   const isCredentialsStep = currentStepDef?.id === "credentials"
   const isTemplateStep = currentStepDef?.id === "template"
   const isNameModeStep = currentStepDef?.id === "name_mode"
-  const isModelsStep = currentStepDef?.id === "models"
-
   const canProceed = () => {
     if (!currentStepDef) return false
     switch (currentStepDef.id) {
@@ -150,6 +165,7 @@ export function ClientCreationWizard({
       case "template": return false // Auto-advances on selection
       case "name_mode": return state.clientName.trim().length > 0
       case "models": return true
+      case "extensions": return true
       case "credentials": return true
       default: return false
     }
@@ -157,13 +173,8 @@ export function ClientCreationWizard({
 
   const handleNext = async () => {
     if (isNameModeStep) {
-      // Create client after name+mode step, before models
+      // Create client after name+mode step, before models/extensions
       await createClient()
-    } else if (isModelsStep) {
-      // Models step saves directly to backend via StrategyModelConfiguration,
-      // just advance to credentials
-      const credIdx = visibleSteps.findIndex(s => s.id === "credentials")
-      setCurrentStep(credIdx)
     } else if (!isLastStep) {
       setCurrentStep((prev) => prev + 1)
     }
@@ -190,12 +201,19 @@ export function ClientCreationWizard({
     setCurrentStep((prev) => prev + 1)
   }
 
+  // Find the first post-creation step
+  const findNextStepAfterCreation = () => {
+    const modelsIdx = visibleSteps.findIndex(s => s.id === "models")
+    if (modelsIdx !== -1) return modelsIdx
+    const extIdx = visibleSteps.findIndex(s => s.id === "extensions")
+    if (extIdx !== -1) return extIdx
+    return visibleSteps.findIndex(s => s.id === "credentials")
+  }
+
   const createClient = async () => {
     // Skip if client already created (user went back and forward again)
     if (state.clientId) {
-      const modelsIdx = visibleSteps.findIndex(s => s.id === "models")
-      const credIdx = visibleSteps.findIndex(s => s.id === "credentials")
-      setCurrentStep(modelsIdx !== -1 ? modelsIdx : credIdx)
+      setCurrentStep(findNextStepAfterCreation())
       return
     }
 
@@ -231,12 +249,15 @@ export function ClientCreationWizard({
         clientSecret: secret,
         strategyId: clientInfo.strategy_id,
         modelPermissions: clientInfo.model_permissions,
+        mcpPermissions: clientInfo.mcp_permissions,
+        skillsPermissions: clientInfo.skills_permissions,
+        codingAgentPermission: clientInfo.coding_agent_permission,
+        codingAgentType: clientInfo.coding_agent_type,
+        marketplacePermission: clientInfo.marketplace_permission,
       }))
 
-      // Advance to models step or credentials (if mcp_only)
-      const modelsIdx = visibleSteps.findIndex(s => s.id === "models")
-      const credIdx = visibleSteps.findIndex(s => s.id === "credentials")
-      setCurrentStep(modelsIdx !== -1 ? modelsIdx : credIdx)
+      // Advance to first post-creation step
+      setCurrentStep(findNextStepAfterCreation())
     } catch (error) {
       console.error("Failed to create client:", error)
       toast.error(`Failed to create client: ${error}`)
@@ -246,7 +267,7 @@ export function ClientCreationWizard({
   }
 
   const handleClientUpdate = useCallback(() => {
-    // Reload model permissions after StrategyModelConfiguration makes changes
+    // Reload permissions after shared components make changes
     if (state.clientUuid) {
       invoke<ClientInfo[]>("list_clients")
         .then((clients) => {
@@ -255,6 +276,11 @@ export function ClientCreationWizard({
             setState((prev) => ({
               ...prev,
               modelPermissions: client.model_permissions,
+              mcpPermissions: client.mcp_permissions,
+              skillsPermissions: client.skills_permissions,
+              codingAgentPermission: client.coding_agent_permission,
+              codingAgentType: client.coding_agent_type,
+              marketplacePermission: client.marketplace_permission,
             }))
           }
         })
@@ -308,6 +334,19 @@ export function ClientCreationWizard({
               } : undefined}
             />
           </div>
+        )
+      case "extensions":
+        if (!state.clientId || !state.mcpPermissions || !state.skillsPermissions) return null
+        return (
+          <StepExtensions
+            clientId={state.clientId}
+            mcpPermissions={state.mcpPermissions}
+            skillsPermissions={state.skillsPermissions}
+            codingAgentPermission={state.codingAgentPermission || "off"}
+            codingAgentType={state.codingAgentType ?? null}
+            marketplacePermission={state.marketplacePermission || "off"}
+            onUpdate={handleClientUpdate}
+          />
         )
       case "credentials":
         return (
