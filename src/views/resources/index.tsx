@@ -12,30 +12,31 @@ interface LlmProvidersViewProps {
   onTabChange: (view: string, subTab?: string | null) => void
 }
 
+interface CacheItemHealth {
+  name: string
+  status: string
+  latency_ms?: number
+  error?: string
+}
+interface HealthCacheState {
+  providers: Record<string, CacheItemHealth>
+}
+
+function mapCacheToHealthStatus(providers: Record<string, CacheItemHealth>): Record<string, HealthStatus> {
+  const status: Record<string, HealthStatus> = {}
+  for (const [name, health] of Object.entries(providers)) {
+    status[name] = {
+      status: health.status as HealthStatus["status"],
+      latency_ms: health.latency_ms,
+      error: health.error,
+    }
+  }
+  return status
+}
+
 export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewProps) {
   // Lifted health status state - persists across tab switches
   const [healthStatus, setHealthStatus] = useState<Record<string, HealthStatus>>({})
-  const [healthInitialized, setHealthInitialized] = useState(false)
-
-  // Start health checks for all providers (called once on mount)
-  const startHealthChecks = useCallback(async (providerNames: string[]) => {
-    // Set providers to pending state (only for new providers)
-    setHealthStatus((prev) => {
-      const updated = { ...prev }
-      for (const name of providerNames) {
-        if (!updated[name]) {
-          updated[name] = { status: "pending" }
-        }
-      }
-      return updated
-    })
-
-    try {
-      await invoke("start_provider_health_checks")
-    } catch (error) {
-      console.error("Failed to start health checks:", error)
-    }
-  }, [])
 
   // Refresh health for a single provider
   const refreshHealth = useCallback(async (instanceName: string) => {
@@ -44,6 +45,14 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
       [instanceName]: { status: "pending" },
     }))
     await invoke("check_single_provider_health", { instanceName })
+  }, [])
+
+  // Load cached health state on mount (populated by periodic health checks)
+  useEffect(() => {
+    invoke<HealthCacheState>("get_health_cache").then((cache) => {
+      if (!cache?.providers) return
+      setHealthStatus(mapCacheToHealthStatus(cache.providers))
+    }).catch(() => {})
   }, [])
 
   // Listen for health check events (individual provider checks)
@@ -60,30 +69,14 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
       }))
     })
 
-    // Listen for global health cache updates (e.g. from sidebar refresh button)
-    interface ItemHealth {
-      name: string
-      status: string
-      latency_ms?: number
-      error?: string
-    }
-    interface HealthCacheState {
-      providers: Record<string, ItemHealth>
-    }
+    // Listen for global health cache updates (e.g. from sidebar refresh button, periodic checks)
     const unsubCacheChanged = listen<HealthCacheState>("health-status-changed", (event) => {
       const { providers } = event.payload
       if (!providers) return
-      setHealthStatus((prev) => {
-        const updated = { ...prev }
-        for (const [name, health] of Object.entries(providers)) {
-          updated[name] = {
-            status: health.status as HealthStatus["status"],
-            latency_ms: health.latency_ms,
-            error: health.error,
-          }
-        }
-        return updated
-      })
+      setHealthStatus((prev) => ({
+        ...prev,
+        ...mapCacheToHealthStatus(providers),
+      }))
     })
 
     return () => {
@@ -147,11 +140,8 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
             selectedId={resourceType === "providers" ? itemId : null}
             onSelect={(id) => handleItemSelect("providers", id)}
             healthStatus={healthStatus}
-            onHealthInit={(providerNames) => {
-              if (!healthInitialized) {
-                setHealthInitialized(true)
-                startHealthChecks(providerNames)
-              }
+            onHealthInit={() => {
+              // Health checks are only triggered by explicit user action (refresh button)
             }}
             onRefreshHealth={refreshHealth}
             initialAddProviderType={resourceType === "providers" ? addType : null}

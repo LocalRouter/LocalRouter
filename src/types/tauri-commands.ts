@@ -99,6 +99,8 @@ export interface ClientInfo {
   context_management_enabled: boolean | null
   /** Per-client indexing tools override (null = inherit global) */
   indexing_tools_enabled: boolean | null
+  /** Per-client catalog compression override (null = inherit global) */
+  catalog_compression_enabled: boolean | null
   created_at: string
   last_used: string | null
   mcp_permissions: McpPermissions
@@ -631,6 +633,7 @@ export interface PreviewToolEntry {
 /** Params for preview_catalog_compression */
 export interface PreviewCatalogCompressionParams {
   catalogThresholdBytes: number
+  source?: string | null
 }
 
 /** Params for toggle_client_context_management */

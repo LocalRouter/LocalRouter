@@ -27,8 +27,8 @@ interface UseIncrementalModelsResult {
   loadingProviders: Set<string>
   /** True once all providers have responded (or no refresh is in progress) */
   isFullyLoaded: boolean
-  /** Manually trigger an incremental refresh */
-  refresh: () => void
+  /** Manually trigger an incremental refresh. Pass true to force-bypass cache. */
+  refresh: (force?: boolean) => void
 }
 
 export function useIncrementalModels(
@@ -39,8 +39,8 @@ export function useIncrementalModels(
   const [loadingProviders, setLoadingProviders] = useState<Set<string>>(new Set())
   const mountedRef = useRef(true)
 
-  const refresh = useCallback(() => {
-    invoke('refresh_models_incremental').catch(() => {})
+  const refresh = useCallback((force?: boolean) => {
+    invoke('refresh_models_incremental', { force: force ?? false }).catch(() => {})
   }, [])
 
   useEffect(() => {

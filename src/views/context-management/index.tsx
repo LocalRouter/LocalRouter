@@ -19,6 +19,10 @@ import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { ContextManagementConfig, ActiveSessionInfo, ContextModeInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams } from "@/types/tauri-commands"
 
+// Must match defaults in crates/lr-config/src/types.rs
+const DEFAULT_CATALOG_THRESHOLD_BYTES = 1000
+const DEFAULT_RESPONSE_THRESHOLD_BYTES = 200
+
 interface ContextManagementViewProps {
   activeSubTab?: string | null
   onTabChange?: (view: string, subTab?: string | null) => void
@@ -204,6 +208,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
             )}
           </TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="preview">Preview</TabsTrigger>
         </TabsList>
 
         {/* Info Tab */}
@@ -817,18 +822,18 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                       min={0}
                     />
                     <span className="text-sm text-muted-foreground">bytes</span>
-                    {config.catalog_threshold_bytes !== 50000 && (
+                    {config.catalog_threshold_bytes !== DEFAULT_CATALOG_THRESHOLD_BYTES && (
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => updateField("catalogThresholdBytes", 50000)}
+                        onClick={() => updateField("catalogThresholdBytes", DEFAULT_CATALOG_THRESHOLD_BYTES)}
                       >
                         Reset to default
                       </Button>
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
-                    Default: 50,000 bytes. Lower values compress more aggressively. Set to 0 to always compress.
+                    Default: {DEFAULT_CATALOG_THRESHOLD_BYTES.toLocaleString()} bytes. Lower values compress more aggressively. Set to 0 to always compress.
                   </p>
                 </CardContent>
               </Card>
@@ -863,42 +868,55 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                       min={0}
                     />
                     <span className="text-sm text-muted-foreground">bytes</span>
-                    {config.response_threshold_bytes !== 10000 && (
+                    {config.response_threshold_bytes !== DEFAULT_RESPONSE_THRESHOLD_BYTES && (
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => updateField("responseThresholdBytes", 10000)}
+                        onClick={() => updateField("responseThresholdBytes", DEFAULT_RESPONSE_THRESHOLD_BYTES)}
                       >
                         Reset to default
                       </Button>
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
-                    Default: 10,000 bytes. Set higher to compress fewer responses. Set to 0 to always compress.
+                    Default: {DEFAULT_RESPONSE_THRESHOLD_BYTES.toLocaleString()} bytes. Set higher to compress fewer responses. Set to 0 to always compress.
                   </p>
                 </CardContent>
               </Card>
 
-              {/* Compression Preview */}
-              <CompressionPreview initialThreshold={config.catalog_threshold_bytes} />
             </div>
           )}
+        </TabsContent>
+
+        {/* Preview Tab */}
+        <TabsContent value="preview" className="flex-1 min-h-0 mt-4">
+          <CompressionPreview
+            initialThreshold={config?.catalog_threshold_bytes ?? 1000}
+            sessions={sessions}
+          />
         </TabsContent>
       </Tabs>
     </div>
   )
 }
 
-function CompressionPreview({ initialThreshold }: { initialThreshold: number }) {
+interface CompressionPreviewProps {
+  initialThreshold: number
+  sessions: ActiveSessionInfo[]
+}
+
+function CompressionPreview({ initialThreshold, sessions }: CompressionPreviewProps) {
   const [threshold, setThreshold] = useState(initialThreshold)
+  const [source, setSource] = useState("mock")
   const [preview, setPreview] = useState<CatalogCompressionPreview | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const fetchPreview = useCallback(async (bytes: number) => {
+  const fetchPreview = useCallback(async (bytes: number, src: string) => {
     setLoading(true)
     try {
       const result = await invoke<CatalogCompressionPreview>("preview_catalog_compression", {
         catalogThresholdBytes: bytes,
+        source: src,
       } satisfies PreviewCatalogCompressionParams)
       setPreview(result)
     } catch (e) {
@@ -910,122 +928,167 @@ function CompressionPreview({ initialThreshold }: { initialThreshold: number }) 
 
   // Load on mount
   useEffect(() => {
-    fetchPreview(initialThreshold)
-  }, [initialThreshold, fetchPreview])
+    fetchPreview(initialThreshold, source)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  // Debounced fetch on slider change
+  // Debounced fetch on slider/source change
   useEffect(() => {
     const timer = setTimeout(() => {
-      fetchPreview(threshold)
+      fetchPreview(threshold, source)
     }, 300)
     return () => clearTimeout(timer)
-  }, [threshold, fetchPreview])
+  }, [threshold, source, fetchPreview])
 
   const savings = preview
     ? Math.round((1 - preview.compressed_size / preview.uncompressed_size) * 100)
     : 0
 
+  const visibleCount = preview?.tools.filter((t) => t.compression_state === "visible").length ?? 0
+  const compressedCount = preview?.compressed_descriptions_count ?? 0
+  const deferredCount = preview?.deferred_items_count ?? 0
+  const truncatedCount = preview?.truncated_servers_count ?? 0
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Compression Preview</CardTitle>
-        <CardDescription>
-          Drag the slider to see how different thresholds affect the welcome message sent to AI clients.
-          Uses mock server data for preview.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Slider */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Threshold</span>
-            <span className="font-mono">{formatBytes(threshold)}</span>
+    <div className="space-y-4">
+      {/* Source selector and threshold controls */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Compression Preview</CardTitle>
+          <CardDescription>
+            See how different thresholds affect the welcome message sent to AI clients.
+            Select a mock scenario or a live session to preview.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Source dropdown */}
+          <div className="space-y-1.5">
+            <label className="text-sm text-muted-foreground">Source</label>
+            <select
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            >
+              <option value="mock">Mock Servers (GitHub, Atlassian, Filesystem, PostgreSQL, Slack)</option>
+              {sessions.map((s) => (
+                <option key={s.session_id} value={`session:${s.session_id}`}>
+                  {s.client_name || s.client_id} ({s.total_tools} tools)
+                </option>
+              ))}
+            </select>
           </div>
-          <input
-            type="range"
-            value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
-            min={0}
-            max={100000}
-            step={1000}
-            className="w-full"
-          />
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>0 (max compression)</span>
-            <span>100 KB (no compression)</span>
-          </div>
-        </div>
 
-        {/* Stats bar */}
-        {preview && (
-          <div className="flex flex-wrap gap-3 text-sm">
-            <div className="flex items-center gap-1.5">
-              <span className="text-muted-foreground">Uncompressed:</span>
-              <span className="font-mono">{formatBytes(preview.uncompressed_size)}</span>
+          {/* Slider */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Threshold</span>
+              <span className="font-mono">{formatBytes(threshold)}</span>
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-muted-foreground">Compressed:</span>
-              <span className="font-mono">{formatBytes(preview.compressed_size)}</span>
+            <input
+              type="range"
+              value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+              min={0}
+              max={100000}
+              step={500}
+              className="w-full"
+            />
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>0 (max compression)</span>
+              <span>100 KB (no compression)</span>
             </div>
-            {savings > 0 && (
-              <Badge variant="outline" className="text-green-600 border-green-600/30">
-                {savings}% saved
-              </Badge>
-            )}
-            {preview.compressed_descriptions_count > 0 && (
-              <Badge variant="outline" className="text-yellow-600 border-yellow-600/30">
-                {preview.compressed_descriptions_count} compressed
-              </Badge>
-            )}
-            {preview.deferred_items_count > 0 && (
-              <Badge variant="outline" className="text-orange-600 border-orange-600/30">
-                {preview.deferred_items_count} deferred
-              </Badge>
-            )}
-            {preview.truncated_servers_count > 0 && (
-              <Badge variant="outline" className="text-red-600 border-red-600/30">
-                {preview.truncated_servers_count} truncated
-              </Badge>
-            )}
           </div>
-        )}
 
-        {/* Side-by-side preview */}
-        {preview && (
-          <ResizablePanelGroup direction="horizontal" className="rounded-md border min-h-[300px]">
-            <ResizablePanel defaultSize={50} minSize={20}>
-              <div className="h-full flex flex-col">
-                <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
-                  <span>Uncompressed</span>
-                  <span className="font-mono">{formatBytes(preview.uncompressed_size)}</span>
-                </div>
-                <ScrollArea className="flex-1 p-3">
-                  <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{preview.welcome_message_uncompressed}</pre>
-                </ScrollArea>
+          {/* Stats bar */}
+          {preview && (
+            <div className="flex flex-wrap gap-3 text-sm">
+              <div className="flex items-center gap-1.5">
+                <span className="text-muted-foreground">Uncompressed:</span>
+                <span className="font-mono">{formatBytes(preview.uncompressed_size)}</span>
               </div>
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-            <ResizablePanel defaultSize={50} minSize={20}>
-              <div className="h-full flex flex-col">
-                <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
-                  <span>Compressed</span>
-                  <span className="font-mono">{formatBytes(preview.compressed_size)}</span>
-                </div>
-                <ScrollArea className="flex-1 p-3">
-                  <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{preview.welcome_message}</pre>
-                </ScrollArea>
+              <div className="flex items-center gap-1.5">
+                <span className="text-muted-foreground">Compressed:</span>
+                <span className="font-mono">{formatBytes(preview.compressed_size)}</span>
               </div>
-            </ResizablePanel>
-          </ResizablePanelGroup>
-        )}
+              {savings > 0 && (
+                <Badge variant="outline" className="text-green-600 border-green-600/30">
+                  {savings}% saved
+                </Badge>
+              )}
+              {visibleCount > 0 && (
+                <Badge variant="outline" className="text-green-600 border-green-600/30">
+                  {visibleCount} visible
+                </Badge>
+              )}
+              {compressedCount > 0 && (
+                <Badge variant="outline" className="text-yellow-600 border-yellow-600/30">
+                  {compressedCount} compressed
+                </Badge>
+              )}
+              {deferredCount > 0 && (
+                <Badge variant="outline" className="text-orange-600 border-orange-600/30">
+                  {deferredCount} deferred
+                </Badge>
+              )}
+              {truncatedCount > 0 && (
+                <Badge variant="outline" className="text-red-600 border-red-600/30">
+                  {truncatedCount} truncated
+                </Badge>
+              )}
+            </div>
+          )}
 
-        {/* Tool list */}
-        {preview && preview.tools.length > 0 && (
-          <div>
-            <p className="text-sm font-medium mb-2">Tool Compression States</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+          {loading && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Computing...
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Side-by-side preview */}
+      {preview && (
+        <ResizablePanelGroup direction="horizontal" className="rounded-md border min-h-[400px]">
+          <ResizablePanel defaultSize={50} minSize={20}>
+            <div className="h-full flex flex-col">
+              <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
+                <span>Uncompressed</span>
+                <span className="font-mono">{formatBytes(preview.uncompressed_size)}</span>
+              </div>
+              <ScrollArea className="flex-1 p-3">
+                <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{preview.welcome_message_uncompressed}</pre>
+              </ScrollArea>
+            </div>
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize={50} minSize={20}>
+            <div className="h-full flex flex-col">
+              <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
+                <span>Compressed</span>
+                <span className="font-mono">{formatBytes(preview.compressed_size)}</span>
+              </div>
+              <ScrollArea className="flex-1 p-3">
+                <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{preview.welcome_message}</pre>
+              </ScrollArea>
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      )}
+
+      {/* Catalog item states */}
+      {preview && preview.tools.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Catalog Item States</CardTitle>
+            <CardDescription>
+              Compression state of each tool, resource, and prompt in the catalog.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1">
               {preview.tools.map((tool) => (
-                <div key={tool.name} className="flex items-center gap-2 text-xs py-0.5">
+                <div key={`${tool.server}-${tool.name}`} className="flex items-center gap-2 text-xs py-0.5">
                   <Badge
                     variant="outline"
                     className={cn(
@@ -1045,17 +1108,10 @@ function CompressionPreview({ initialThreshold }: { initialThreshold: number }) 
                 </div>
               ))}
             </div>
-          </div>
-        )}
-
-        {loading && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            Computing...
-          </div>
-        )}
-      </CardContent>
-    </Card>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   )
 }
 

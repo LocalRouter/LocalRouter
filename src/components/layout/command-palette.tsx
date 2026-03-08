@@ -3,7 +3,7 @@ import {
   LayoutDashboard,
   Users,
   Settings,
-  Server,
+
   Cpu,
   RefreshCw,
   Plus,
@@ -161,12 +161,6 @@ export function CommandPalette({
 
         {/* Settings shortcuts */}
         <CommandGroup heading="Settings">
-          <CommandItem
-            onSelect={() => runCommand(() => onViewChange('settings', 'server'))}
-          >
-            <Server className="mr-2 h-4 w-4" />
-            <span>Server Configuration</span>
-          </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('settings', 'updates'))}
           >

@@ -29,7 +29,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { GripVertical, Zap, Ban, Search, ChevronRight, ChevronDown } from "lucide-react"
+import { GripVertical, Zap, Ban, Search, ChevronRight, ChevronDown, ArrowUpDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
 import type { FreeTierKind } from "@/types/tauri-commands"
@@ -37,6 +37,30 @@ import type { FreeTierKind } from "@/types/tauri-commands"
 export interface Model {
   id: string
   provider: string
+}
+
+type SortOption = 'name' | 'provider' | 'price-asc' | 'price-desc' | 'params-asc' | 'params-desc'
+
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
+  { value: 'name', label: 'Name' },
+  { value: 'provider', label: 'Provider' },
+  { value: 'price-asc', label: 'Price: Low → High' },
+  { value: 'price-desc', label: 'Price: High → Low' },
+  { value: 'params-asc', label: 'Params: Small → Large' },
+  { value: 'params-desc', label: 'Params: Large → Small' },
+]
+
+/** Parse formatted parameter count string (e.g. "7.0B", "13.5M") to a numeric value for sorting */
+const parseParamCount = (s: string): number => {
+  const match = s.match(/^([\d.]+)\s*([BMK]?)$/i)
+  if (!match) return 0
+  const num = parseFloat(match[1])
+  switch (match[2].toUpperCase()) {
+    case 'B': return num * 1e9
+    case 'M': return num * 1e6
+    case 'K': return num * 1e3
+    default: return num
+  }
 }
 
 export interface ModelPricingInfo {
@@ -56,6 +80,8 @@ interface DragThresholdModelSelectorProps {
   disableDragOverlay?: boolean
   /** Optional pricing data keyed by "provider/modelId" */
   modelPricing?: Record<string, ModelPricingInfo>
+  /** Optional parameter count strings keyed by "provider/modelId" (e.g. "7.0B") */
+  modelParamCounts?: Record<string, string>
   /** Optional free tier kinds keyed by provider instance name */
   freeTierKinds?: Record<string, FreeTierKind>
 }
@@ -78,6 +104,7 @@ function SortableRow({
   onToggle,
   pricing,
   freeTierKind,
+  showProvider = true,
 }: {
   id: string
   provider: string
@@ -88,6 +115,7 @@ function SortableRow({
   onToggle: () => void
   pricing?: ModelPricingInfo
   freeTierKind?: FreeTierKind
+  showProvider?: boolean
 }) {
   const {
     attributes,
@@ -143,16 +171,28 @@ function SortableRow({
         )}
       </div>
 
-      {/* Model info */}
-      <div className="flex-1 min-w-0">
+      {/* Model info + provider badge inline */}
+      <div className="flex-1 min-w-0 flex items-center gap-2">
         <span
           className={cn(
-            "text-sm font-mono truncate block",
+            "text-sm font-mono truncate",
             !isEnabled && "text-muted-foreground"
           )}
         >
           {modelId}
         </span>
+        {showProvider && (
+          <span
+            className={cn(
+              "text-xs px-2 py-0.5 rounded-full shrink-0",
+              isEnabled
+                ? "bg-muted text-muted-foreground"
+                : "bg-muted/50 text-muted-foreground/70"
+            )}
+          >
+            {provider}
+          </span>
+        )}
       </div>
 
       {/* Pricing badge */}
@@ -163,18 +203,6 @@ function SortableRow({
           freeTierKind={freeTierKind}
         />
       )}
-
-      {/* Provider badge */}
-      <span
-        className={cn(
-          "text-xs px-2 py-0.5 rounded-full shrink-0",
-          isEnabled
-            ? "bg-muted text-muted-foreground"
-            : "bg-muted/50 text-muted-foreground/70"
-        )}
-      >
-        {provider}
-      </span>
     </div>
   )
 }
@@ -213,6 +241,9 @@ function DragOverlayItem({
         )}
       </div>
       <span className="text-sm font-mono flex-1">{modelId}</span>
+      <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+        {provider}
+      </span>
       {pricing && (
         <ModelPricingBadge
           inputPricePerMillion={pricing.input}
@@ -220,9 +251,6 @@ function DragOverlayItem({
           freeTierKind={freeTierKind}
         />
       )}
-      <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-        {provider}
-      </span>
     </div>
   )
 }
@@ -274,7 +302,7 @@ function DisabledDropZone({
     <div
       ref={setNodeRef}
       className={cn(
-        "max-h-[250px] overflow-y-auto transition-colors",
+        "max-h-[400px] overflow-y-auto transition-colors",
         isOver && "bg-muted/40"
       )}
     >
@@ -293,11 +321,13 @@ export function DragThresholdModelSelector({
   className,
   disableDragOverlay = false,
   modelPricing,
+  modelParamCounts,
   freeTierKinds,
 }: DragThresholdModelSelectorProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overZone, setOverZone] = useState<string | null>(null)
   const [disabledSearch, setDisabledSearch] = useState("")
+  const [disabledSort, setDisabledSort] = useState<SortOption>('name')
   const [collapsedProviders, setCollapsedProviders] = useState<Set<string> | "all">("all")
 
   const sensors = useSensors(
@@ -363,24 +393,89 @@ export function DragThresholdModelSelector({
     [disabledByProvider]
   )
 
-  // Filter disabled items by search
+  // Helper to get average price for a model
+  const getModelAvgPrice = (provider: string, modelId: string): number => {
+    const pricing = modelPricing?.[`${provider}/${modelId}`]
+    if (!pricing) return Infinity
+    const input = pricing.input ?? Infinity
+    const output = pricing.output ?? Infinity
+    if (input === Infinity && output === Infinity) return Infinity
+    if (input === Infinity) return output
+    if (output === Infinity) return input
+    return (input + output) / 2
+  }
+
+  // Filter and sort disabled items
   const searchLower = disabledSearch.toLowerCase()
   const filteredDisabledItems = useMemo(() => {
-    if (!searchLower) return disabledItems
-    return disabledItems.filter(
-      (item) =>
-        item.modelId.toLowerCase().includes(searchLower) ||
-        item.provider.toLowerCase().includes(searchLower)
-    )
-  }, [disabledItems, searchLower])
+    let items = disabledItems
+    if (searchLower) {
+      items = items.filter(
+        (item) =>
+          item.modelId.toLowerCase().includes(searchLower) ||
+          item.provider.toLowerCase().includes(searchLower)
+      )
+    }
+    if (disabledSort !== 'name') {
+      items = [...items].sort((a, b) => {
+        switch (disabledSort) {
+          case 'provider': {
+            const providerCmp = a.provider.localeCompare(b.provider)
+            return providerCmp !== 0 ? providerCmp : a.modelId.localeCompare(b.modelId)
+          }
+          case 'price-asc': {
+            const priceA = getModelAvgPrice(a.provider, a.modelId)
+            const priceB = getModelAvgPrice(b.provider, b.modelId)
+            return priceA - priceB || a.modelId.localeCompare(b.modelId)
+          }
+          case 'price-desc': {
+            const priceA = getModelAvgPrice(a.provider, a.modelId)
+            const priceB = getModelAvgPrice(b.provider, b.modelId)
+            // Push models without pricing to the bottom
+            if (priceA === Infinity && priceB === Infinity) return a.modelId.localeCompare(b.modelId)
+            if (priceA === Infinity) return 1
+            if (priceB === Infinity) return -1
+            return priceB - priceA || a.modelId.localeCompare(b.modelId)
+          }
+          case 'params-asc': {
+            const pA = modelParamCounts?.[`${a.provider}/${a.modelId}`]
+            const pB = modelParamCounts?.[`${b.provider}/${b.modelId}`]
+            const numA = pA ? parseParamCount(pA) : Infinity
+            const numB = pB ? parseParamCount(pB) : Infinity
+            if (numA === Infinity && numB === Infinity) return a.modelId.localeCompare(b.modelId)
+            if (numA === Infinity) return 1
+            if (numB === Infinity) return -1
+            return numA - numB || a.modelId.localeCompare(b.modelId)
+          }
+          case 'params-desc': {
+            const pA = modelParamCounts?.[`${a.provider}/${a.modelId}`]
+            const pB = modelParamCounts?.[`${b.provider}/${b.modelId}`]
+            const numA = pA ? parseParamCount(pA) : Infinity
+            const numB = pB ? parseParamCount(pB) : Infinity
+            if (numA === Infinity && numB === Infinity) return a.modelId.localeCompare(b.modelId)
+            if (numA === Infinity) return 1
+            if (numB === Infinity) return -1
+            return numB - numA || a.modelId.localeCompare(b.modelId)
+          }
+          default:
+            return a.modelId.localeCompare(b.modelId)
+        }
+      })
+    }
+    return items
+  }, [disabledItems, searchLower, disabledSort, modelPricing, modelParamCounts])
+
+  // Whether to show flat list (no provider grouping) - used for price/params sorting
+  const showFlatList = disabledSort !== 'name' && disabledSort !== 'provider'
 
   // Visible disabled items (filtered + not in collapsed providers)
   const visibleDisabledItems = useMemo(() => {
+    if (showFlatList) return filteredDisabledItems
     return filteredDisabledItems.filter((item) => {
       if (collapsedProviders === "all") return false
       return !collapsedProviders.has(item.provider)
     })
-  }, [filteredDisabledItems, collapsedProviders])
+  }, [filteredDisabledItems, collapsedProviders, showFlatList])
 
   const disabledIds = visibleDisabledItems.map((item) => item.id)
 
@@ -565,7 +660,7 @@ export function DragThresholdModelSelector({
             </span>
           </div>
 
-          {/* Search input for disabled models */}
+          {/* Search and sort controls for disabled models */}
           {disabledItems.length > 0 && (
             <div className="flex items-center gap-2 px-3 py-2 border-b bg-background">
               <Search className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" />
@@ -576,10 +671,24 @@ export function DragThresholdModelSelector({
                 onChange={(e) => setDisabledSearch(e.target.value)}
                 className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
               />
+              <div className="flex items-center gap-1.5 shrink-0 border-l pl-2">
+                <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground/50" />
+                <select
+                  value={disabledSort}
+                  onChange={(e) => setDisabledSort(e.target.value as SortOption)}
+                  className="bg-transparent text-xs text-muted-foreground outline-none cursor-pointer"
+                >
+                  {SORT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           )}
 
-          {/* Disabled models grouped by provider */}
+          {/* Disabled models - grouped by provider or flat list depending on sort */}
           <SortableContext items={disabledIds} strategy={verticalListSortingStrategy}>
             <DisabledDropZone isOver={overZone === "disabled-zone"}>
               {disabledItems.length === 0 ? (
@@ -590,7 +699,24 @@ export function DragThresholdModelSelector({
                 <div className="p-4 text-center text-sm text-muted-foreground/60">
                   No models match &ldquo;{disabledSearch}&rdquo;
                 </div>
+              ) : showFlatList ? (
+                /* Flat list for price sorting */
+                filteredDisabledItems.map((item, index) => (
+                  <SortableRow
+                    key={item.id}
+                    id={item.id}
+                    provider={item.provider}
+                    modelId={item.modelId}
+                    index={index}
+                    isEnabled={false}
+                    disabled={disabled}
+                    onToggle={() => handleToggle(item.provider, item.modelId)}
+                    pricing={modelPricing?.[`${item.provider}/${item.modelId}`]}
+                    freeTierKind={freeTierKinds?.[item.provider]}
+                  />
+                ))
               ) : (
+                /* Provider-grouped list for name/provider sorting */
                 disabledProviders.map((provider) => {
                   const providerItems = (disabledByProvider[provider] || []).filter(
                     (item) =>
@@ -629,6 +755,7 @@ export function DragThresholdModelSelector({
                             onToggle={() => handleToggle(item.provider, item.modelId)}
                             pricing={modelPricing?.[`${item.provider}/${item.modelId}`]}
                             freeTierKind={freeTierKinds?.[item.provider]}
+                            showProvider={false}
                           />
                         ))}
                     </div>

@@ -674,7 +674,6 @@ export function McpServersPanel({
                     initialDirectTarget={`server:${selectedServer.id}`}
                     hideModeSwitcher
                     hideDirectTargetSelector
-                    showDeferredInDirect
                     innerPath={null}
                     onPathChange={() => {}}
                   />

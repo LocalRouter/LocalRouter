@@ -332,6 +332,7 @@ export function ClientCreationWizard({
                 modelPermissions: state.modelPermissions,
                 onClientUpdate: handleClientUpdate,
               } : undefined}
+              inDialog
             />
           </div>
         )
@@ -400,21 +401,28 @@ export function ClientCreationWizard({
             {isCredentialsStep ? (
               <Button onClick={handleComplete}>Done</Button>
             ) : showNextButton ? (
-              <Button onClick={handleNext} disabled={!canProceed() || creating}>
-                {creating ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Creating...
-                  </>
-                ) : isNameModeStep ? (
-                  "Create Client"
-                ) : (
-                  <>
-                    Next
-                    <ChevronRight className="ml-1 h-4 w-4" />
-                  </>
+              <>
+                {state.clientId && (
+                  <Button variant="outline" onClick={handleComplete}>
+                    Done
+                  </Button>
                 )}
-              </Button>
+                <Button onClick={handleNext} disabled={!canProceed() || creating}>
+                  {creating ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Creating...
+                    </>
+                  ) : isNameModeStep ? (
+                    "Create Client"
+                  ) : (
+                    <>
+                      Next
+                      <ChevronRight className="ml-1 h-4 w-4" />
+                    </>
+                  )}
+                </Button>
+              </>
             ) : null}
           </div>
         </DialogFooter>

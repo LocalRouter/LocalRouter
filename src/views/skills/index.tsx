@@ -838,7 +838,6 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                       initialDirectTarget={`skill:${selectedSkillInfo.name}`}
                       hideModeSwitcher
                       hideDirectTargetSelector
-                      showDeferredInDirect
                       innerPath={null}
                       onPathChange={() => {}}
                     />

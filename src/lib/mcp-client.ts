@@ -42,7 +42,6 @@ export interface McpClientConfig {
   serverPort: number
   clientToken: string
   transportType?: TransportType
-  deferredLoading?: boolean // Enable deferred loading for unified gateway
   mcpAccess?: string // MCP server access: "all", "none", or a specific server ID
   skillsAccess?: "all" | string // Skills access: "all" or specific skill name
   codingAgentAccess?: string // Coding agent type (e.g., "claude_code") for direct mode
@@ -172,9 +171,6 @@ export class McpClientWrapper {
         // Build headers - include access control headers for internal test client
         const headers: Record<string, string> = {
           Authorization: `Bearer ${this.config.clientToken}`,
-        }
-        if (this.config.deferredLoading) {
-          headers["X-Deferred-Loading"] = "true"
         }
         if (this.config.mcpAccess) {
           headers["X-MCP-Access"] = this.config.mcpAccess

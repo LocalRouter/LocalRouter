@@ -17,7 +17,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Button } from "@/components/ui/Button"
 import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, Circle, Info, Users, Globe, Zap, BookOpen, RefreshCw, Loader2 } from "lucide-react"
@@ -120,7 +119,6 @@ interface McpClient {
   name: string
   client_id: string
   enabled: boolean
-  mcp_deferred_loading: boolean
   marketplace_permission: "allow" | "ask" | "off"
 }
 
@@ -171,10 +169,9 @@ interface McpTabProps {
   initialClientId?: string
   hideModeSwitcher?: boolean
   hideDirectTargetSelector?: boolean
-  showDeferredInDirect?: boolean
 }
 
-export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarget, initialClientId, hideModeSwitcher, hideDirectTargetSelector, showDeferredInDirect }: McpTabProps) {
+export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarget, initialClientId, hideModeSwitcher, hideDirectTargetSelector }: McpTabProps) {
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [mode, setMode] = useState<McpTestMode>("client")
@@ -203,10 +200,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
 
   // Auto-approve settings (lifted from SamplingPanel to persist across tab switches)
   const [autoApproveSampling, setAutoApproveSampling] = useState(false)
-
-  // Deferred loading for unified gateway (reduces token consumption for large catalogs)
-  // In "client" mode, initialized from client settings; in "all" mode, starts false
-  const [deferredLoading, setDeferredLoading] = useState(false)
 
   // Sampling panel state (lifted to persist across tab switches)
   const [samplingState, setSamplingState] = useState<SamplingState>({
@@ -501,18 +494,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     setResourceUpdates(new Map())
   }, [])
 
-  // Get selected client's data
-  const selectedClient = useMemo(() => {
-    return clients.find(c => c.id === selectedClientId)
-  }, [clients, selectedClientId])
-
-  // Sync deferred loading from client settings when selected client changes
-  useEffect(() => {
-    if (mode === "client" && selectedClient) {
-      setDeferredLoading(selectedClient.mcp_deferred_loading)
-    }
-  }, [mode, selectedClient])
-
   // Compute whether we have enough settings to connect
   const canConnect = useMemo(() => {
     if (!serverPort) return false
@@ -549,25 +530,15 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       _isDirectCodingAgent ? (_directTarget as { type: "coding_agent"; agentType: string }).agentType :
       undefined
 
-    // Deferred loading:
-    // - "all" mode: use the toggle state
-    // - "client" mode: use the toggle state (initialized from client settings)
-    // - "direct" mode: off unless showDeferredInDirect is enabled
-    const effectiveDeferredLoading: boolean | undefined =
-      (mode === "all" || mode === "client") ? (deferredLoading || undefined) :
-      (mode === "direct" && showDeferredInDirect) ? (deferredLoading || undefined) :
-      undefined
-
     return {
       serverPort,
       clientToken: token,
       transportType: "sse" as const,
-      deferredLoading: effectiveDeferredLoading,
       mcpAccess,
       skillsAccess,
       codingAgentAccess,
     }
-  }, [canConnect, serverPort, mode, clientApiKey, internalTestToken, selectedDirectTarget, deferredLoading])
+  }, [canConnect, serverPort, mode, clientApiKey, internalTestToken, selectedDirectTarget])
 
   // Serialize config for change detection
   const connectionConfigKey = connectionConfig ? JSON.stringify(connectionConfig) : null
@@ -740,32 +711,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                 </div>
               )}
 
-              {/* Deferred loading toggle - for "client", "all", and optionally "direct" modes */}
-              {(mode === "client" || mode === "all" || (mode === "direct" && showDeferredInDirect)) && (
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="deferred-loading"
-                    checked={deferredLoading}
-                    onCheckedChange={(checked) => setDeferredLoading(checked === true)}
-                  />
-                  <Label htmlFor="deferred-loading" className="text-sm cursor-pointer">
-                    Deferred Loading
-                  </Label>
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom" className="max-w-[300px]">
-                        <p>
-                          When enabled, tools and resources are loaded on-demand via search
-                          instead of all at once. Reduces token consumption for large catalogs.
-                        </p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                </div>
-              )}
             </div>
           </div>
 

@@ -80,7 +80,7 @@ export function getHeaderContent(requestType: RequestType) {
       return {
         icon: <StoreIcon className="h-5 w-5 text-pink-500" />,
         title: "Marketplace Installation",
-        description: "A skill from the marketplace wants to be installed",
+        description: "Review this package before installing",
       }
     case "skill":
       return {
@@ -135,6 +135,18 @@ export function FirewallApprovalHeader({ requestType }: { requestType: RequestTy
   )
 }
 
+/** Marketplace listing metadata for display in the approval popup */
+export interface MarketplaceListingInfo {
+  name: string
+  description?: string | null
+  homepage?: string | null
+  vendor?: string | null
+  author?: string | null
+  source_label?: string | null
+  source_repo?: string | null
+  install_type?: "mcp_server" | "skill"
+}
+
 export interface FirewallApprovalCardProps {
   clientName: string
   toolName: string
@@ -148,6 +160,8 @@ export interface FirewallApprovalCardProps {
   guardrailDirection?: "request" | "response"
   guardrailActions?: CategoryActionRequired[]
   guardrailFlaggedText?: string
+  /** Marketplace listing details for install popups */
+  marketplaceListing?: MarketplaceListingInfo | null
   /** If not provided, all buttons are disabled (demo mode) */
   onAction?: (action: ApprovalAction) => void
   onEdit?: () => void
@@ -184,6 +198,7 @@ export function FirewallApprovalCard({
   guardrailDirection,
   guardrailActions,
   guardrailFlaggedText,
+  marketplaceListing,
   onAction,
   onEdit,
   submitting = false,
@@ -198,7 +213,7 @@ export function FirewallApprovalCard({
     is_auto_router_request: isAutoRouterRequest,
   })
   const parsedArgs = parseArguments(argumentsPreview || "")
-  const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback" && requestType !== "auto_router"
+  const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback"
   const disabled = !onAction || submitting
 
   return (
@@ -221,10 +236,39 @@ export function FirewallApprovalCard({
             </>
           ) : requestType === "marketplace" ? (
             <>
-              <span className="text-muted-foreground">Skill:</span>
-              <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">
-                {toolName}
-              </code>
+              {marketplaceListing ? (
+                <>
+                  <span className="text-muted-foreground">Name:</span>
+                  <span className="font-medium">{marketplaceListing.name}</span>
+                  {marketplaceListing.description && (
+                    <>
+                      <span className="text-muted-foreground">Description:</span>
+                      <span className="truncate" title={marketplaceListing.description}>{marketplaceListing.description}</span>
+                    </>
+                  )}
+                  <span className="text-muted-foreground">Type:</span>
+                  <span>{marketplaceListing.install_type === "mcp_server" ? "MCP Server" : "Skill"}</span>
+                  {(marketplaceListing.vendor || marketplaceListing.author) && (
+                    <>
+                      <span className="text-muted-foreground">{marketplaceListing.install_type === "mcp_server" ? "Vendor:" : "Author:"}</span>
+                      <span>{marketplaceListing.vendor || marketplaceListing.author}</span>
+                    </>
+                  )}
+                  {marketplaceListing.source_label && (
+                    <>
+                      <span className="text-muted-foreground">Source:</span>
+                      <span>{marketplaceListing.source_label}</span>
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="text-muted-foreground">Tool:</span>
+                  <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">
+                    {toolName}
+                  </code>
+                </>
+              )}
             </>
           ) : requestType === "skill" ? (
             <>
@@ -266,8 +310,22 @@ export function FirewallApprovalCard({
             </>
           )}
 
-          {/* Arguments inline (non-guardrail) */}
-          {requestType !== "guardrail" && parsedArgs.map(({ key, value }) => (
+          {/* Marketplace source link */}
+          {requestType === "marketplace" && marketplaceListing && (marketplaceListing.homepage || marketplaceListing.source_repo) && (
+            <>
+              <span className="text-muted-foreground">Source:</span>
+              <button
+                className="text-blue-500 hover:text-blue-400 hover:underline text-left truncate font-mono text-[11px]"
+                title={marketplaceListing.homepage || marketplaceListing.source_repo || ""}
+                onClick={() => window.open(marketplaceListing.homepage || marketplaceListing.source_repo || "", "_blank")}
+              >
+                {(marketplaceListing.homepage || marketplaceListing.source_repo || "").replace(/^https?:\/\//, "")}
+              </button>
+            </>
+          )}
+
+          {/* Arguments inline (non-guardrail, non-marketplace with listing) */}
+          {requestType !== "guardrail" && !(requestType === "marketplace" && marketplaceListing) && parsedArgs.map(({ key, value }) => (
             <span key={key} className="contents">
               <span className="text-muted-foreground">{key}:</span>
               <span className="font-mono truncate" title={value}>

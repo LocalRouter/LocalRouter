@@ -3,7 +3,7 @@
  *
  * A comprehensive TypeScript client for the LocalRouter SSE streaming gateway.
  * Multiplexes multiple MCP servers into a single client-facing stream with
- * request/response correlation, notifications, and deferred loading support.
+ * request/response correlation, and notifications.
  *
  * Usage:
  * ```typescript

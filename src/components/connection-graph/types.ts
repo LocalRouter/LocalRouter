@@ -76,7 +76,6 @@ export interface Client {
   client_id: string
   enabled: boolean
   strategy_id: string
-  mcp_deferred_loading: boolean
   created_at: string
   last_used: string | null
   mcp_permissions: McpPermissions

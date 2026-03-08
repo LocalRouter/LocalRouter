@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Loader2 } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/Card'
 import Button from '../ui/Button'
@@ -165,7 +166,7 @@ export default function StrategyConfigEditor({
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <div className="text-gray-500 dark:text-gray-400">Loading strategy configuration...</div>
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     )
   }

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Select,
   SelectContent,
@@ -14,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import type { SetMaxCodingSessionsParams } from "@/types/tauri-commands"
+import type { SetMaxCodingSessionsParams, SetPeriodicHealthEnabledParams } from "@/types/tauri-commands"
 
 interface ServerConfig {
   host: string
@@ -47,12 +48,14 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
   const [executablePath, setExecutablePath] = useState<string>("")
   const [maxCodingSessions, setMaxCodingSessions] = useState<number>(10)
   const [editMaxCodingSessions, setEditMaxCodingSessions] = useState<number>(10)
+  const [periodicHealthEnabled, setPeriodicHealthEnabled] = useState(true)
 
   useEffect(() => {
     loadConfig()
     loadNetworkInterfaces()
     loadExecutablePath()
     loadMaxCodingSessions()
+    loadPeriodicHealthEnabled()
   }, [])
 
   useEffect(() => {
@@ -104,6 +107,25 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
       await invoke("set_max_coding_sessions", { maxSessions: editMaxCodingSessions } satisfies SetMaxCodingSessionsParams)
       setMaxCodingSessions(editMaxCodingSessions)
       toast.success("Max coding sessions updated")
+    } catch (error: any) {
+      toast.error(`Failed to update: ${error.message || error}`)
+    }
+  }
+
+  const loadPeriodicHealthEnabled = async () => {
+    try {
+      const enabled = await invoke<boolean>("get_periodic_health_enabled")
+      setPeriodicHealthEnabled(enabled)
+    } catch (error) {
+      console.error("Failed to load periodic health setting:", error)
+    }
+  }
+
+  const togglePeriodicHealth = async (checked: boolean) => {
+    try {
+      await invoke("set_periodic_health_enabled", { enabled: checked } satisfies SetPeriodicHealthEnabledParams)
+      setPeriodicHealthEnabled(checked)
+      toast.success(checked ? "Periodic health checks enabled (restart to apply)" : "Periodic health checks disabled (restart to apply)")
     } catch (error: any) {
       toast.error(`Failed to update: ${error.message || error}`)
     }
@@ -319,6 +341,33 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
               </Button>
             </div>
           </form>
+        </CardContent>
+      </Card>
+
+      {/* Health Checks */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Health Checks</CardTitle>
+          <CardDescription>
+            Configure automatic provider health monitoring
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center space-x-2">
+            <Checkbox
+              id="periodic-health"
+              checked={periodicHealthEnabled}
+              onCheckedChange={(checked) => togglePeriodicHealth(checked === true)}
+            />
+            <Label htmlFor="periodic-health" className="text-sm font-normal cursor-pointer">
+              Enable periodic health checks
+            </Label>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            When enabled, provider health is checked automatically on a schedule.
+            On-failure detection and manual health checks always remain active regardless of this setting.
+            Requires a server restart to take effect.
+          </p>
         </CardContent>
       </Card>
 

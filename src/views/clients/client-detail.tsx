@@ -9,6 +9,7 @@ import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientSkillsTab } from "./tabs/skills-tab"
 import { ClientCodingAgentsTab } from "./tabs/coding-agents-tab"
+import { ClientContextTab } from "./tabs/context-tab"
 import { ClientGuardrailsTab } from "./tabs/guardrails-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
@@ -23,8 +24,8 @@ interface Client {
   client_id: string
   enabled: boolean
   strategy_id: string
-  mcp_deferred_loading: boolean
   context_management_enabled: boolean | null
+  indexing_tools_enabled: boolean | null
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
   coding_agent_permission: PermissionState
@@ -58,7 +59,10 @@ export function ClientDetail({
   const [loading, setLoading] = useState(!initialClient)
   const [activeTab, setActiveTab] = useState(initialTab || "connect")
 
-  const [tryItOutSubTab, setTryItOutSubTab] = useState("llm")
+  const [tryItOutSubTab, setTryItOutSubTab] = useState(() => {
+    const mode = initialClient?.client_mode || "both"
+    return mode === "mcp_only" ? "mcp" : "llm"
+  })
   const [mcpInnerPath, setMcpInnerPath] = useState<string | null>(null)
 
   const clientMode = client?.client_mode || "both"
@@ -66,7 +70,9 @@ export function ClientDetail({
   const showMcpTab = clientMode !== "llm_only"
   const showSkillsTab = clientMode !== "llm_only"
   const showCodingAgentsTab = clientMode !== "llm_only"
+  const showGuardrailsTab = clientMode !== "mcp_only"
   const showTryItOutLlm = clientMode !== "mcp_only"
+  const showTryItOutMcp = clientMode !== "llm_only"
 
   useEffect(() => {
     if (!initialClient) {
@@ -103,7 +109,15 @@ export function ClientDetail({
     if (activeTab === "mcp" && !showMcpTab) setActiveTab("connect")
     if (activeTab === "skills" && !showSkillsTab) setActiveTab("connect")
     if (activeTab === "coding-agents" && !showCodingAgentsTab) setActiveTab("connect")
-  }, [clientMode, activeTab, showModelsTab, showMcpTab, showSkillsTab, showCodingAgentsTab])
+    if (activeTab === "context" && !showMcpTab) setActiveTab("connect")
+    if (activeTab === "guardrails" && !showGuardrailsTab) setActiveTab("connect")
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showSkillsTab, showCodingAgentsTab, showGuardrailsTab])
+
+  // If try-it-out sub-tab becomes hidden due to mode change, switch to the available one
+  useEffect(() => {
+    if (tryItOutSubTab === "llm" && !showTryItOutLlm) setTryItOutSubTab("mcp")
+    if (tryItOutSubTab === "mcp" && !showTryItOutMcp) setTryItOutSubTab("llm")
+  }, [clientMode, tryItOutSubTab, showTryItOutLlm, showTryItOutMcp])
 
   const loadClient = async () => {
     try {
@@ -148,15 +162,37 @@ export function ClientDetail({
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList>
-            <TabsTrigger value="connect">Connect</TabsTrigger>
-            <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
-            {showModelsTab && <TabsTrigger value="models">Models</TabsTrigger>}
-            {showMcpTab && <TabsTrigger value="mcp">MCP</TabsTrigger>}
-            {showSkillsTab && <TabsTrigger value="skills">Skills</TabsTrigger>}
-            {showCodingAgentsTab && <TabsTrigger value="coding-agents">Coding Agents</TabsTrigger>}
-            <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
-            <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsList className="bg-transparent h-auto gap-2 p-0 items-end">
+            <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
+              <TabsTrigger value="connect">Connect</TabsTrigger>
+              <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
+            </div>
+
+            {showModelsTab && (
+              <div>
+                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">LLM</div>
+                <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
+                  <TabsTrigger value="models">Providers</TabsTrigger>
+                  <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
+                </div>
+              </div>
+            )}
+
+            {showMcpTab && (
+              <div>
+                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">MCP</div>
+                <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
+                  <TabsTrigger value="mcp">Servers</TabsTrigger>
+                  <TabsTrigger value="skills">Skills</TabsTrigger>
+                  <TabsTrigger value="coding-agents">Coding Agents</TabsTrigger>
+                  <TabsTrigger value="context">Context</TabsTrigger>
+                </div>
+              </div>
+            )}
+
+            <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
+              <TabsTrigger value="settings">Settings</TabsTrigger>
+            </div>
           </TabsList>
 
           <TabsContent value="connect">
@@ -165,10 +201,12 @@ export function ClientDetail({
 
           <TabsContent value="try-it-out">
             <Tabs value={tryItOutSubTab} onValueChange={setTryItOutSubTab} className="space-y-4">
-              <TabsList className="w-fit">
-                {showTryItOutLlm && <TabsTrigger value="llm">LLM Provider</TabsTrigger>}
-                <TabsTrigger value="mcp">MCP</TabsTrigger>
-              </TabsList>
+              {showTryItOutLlm && showTryItOutMcp && (
+                <TabsList className="w-fit">
+                  <TabsTrigger value="llm">LLM Provider</TabsTrigger>
+                  <TabsTrigger value="mcp">MCP</TabsTrigger>
+                </TabsList>
+              )}
 
               {showTryItOutLlm && (
                 <TabsContent value="llm">
@@ -180,15 +218,17 @@ export function ClientDetail({
                 </TabsContent>
               )}
 
-              <TabsContent value="mcp">
-                <McpTab
-                  initialMode="client"
-                  initialClientId={client.client_id}
-                  hideModeSwitcher
-                  innerPath={mcpInnerPath}
-                  onPathChange={setMcpInnerPath}
-                />
-              </TabsContent>
+              {showTryItOutMcp && (
+                <TabsContent value="mcp">
+                  <McpTab
+                    initialMode="client"
+                    initialClientId={client.client_id}
+                    hideModeSwitcher
+                    innerPath={mcpInnerPath}
+                    onPathChange={setMcpInnerPath}
+                  />
+                </TabsContent>
+              )}
             </Tabs>
           </TabsContent>
 
@@ -221,13 +261,21 @@ export function ClientDetail({
             </TabsContent>
           )}
 
-          <TabsContent value="guardrails">
-            <ClientGuardrailsTab
-              client={client}
-              onUpdate={loadClient}
-              onViewChange={onViewChange}
-            />
-          </TabsContent>
+          {showMcpTab && (
+            <TabsContent value="context">
+              <ClientContextTab client={client} onUpdate={loadClient} onViewChange={onViewChange} />
+            </TabsContent>
+          )}
+
+          {showGuardrailsTab && (
+            <TabsContent value="guardrails">
+              <ClientGuardrailsTab
+                client={client}
+                onUpdate={loadClient}
+                onViewChange={onViewChange}
+              />
+            </TabsContent>
+          )}
 
           <TabsContent value="settings">
             <ClientSettingsTab

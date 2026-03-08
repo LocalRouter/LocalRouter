@@ -13,7 +13,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 // DEPRECATED: Route, AlertTriangle unused - Strategy UI hidden
-import { /* Route, AlertTriangle, */ Gauge, Coins } from "lucide-react"
+import { /* Route, AlertTriangle, */ Gauge, Coins, Loader2 } from "lucide-react"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import {
   Card,
@@ -240,8 +240,8 @@ export function ClientModelsTab({
       <div className="space-y-6">
         <Card>
           <CardContent className="py-8">
-            <div className="text-center text-muted-foreground">
-              Loading strategy configuration...
+            <div className="flex items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
           </CardContent>
         </Card>

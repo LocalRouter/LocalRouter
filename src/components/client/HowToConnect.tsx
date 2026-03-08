@@ -233,6 +233,25 @@ function QuickSetupTab({
     fetchCapabilities()
   }, [template.id])
 
+  // Auto-fetch temporary launch command when capabilities indicate support
+  useEffect(() => {
+    if (!capabilities?.supports_try_it_out) return
+    const fetchLaunchCommand = async () => {
+      try {
+        setTryingOut(true)
+        const res = await invoke<LaunchResult>("try_it_out_app", {
+          clientId,
+        } satisfies TryItOutAppParams)
+        setTemporaryResult(res)
+      } catch (error) {
+        console.error("Failed to fetch launch command:", error)
+      } finally {
+        setTryingOut(false)
+      }
+    }
+    fetchLaunchCommand()
+  }, [capabilities, clientId])
+
   const handleTryItOut = async () => {
     try {
       setTryingOut(true)
@@ -308,6 +327,11 @@ function QuickSetupTab({
   const innerTabCount = 1 + (supportsTryItOut ? 1 : 0) + (supportsPermanent ? 1 : 0)
   const innerGridCols = innerTabCount === 1 ? "grid-cols-1" : innerTabCount === 2 ? "grid-cols-2" : "grid-cols-3"
 
+  const [innerTab, setInnerTab] = useState("manual")
+  useEffect(() => {
+    setInnerTab(supportsPermanent ? "auto" : supportsTryItOut ? "temporary" : "manual")
+  }, [supportsPermanent, supportsTryItOut])
+
   return (
     <div className="space-y-4">
       {/* Header with icon and name */}
@@ -353,18 +377,8 @@ function QuickSetupTab({
       </div>
 
       {/* Inner tabs: Manual / Temporary / Auto */}
-      <Tabs defaultValue="manual">
+      <Tabs value={innerTab} onValueChange={setInnerTab}>
         <TabsList className={`mb-4 grid w-full ${innerGridCols}`}>
-          <TabsTrigger value="manual" className="text-xs gap-1">
-            <BookOpen className="h-3 w-3" />
-            Manual
-          </TabsTrigger>
-          {supportsTryItOut && (
-            <TabsTrigger value="temporary" className="text-xs gap-1">
-              <Rocket className="h-3 w-3" />
-              Temporary
-            </TabsTrigger>
-          )}
           {supportsPermanent && (
             <TabsTrigger value="auto" className="text-xs gap-1">
               <RefreshCcw className="h-3 w-3" />
@@ -374,7 +388,154 @@ function QuickSetupTab({
               </Badge>
             </TabsTrigger>
           )}
+          {supportsTryItOut && (
+            <TabsTrigger value="temporary" className="text-xs gap-1">
+              <Rocket className="h-3 w-3" />
+              Quick Start
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="manual" className="text-xs gap-1">
+            <BookOpen className="h-3 w-3" />
+            Manual
+          </TabsTrigger>
         </TabsList>
+
+        {/* Auto tab */}
+        {supportsPermanent && (
+          <TabsContent value="auto" className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              LocalRouter automatically configures {template.name} and keeps it in sync.
+            </p>
+
+            {/* What auto-sync will do */}
+            <div className="rounded-lg border p-3 space-y-2.5">
+              <p className="text-xs font-medium">When enabled, LocalRouter will:</p>
+              <ul className="space-y-2">
+                {template.configFile && (
+                  <li className="flex items-start gap-2 text-xs text-muted-foreground">
+                    <FileJson className="h-3.5 w-3.5 mt-0.5 shrink-0 text-foreground" />
+                    <span>
+                      Write configuration to{" "}
+                      <code className="bg-muted px-1 py-0.5 rounded break-all">
+                        {resolveTemplatePlaceholders(template.configFile.path, baseUrl, resolvedSecret, clientId, homeDir, configDir)}
+                      </code>
+                    </span>
+                  </li>
+                )}
+                {template.envVars && template.envVars.length > 0 && (
+                  <li className="flex items-start gap-2 text-xs text-muted-foreground">
+                    <Key className="h-3.5 w-3.5 mt-0.5 shrink-0 text-foreground" />
+                    <span>Set API base URL and credentials ({template.envVars.map(e => e.name).join(", ")})</span>
+                  </li>
+                )}
+                <li className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <Cpu className="h-3.5 w-3.5 mt-0.5 shrink-0 text-foreground" />
+                  <span>Configure available models from this client's routing strategy</span>
+                </li>
+                {template.supportsMcp && (
+                  <li className="flex items-start gap-2 text-xs text-muted-foreground">
+                    <Terminal className="h-3.5 w-3.5 mt-0.5 shrink-0 text-foreground" />
+                    <span>Set up MCP proxy connection to LocalRouter's servers and skills</span>
+                  </li>
+                )}
+                <li className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <RefreshCcw className="h-3.5 w-3.5 mt-0.5 shrink-0 text-foreground" />
+                  <span>Re-sync automatically when models, secrets, or server settings change</span>
+                </li>
+              </ul>
+            </div>
+
+            {/* Toggle */}
+            <div className="rounded-lg border p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Settings2 className="h-4 w-4 text-muted-foreground" />
+                  <Label htmlFor="sync-config" className="text-sm font-medium cursor-pointer">Keep config in sync</Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  {syncEnabled && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={handleManualSync}
+                      disabled={syncing}
+                      title="Sync now"
+                    >
+                      {syncing ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCcw className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  )}
+                  <Switch
+                    id="sync-config"
+                    checked={syncEnabled}
+                    onCheckedChange={handleToggleSyncConfig}
+                    disabled={syncing}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Warning about overwrites */}
+            <div className="flex items-start gap-2 text-xs text-muted-foreground">
+              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-yellow-500" />
+              <span>Manual edits to managed config files may be overwritten during sync.</span>
+            </div>
+
+            {autoResult && <LaunchResultDisplay result={autoResult} />}
+          </TabsContent>
+        )}
+
+        {/* Quick Start tab */}
+        {supportsTryItOut && (
+          <TabsContent value="temporary" className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              Launch {template.name} with LocalRouter pre-configured. No files are modified — settings are passed via environment variables.
+            </p>
+
+            {tryingOut ? (
+              <div className="rounded-lg border p-3">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Generating launch command...
+                </div>
+              </div>
+            ) : temporaryResult ? (
+              <div className="space-y-3">
+                {temporaryResult.success && temporaryResult.terminal_command ? (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Run in your terminal:</Label>
+                    <CopyableCodeBlock value={temporaryResult.terminal_command} />
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950 p-3 text-sm">
+                    <p>{temporaryResult.message}</p>
+                  </div>
+                )}
+                <Button variant="ghost" size="sm" onClick={handleTryItOut} disabled={tryingOut} className="text-xs">
+                  <RefreshCw className="mr-1.5 h-3 w-3" />
+                  Regenerate
+                </Button>
+              </div>
+            ) : null}
+
+            {template.supportsMcp && (
+              <div className="rounded-lg border p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Terminal className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">MCP Proxy</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {template.name} will also connect to LocalRouter's MCP servers and skills.
+                  {template.setupType !== "generic" ? " This is configured automatically." : ""}
+                </p>
+              </div>
+            )}
+          </TabsContent>
+        )}
 
         {/* Manual tab */}
         <TabsContent value="manual" className="space-y-3">
@@ -456,108 +617,6 @@ function QuickSetupTab({
             </a>
           )}
         </TabsContent>
-
-        {/* Temporary tab */}
-        {supportsTryItOut && (
-          <TabsContent value="temporary" className="space-y-4">
-            <p className="text-xs text-muted-foreground">One-time — no files modified</p>
-
-            <Button onClick={handleTryItOut} disabled={tryingOut || syncing} className="w-full">
-              {tryingOut ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Preparing...
-                </>
-              ) : (
-                <>
-                  <Rocket className="mr-2 h-4 w-4" />
-                  Try It Out
-                </>
-              )}
-            </Button>
-
-            {temporaryResult && <LaunchResultDisplay result={temporaryResult} />}
-
-            {/* MCP info (for apps that support MCP) */}
-            {template.supportsMcp && (
-              <div className="rounded-lg border p-3 space-y-2">
-                <div className="flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">MCP Proxy</span>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {template.name} will also connect to LocalRouter's MCP servers and skills.
-                  {template.setupType !== "generic" ? " This is configured automatically." : ""}
-                </p>
-              </div>
-            )}
-          </TabsContent>
-        )}
-
-        {/* Auto tab */}
-        {supportsPermanent && (
-          <TabsContent value="auto" className="space-y-4">
-            {/* Warning: what sync will do */}
-            <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-900 dark:bg-yellow-950 p-3 space-y-1.5">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 mt-0.5 shrink-0" />
-                <div className="space-y-1 min-w-0">
-                  <p className="text-xs font-medium text-yellow-800 dark:text-yellow-300">
-                    This will modify {template.name}'s configuration files
-                  </p>
-                  <p className="text-xs text-yellow-700 dark:text-yellow-400">
-                    LocalRouter will automatically write and update config files when models, secrets, or settings change. Manual edits to these files may be overwritten.
-                  </p>
-                  {template.configFile && (
-                    <code className="text-xs text-yellow-700 dark:text-yellow-400 block break-all">
-                      {resolveTemplatePlaceholders(template.configFile.path, baseUrl, resolvedSecret, clientId, homeDir, configDir)}
-                    </code>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-lg border p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Settings2 className="h-4 w-4 text-muted-foreground" />
-                  <Label htmlFor="sync-config" className="text-sm font-medium cursor-pointer">Keep config in sync</Label>
-                </div>
-                <div className="flex items-center gap-2">
-                  {syncEnabled && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={handleManualSync}
-                      disabled={syncing}
-                      title="Sync now"
-                    >
-                      {syncing ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <RefreshCcw className="h-3.5 w-3.5" />
-                      )}
-                    </Button>
-                  )}
-                  <Switch
-                    id="sync-config"
-                    checked={syncEnabled}
-                    onCheckedChange={handleToggleSyncConfig}
-                    disabled={syncing}
-                  />
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {syncEnabled
-                  ? "Config files are kept in sync when models, secrets, or settings change."
-                  : "Automatically update config files when models or secrets change."}
-              </p>
-            </div>
-
-            {autoResult && <LaunchResultDisplay result={autoResult} />}
-          </TabsContent>
-        )}
       </Tabs>
     </div>
   )

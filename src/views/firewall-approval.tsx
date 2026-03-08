@@ -8,8 +8,9 @@ import {
   FirewallApprovalHeader,
   getRequestType,
   type ApprovalAction,
+  type MarketplaceListingInfo,
 } from "@/components/shared/FirewallApprovalCard"
-import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
+import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing } from "@/types/tauri-commands"
 
 interface ApprovalDetails {
   request_id: string
@@ -65,6 +66,8 @@ const MODEL_PARAM_FIELDS: ModelParamField[] = [
   { key: "seed", label: "Seed", type: "number", step: 1 },
 ]
 
+type EditorTab = "params" | "messages" | "raw"
+
 export function FirewallApproval() {
   const [details, setDetails] = useState<ApprovalDetails | null>(null)
   const [loading, setLoading] = useState(true)
@@ -77,13 +80,19 @@ export function FirewallApproval() {
   const [fullArguments, setFullArguments] = useState<string | null>(null)
   const [editedJson, setEditedJson] = useState<string>("")
   const [jsonValid, setJsonValid] = useState(true)
-  const [editorMode, setEditorMode] = useState<"kv" | "raw">("kv")
-  // Key-value pairs for kv editor mode
+  const [editorTab, setEditorTab] = useState<EditorTab>("params")
+  // Key-value pairs for kv editor mode (tool/skill)
   const [kvPairs, setKvPairs] = useState<{ key: string; value: string }[]>([])
-  // Model params for model editor
+  // Model params for model/auto-router editor
   const [modelParams, setModelParams] = useState<Record<string, string>>({})
   // Available models for dropdown (filtered by client permissions)
   const [allowedModels, setAllowedModels] = useState<ModelInfo[]>([])
+  // Candidate models for auto-router
+  const [candidateModels, setCandidateModels] = useState<string[]>([])
+  // Messages editor
+  const [editedMessages, setEditedMessages] = useState<{ role: string; content: string }[]>([])
+  // Marketplace listing details
+  const [marketplaceListing, setMarketplaceListing] = useState<MarketplaceListingInfo | null>(null)
 
   useEffect(() => {
     const loadDetails = async () => {
@@ -97,8 +106,50 @@ export function FirewallApproval() {
         })
         setDetails(result)
 
+        // Fetch marketplace listing details for install tools
+        if (result.tool_name.includes("marketplace__install")) {
+          try {
+            const args = JSON.parse(result.arguments_preview || "{}")
+            const name = args.name as string | undefined
+            if (name) {
+              if (result.tool_name.includes("install_mcp_server")) {
+                const listings = await invoke<McpServerListing[]>("marketplace_search_mcp_servers", { query: name })
+                const listing = listings.find((l) => l.name === name)
+                if (listing) {
+                  setMarketplaceListing({
+                    name: listing.name,
+                    description: listing.description,
+                    homepage: listing.homepage,
+                    vendor: listing.vendor,
+                    install_type: "mcp_server",
+                  })
+                }
+              } else if (result.tool_name.includes("install_skill")) {
+                const listings = await invoke<SkillListing[]>("marketplace_search_skills", { query: name })
+                const listing = listings.find((l) => l.name === name)
+                if (listing) {
+                  setMarketplaceListing({
+                    name: listing.name,
+                    description: listing.description,
+                    author: listing.author,
+                    source_label: listing.source_label,
+                    source_repo: listing.source_repo,
+                    install_type: "skill",
+                  })
+                }
+              }
+            }
+          } catch (err) {
+            console.error("Failed to fetch marketplace listing:", err)
+          }
+        }
+
         // Resize window based on content type
-        if (result.is_free_tier_fallback) {
+        if (result.tool_name.includes("marketplace__install")) {
+          const win = getCurrentWebviewWindow()
+          await win.setSize(new LogicalSize(440, 380))
+          await win.center()
+        } else if (result.is_free_tier_fallback) {
           const win = getCurrentWebviewWindow()
           await win.setSize(new LogicalSize(400, 280))
           await win.center()
@@ -150,6 +201,26 @@ export function FirewallApproval() {
     }
   }, [loading, details, buttonsReady])
 
+  /** Resize the window based on the active editor tab */
+  const resizeForTab = async (tab: EditorTab) => {
+    const win = getCurrentWebviewWindow()
+    if (tab === "params") {
+      await win.setSize(new LogicalSize(500, 520))
+    } else {
+      // Messages and Raw JSON need more space
+      await win.setSize(new LogicalSize(560, 600))
+    }
+    await win.center()
+  }
+
+  /** Extract the request object from full arguments (handles auto-router nesting) */
+  const getRequestFromArgs = (obj: Record<string, unknown>, isAutoRouter: boolean): Record<string, unknown> => {
+    if (isAutoRouter && typeof obj.request === "object" && obj.request !== null) {
+      return obj.request as Record<string, unknown>
+    }
+    return obj
+  }
+
   const enterEditMode = async () => {
     if (!details) return
     try {
@@ -158,40 +229,64 @@ export function FirewallApproval() {
       })
       const jsonStr = args || "{}"
       setFullArguments(jsonStr)
-      setEditedJson(jsonStr)
       setJsonValid(true)
       setEditMode(true)
 
-      // Initialize kv pairs from JSON
+      const isModelLike = details.is_model_request || details.is_auto_router_request
+
       try {
         const obj = JSON.parse(jsonStr)
-        if (typeof obj === "object" && obj !== null) {
-          setKvPairs(
-            Object.entries(obj).map(([key, value]) => ({
-              key,
-              value: typeof value === "string" ? value : JSON.stringify(value),
-            }))
-          )
-        }
-      } catch {
-        setKvPairs([])
-      }
 
-      // For model requests, initialize model params and fetch allowed models
-      if (details.is_model_request) {
-        try {
-          const obj = JSON.parse(jsonStr)
+        if (isModelLike) {
+          // For model/auto-router: extract request object and initialize params + messages
+          const reqObj = getRequestFromArgs(obj, !!details.is_auto_router_request)
+
+          // Initialize model params
           const params: Record<string, string> = {}
+          if (reqObj.model != null) params.model = String(reqObj.model)
           for (const field of MODEL_PARAM_FIELDS) {
-            const val = obj[field.key]
+            const val = reqObj[field.key]
             params[field.key] = val != null ? String(val) : ""
           }
           setModelParams(params)
-        } catch {
-          setModelParams({})
-        }
 
-        // Fetch all models and client permissions, then filter
+          // Initialize messages
+          const msgs = Array.isArray(reqObj.messages) ? reqObj.messages : []
+          setEditedMessages(
+            msgs.map((m: Record<string, unknown>) => ({
+              role: typeof m.role === "string" ? m.role : "user",
+              content: typeof m.content === "string"
+                ? m.content
+                : JSON.stringify(m.content),
+            }))
+          )
+
+          // For auto-router: extract candidate models
+          if (details.is_auto_router_request && Array.isArray(obj.candidate_models)) {
+            setCandidateModels(obj.candidate_models as string[])
+          }
+
+          // Set raw JSON to the request portion only
+          setEditedJson(JSON.stringify(reqObj, null, 2))
+        } else {
+          // For tools/skills: use kv pairs
+          if (typeof obj === "object" && obj !== null) {
+            setKvPairs(
+              Object.entries(obj).map(([key, value]) => ({
+                key,
+                value: typeof value === "string" ? value : JSON.stringify(value),
+              }))
+            )
+          }
+          setEditedJson(jsonStr)
+        }
+      } catch {
+        setKvPairs([])
+        setEditedJson(jsonStr)
+      }
+
+      // Fetch allowed models for model/auto-router
+      if (isModelLike) {
         try {
           const [allModels, clientInfo] = await Promise.all([
             invoke<ModelInfo[]>("list_all_models"),
@@ -208,10 +303,9 @@ export function FirewallApproval() {
         }
       }
 
-      // Resize window for edit mode
-      const win = getCurrentWebviewWindow()
-      await win.setSize(new LogicalSize(500, 520))
-      await win.center()
+      // Reset tab to params and resize
+      setEditorTab("params")
+      await resizeForTab("params")
     } catch (err) {
       console.error("Failed to enter edit mode:", err)
     }
@@ -224,7 +318,9 @@ export function FirewallApproval() {
     setKvPairs([])
     setModelParams({})
     setAllowedModels([])
-    setEditorMode("kv")
+    setCandidateModels([])
+    setEditedMessages([])
+    setEditorTab("params")
 
     const win = getCurrentWebviewWindow()
     await win.setSize(new LogicalSize(400, 320))
@@ -268,9 +364,12 @@ export function FirewallApproval() {
     }
   }
 
-  // Build model params JSON from form fields
-  const buildModelParamsJson = (): string => {
+  /** Build the full edited request JSON for model/auto-router */
+  const buildEditedRequestJson = (): Record<string, unknown> => {
     const obj: Record<string, unknown> = {}
+    // Model
+    if (modelParams.model) obj.model = modelParams.model
+    // Params
     for (const field of MODEL_PARAM_FIELDS) {
       const val = modelParams[field.key]
       if (val === "" || val === undefined) {
@@ -282,7 +381,19 @@ export function FirewallApproval() {
         obj[field.key] = val
       }
     }
-    return JSON.stringify(obj, null, 2)
+    // Messages
+    obj.messages = editedMessages.map((m) => {
+      // Try to parse content as JSON (for multipart content)
+      let content: unknown = m.content
+      try {
+        const parsed = JSON.parse(m.content)
+        if (Array.isArray(parsed)) content = parsed
+      } catch {
+        // keep as string
+      }
+      return { role: m.role, content }
+    })
+    return obj
   }
 
   const handleAction = async (action: ApprovalAction) => {
@@ -296,12 +407,30 @@ export function FirewallApproval() {
 
       // In edit mode, send edited data
       if (editMode) {
+        const isModelLike = details.is_model_request || details.is_auto_router_request
         let editedData: string
-        if (details.is_model_request) {
-          editedData = buildModelParamsJson()
+
+        if (isModelLike) {
+          if (editorTab === "raw") {
+            // Raw JSON mode — use editedJson directly, wrapping for auto-router
+            if (details.is_auto_router_request) {
+              editedData = JSON.stringify({ request: JSON.parse(editedJson) })
+            } else {
+              editedData = editedJson
+            }
+          } else {
+            // Params/Messages mode — build from state
+            const reqObj = buildEditedRequestJson()
+            if (details.is_auto_router_request) {
+              editedData = JSON.stringify({ request: reqObj })
+            } else {
+              editedData = JSON.stringify(reqObj)
+            }
+          }
         } else {
           editedData = editedJson
         }
+
         // Only send if actually different from original
         if (editedData !== fullArguments) {
           params.editedArguments = editedData
@@ -337,14 +466,22 @@ export function FirewallApproval() {
     server_name: details.server_name,
     tool_name: details.tool_name,
     is_model_request: details.is_model_request,
+    is_auto_router_request: details.is_auto_router_request,
   })
+  const isModelLike = requestType === "model" || requestType === "auto_router"
 
-  // Render edit mode view for model requests
-  const renderModelEditor = () => (
+  // Tab style helper
+  const tabClass = (tab: EditorTab) =>
+    `text-xs px-2 py-1 rounded ${editorTab === tab ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`
+
+  // Render the model + params editor (used by model and auto-router)
+  const renderParamsEditor = () => (
     <div className="flex flex-col gap-2 overflow-auto flex-1">
-      <div className="text-xs text-muted-foreground mb-1">
-        Provider: <span className="font-medium text-foreground">{details.server_name}</span>
-      </div>
+      {requestType === "model" && (
+        <div className="text-xs text-muted-foreground mb-1">
+          Provider: <span className="font-medium text-foreground">{details.server_name}</span>
+        </div>
+      )}
       {/* Model dropdown */}
       <div className="grid grid-cols-[120px_1fr] gap-2 items-center">
         <label className="text-xs text-muted-foreground">Model:</label>
@@ -353,15 +490,35 @@ export function FirewallApproval() {
           value={modelParams.model ?? ""}
           onChange={(e) => setModelParams((prev) => ({ ...prev, model: e.target.value }))}
         >
-          {/* Include current value even if not in the list */}
-          {modelParams.model && !allowedModels.some((m) => m.id === modelParams.model) && (
-            <option value={modelParams.model}>{modelParams.model}</option>
+          {/* For auto-router: option to keep auto */}
+          {requestType === "auto_router" && (
+            <option value="localrouter/auto">Auto (let router decide)</option>
           )}
-          {allowedModels.map((m) => (
-            <option key={`${m.provider}__${m.id}`} value={m.id}>
-              {m.id}
-            </option>
-          ))}
+          {/* Candidate models for auto-router */}
+          {candidateModels.length > 0 && (
+            <optgroup label="Router Candidates">
+              {candidateModels.map((m) => (
+                <option key={`candidate-${m}`} value={m.split("/").slice(1).join("/") || m}>
+                  {m}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {/* All allowed models */}
+          <optgroup label={candidateModels.length > 0 ? "All Available" : "Models"}>
+            {/* Include current value even if not in the list */}
+            {modelParams.model &&
+              modelParams.model !== "localrouter/auto" &&
+              !allowedModels.some((m) => m.id === modelParams.model) &&
+              !candidateModels.some((c) => c.endsWith(`/${modelParams.model}`)) && (
+                <option value={modelParams.model}>{modelParams.model}</option>
+              )}
+            {allowedModels.map((m) => (
+              <option key={`${m.provider}__${m.id}`} value={m.id}>
+                {m.id}
+              </option>
+            ))}
+          </optgroup>
           {allowedModels.length === 0 && !modelParams.model && (
             <option value="" disabled>Loading models...</option>
           )}
@@ -386,36 +543,113 @@ export function FirewallApproval() {
     </div>
   )
 
-  // Render edit mode view for tool/skill/prompt requests (kv + raw toggle)
-  const renderJsonEditor = () => (
+  // Render messages editor
+  const renderMessagesEditor = () => (
+    <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="flex items-center justify-between mb-2 flex-shrink-0">
+        <span className="text-xs text-muted-foreground">
+          {editedMessages.length} message{editedMessages.length !== 1 ? "s" : ""}
+        </span>
+        <button
+          className="text-xs px-2 py-1 rounded bg-muted text-muted-foreground hover:bg-muted/80"
+          onClick={() => setEditedMessages((prev) => [...prev, { role: "user", content: "" }])}
+        >
+          + Add
+        </button>
+      </div>
+      <div className="flex flex-col gap-2 overflow-auto flex-1">
+        {editedMessages.map((msg, idx) => (
+          <div key={idx} className="flex flex-col gap-1 bg-muted/30 rounded p-2">
+            <div className="flex items-center gap-2">
+              <select
+                className="h-6 px-1 text-xs rounded border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                value={msg.role}
+                onChange={(e) => {
+                  const updated = [...editedMessages]
+                  updated[idx] = { ...msg, role: e.target.value }
+                  setEditedMessages(updated)
+                }}
+              >
+                <option value="system">system</option>
+                <option value="user">user</option>
+                <option value="assistant">assistant</option>
+                <option value="tool">tool</option>
+              </select>
+              <button
+                className="ml-auto text-[10px] text-destructive hover:text-destructive/80"
+                onClick={() => setEditedMessages((prev) => prev.filter((_, i) => i !== idx))}
+              >
+                Remove
+              </button>
+            </div>
+            <textarea
+              className="min-h-[48px] px-2 py-1 text-xs rounded border border-border bg-background text-foreground font-mono resize-y focus:outline-none focus:ring-1 focus:ring-ring"
+              value={msg.content}
+              rows={Math.min(6, Math.max(2, msg.content.split("\n").length))}
+              onChange={(e) => {
+                const updated = [...editedMessages]
+                updated[idx] = { ...msg, content: e.target.value }
+                setEditedMessages(updated)
+              }}
+              spellCheck={false}
+            />
+          </div>
+        ))}
+        {editedMessages.length === 0 && (
+          <div className="text-xs text-muted-foreground italic">No messages</div>
+        )}
+      </div>
+    </div>
+  )
+
+  // Render raw JSON editor
+  const renderRawJsonEditor = () => (
+    <div className="flex flex-col flex-1 overflow-hidden">
+      <textarea
+        className={`flex-1 px-2 py-1 text-xs rounded border font-mono resize-none bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring ${
+          jsonValid ? "border-border" : "border-destructive"
+        }`}
+        value={editedJson}
+        onChange={(e) => {
+          setEditedJson(e.target.value)
+          try {
+            JSON.parse(e.target.value)
+            setJsonValid(true)
+          } catch {
+            setJsonValid(false)
+          }
+        }}
+        spellCheck={false}
+      />
+    </div>
+  )
+
+  // Render edit mode view for tool/skill (kv + raw toggle — unchanged from original)
+  const renderToolEditor = () => (
     <div className="flex flex-col flex-1 overflow-hidden">
       {/* Editor mode tabs */}
       <div className="flex gap-1 mb-2 flex-shrink-0">
         <button
-          className={`text-xs px-2 py-1 rounded ${editorMode === "kv" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+          className={`text-xs px-2 py-1 rounded ${editorTab === "params" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
           onClick={() => {
-            if (editorMode === "raw") {
-              syncJsonToKv(editedJson)
-            }
-            setEditorMode("kv")
+            if (editorTab === "raw") syncJsonToKv(editedJson)
+            setEditorTab("params")
           }}
         >
           Fields
         </button>
         <button
-          className={`text-xs px-2 py-1 rounded ${editorMode === "raw" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+          className={`text-xs px-2 py-1 rounded ${editorTab === "raw" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
           onClick={() => {
-            if (editorMode === "kv") {
-              syncKvToJson(kvPairs)
-            }
-            setEditorMode("raw")
+            if (editorTab === "params") syncKvToJson(kvPairs)
+            setEditorTab("raw")
           }}
         >
           JSON
         </button>
       </div>
 
-      {editorMode === "kv" ? (
+      {editorTab === "params" ? (
         <div className="flex flex-col gap-1.5 overflow-auto flex-1">
           {kvPairs.map(({ key, value }, idx) => (
             <div key={key} className="grid grid-cols-[100px_1fr] gap-2 items-start">
@@ -440,23 +674,87 @@ export function FirewallApproval() {
           )}
         </div>
       ) : (
-        <textarea
-          className={`flex-1 px-2 py-1 text-xs rounded border font-mono resize-none bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring ${
-            jsonValid ? "border-border" : "border-destructive"
-          }`}
-          value={editedJson}
-          onChange={(e) => {
-            setEditedJson(e.target.value)
-            try {
-              JSON.parse(e.target.value)
-              setJsonValid(true)
-            } catch {
-              setJsonValid(false)
-            }
-          }}
-          spellCheck={false}
-        />
+        renderRawJsonEditor()
       )}
+    </div>
+  )
+
+  /** Sync model params + messages into the raw JSON editor when switching to raw tab */
+  const syncModelStateToJson = () => {
+    const obj = buildEditedRequestJson()
+    const json = JSON.stringify(obj, null, 2)
+    setEditedJson(json)
+    setJsonValid(true)
+  }
+
+  /** Sync raw JSON back to model params + messages when switching away from raw tab */
+  const syncJsonToModelState = () => {
+    try {
+      const obj = JSON.parse(editedJson)
+      if (typeof obj !== "object" || obj === null) return
+      // Params
+      const params: Record<string, string> = {}
+      if (obj.model != null) params.model = String(obj.model)
+      for (const field of MODEL_PARAM_FIELDS) {
+        const val = obj[field.key]
+        params[field.key] = val != null ? String(val) : ""
+      }
+      setModelParams(params)
+      // Messages
+      if (Array.isArray(obj.messages)) {
+        setEditedMessages(
+          obj.messages.map((m: Record<string, unknown>) => ({
+            role: typeof m.role === "string" ? m.role : "user",
+            content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+          }))
+        )
+      }
+      setJsonValid(true)
+    } catch {
+      setJsonValid(false)
+    }
+  }
+
+  // Render the three-tab editor for model/auto-router
+  const renderModelLikeEditor = () => (
+    <div className="flex flex-col flex-1 overflow-hidden">
+      {/* Tab bar */}
+      <div className="flex gap-1 mb-2 flex-shrink-0">
+        <button
+          className={tabClass("params")}
+          onClick={async () => {
+            if (editorTab === "raw") syncJsonToModelState()
+            setEditorTab("params")
+            await resizeForTab("params")
+          }}
+        >
+          Model + Params
+        </button>
+        <button
+          className={tabClass("messages")}
+          onClick={async () => {
+            if (editorTab === "raw") syncJsonToModelState()
+            setEditorTab("messages")
+            await resizeForTab("messages")
+          }}
+        >
+          Messages ({editedMessages.length})
+        </button>
+        <button
+          className={tabClass("raw")}
+          onClick={async () => {
+            if (editorTab !== "raw") syncModelStateToJson()
+            setEditorTab("raw")
+            await resizeForTab("raw")
+          }}
+        >
+          JSON
+        </button>
+      </div>
+
+      {editorTab === "params" && renderParamsEditor()}
+      {editorTab === "messages" && renderMessagesEditor()}
+      {editorTab === "raw" && renderRawJsonEditor()}
     </div>
   )
 
@@ -478,6 +776,7 @@ export function FirewallApproval() {
           guardrailDirection={details.guardrail_details?.scan_direction}
           guardrailActions={details.guardrail_details?.actions_required}
           guardrailFlaggedText={details.guardrail_details?.flagged_text}
+          marketplaceListing={marketplaceListing}
           onAction={buttonsReady ? handleAction : undefined}
           onEdit={enterEditMode}
           submitting={submitting}
@@ -504,6 +803,11 @@ export function FirewallApproval() {
                 <span className="text-muted-foreground">Provider:</span>
                 <span className="truncate">{details.server_name}</span>
               </>
+            ) : requestType === "auto_router" ? (
+              <>
+                <span className="text-muted-foreground">Mode:</span>
+                <span className="font-medium">Auto Model Selection</span>
+              </>
             ) : (
               <>
                 <span className="text-muted-foreground">{requestType === "skill" ? "Skill" : "Tool"}:</span>
@@ -513,7 +817,7 @@ export function FirewallApproval() {
           </div>
 
           {/* Editor */}
-          {requestType === "model" ? renderModelEditor() : renderJsonEditor()}
+          {isModelLike ? renderModelLikeEditor() : renderToolEditor()}
         </div>
 
         {/* Edit mode actions */}
@@ -530,7 +834,7 @@ export function FirewallApproval() {
           <Button
             className="h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
             onClick={() => handleAction("allow_once")}
-            disabled={submitting || (!jsonValid && !details.is_model_request)}
+            disabled={submitting || (!jsonValid && editorTab === "raw")}
           >
             Allow with Edits
           </Button>

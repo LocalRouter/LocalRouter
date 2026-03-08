@@ -70,19 +70,22 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
   {
     id: 'codex',
     name: 'Codex',
-    description: 'OpenAI\'s CLI coding assistant.',
+    description: 'OpenAI\'s CLI coding assistant with MCP support.',
     category: 'coding_assistants',
     icon: 'openai',
-    // Codex is LLM-only — no MCP client layer documented.
-    // See: https://developers.openai.com/codex/config-reference/
-    defaultMode: 'llm_only',
-    setupType: 'env_vars',
+    defaultMode: 'both',
+    setupType: 'config_file',
     envVars: [
       { name: 'OPENAI_BASE_URL', value: '{{BASE_URL}}', description: 'LocalRouter API endpoint' },
       { name: 'OPENAI_API_KEY', value: '{{CLIENT_SECRET}}', description: 'Client secret' },
     ],
-    docsUrl: 'https://github.com/openai/codex',
-    supportsMcp: false,
+    configFile: {
+      path: '{{HOME_DIR}}/.codex/config.toml',
+      jsonSnippet: `[mcp_servers.localrouter]\nurl = "{{BASE_URL}}"\nhttp_headers = { "Authorization" = "Bearer {{CLIENT_SECRET}}" }`,
+      description: 'Adds LocalRouter as an MCP server. LLM routing uses env vars at launch time.',
+    },
+    docsUrl: 'https://developers.openai.com/codex/config-reference/',
+    supportsMcp: true,
     supportsLlm: true,
     binaryNames: ['codex'],
   },

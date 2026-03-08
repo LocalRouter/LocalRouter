@@ -98,6 +98,10 @@ interface StrategyModelConfigurationProps {
      * Optional callback for navigating to other views (e.g., Try It Out)
      */
     onTabChange?: (view: string, subTab?: string | null) => void
+    /**
+     * When true, disables DragOverlay in model selectors (fixes offset issues inside dialogs)
+     */
+    inDialog?: boolean
 }
 
 export function StrategyModelConfiguration({
@@ -107,12 +111,14 @@ export function StrategyModelConfiguration({
                                                className,
                                                clientContext,
                                                onTabChange,
+                                               inDialog = false,
                                            }: StrategyModelConfigurationProps) {
     const [strategy, setStrategy] = useState<StrategyConfig | null>(null)
     const { models, loadingProviders, isFullyLoaded } = useIncrementalModels()
     const [loading, setLoading] = useState(true)
     const [saving, setSaving] = useState(false)
     const [modelPricing, setModelPricing] = useState<Record<string, ModelPricingInfo>>({})
+    const [modelParamCounts, setModelParamCounts] = useState<Record<string, string>>({})
     const [freeTierKinds, setFreeTierKinds] = useState<Record<string, FreeTierKind>>({})
 
     // Routing mode: 'allowed' shows only selected models, 'auto' shows only the auto router model
@@ -200,6 +206,7 @@ export function StrategyModelConfiguration({
         provider_instance: string
         input_price_per_million?: number | null
         output_price_per_million?: number | null
+        parameter_count?: string | null
     }
 
     const loadData = async () => {
@@ -224,6 +231,14 @@ export function StrategyModelConfiguration({
                     }
                 }
                 setModelPricing(pricingMap)
+
+                const paramMap: Record<string, string> = {}
+                for (const m of detailedModels) {
+                    if (m.parameter_count) {
+                        paramMap[`${m.provider_instance}/${m.model_id}`] = m.parameter_count
+                    }
+                }
+                setModelParamCounts(paramMap)
 
                 const ftMap: Record<string, FreeTierKind> = {}
                 for (const s of ftStatuses) {
@@ -432,8 +447,8 @@ export function StrategyModelConfiguration({
             <div className={cn("space-y-4", className)}>
                 <Card>
                     <CardContent className="py-8">
-                        <div className="text-center text-muted-foreground">
-                            Loading strategy configuration...
+                        <div className="flex items-center justify-center">
+                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                         </div>
                     </CardContent>
                 </Card>
@@ -587,10 +602,8 @@ export function StrategyModelConfiguration({
                                     </Card>
                         </div>
 
-                        {/* Prioritized Models Grid */}
+                        {/* Prioritized Models */}
                         <div className="pt-4">
-                            <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
-                                        {/* Left: Strong/Prioritized Models */}
                                         <Card>
                                             <CardHeader>
                                                 <div className="flex items-center gap-3">
@@ -618,12 +631,16 @@ export function StrategyModelConfiguration({
                                                     onChange={handlePrioritizedModelsChange}
                                                     disabled={readOnly || saving}
                                                     modelPricing={modelPricing}
+                                                    modelParamCounts={modelParamCounts}
                                                     freeTierKinds={freeTierKinds}
+                                                    disableDragOverlay={inDialog}
                                                 />
                                             </CardContent>
                                         </Card>
+                        </div>
 
-                                        {/* Right: Strong/Weak (Weak Models) */}
+                        {/* Weak Model */}
+                        <div className="pt-4">
                                         <Card>
                                             <CardHeader>
                                                 <div className="flex items-center justify-between">
@@ -712,7 +729,9 @@ export function StrategyModelConfiguration({
                                                             onChange={handleWeakModelsChange}
                                                             disabled={readOnly || saving}
                                                             modelPricing={modelPricing}
+                                                            modelParamCounts={modelParamCounts}
                                                             freeTierKinds={freeTierKinds}
+                                                            disableDragOverlay={inDialog}
                                                         />
 
                                                         {/* Threshold Selector */}
@@ -734,8 +753,7 @@ export function StrategyModelConfiguration({
                                                 )}
                                             </CardContent>
                                         </Card>
-                                    </div>
-                                </div>
+                        </div>
                             </>
                         )}
                     </div>
