@@ -476,20 +476,9 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
             </DisabledOverlay>
           ) : (
             <div className="flex flex-col h-full min-h-0">
-              {/* Search bar + filter */}
+              {/* Filter toggle + search bar */}
               <div className="flex items-center gap-2 mb-4 flex-shrink-0">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder={filter === "mcp" ? "Search MCP servers..." : filter === "skill" ? "Search skills..." : "Search MCP servers and skills..."}
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                    className="pl-9 h-9"
-                  />
-                </div>
-                {/* Filter toggle */}
-                <div className="flex rounded-md border h-9">
+                <div className="flex rounded-md border h-9 shrink-0">
                   <button
                     className={cn(
                       "px-3 text-xs font-medium transition-colors rounded-l-md",
@@ -530,199 +519,178 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
                     Skills
                   </button>
                 </div>
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder={filter === "mcp" ? "Search MCP servers..." : filter === "skill" ? "Search skills..." : "Search MCP servers and skills..."}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                    className="pl-9 h-9"
+                  />
+                </div>
                 <Button onClick={handleSearch} disabled={isSearching} className="h-9">
                   {isSearching ? <Loader2 className="h-4 w-4 animate-spin" /> : "Search"}
                 </Button>
               </div>
 
-              {/* Results */}
+              {/* Combined Results */}
               <div className="flex-1 min-h-0 overflow-hidden">
                 <ScrollArea className="h-full">
-                  <div className="space-y-6 pr-4 pb-4">
-                    {/* MCP Results */}
-                    {showMcp && config?.mcp_enabled && (
-                      <div>
-                        {filter === "all" && (
-                          <div className="flex items-center gap-2 mb-3">
-                            <McpIcon className="h-4 w-4 text-muted-foreground" />
-                            <h3 className="text-sm font-semibold text-muted-foreground">MCP Servers</h3>
-                            {!searchingMcp && (
-                              <span className="text-xs text-muted-foreground">({mcpResults.length})</span>
-                            )}
-                          </div>
-                        )}
-                        {searchingMcp ? (
-                          <div className="flex items-center justify-center py-8">
-                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                          </div>
-                        ) : mcpResults.length === 0 ? (
-                          <div className="flex flex-col items-center justify-center py-6 text-muted-foreground">
-                            <McpIcon className="h-8 w-8 mb-2" />
-                            <p className="text-sm">No MCP servers found</p>
-                          </div>
-                        ) : (
-                          <div className="space-y-3">
-                            {mcpResults.map((server) => {
-                              const pkg = server.packages[0]
-                              return (
-                                <Card key={server.name} className="p-3">
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-2">
-                                        <McpIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                                        <p className="font-medium text-sm truncate">{server.name}</p>
-                                        {pkg?.version && (
-                                          <span className="text-xs text-muted-foreground">v{pkg.version}</span>
-                                        )}
-                                      </div>
-                                      <div className="flex items-center gap-2 text-xs text-muted-foreground ml-5">
-                                        {server.vendor && <span>by {server.vendor}</span>}
-                                        <Badge variant="outline" className="text-xs">
-                                          {server.source_id}
-                                        </Badge>
-                                      </div>
-                                      <p className="text-xs text-muted-foreground line-clamp-2 mt-1 ml-5">
-                                        {server.description}
-                                      </p>
-                                      <div className="flex flex-wrap items-center gap-1 mt-2 ml-5">
-                                        {server.available_transports.includes("stdio") && (
-                                          <Badge variant="secondary" className="text-xs">
-                                            <Package className="h-3 w-3 mr-1" />
-                                            stdio
-                                          </Badge>
-                                        )}
-                                        {server.remotes.length > 0 && (
-                                          <Badge variant="secondary" className="text-xs">
-                                            <Globe className="h-3 w-3 mr-1" />
-                                            remote
-                                          </Badge>
-                                        )}
-                                        {pkg?.license && (
-                                          <Badge variant="outline" className="text-xs">{pkg.license}</Badge>
-                                        )}
-                                        {pkg?.runtime && (
-                                          <Badge variant="outline" className="text-xs">{pkg.runtime}</Badge>
-                                        )}
-                                      </div>
-                                      {server.homepage && isValidHttpUrl(server.homepage) && (
-                                        <a
-                                          href={server.homepage}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2 ml-5"
-                                          onClick={(e) => e.stopPropagation()}
-                                        >
-                                          <ExternalLink className="h-3 w-3" />
-                                          Source
-                                        </a>
-                                      )}
-                                    </div>
-                                    <Button size="sm" variant="secondary" onClick={() => handleMcpClick(server)}>
-                                      View
-                                      <ChevronRight className="h-4 w-4 ml-1" />
-                                    </Button>
-                                  </div>
-                                </Card>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )}
+                  {isSearching ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : (() => {
+                    // Build a single combined list of results
+                    type ResultItem =
+                      | { type: "mcp"; data: McpServerListing }
+                      | { type: "skill"; data: SkillListing }
+                    const items: ResultItem[] = []
+                    if (showMcp && config?.mcp_enabled) {
+                      for (const s of mcpResults) items.push({ type: "mcp", data: s })
+                    }
+                    if (showSkills && config?.skills_enabled) {
+                      for (const s of skillResults.slice(0, 20)) items.push({ type: "skill", data: s })
+                    }
 
-                    {/* Skills Results */}
-                    {showSkills && config?.skills_enabled && (
-                      <div>
-                        {filter === "all" && (
-                          <div className="flex items-center gap-2 mb-3">
-                            <SkillsIcon className="h-4 w-4 text-muted-foreground" />
-                            <h3 className="text-sm font-semibold text-muted-foreground">Skills</h3>
-                            {!searchingSkills && (
-                              <span className="text-xs text-muted-foreground">({skillResults.length})</span>
-                            )}
-                          </div>
-                        )}
-                        {searchingSkills ? (
-                          <div className="flex items-center justify-center py-8">
-                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                          </div>
-                        ) : skillResults.length === 0 ? (
-                          <div className="flex flex-col items-center justify-center py-6 text-muted-foreground">
-                            <SkillsIcon className="h-8 w-8 mb-2" />
-                            <p className="text-sm">No skills found</p>
-                            {(!config?.skill_sources || config.skill_sources.length === 0) && (
-                              <p className="text-xs mt-2 text-center max-w-[280px]">
-                                No skill sources configured. Add sources in Settings to browse available skills.
-                              </p>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="space-y-3">
-                            {skillResults.slice(0, 20).map((skill) => {
-                              const isInstalled = installedSkillNames.includes(skill.name)
-                              return (
-                                <Card key={`${skill.source_label}-${skill.name}`} className="p-3">
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-2">
-                                        <SkillsIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                                        <p className="font-medium text-sm truncate">{skill.name}</p>
-                                        {isInstalled && (
-                                          <Badge variant="secondary" className="text-xs shrink-0">
-                                            <Check className="h-3 w-3 mr-0.5" />
-                                            Installed
-                                          </Badge>
-                                        )}
-                                      </div>
-                                      <div className="flex items-center gap-1 text-xs text-muted-foreground ml-5">
-                                        {skill.author && <span>by {skill.author}</span>}
-                                        <Badge variant="outline" className="text-xs ml-1">
-                                          {skill.source_label}
-                                        </Badge>
-                                      </div>
-                                      <p className="text-xs text-muted-foreground line-clamp-2 mt-1 ml-5">
-                                        {skill.description || "No description available"}
-                                      </p>
-                                      {skill.tags.length > 0 && (
-                                        <div className="flex flex-wrap gap-1 mt-2 ml-5">
-                                          {skill.tags.slice(0, 3).map((tag) => (
-                                            <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
-                                          ))}
-                                        </div>
+                    if (items.length === 0) {
+                      const hasDisabled = (showMcp && mcpDisabled) || (showSkills && skillsDisabled)
+                      return (
+                        <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                          <StoreIcon className="h-8 w-8 mb-2" />
+                          <p className="text-sm">No results found</p>
+                          {hasDisabled && (
+                            <p className="text-xs mt-2">
+                              Some marketplaces are disabled. <button className="underline" onClick={() => handleTopTabChange("settings")}>Enable in Settings</button>.
+                            </p>
+                          )}
+                        </div>
+                      )
+                    }
+
+                    return (
+                      <div className="space-y-3 pr-4 pb-4">
+                        {items.map((item) => {
+                          if (item.type === "mcp") {
+                            const server = item.data
+                            const pkg = server.packages[0]
+                            return (
+                              <Card key={`mcp-${server.name}`} className="p-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <Badge variant="outline" className="text-[10px] shrink-0 px-1.5 py-0">
+                                        <McpIcon className="h-3 w-3 mr-0.5" />
+                                        MCP
+                                      </Badge>
+                                      <p className="font-medium text-sm truncate">{server.name}</p>
+                                      {pkg?.version && (
+                                        <span className="text-xs text-muted-foreground">v{pkg.version}</span>
                                       )}
                                     </div>
-                                    {isInstalled ? (
-                                      <Button size="sm" variant="secondary" onClick={() => handleSkillClick(skill)}>
-                                        <RefreshCw className="h-4 w-4 mr-1" />
-                                        Replace
-                                      </Button>
-                                    ) : (
-                                      <Button size="sm" onClick={() => handleSkillClick(skill)}>
-                                        <Plus className="h-4 w-4 mr-1" />
-                                        Add
-                                      </Button>
+                                    <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                                      {server.vendor && <span>by {server.vendor}</span>}
+                                    </div>
+                                    <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
+                                      {server.description}
+                                    </p>
+                                    <div className="flex flex-wrap items-center gap-1 mt-2">
+                                      {server.available_transports.includes("stdio") && (
+                                        <Badge variant="secondary" className="text-xs">
+                                          <Package className="h-3 w-3 mr-1" />
+                                          stdio
+                                        </Badge>
+                                      )}
+                                      {server.remotes.length > 0 && (
+                                        <Badge variant="secondary" className="text-xs">
+                                          <Globe className="h-3 w-3 mr-1" />
+                                          remote
+                                        </Badge>
+                                      )}
+                                      {pkg?.license && (
+                                        <Badge variant="outline" className="text-xs">{pkg.license}</Badge>
+                                      )}
+                                      {pkg?.runtime && (
+                                        <Badge variant="outline" className="text-xs">{pkg.runtime}</Badge>
+                                      )}
+                                    </div>
+                                    {server.homepage && isValidHttpUrl(server.homepage) && (
+                                      <a
+                                        href={server.homepage}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <ExternalLink className="h-3 w-3" />
+                                        Source
+                                      </a>
                                     )}
                                   </div>
-                                </Card>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )}
+                                  <Button size="sm" variant="secondary" onClick={() => handleMcpClick(server)}>
+                                    View
+                                    <ChevronRight className="h-4 w-4 ml-1" />
+                                  </Button>
+                                </div>
+                              </Card>
+                            )
+                          }
 
-                    {/* Disabled sections hint */}
-                    {showMcp && mcpDisabled && (
-                      <div className="text-center py-4 text-xs text-muted-foreground">
-                        MCP marketplace is disabled. Enable it in <button className="underline" onClick={() => handleTopTabChange("settings")}>Settings</button>.
+                          const skill = item.data
+                          const isInstalled = installedSkillNames.includes(skill.name)
+                          return (
+                            <Card key={`skill-${skill.source_label}-${skill.name}`} className="p-3">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant="outline" className="text-[10px] shrink-0 px-1.5 py-0">
+                                      <SkillsIcon className="h-3 w-3 mr-0.5" />
+                                      Skill
+                                    </Badge>
+                                    <p className="font-medium text-sm truncate">{skill.name}</p>
+                                    {isInstalled && (
+                                      <Badge variant="secondary" className="text-xs shrink-0">
+                                        <Check className="h-3 w-3 mr-0.5" />
+                                        Installed
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
+                                    {skill.author && <span>by {skill.author}</span>}
+                                    <Badge variant="outline" className="text-xs ml-1">
+                                      {skill.source_label}
+                                    </Badge>
+                                  </div>
+                                  <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
+                                    {skill.description || "No description available"}
+                                  </p>
+                                  {skill.tags.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-2">
+                                      {skill.tags.slice(0, 3).map((tag) => (
+                                        <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                                {isInstalled ? (
+                                  <Button size="sm" variant="secondary" onClick={() => handleSkillClick(skill)}>
+                                    <RefreshCw className="h-4 w-4 mr-1" />
+                                    Replace
+                                  </Button>
+                                ) : (
+                                  <Button size="sm" onClick={() => handleSkillClick(skill)}>
+                                    <Plus className="h-4 w-4 mr-1" />
+                                    Add
+                                  </Button>
+                                )}
+                              </div>
+                            </Card>
+                          )
+                        })}
                       </div>
-                    )}
-                    {showSkills && skillsDisabled && (
-                      <div className="text-center py-4 text-xs text-muted-foreground">
-                        Skills marketplace is disabled. Enable it in <button className="underline" onClick={() => handleTopTabChange("settings")}>Settings</button>.
-                      </div>
-                    )}
-                  </div>
+                    )
+                  })()}
                 </ScrollArea>
               </div>
             </div>
