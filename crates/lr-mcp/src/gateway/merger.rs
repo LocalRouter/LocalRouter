@@ -230,7 +230,6 @@ fn build_unified_server_blocks(inst: &mut String, ctx: &InstructionsContext) {
     for vsi in &ctx.virtual_instructions {
         let tag = slugify(&vsi.section_title);
         inst.push_str(&format!("<{}>\n", tag));
-        inst.push_str(&format!("**{}**\n", vsi.section_title));
         for name in &vsi.tool_names {
             inst.push_str(&format!("- `{}` (tool)\n", name));
         }
@@ -258,7 +257,6 @@ fn build_unified_server_blocks(inst: &mut String, ctx: &InstructionsContext) {
         }
 
         inst.push_str(&format!("<{}>\n", tag));
-        inst.push_str(&format!("**{}**\n", server.name));
 
         for name in &server.tool_names {
             inst.push_str(&format!("- `{}` (tool)\n", name));
@@ -373,7 +371,6 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
     for vsi in &ctx.virtual_instructions {
         let tag = slugify(&vsi.section_title);
         inst.push_str(&format!("<{}>\n", tag));
-        inst.push_str(&format!("**{}**\n", vsi.section_title));
         for name in &vsi.tool_names {
             inst.push_str(&format!("- `{}` (tool)\n", name));
         }
@@ -404,9 +401,8 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
                 parts.push(format!("{} prompts", server.prompt_names.len()));
             }
             inst.push_str(&format!(
-                "<{}>\n**{}**\n{} — ctx_search(source=\"catalog:{}\") to explore\n</{}>\n\n",
+                "<{}>\n{} — ctx_search(source=\"catalog:{}\") to explore\n</{}>\n\n",
                 server_slug,
-                server.name,
                 parts.join(", "),
                 server_slug,
                 server_slug
@@ -415,7 +411,6 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
         }
 
         inst.push_str(&format!("<{}>\n", server_slug));
-        inst.push_str(&format!("**{}**\n", server.name));
 
         // List tools — deferred, compressed, or full
         let tools_deferred = deferred_tools_servers.contains(server_slug.as_str());
@@ -669,7 +664,7 @@ pub fn build_preview_instructions_context() -> InstructionsContext {
             },
             VirtualInstructions {
                 section_title: "Skills".to_string(),
-                content: "Call a skill's `get_info` tool to view its instructions.\n\n- **code-review**: `skill_code_review_get_info` — Automated code review\n- **deploy**: `skill_deploy_get_info` — Deploy to production\n".to_string(),
+                content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string(),
                 tool_names: vec![
                     "skill_code_review_get_info".to_string(),
                     "skill_deploy_get_info".to_string(),
@@ -1266,8 +1261,8 @@ mod tests {
         // Header
         assert!(instructions.contains("Unified MCP Gateway"));
         assert!(instructions.contains("servername__"));
-        // Tool listing with type annotations
-        assert!(instructions.contains("**filesystem**"));
+        // Tool listing with type annotations inside XML block
+        assert!(instructions.contains("<filesystem>"));
         assert!(instructions.contains("`filesystem__read_file` (tool)"));
         assert!(instructions.contains("`filesystem__write_file` (tool)"));
         // Server instructions in XML tags
@@ -1339,7 +1334,7 @@ mod tests {
             catalog_compression: None,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
-                content: "Call a skill's `get_info` tool.\n\n- **code-review**: `skill_code_review_get_info` — Automated code review\n"
+                content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n"
                     .to_string(),
                 tool_names: vec!["skill_code_review_get_info".to_string()],
                 priority: 30,
@@ -1347,11 +1342,10 @@ mod tests {
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Virtual tool listing in XML block
+        // Virtual tool listing in XML block (no bold header, tag is enough)
         assert!(instructions.contains("<skills>"));
-        assert!(instructions.contains("**Skills**"));
         assert!(instructions.contains("`skill_code_review_get_info` (tool)"));
-        assert!(instructions.contains("Automated code review"));
+        assert!(instructions.contains("ctx_execute_file"));
         assert!(instructions.contains("</skills>"));
     }
 
@@ -1383,9 +1377,9 @@ mod tests {
         let instructions = build_gateway_instructions(&ctx).unwrap();
         // Header
         assert!(instructions.contains("Unified MCP Gateway"));
-        // Virtual server listed FIRST
-        let skills_pos = instructions.find("**Skills**").unwrap();
-        let github_pos = instructions.find("**github**").unwrap();
+        // Virtual server listed FIRST (use XML tags for position check)
+        let skills_pos = instructions.find("<skills>").unwrap();
+        let github_pos = instructions.find("<github>").unwrap();
         assert!(skills_pos < github_pos, "Virtual servers should come first");
         // Virtual tool listing
         assert!(instructions.contains("`skill_deploy_get_info` (tool)"));
@@ -1548,7 +1542,7 @@ mod tests {
             virtual_instructions: vec![
                 VirtualInstructions {
                     section_title: "Skills".to_string(),
-                    content: "Call a skill's `get_info` tool.\n\n- **code-review**: `skill_code_review_get_info` — Automated code review\n".to_string(),
+                    content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string(),
                     tool_names: vec![
                         "skill_code_review_get_info".to_string(),
                         "skill_deploy_get_info".to_string(),
@@ -1569,10 +1563,10 @@ mod tests {
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
 
-        // Virtual servers come first
-        let skills_pos = instructions.find("**Skills**").unwrap();
-        let marketplace_pos = instructions.find("**Marketplace**").unwrap();
-        let filesystem_pos = instructions.find("**filesystem**").unwrap();
+        // Virtual servers come first (use XML tags for position check)
+        let skills_pos = instructions.find("<skills>").unwrap();
+        let marketplace_pos = instructions.find("<marketplace>").unwrap();
+        let filesystem_pos = instructions.find("<filesystem>").unwrap();
         let broken_pos = instructions.find("**broken-server**").unwrap();
         assert!(skills_pos < marketplace_pos);
         assert!(marketplace_pos < filesystem_pos);
@@ -1625,10 +1619,9 @@ mod tests {
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        assert!(instructions.contains("**Skills**"));
+        assert!(instructions.contains("<skills>"));
         assert!(instructions.contains("`skill_code_review_get_info` (tool)"));
         assert!(instructions.contains("`skill_deploy_get_info` (tool)"));
-        assert!(instructions.contains("<skills>"));
         assert!(instructions.contains("Call get_info to unlock skills."));
         assert!(instructions.contains("</skills>"));
         // No regular server content

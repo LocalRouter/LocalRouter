@@ -176,20 +176,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             return None;
         }
 
-        let mut content = String::from(
-            "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n\n",
-        );
-        for skill in &accessible {
-            let sname = sanitize_name(&skill.metadata.name);
-            content.push_str(&format!(
-                "- **{}**: `skill_{}_get_info`",
-                skill.metadata.name, sname
-            ));
-            if let Some(desc) = &skill.metadata.description {
-                content.push_str(&format!(" — {}", desc));
-            }
-            content.push('\n');
-        }
+        let content = "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string();
 
         Some(VirtualInstructions {
             section_title: "Skills".to_string(),
