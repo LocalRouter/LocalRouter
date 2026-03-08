@@ -271,7 +271,10 @@ pub async fn chat_completions(
         // Track tokens saved by compression
         if compressed.original_tokens > compressed.compressed_tokens {
             let saved = (compressed.original_tokens - compressed.compressed_tokens) as u64;
-            state.feature_stats.compression_tokens_saved.fetch_add(saved, std::sync::atomic::Ordering::Relaxed);
+            state
+                .feature_stats
+                .compression_tokens_saved
+                .fetch_add(saved, std::sync::atomic::Ordering::Relaxed);
         }
         request.messages = compressed
             .compressed_messages
@@ -406,9 +409,13 @@ fn spawn_routellm_classification(
                 );
                 // Track strong/weak classification for dashboard
                 if is_strong {
-                    feature_stats.routellm_strong.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    feature_stats
+                        .routellm_strong
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 } else {
-                    feature_stats.routellm_weak.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    feature_stats
+                        .routellm_weak
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 Some(PreComputedRouting {
                     is_strong,
@@ -2975,7 +2982,10 @@ fn maybe_repair_json_content(
             result.repairs.len()
         );
         // Track JSON repairs for dashboard
-        state.feature_stats.json_repairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .feature_stats
+            .json_repairs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     result.repaired
 }

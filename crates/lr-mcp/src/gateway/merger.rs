@@ -1954,9 +1954,7 @@ mod tests {
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
                 content: "Call get_info to unlock skills.\n".to_string(),
-                tool_names: vec![
-                    "skill_get_info".to_string(),
-                ],
+                tool_names: vec!["skill_get_info".to_string()],
                 priority: 30,
             }],
         };
