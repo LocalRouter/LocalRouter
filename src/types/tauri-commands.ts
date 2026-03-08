@@ -619,14 +619,19 @@ export interface CatalogCompressionPreview {
   compressed_descriptions_count: number
   deferred_items_count: number
   truncated_servers_count: number
-  tools: PreviewToolEntry[]
+  servers: PreviewServerEntry[]
 }
 
-/** Rust: src-tauri/src/ui/commands.rs - PreviewToolEntry */
-export interface PreviewToolEntry {
+/** Rust: src-tauri/src/ui/commands.rs - PreviewServerEntry */
+export interface PreviewServerEntry {
   name: string
-  server: string
   is_virtual: boolean
+  tool_names: string[]
+  resource_names: string[]
+  prompt_names: string[]
+  description: string | null
+  instructions: string | null
+  /** "visible" | "compressed" | "deferred" | "truncated" */
   compression_state: string
 }
 

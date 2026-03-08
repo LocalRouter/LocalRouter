@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import type { ContextManagementConfig, ActiveSessionInfo, ContextModeInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams } from "@/types/tauri-commands"
+import type { ContextManagementConfig, ActiveSessionInfo, ContextModeInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
 const DEFAULT_CATALOG_THRESHOLD_BYTES = 1000
@@ -340,7 +340,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Enable Catalog Indexing</CardTitle>
+                    <CardTitle className="text-base">Enable Catalog Compression</CardTitle>
                     <Switch
                       checked={config.enabled}
                       onCheckedChange={(enabled) => updateField("enabled", enabled)}
@@ -363,6 +363,12 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                     <code className="px-1 py-0.5 rounded bg-muted text-xs">tools/listChanged</code> notifications.
                   </p>
                 </CardHeader>
+                <CardContent>
+                  <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_search</code>
+                  </div>
+                </CardContent>
               </Card>
             )}
 
@@ -390,7 +396,16 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                     Clients can override this setting individually in their Context tab.
                   </p>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-3">
+                  <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_execute</code>
+                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_execute_file</code>
+                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_batch_execute</code>
+                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_index</code>
+                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_fetch_and_index</code>
+                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_search</code>
+                  </div>
                   <div className="p-3 rounded-lg border border-amber-600/50 bg-amber-500/10">
                     <div className="flex gap-2 items-start">
                       <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
@@ -892,7 +907,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
         <TabsContent value="preview" className="flex-1 min-h-0 mt-4">
           <CompressionPreview
             initialThreshold={config?.catalog_threshold_bytes ?? 1000}
-            sessions={sessions}
           />
         </TabsContent>
       </Tabs>
@@ -902,17 +916,26 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
 
 interface CompressionPreviewProps {
   initialThreshold: number
-  sessions: ActiveSessionInfo[]
 }
 
-function CompressionPreview({ initialThreshold, sessions }: CompressionPreviewProps) {
+function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
   const [threshold, setThreshold] = useState(initialThreshold)
   const [source, setSource] = useState("mock")
   const [preview, setPreview] = useState<CatalogCompressionPreview | null>(null)
   const [loading, setLoading] = useState(false)
+  const [clients, setClients] = useState<ClientInfo[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  // Load clients for the dropdown
+  useEffect(() => {
+    invoke<ClientInfo[]>("list_clients")
+      .then(setClients)
+      .catch((e) => console.error("Failed to load clients:", e))
+  }, [])
 
   const fetchPreview = useCallback(async (bytes: number, src: string) => {
     setLoading(true)
+    setError(null)
     try {
       const result = await invoke<CatalogCompressionPreview>("preview_catalog_compression", {
         catalogThresholdBytes: bytes,
@@ -920,6 +943,8 @@ function CompressionPreview({ initialThreshold, sessions }: CompressionPreviewPr
       } satisfies PreviewCatalogCompressionParams)
       setPreview(result)
     } catch (e) {
+      const msg = String(e)
+      setError(msg)
       console.error("Failed to load compression preview:", e)
     } finally {
       setLoading(false)
@@ -944,20 +969,15 @@ function CompressionPreview({ initialThreshold, sessions }: CompressionPreviewPr
     ? Math.round((1 - preview.compressed_size / preview.uncompressed_size) * 100)
     : 0
 
-  const visibleCount = preview?.tools.filter((t) => t.compression_state === "visible").length ?? 0
-  const compressedCount = preview?.compressed_descriptions_count ?? 0
-  const deferredCount = preview?.deferred_items_count ?? 0
-  const truncatedCount = preview?.truncated_servers_count ?? 0
-
   return (
     <div className="space-y-4">
-      {/* Source selector and threshold controls */}
+      {/* Controls */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Compression Preview</CardTitle>
           <CardDescription>
-            See how different thresholds affect the welcome message sent to AI clients.
-            Select a mock scenario or a live session to preview.
+            See how different thresholds affect the welcome message and tool catalog.
+            Select mock servers or a connected client.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -970,9 +990,9 @@ function CompressionPreview({ initialThreshold, sessions }: CompressionPreviewPr
               className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
             >
               <option value="mock">Mock Servers (GitHub, Atlassian, Filesystem, PostgreSQL, Slack)</option>
-              {sessions.map((s) => (
-                <option key={s.session_id} value={`session:${s.session_id}`}>
-                  {s.client_name || s.client_id} ({s.total_tools} tools)
+              {clients.filter((c) => c.enabled).map((c) => (
+                <option key={c.id} value={`client:${c.client_id}`}>
+                  {c.name}
                 </option>
               ))}
             </select>
@@ -1015,26 +1035,28 @@ function CompressionPreview({ initialThreshold, sessions }: CompressionPreviewPr
                   {savings}% saved
                 </Badge>
               )}
-              {visibleCount > 0 && (
-                <Badge variant="outline" className="text-green-600 border-green-600/30">
-                  {visibleCount} visible
-                </Badge>
-              )}
-              {compressedCount > 0 && (
+              {preview.compressed_descriptions_count > 0 && (
                 <Badge variant="outline" className="text-yellow-600 border-yellow-600/30">
-                  {compressedCount} compressed
+                  {preview.compressed_descriptions_count} compressed
                 </Badge>
               )}
-              {deferredCount > 0 && (
+              {preview.deferred_items_count > 0 && (
                 <Badge variant="outline" className="text-orange-600 border-orange-600/30">
-                  {deferredCount} deferred
+                  {preview.deferred_items_count} deferred
                 </Badge>
               )}
-              {truncatedCount > 0 && (
+              {preview.truncated_servers_count > 0 && (
                 <Badge variant="outline" className="text-red-600 border-red-600/30">
-                  {truncatedCount} truncated
+                  {preview.truncated_servers_count} truncated
                 </Badge>
               )}
+            </div>
+          )}
+
+          {error && (
+            <div className="flex items-center gap-2 text-sm text-destructive">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              <span>{error}</span>
             </div>
           )}
 
@@ -1047,7 +1069,7 @@ function CompressionPreview({ initialThreshold, sessions }: CompressionPreviewPr
         </CardContent>
       </Card>
 
-      {/* Side-by-side preview */}
+      {/* Side-by-side welcome message */}
       {preview && (
         <ResizablePanelGroup direction="horizontal" className="rounded-md border min-h-[400px]">
           <ResizablePanel defaultSize={50} minSize={20}>
@@ -1076,40 +1098,136 @@ function CompressionPreview({ initialThreshold, sessions }: CompressionPreviewPr
         </ResizablePanelGroup>
       )}
 
-      {/* Catalog item states */}
-      {preview && preview.tools.length > 0 && (
+      {/* Tools / Resources / Prompts — side-by-side detail */}
+      {preview && preview.servers.length > 0 && (
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">Catalog Item States</CardTitle>
+            <CardTitle className="text-base">Tools / Resources / Prompts</CardTitle>
             <CardDescription>
-              Compression state of each tool, resource, and prompt in the catalog.
+              Left: full catalog. Right: after compression (compressed descriptions shortened, deferred items omitted).
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1">
-              {preview.tools.map((tool) => (
-                <div key={`${tool.server}-${tool.name}`} className="flex items-center gap-2 text-xs py-0.5">
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      "text-[10px] px-1.5 py-0 min-w-[70px] justify-center",
-                      tool.compression_state === "visible" && "text-green-600 border-green-600/30",
-                      tool.compression_state === "compressed" && "text-yellow-600 border-yellow-600/30",
-                      tool.compression_state === "deferred" && "text-orange-600 border-orange-600/30",
-                      tool.compression_state === "truncated" && "text-red-600 border-red-600/30",
-                    )}
-                  >
-                    {tool.compression_state}
-                  </Badge>
-                  <span className="font-mono truncate">{tool.name}</span>
-                  {tool.is_virtual && (
-                    <span className="text-muted-foreground">(virtual)</span>
-                  )}
+            <ResizablePanelGroup direction="horizontal" className="rounded-md border min-h-[300px]">
+              {/* Left: full catalog */}
+              <ResizablePanel defaultSize={50} minSize={20}>
+                <div className="h-full flex flex-col">
+                  <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground">
+                    Full Catalog
+                  </div>
+                  <ScrollArea className="flex-1">
+                    <div className="p-3 space-y-4">
+                      {preview.servers.map((server) => (
+                        <ServerCatalogBlock key={server.name} server={server} mode="full" />
+                      ))}
+                    </div>
+                  </ScrollArea>
                 </div>
-              ))}
-            </div>
+              </ResizablePanel>
+              <ResizableHandle withHandle />
+              {/* Right: compressed catalog */}
+              <ResizablePanel defaultSize={50} minSize={20}>
+                <div className="h-full flex flex-col">
+                  <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground">
+                    After Compression
+                  </div>
+                  <ScrollArea className="flex-1">
+                    <div className="p-3 space-y-4">
+                      {preview.servers.map((server) => (
+                        <ServerCatalogBlock key={server.name} server={server} mode="compressed" />
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </div>
+              </ResizablePanel>
+            </ResizablePanelGroup>
           </CardContent>
         </Card>
+      )}
+    </div>
+  )
+}
+
+/** Renders a single server's catalog block for the compression preview. */
+function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode: "full" | "compressed" }) {
+  const isDeferred = server.compression_state === "deferred"
+  const isTruncated = server.compression_state === "truncated"
+  const isCompressed = server.compression_state === "compressed"
+
+  // In compressed mode, deferred servers are omitted entirely
+  if (mode === "compressed" && isDeferred) {
+    return (
+      <div className="opacity-40">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-xs font-semibold">{server.name}</span>
+          <Badge variant="outline" className="text-[10px] px-1 py-0 text-orange-600 border-orange-600/30">deferred</Badge>
+        </div>
+        <p className="text-[10px] text-muted-foreground italic">
+          {server.tool_names.length + server.resource_names.length + server.prompt_names.length} items — activate via ctx_search
+        </p>
+      </div>
+    )
+  }
+
+  // In compressed mode, truncated servers show only counts
+  if (mode === "compressed" && isTruncated) {
+    return (
+      <div className="opacity-50">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-xs font-semibold">{server.name}</span>
+          <Badge variant="outline" className="text-[10px] px-1 py-0 text-red-600 border-red-600/30">truncated</Badge>
+        </div>
+        <p className="text-[10px] text-muted-foreground italic">
+          {server.tool_names.length} tools, {server.resource_names.length} resources, {server.prompt_names.length} prompts — ctx_search to explore
+        </p>
+      </div>
+    )
+  }
+
+  const showDescription = mode === "full" || !isCompressed
+  const totalItems = server.tool_names.length + server.resource_names.length + server.prompt_names.length
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-xs font-semibold">{server.name}</span>
+        {server.is_virtual && <span className="text-[10px] text-muted-foreground">(virtual)</span>}
+        {mode === "compressed" && isCompressed && (
+          <Badge variant="outline" className="text-[10px] px-1 py-0 text-yellow-600 border-yellow-600/30">compressed</Badge>
+        )}
+        <span className="text-[10px] text-muted-foreground">{totalItems} items</span>
+      </div>
+
+      {/* Tool/resource/prompt names */}
+      <div className="ml-2 space-y-0.5">
+        {server.tool_names.map((name) => (
+          <div key={name} className="text-[11px] font-mono text-muted-foreground">
+            <span className="text-foreground/70">•</span> <code className="text-foreground/80">{name}</code> <span className="text-muted-foreground/60">(tool)</span>
+          </div>
+        ))}
+        {server.resource_names.map((name) => (
+          <div key={name} className="text-[11px] font-mono text-muted-foreground">
+            <span className="text-foreground/70">•</span> <code className="text-foreground/80">{name}</code> <span className="text-blue-500/60">(resource)</span>
+          </div>
+        ))}
+        {server.prompt_names.map((name) => (
+          <div key={name} className="text-[11px] font-mono text-muted-foreground">
+            <span className="text-foreground/70">•</span> <code className="text-foreground/80">{name}</code> <span className="text-purple-500/60">(prompt)</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Description + instructions */}
+      {showDescription && (server.description || server.instructions) && (
+        <div className="ml-2 mt-1.5 text-[10px] text-muted-foreground leading-relaxed whitespace-pre-wrap border-l-2 border-muted pl-2">
+          {server.description && <p>{server.description}</p>}
+          {server.instructions && <p className="mt-1">{server.instructions}</p>}
+        </div>
+      )}
+      {mode === "compressed" && isCompressed && (
+        <div className="ml-2 mt-1.5 text-[10px] text-yellow-600/80 italic border-l-2 border-yellow-600/20 pl-2">
+          [compressed] ctx_search(source=&quot;catalog:{server.name.toLowerCase().replace(/ /g, "-")}&quot;) to view full details
+        </div>
       )}
     </div>
   )

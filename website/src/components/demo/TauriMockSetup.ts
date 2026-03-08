@@ -973,11 +973,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     compressed_descriptions_count: 2,
     deferred_items_count: 0,
     truncated_servers_count: 0,
-    tools: [
-      { name: 'ctx_search', server: 'Context Management', is_virtual: true, compression_state: 'visible' },
-      { name: 'ctx_execute', server: 'Context Management', is_virtual: true, compression_state: 'visible' },
-      { name: 'filesystem__read_file', server: 'Filesystem', is_virtual: false, compression_state: 'compressed' },
-      { name: 'filesystem__write_file', server: 'Filesystem', is_virtual: false, compression_state: 'compressed' },
+    servers: [
+      { name: 'Context Management', is_virtual: true, tool_names: ['ctx_search', 'ctx_execute'], resource_names: [], prompt_names: [], description: 'Use ctx_search to discover MCP capabilities.', instructions: null, compression_state: 'visible' },
+      { name: 'Filesystem', is_virtual: false, tool_names: ['filesystem__read_file', 'filesystem__write_file'], resource_names: [], prompt_names: [], description: 'Provides filesystem operations.', instructions: 'Use read_file to read files.', compression_state: 'compressed' },
     ],
   }),
   'terminate_session': (args) => {

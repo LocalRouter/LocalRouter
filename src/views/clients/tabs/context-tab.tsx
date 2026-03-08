@@ -73,7 +73,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <CardTitle className="text-base">Context Management</CardTitle>
+              <CardTitle className="text-base">Catalog Compression</CardTitle>
               <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-900 dark:text-purple-300 font-medium">
                 EXPERIMENTAL
               </span>
@@ -95,16 +95,20 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
             </div>
           </div>
           <CardDescription>
-            Uses deferred loading of tools, prompts, and resources combined with{" "}
+            Enables catalog compression: deferred loading of tools, prompts, and resources combined with{" "}
             <a href="https://github.com/mksglu/context-mode" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">context-mode</a>{" "}
             indexing of welcome messages and tool descriptions. When catalogs exceed the configured
-            threshold, capabilities are hidden and a{" "}
+            threshold, descriptions are compressed and low-priority capabilities are deferred. A{" "}
             <code className="px-1 py-0.5 rounded bg-muted text-xs">ctx_search</code>{" "}
             tool lets the AI discover and unhide them on demand. This exposes only the search
             capability &mdash; to also give AI clients the full indexing tools, enable Indexing Tools below.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
+          <div className="flex flex-wrap gap-1.5">
+            <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_search</code>
+          </div>
           <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-600/50">
             <div className="flex items-start gap-3">
               <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
@@ -162,7 +166,16 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
             context window, freeing space for the AI to work with larger results.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
+          <div className="flex flex-wrap gap-1.5">
+            <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_execute</code>
+            <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_execute_file</code>
+            <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_batch_execute</code>
+            <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_index</code>
+            <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_fetch_and_index</code>
+            <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_search</code>
+          </div>
           <div className="p-3 rounded-lg border border-amber-600/50 bg-amber-500/10">
             <div className="flex gap-2 items-start">
               <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
