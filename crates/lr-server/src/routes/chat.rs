@@ -205,24 +205,36 @@ pub async fn chat_completions(
     // Check rate limits first (reject early before spawning parallel work)
     check_rate_limits(&state, &auth, &request).await?;
 
-    // Start guardrail scan in parallel (will be joined before returning response)
-    let guardrail_handle = {
+    // Start guardrail scan in parallel (only if safety engine is available)
+    let guardrail_handle = if client_auth.is_some()
+        && state
+            .safety_engine
+            .read()
+            .as_ref()
+            .map_or(false, |e| e.has_models())
+    {
         let state_ref = state.clone();
         let client_ctx = client_auth.as_ref().map(|e| e.0.clone());
         let request_clone = request.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             run_guardrails_scan(&state_ref, client_ctx.as_ref(), &request_clone).await
-        })
+        }))
+    } else {
+        None
     };
 
-    // Start prompt compression in parallel (if enabled for this client)
-    let compression_handle = {
+    // Start prompt compression in parallel (only if compression is enabled)
+    let compression_handle = if state.compression_service.read().is_some()
+        && state.config_manager.get().prompt_compression.enabled
+    {
         let state_ref = state.clone();
         let client_ctx = client_auth.as_ref().map(|e| e.0.clone());
         let request_clone = request.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             run_prompt_compression(&state_ref, client_ctx.as_ref(), &request_clone).await
-        })
+        }))
+    } else {
+        None
     };
 
     // Start RouteLLM classification in parallel (only for localrouter/auto)
@@ -233,9 +245,13 @@ pub async fn chat_completions(
     };
 
     // Await compression result (must complete before converting to provider format)
-    let compression_result = compression_handle
-        .await
-        .map_err(|e| ApiErrorResponse::internal_error(format!("Compression task failed: {}", e)))?;
+    let compression_result = if let Some(handle) = compression_handle {
+        handle.await.map_err(|e| {
+            ApiErrorResponse::internal_error(format!("Compression task failed: {}", e))
+        })?
+    } else {
+        Ok(None)
+    };
 
     // Apply compression: replace request messages if compression succeeded
     if let Ok(Some(compressed)) = &compression_result {
@@ -316,9 +332,13 @@ pub async fn chat_completions(
         }
     } else {
         // Sequential mode: await guardrail result before calling provider
-        let guardrail_result = guardrail_handle.await.map_err(|e| {
-            ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
-        })??;
+        let guardrail_result = if let Some(handle) = guardrail_handle {
+            handle.await.map_err(|e| {
+                ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
+            })??
+        } else {
+            None
+        };
 
         if let Some(check_result) = guardrail_result {
             handle_guardrail_approval(
@@ -1466,7 +1486,8 @@ fn convert_to_provider_request(
 }
 
 /// Type alias for a spawned guardrail scan task
-type GuardrailHandle = tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>;
+type GuardrailHandle =
+    Option<tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>>;
 
 /// Handle non-streaming chat completion with parallel guardrails.
 /// Starts LLM request immediately and awaits guardrails concurrently.
@@ -1491,23 +1512,30 @@ async fn handle_non_streaming_parallel(
         tokio::spawn(async move { router.complete(&api_key_id, provider_request).await })
     };
 
-    // Wait for both guardrail scan and LLM response concurrently
-    let (guardrail_result, llm_result) = tokio::join!(guardrail_handle, llm_handle);
+    // Wait for guardrail scan (if spawned) and LLM response concurrently
+    let (guardrail_result, llm_result) = if let Some(handle) = guardrail_handle {
+        let (g, l) = tokio::join!(handle, llm_handle);
+        (Some(g), l)
+    } else {
+        (None, llm_handle.await)
+    };
 
     // Process guardrail result first — if denied, discard LLM response
-    let guardrail_result = guardrail_result.map_err(|e| {
-        ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
-    })??;
+    if let Some(guardrail_res) = guardrail_result {
+        let guardrail_result = guardrail_res.map_err(|e| {
+            ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
+        })??;
 
-    if let Some(check_result) = guardrail_result {
-        handle_guardrail_approval(
-            &state,
-            client_auth.as_ref().map(|e| &e.0),
-            &request,
-            check_result,
-            "request",
-        )
-        .await?;
+        if let Some(check_result) = guardrail_result {
+            handle_guardrail_approval(
+                &state,
+                client_auth.as_ref().map(|e| &e.0),
+                &request,
+                check_result,
+                "request",
+            )
+            .await?;
+        }
     }
 
     // Guardrails passed — unwrap LLM response
@@ -2455,12 +2483,12 @@ async fn handle_streaming_parallel(
     let (event_tx, event_rx) = mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
 
     // Spawn guardrail resolver
-    {
+    if let Some(handle) = guardrail_handle {
         let state = state.clone();
         let client_auth = client_auth.clone();
         let request = request.clone();
         tokio::spawn(async move {
-            let result = guardrail_handle.await;
+            let result = handle.await;
             match result {
                 Ok(Ok(None)) => {
                     // Safe — no violations
@@ -2492,6 +2520,9 @@ async fn handle_streaming_parallel(
                 }
             }
         });
+    } else {
+        // No guardrails — pass immediately
+        let _ = gate_tx.send(GuardrailGate::Passed);
     }
 
     // Spawn buffer/flush worker
