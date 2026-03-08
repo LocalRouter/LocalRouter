@@ -34,6 +34,12 @@ pub fn is_marketplace_tool(name: &str) -> bool {
     name.starts_with(TOOL_PREFIX)
 }
 
+/// Check if a marketplace tool is a read-only search tool (no approval needed).
+pub fn is_marketplace_search_tool(name: &str) -> bool {
+    let stripped = name.strip_prefix(TOOL_PREFIX).unwrap_or(name);
+    matches!(stripped, tools::SEARCH_MCP_SERVERS | tools::SEARCH_SKILLS)
+}
+
 /// Central marketplace service
 pub struct MarketplaceService {
     /// MCP registry client

@@ -483,6 +483,10 @@ pub struct HealthCheckConfig {
     /// Health check mode (periodic or on-failure)
     #[serde(default)]
     pub mode: HealthCheckMode,
+    /// Whether periodic health checks are enabled
+    /// When false, only on-failure and user-triggered health checks run
+    #[serde(default = "default_true")]
+    pub periodic_enabled: bool,
     /// Interval between health checks (in seconds)
     /// Default: 600 (10 minutes)
     #[serde(default = "default_health_check_interval")]
@@ -491,6 +495,15 @@ pub struct HealthCheckConfig {
     /// Default: 5 seconds
     #[serde(default = "default_health_check_timeout")]
     pub timeout_secs: u64,
+    /// Interval for accelerated recovery checks when providers are unhealthy (seconds)
+    /// Default: 30 seconds
+    #[serde(default = "default_recovery_interval")]
+    pub recovery_interval_secs: u64,
+    /// Debounce cooldown for on-failure health marking (seconds)
+    /// Prevents flooding health updates when many requests fail simultaneously
+    /// Default: 10 seconds
+    #[serde(default = "default_failure_cooldown")]
+    pub failure_cooldown_secs: u64,
 }
 
 fn default_health_check_interval() -> u64 {
@@ -501,12 +514,23 @@ fn default_health_check_timeout() -> u64 {
     5 // 5 seconds
 }
 
+fn default_recovery_interval() -> u64 {
+    30 // 30 seconds
+}
+
+fn default_failure_cooldown() -> u64 {
+    10 // 10 seconds
+}
+
 impl Default for HealthCheckConfig {
     fn default() -> Self {
         Self {
             mode: HealthCheckMode::default(),
+            periodic_enabled: true,
             interval_secs: default_health_check_interval(),
             timeout_secs: default_health_check_timeout(),
+            recovery_interval_secs: default_recovery_interval(),
+            failure_cooldown_secs: default_failure_cooldown(),
         }
     }
 }
@@ -557,13 +581,13 @@ pub struct ModelCacheConfig {
 }
 
 fn default_model_cache_ttl() -> u64 {
-    5 // 5 seconds
+    300 // 5 minutes
 }
 
 impl Default for ModelCacheConfig {
     fn default() -> Self {
         Self {
-            default_ttl_seconds: 5,
+            default_ttl_seconds: 300,
             provider_ttl_overrides: std::collections::HashMap::new(),
             use_catalog_fallback: true,
         }
@@ -1293,11 +1317,11 @@ impl Default for ContextManagementConfig {
 }
 
 fn default_catalog_threshold_bytes() -> usize {
-    8192
+    1000
 }
 
 fn default_response_threshold_bytes() -> usize {
-    4096
+    200
 }
 
 /// Configuration for a single coding agent.
@@ -1833,15 +1857,21 @@ pub struct Client {
     )]
     pub mcp_server_access: McpServerAccess,
 
-    /// Migration shim: old deferred loading flag (deserialize only)
-    /// Use context_management_enabled instead
-    #[serde(default, skip_serializing)]
-    pub mcp_deferred_loading: bool,
-
     /// Enable context management for this client.
     /// None = inherit global setting, Some(false) = disabled regardless of global.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_management_enabled: Option<bool>,
+
+    /// Enable indexing tools for this client.
+    /// None = inherit global setting, Some(true) = enabled regardless of global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexing_tools_enabled: Option<bool>,
+
+    /// Enable catalog compression for this client.
+    /// None = inherit global setting (enabled when context management is on),
+    /// Some(false) = disabled regardless of global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_compression_enabled: Option<bool>,
 
     /// Migration shim: old skills access (deserialize only)
     /// Use skills_permissions instead
@@ -2786,8 +2816,9 @@ impl Client {
             enabled: true,
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
-            mcp_deferred_loading: false,
             context_management_enabled: None,
+            indexing_tools_enabled: None,
+            catalog_compression_enabled: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),
             last_used: None,
@@ -2816,18 +2847,30 @@ impl Client {
 
     /// Resolve whether context management is enabled for this client.
     /// Checks per-client override first, then falls back to global config.
-    /// Also migrates old `mcp_deferred_loading: true` → context management enabled.
     pub fn is_context_management_enabled(&self, global: &ContextManagementConfig) -> bool {
         // Per-client override takes precedence
         if let Some(enabled) = self.context_management_enabled {
             return enabled;
         }
-        // Migration: old deferred loading flag
-        if self.mcp_deferred_loading {
-            return true;
-        }
         // Fall back to global setting
         global.enabled
+    }
+
+    /// Resolve whether indexing tools are enabled for this client.
+    /// Checks per-client override first, then falls back to global config.
+    /// Only effective when context management is also enabled.
+    pub fn is_indexing_tools_enabled(&self, global: &ContextManagementConfig) -> bool {
+        if let Some(enabled) = self.indexing_tools_enabled {
+            return enabled;
+        }
+        global.indexing_tools
+    }
+
+    /// Resolve whether catalog compression is enabled for this client.
+    /// Checks per-client override first, then falls back to global default (enabled).
+    /// Only effective when context management is also enabled.
+    pub fn is_catalog_compression_enabled(&self) -> bool {
+        self.catalog_compression_enabled.unwrap_or(true)
     }
 
     /// Update last used timestamp

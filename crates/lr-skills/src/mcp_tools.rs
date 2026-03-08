@@ -175,6 +175,7 @@ fn build_get_info_response(skill: &SkillDefinition) -> serde_json::Value {
         text.push_str(&format!("**Tags:** {}\n", skill.metadata.tags.join(", ")));
     }
 
+    text.push_str(&format!("**Location:** `{}/SKILL.md`\n", skill_dir));
     text.push('\n');
 
     // File listings with absolute paths
@@ -215,6 +216,10 @@ fn build_get_info_response(skill: &SkillDefinition) -> serde_json::Value {
 
     // Full SKILL.md body
     text.push_str("## Instructions\n\n");
+    text.push_str(&format!(
+        "> File paths in these instructions are relative to: `{}`\n\n",
+        skill_dir
+    ));
     text.push_str(&skill.body);
 
     json!({

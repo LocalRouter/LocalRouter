@@ -372,20 +372,6 @@ impl ClientManager {
             .unwrap_or(false)
     }
 
-    /// Set MCP deferred loading for a client
-    pub fn set_mcp_deferred_loading(&self, client_id: &str, enabled: bool) -> AppResult<()> {
-        let mut clients = self.clients.write();
-
-        let client = clients
-            .iter_mut()
-            .find(|c| c.id == client_id)
-            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
-
-        client.mcp_deferred_loading = enabled;
-
-        Ok(())
-    }
-
     /// Set context management enabled for a client (None = inherit global, Some(false) = disabled)
     pub fn set_context_management_enabled(
         &self,
@@ -400,6 +386,24 @@ impl ClientManager {
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         client.context_management_enabled = enabled;
+
+        Ok(())
+    }
+
+    /// Set indexing tools enabled for a client (None = inherit global, Some(true) = enabled)
+    pub fn set_indexing_tools_enabled(
+        &self,
+        client_id: &str,
+        enabled: Option<bool>,
+    ) -> AppResult<()> {
+        let mut clients = self.clients.write();
+
+        let client = clients
+            .iter_mut()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
+
+        client.indexing_tools_enabled = enabled;
 
         Ok(())
     }
