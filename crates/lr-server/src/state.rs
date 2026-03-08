@@ -81,7 +81,8 @@ impl SseConnectionManager {
             );
             old_handle.abort();
         }
-        self.gateway_task_handles.insert(client_id.to_string(), handle);
+        self.gateway_task_handles
+            .insert(client_id.to_string(), handle);
     }
 
     /// Set the Tauri app handle for event emission
@@ -141,30 +142,21 @@ impl SseConnectionManager {
     /// Returns true if the message was sent, false if no connection exists
     pub fn send_response(&self, client_id: &str, response: JsonRpcResponse) -> bool {
         let response_id = response.id.clone();
-        let active_connections: Vec<String> =
-            self.connections.iter().map(|e| e.key().clone()).collect();
-
-        tracing::info!(
-            "SseConnectionManager::send_response: client_id={}, response_id={:?}, active_connections={:?}",
-            client_id,
-            response_id,
-            active_connections
-        );
 
         if let Some(tx) = self.connections.get(client_id) {
             match tx.send(SseMessage::Response(response)) {
                 Ok(_) => {
-                    tracing::info!(
-                        "Sent response to client {} via SSE channel (response_id={:?})",
-                        client_id,
+                    tracing::debug!(
+                        "SSE response sent: client={}, response_id={:?}",
+                        &client_id[..8.min(client_id.len())],
                         response_id
                     );
                     true
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "Failed to send response to client {} - channel closed: {} (response_id={:?})",
-                        client_id,
+                        "SSE channel closed for client {}: {} (response_id={:?})",
+                        &client_id[..8.min(client_id.len())],
                         e,
                         response_id
                     );
@@ -172,12 +164,7 @@ impl SseConnectionManager {
                 }
             }
         } else {
-            tracing::warn!(
-                "No SSE connection for client {} - cannot send response (response_id={:?}, active_connections={:?})",
-                client_id,
-                response_id,
-                active_connections
-            );
+            // Normal for non-SSE (HTTP POST) clients
             false
         }
     }
@@ -727,6 +714,9 @@ pub struct AppState {
 
     /// Safety engine for LLM-based content inspection (swappable at runtime)
     pub safety_engine: Arc<RwLock<Option<Arc<lr_guardrails::SafetyEngine>>>>,
+
+    /// Prompt compression service (LLMLingua-2 via Candle)
+    pub compression_service: Arc<RwLock<Option<Arc<lr_compression::CompressionService>>>>,
 }
 
 impl AppState {
@@ -807,6 +797,7 @@ impl AppState {
             free_tier_approval_tracker: Arc::new(FreeTierApprovalTracker::new()),
             auto_router_approval_tracker: Arc::new(AutoRouterApprovalTracker::new()),
             safety_engine: Arc::new(RwLock::new(None)),
+            compression_service: Arc::new(RwLock::new(None)),
         }
     }
 

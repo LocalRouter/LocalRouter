@@ -62,6 +62,7 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
         client_manager,
         token_store,
         metrics_collector,
+        None,
     )
     .await
     .expect("Failed to start test server");

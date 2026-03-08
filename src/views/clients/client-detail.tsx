@@ -11,6 +11,7 @@ import { ClientSkillsTab } from "./tabs/skills-tab"
 import { ClientCodingAgentsTab } from "./tabs/coding-agents-tab"
 import { ClientContextTab } from "./tabs/context-tab"
 import { ClientGuardrailsTab } from "./tabs/guardrails-tab"
+import { ClientCompressionTab } from "./tabs/compression-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
@@ -111,6 +112,7 @@ export function ClientDetail({
     if (activeTab === "coding-agents" && !showCodingAgentsTab) setActiveTab("connect")
     if (activeTab === "context" && !showMcpTab) setActiveTab("connect")
     if (activeTab === "guardrails" && !showGuardrailsTab) setActiveTab("connect")
+    if (activeTab === "compression" && !showModelsTab) setActiveTab("connect")
   }, [clientMode, activeTab, showModelsTab, showMcpTab, showSkillsTab, showCodingAgentsTab, showGuardrailsTab])
 
   // If try-it-out sub-tab becomes hidden due to mode change, switch to the available one
@@ -174,6 +176,7 @@ export function ClientDetail({
                 <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
                   <TabsTrigger value="models">Providers</TabsTrigger>
                   <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
+                  <TabsTrigger value="compression">Compression</TabsTrigger>
                 </div>
               </div>
             )}
@@ -270,6 +273,16 @@ export function ClientDetail({
           {showGuardrailsTab && (
             <TabsContent value="guardrails">
               <ClientGuardrailsTab
+                client={client}
+                onUpdate={loadClient}
+                onViewChange={onViewChange}
+              />
+            </TabsContent>
+          )}
+
+          {showModelsTab && (
+            <TabsContent value="compression">
+              <ClientCompressionTab
                 client={client}
                 onUpdate={loadClient}
                 onViewChange={onViewChange}

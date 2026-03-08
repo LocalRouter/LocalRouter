@@ -413,11 +413,7 @@ pub async fn toggle_client_indexing_tools(
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!(
-        "Setting client {} indexing tools: {:?}",
-        client_id,
-        enabled
-    );
+    tracing::info!("Setting client {} indexing tools: {:?}", client_id, enabled);
 
     // Update in client manager (in-memory)
     client_manager
@@ -2160,6 +2156,60 @@ pub async fn update_client_guardrails_config(
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
                 client.guardrails = new_config.clone();
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Per-Client Prompt Compression Commands
+// ============================================================================
+
+/// Get the prompt compression configuration for a specific client
+#[tauri::command]
+pub async fn get_client_compression_config(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    serde_json::to_value(&client.prompt_compression).map_err(|e| e.to_string())
+}
+
+/// Update the prompt compression configuration for a specific client
+#[tauri::command]
+pub async fn update_client_compression_config(
+    client_id: String,
+    config_json: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let new_config: lr_config::ClientPromptCompressionConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.prompt_compression = new_config.clone();
                 found = true;
             }
         })
