@@ -596,10 +596,7 @@ impl McpGateway {
             };
             let approved = session_read.firewall_session_approvals.contains(tool_name);
             let denied = session_read.firewall_session_denials.contains(tool_name);
-            let arguments = request
-                .params
-                .as_ref()
-                .and_then(|p| p.get("arguments"));
+            let arguments = request.params.as_ref().and_then(|p| p.get("arguments"));
             let result =
                 vs.check_permissions(state.as_ref(), tool_name, arguments, approved, denied);
             (
@@ -831,6 +828,10 @@ impl McpGateway {
                 "text": compressed_text,
             }));
         }
+
+        let saved = byte_size.saturating_sub(compressed_text.len()) as u64;
+        self.context_mgmt_bytes_saved
+            .fetch_add(saved, std::sync::atomic::Ordering::Relaxed);
 
         tracing::info!(
             "Compressed response for {} ({} bytes → {} bytes, source={})",

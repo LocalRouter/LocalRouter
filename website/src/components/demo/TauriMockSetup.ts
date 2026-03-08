@@ -784,6 +784,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       cost_today: Number((base.cost_today + Math.random() * 2).toFixed(2)),
     }
   },
+  'get_feature_stats': () => ({
+    routellm_strong: 847,
+    routellm_weak: 1253,
+    json_repairs: 34,
+    compression_tokens_saved: 128400,
+    context_mgmt_tokens_saved: 256800,
+  }),
   'get_global_metrics': () => generateMockGraphData("Total Requests", 300, 200),
   'get_api_key_metrics': () => generateMockGraphData("API Requests", 150, 100),
   'get_provider_metrics': () => generateMockGraphData("Provider Requests", 200, 150),

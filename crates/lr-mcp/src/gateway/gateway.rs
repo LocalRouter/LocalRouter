@@ -1,5 +1,6 @@
 use dashmap::DashMap;
 use serde_json::{json, Value};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -54,6 +55,9 @@ pub struct McpGateway {
 
     /// Virtual MCP servers (skills, marketplace, coding agents)
     pub(crate) virtual_servers: parking_lot::RwLock<Vec<Arc<dyn VirtualMcpServer>>>,
+
+    /// Bytes saved by context management response compression (atomic counter)
+    pub context_mgmt_bytes_saved: AtomicU64,
 }
 
 impl McpGateway {
@@ -103,6 +107,7 @@ impl McpGateway {
             elicitation_manager,
             firewall_manager,
             virtual_servers: parking_lot::RwLock::new(Vec::new()),
+            context_mgmt_bytes_saved: AtomicU64::new(0),
         }
     }
 

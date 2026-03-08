@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { Activity, DollarSign, Zap, CheckCircle, RefreshCw, Plus, LayoutDashboard } from "lucide-react"
+import { Activity, DollarSign, Zap, CheckCircle, RefreshCw, Plus, LayoutDashboard, GitBranch, Wrench, FileDown, Database } from "lucide-react"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { StatsCard, StatsRow } from "@/components/shared/stats-card"
 import { MetricsChart } from "@/components/shared/metrics-chart"
@@ -24,6 +24,14 @@ interface AggregateStats {
   total_tokens: number
   total_cost: number
   successful_requests: number
+}
+
+interface FeatureStats {
+  routellm_strong: number
+  routellm_weak: number
+  json_repairs: number
+  compression_tokens_saved: number
+  context_mgmt_tokens_saved: number
 }
 
 interface Client {
@@ -62,6 +70,7 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
   const [manualRefreshKey, setManualRefreshKey] = useState(0)
   const refreshKey = metricsRefreshKey + manualRefreshKey
   const [stats, setStats] = useState<AggregateStats | null>(null)
+  const [featureStats, setFeatureStats] = useState<FeatureStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [wizardOpen, setWizardOpen] = useState(false)
 
@@ -93,8 +102,12 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
 
   const loadStats = async () => {
     try {
-      const aggregateStats = await invoke<AggregateStats>("get_aggregate_stats")
+      const [aggregateStats, fStats] = await Promise.all([
+        invoke<AggregateStats>("get_aggregate_stats"),
+        invoke<FeatureStats>("get_feature_stats").catch(() => null),
+      ])
       setStats(aggregateStats)
+      setFeatureStats(fStats)
     } catch (error) {
       console.error("Failed to load aggregate stats:", error)
       setStats({
@@ -128,6 +141,18 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
     stats && stats.total_requests > 0
       ? ((stats.successful_requests / stats.total_requests) * 100).toFixed(1)
       : "0.0"
+
+  // RouteLLM strong/weak ratio display
+  const routellmTotal = (featureStats?.routellm_strong ?? 0) + (featureStats?.routellm_weak ?? 0)
+  const routellmRatio = routellmTotal > 0
+    ? `${featureStats!.routellm_strong} / ${featureStats!.routellm_weak}`
+    : "—"
+
+  const formatTokens = (n: number) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+    return n.toLocaleString()
+  }
 
   // Set to "All" by default when scope changes
   useEffect(() => {
@@ -232,6 +257,37 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
           title="Success Rate"
           value={loading ? "-" : `${successRate}%`}
           icon={<CheckCircle className="h-5 w-5" />}
+          loading={loading}
+        />
+      </StatsRow>
+
+      {/* Feature Stats Row */}
+      <StatsRow>
+        <StatsCard
+          title="Strong / Weak"
+          value={loading ? "-" : routellmRatio}
+          description={routellmTotal > 0 ? `${routellmTotal} classified` : "RouteLLM inactive"}
+          icon={<GitBranch className="h-5 w-5" />}
+          loading={loading}
+        />
+        <StatsCard
+          title="JSON Repairs"
+          value={loading ? "-" : (featureStats?.json_repairs ?? 0).toLocaleString()}
+          icon={<Wrench className="h-5 w-5" />}
+          loading={loading}
+        />
+        <StatsCard
+          title="Compression Saved"
+          value={loading ? "-" : formatTokens(featureStats?.compression_tokens_saved ?? 0)}
+          description="tokens saved"
+          icon={<FileDown className="h-5 w-5" />}
+          loading={loading}
+        />
+        <StatsCard
+          title="Context Mgmt Saved"
+          value={loading ? "-" : formatTokens(featureStats?.context_mgmt_tokens_saved ?? 0)}
+          description="tokens saved"
+          icon={<Database className="h-5 w-5" />}
           loading={loading}
         />
       </StatsRow>

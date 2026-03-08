@@ -1494,6 +1494,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::restart_server,
             // Monitoring & statistics commands
             ui::commands::get_aggregate_stats,
+            ui::commands::get_feature_stats,
             // Metrics commands
             ui::commands_metrics::get_global_metrics,
             ui::commands_metrics::get_api_key_metrics,

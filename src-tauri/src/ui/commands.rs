@@ -178,6 +178,30 @@ pub async fn get_aggregate_stats(
     })
 }
 
+/// Get feature-level statistics (RouteLLM, JSON repair, compression, context mgmt)
+///
+/// Returns in-memory counters accumulated since server start.
+#[tauri::command]
+pub async fn get_feature_stats(
+    server_manager: State<'_, Arc<lr_server::ServerManager>>,
+) -> Result<lr_server::state::FeatureStatsSnapshot, String> {
+    let app_state = server_manager
+        .get_state()
+        .ok_or_else(|| "Server is not running".to_string())?;
+
+    let mut snapshot = app_state.feature_stats.snapshot();
+
+    // Include context management bytes saved from the MCP gateway (convert bytes → approx tokens)
+    let ctx_bytes = app_state
+        .mcp_gateway
+        .context_mgmt_bytes_saved
+        .load(std::sync::atomic::Ordering::Relaxed);
+    // Rough estimate: ~4 chars per token
+    snapshot.context_mgmt_tokens_saved = ctx_bytes / 4;
+
+    Ok(snapshot)
+}
+
 // ============================================================================
 // Network Interface Commands
 // ============================================================================
@@ -1847,11 +1871,7 @@ pub struct PreviewPromptDetail {
 /// Generate a human-readable description from a namespaced tool name.
 /// e.g. "github__issue_read" → "Issue read", "filesystem__read_file" → "Read file"
 fn humanize_tool_name(name: &str) -> String {
-    let raw = name
-        .split("__")
-        .last()
-        .unwrap_or(name)
-        .replace('_', " ");
+    let raw = name.split("__").last().unwrap_or(name).replace('_', " ");
     let mut chars = raw.chars();
     match chars.next() {
         Some(c) => c.to_uppercase().to_string() + chars.as_str(),

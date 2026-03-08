@@ -745,6 +745,18 @@ export interface AggregateStats {
 }
 
 /**
+ * Feature-level statistics for the dashboard.
+ * Rust: crates/lr-server/src/state.rs - FeatureStatsSnapshot struct
+ */
+export interface FeatureStatsSnapshot {
+  routellm_strong: number
+  routellm_weak: number
+  json_repairs: number
+  compression_tokens_saved: number
+  context_mgmt_tokens_saved: number
+}
+
+/**
  * Graph data for charts.
  * Rust: crates/lr-monitoring/src/graphs.rs - GraphData struct
  */

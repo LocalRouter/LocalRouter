@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -622,6 +623,59 @@ impl AutoRouterApprovalTracker {
     }
 }
 
+/// Tracks feature-specific counters for the dashboard.
+/// Uses atomics so incrementing is lock-free.
+pub struct FeatureStats {
+    /// Number of RouteLLM requests classified as "strong"
+    pub routellm_strong: AtomicU64,
+    /// Number of RouteLLM requests classified as "weak"
+    pub routellm_weak: AtomicU64,
+    /// Number of JSON repair operations performed
+    pub json_repairs: AtomicU64,
+    /// Total tokens saved by prompt compression
+    pub compression_tokens_saved: AtomicU64,
+    /// Total tokens saved by context management (accumulated on session expiry)
+    pub context_mgmt_tokens_saved: AtomicU64,
+}
+
+impl FeatureStats {
+    pub fn new() -> Self {
+        Self {
+            routellm_strong: AtomicU64::new(0),
+            routellm_weak: AtomicU64::new(0),
+            json_repairs: AtomicU64::new(0),
+            compression_tokens_saved: AtomicU64::new(0),
+            context_mgmt_tokens_saved: AtomicU64::new(0),
+        }
+    }
+
+    pub fn snapshot(&self) -> FeatureStatsSnapshot {
+        FeatureStatsSnapshot {
+            routellm_strong: self.routellm_strong.load(Ordering::Relaxed),
+            routellm_weak: self.routellm_weak.load(Ordering::Relaxed),
+            json_repairs: self.json_repairs.load(Ordering::Relaxed),
+            compression_tokens_saved: self.compression_tokens_saved.load(Ordering::Relaxed),
+            context_mgmt_tokens_saved: self.context_mgmt_tokens_saved.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl Default for FeatureStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Serializable snapshot of feature stats for the frontend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureStatsSnapshot {
+    pub routellm_strong: u64,
+    pub routellm_weak: u64,
+    pub json_repairs: u64,
+    pub compression_tokens_saved: u64,
+    pub context_mgmt_tokens_saved: u64,
+}
+
 /// Server state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -717,6 +771,9 @@ pub struct AppState {
 
     /// Prompt compression service (LLMLingua-2 via Candle)
     pub compression_service: Arc<RwLock<Option<Arc<lr_compression::CompressionService>>>>,
+
+    /// Feature-level stats (RouteLLM, JSON repair, compression, context mgmt)
+    pub feature_stats: Arc<FeatureStats>,
 }
 
 impl AppState {
@@ -798,6 +855,7 @@ impl AppState {
             auto_router_approval_tracker: Arc::new(AutoRouterApprovalTracker::new()),
             safety_engine: Arc::new(RwLock::new(None)),
             compression_service: Arc::new(RwLock::new(None)),
+            feature_stats: Arc::new(FeatureStats::new()),
         }
     }
 
