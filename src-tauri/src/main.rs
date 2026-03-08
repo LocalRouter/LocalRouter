@@ -54,7 +54,7 @@ fn init_logging() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "localrouter=info".into()),
+                .unwrap_or_else(|_| "localrouter=info,lr_mcp=info,lr_server=info,lr_providers=info,lr_clients=info,lr_router=info".into()),
         )
         .with(
             tracing_subscriber::fmt::layer().with_writer(std::io::stderr), // Always to stderr
@@ -397,6 +397,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         lr_router::FreeTierManager::new(free_tier_persist_path.clone())
     });
 
+    // Initialize shared health cache (used by both router and server)
+    let health_cache = Arc::new(providers::health_cache::HealthCacheManager::new());
+
     // Initialize router
     info!("Initializing router...");
     let config_manager_arc = Arc::new(config_manager.clone());
@@ -406,7 +409,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         rate_limiter.clone(),
         metrics_collector.clone(),
         free_tier_manager.clone(),
-    );
+    )
+    .with_health_cache(health_cache.clone());
 
     // Add RouteLLM service to router
     app_router = app_router.with_routellm(routellm_service);
@@ -439,6 +443,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 client_manager: client_manager.clone(),
                 token_store: token_store.clone(),
                 metrics_collector: metrics_collector.clone(),
+                health_cache: Some(health_cache.clone()),
             },
         )
         .await?;
@@ -553,7 +558,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 );
                 app_state
                     .mcp_gateway
-                    .register_virtual_server(context_mode_vs);
+                    .register_virtual_server(context_mode_vs.clone());
+                app.manage(context_mode_vs);
                 info!("Context-mode virtual server registered");
 
                 // Register marketplace virtual server if available
@@ -966,6 +972,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 client_manager: client_manager_clone2,
                                 token_store: token_store_clone2,
                                 metrics_collector: metrics_collector_clone2,
+                                health_cache: health_cache_clone.clone(),
                             },
                         )
                         .await
@@ -1058,7 +1065,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
                 // Start periodic health check task if configured
                 let health_check_config = config_manager.get().health_check.clone();
-                if health_check_config.mode == config::HealthCheckMode::Periodic {
+                if health_check_config.mode == config::HealthCheckMode::Periodic
+                    && health_check_config.periodic_enabled
+                {
                     let health_cache_for_task = state.health_cache.clone();
                     let provider_registry_for_task = provider_registry.clone();
                     let mcp_server_manager_for_task = mcp_server_manager.clone();
@@ -1172,7 +1181,105 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         interval_secs
                     );
                 } else {
-                    info!("Health check mode is on-failure, skipping periodic task");
+                    if !health_check_config.periodic_enabled {
+                        info!("Periodic health checks disabled by user setting");
+                    } else {
+                        info!("Health check mode is on-failure, skipping periodic task");
+                    }
+                }
+
+                // Spawn recovery task: re-checks unhealthy providers on a faster cadence
+                // Wakes on notify (when a provider is marked unhealthy) or every recovery_interval
+                {
+                    let health_cache_for_recovery = state.health_cache.clone();
+                    let provider_registry_for_recovery = provider_registry.clone();
+                    let recovery_interval = std::time::Duration::from_secs(
+                        health_check_config.recovery_interval_secs,
+                    );
+                    let timeout_secs = health_check_config.timeout_secs;
+                    let notify = health_cache_for_recovery.recovery_notify();
+
+                    tokio::spawn(async move {
+                        use providers::health_cache::ItemHealth;
+
+                        loop {
+                            // Wait for either a notify signal or the recovery interval
+                            tokio::select! {
+                                _ = notify.notified() => {
+                                    // Small delay to batch multiple rapid failures
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                }
+                                _ = tokio::time::sleep(recovery_interval) => {}
+                            }
+
+                            let unhealthy = health_cache_for_recovery.get_unhealthy_providers();
+                            if unhealthy.is_empty() {
+                                continue;
+                            }
+
+                            debug!(
+                                "Recovery check: re-checking {} unhealthy provider(s): {:?}",
+                                unhealthy.len(),
+                                unhealthy
+                            );
+
+                            for provider_name in &unhealthy {
+                                if let Some(provider) =
+                                    provider_registry_for_recovery.get_provider(provider_name)
+                                {
+                                    let health = tokio::time::timeout(
+                                        std::time::Duration::from_secs(timeout_secs),
+                                        provider.health_check(),
+                                    )
+                                    .await;
+
+                                    let item_health = match health {
+                                        Ok(h) => {
+                                            use providers::HealthStatus;
+                                            match h.status {
+                                                HealthStatus::Healthy => {
+                                                    info!(
+                                                        "Provider {} recovered",
+                                                        provider_name
+                                                    );
+                                                    ItemHealth::healthy(
+                                                        provider_name.clone(),
+                                                        h.latency_ms,
+                                                    )
+                                                }
+                                                HealthStatus::Degraded => ItemHealth::degraded(
+                                                    provider_name.clone(),
+                                                    h.latency_ms,
+                                                    h.error_message.unwrap_or_else(|| {
+                                                        "Degraded".to_string()
+                                                    }),
+                                                ),
+                                                HealthStatus::Unhealthy => ItemHealth::unhealthy(
+                                                    provider_name.clone(),
+                                                    h.error_message.unwrap_or_else(|| {
+                                                        "Unhealthy".to_string()
+                                                    }),
+                                                ),
+                                            }
+                                        }
+                                        Err(_) => ItemHealth::unhealthy(
+                                            provider_name.clone(),
+                                            format!(
+                                                "Recovery check timeout ({}s)",
+                                                timeout_secs
+                                            ),
+                                        ),
+                                    };
+                                    health_cache_for_recovery
+                                        .update_provider(provider_name, item_health);
+                                }
+                            }
+                        }
+                    });
+                    info!(
+                        "Started recovery health check task (interval: {}s)",
+                        recovery_interval.as_secs()
+                    );
                 }
             }
 
@@ -1285,6 +1392,14 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 let client_mgr_for_sync = client_manager.clone();
                 let pr_for_sync = provider_registry.clone();
                 tokio::spawn(async move {
+                    // Sync on startup
+                    ui::commands_clients::sync_all_clients(
+                        &cm_for_sync,
+                        &client_mgr_for_sync,
+                        &pr_for_sync,
+                    )
+                    .await;
+
                     loop {
                         // Wait for a signal
                         if sync_rx.recv().await.is_none() {
@@ -1364,6 +1479,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Centralized health cache commands
             ui::commands::get_health_cache,
             ui::commands::refresh_all_health,
+            ui::commands::get_periodic_health_enabled,
+            ui::commands::set_periodic_health_enabled,
             ui::commands::list_provider_models,
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
@@ -1459,8 +1576,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::update_client_name,
             ui::commands::toggle_client_enabled,
             ui::commands::rotate_client_secret,
-            ui::commands::toggle_client_deferred_loading,
             ui::commands::toggle_client_context_management,
+            ui::commands::toggle_client_indexing_tools,
             ui::commands::get_client_value,
             // Strategy management commands
             ui::commands::list_strategies,
@@ -1566,7 +1683,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::install_context_mode,
             ui::commands::get_context_management_config,
             ui::commands::update_context_management_config,
+            ui::commands::preview_catalog_compression,
             ui::commands::list_active_sessions,
+            ui::commands::terminate_session,
+            ui::commands::get_session_context_sources,
+            ui::commands::get_session_context_stats,
+            ui::commands::query_session_context_index,
             ui::commands::get_skills_config,
             ui::commands::add_skill_source,
             ui::commands::remove_skill_source,

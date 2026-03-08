@@ -5,7 +5,6 @@
 
 pub mod access_control;
 pub mod context_mode;
-pub mod deferred;
 pub mod elicitation;
 pub mod firewall;
 #[allow(clippy::module_inception)]
@@ -28,5 +27,9 @@ pub mod virtual_skills;
 mod tests;
 
 // Re-export public API
-pub use gateway::{ActiveSessionInfo, McpGateway};
+pub use gateway::{ActiveSessionInfo, CatalogSourceEntry, McpGateway};
+pub use merger::{
+    build_gateway_instructions, build_preview_instructions_context,
+    compute_catalog_compression_plan, InstructionsContext,
+};
 pub use types::GatewayConfig;

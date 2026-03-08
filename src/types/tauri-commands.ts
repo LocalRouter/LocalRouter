@@ -95,9 +95,10 @@ export interface ClientInfo {
   client_id: string
   enabled: boolean
   strategy_id: string
-  mcp_deferred_loading: boolean
   /** Per-client context management override (null = inherit global, false = disabled) */
   context_management_enabled: boolean | null
+  /** Per-client indexing tools override (null = inherit global) */
+  indexing_tools_enabled: boolean | null
   created_at: string
   last_used: string | null
   mcp_permissions: McpPermissions
@@ -607,10 +608,73 @@ export interface UpdateContextManagementConfigParams {
   responseThresholdBytes?: number
 }
 
+/** Rust: src-tauri/src/ui/commands.rs - CatalogCompressionPreview */
+export interface CatalogCompressionPreview {
+  welcome_message: string
+  welcome_message_uncompressed: string
+  uncompressed_size: number
+  compressed_size: number
+  compressed_descriptions_count: number
+  deferred_items_count: number
+  truncated_servers_count: number
+  tools: PreviewToolEntry[]
+}
+
+/** Rust: src-tauri/src/ui/commands.rs - PreviewToolEntry */
+export interface PreviewToolEntry {
+  name: string
+  server: string
+  is_virtual: boolean
+  compression_state: string
+}
+
+/** Params for preview_catalog_compression */
+export interface PreviewCatalogCompressionParams {
+  catalogThresholdBytes: number
+}
+
 /** Params for toggle_client_context_management */
 export interface ToggleClientContextManagementParams {
   clientId: string
   enabled: boolean | null
+}
+
+/** Params for toggle_client_indexing_tools */
+export interface ToggleClientIndexingToolsParams {
+  clientId: string
+  enabled: boolean | null
+}
+
+/**
+ * A catalog source entry from a context management session.
+ * Rust: crates/lr-mcp/src/gateway/gateway.rs - CatalogSourceEntry struct
+ */
+export interface CatalogSourceEntry {
+  source_label: string
+  item_type: string
+  activated: boolean
+}
+
+/** Params for terminate_session */
+export interface TerminateSessionParams {
+  sessionId: string
+}
+
+/** Params for get_session_context_sources */
+export interface GetSessionContextSourcesParams {
+  sessionId: string
+}
+
+/** Params for get_session_context_stats */
+export interface GetSessionContextStatsParams {
+  sessionId: string
+}
+
+/** Params for query_session_context_index */
+export interface QuerySessionContextIndexParams {
+  sessionId: string
+  query: string
+  source?: string | null
 }
 
 /**
@@ -618,6 +682,7 @@ export interface ToggleClientContextManagementParams {
  * Rust: crates/lr-mcp/src/gateway/gateway.rs - ActiveSessionInfo struct
  */
 export interface ActiveSessionInfo {
+  session_id: string
   client_id: string
   client_name: string
   duration_secs: number
@@ -628,6 +693,8 @@ export interface ActiveSessionInfo {
   cm_indexed_sources: number
   cm_activated_tools: number
   cm_total_tools: number
+  cm_catalog_threshold_bytes: number
+  cm_indexing_tools_enabled: boolean
 }
 
 // =============================================================================
@@ -1271,12 +1338,6 @@ export interface ToggleClientEnabledParams {
 /** Params for rotate_client_secret */
 export interface RotateClientSecretParams {
   clientId: string
-}
-
-/** Params for toggle_client_deferred_loading */
-export interface ToggleClientDeferredLoadingParams {
-  clientId: string
-  enabled: boolean
 }
 
 /** Params for get_client */
@@ -2426,6 +2487,11 @@ export interface SetClientCodingAgentTypeParams {
 /** Params for set_max_coding_sessions */
 export interface SetMaxCodingSessionsParams {
   maxSessions: number
+}
+
+/** Params for set_periodic_health_enabled */
+export interface SetPeriodicHealthEnabledParams {
+  enabled: boolean
 }
 
 // =============================================================================

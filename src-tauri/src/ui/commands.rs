@@ -1635,6 +1635,9 @@ pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
     let npx_version = if npx_available {
         tokio::process::Command::new("npx")
             .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
             .output()
             .await
             .ok()
@@ -1649,25 +1652,56 @@ pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
         None
     };
 
-    // Use --no-install to avoid triggering a slow install
-    let context_mode_version = if npx_available {
-        tokio::process::Command::new("npx")
-            .args(["--no-install", "context-mode", "--version"])
-            .output()
-            .await
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    String::from_utf8(o.stdout)
-                        .ok()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
+    // Check for context-mode: try global install first, then fall back to npx.
+    // It prints "Context Mode MCP server v1.0.15 running on stdio" to stderr on start
+    // (stdout is reserved for MCP protocol over stdio)
+    let context_mode_version = {
+        // 1. Try global binary first (matches spawn_context_mode_process resolution order)
+        let cmd = if which::which("context-mode").is_ok() {
+            Some(("context-mode", vec![]))
+        } else if npx_available {
+            Some(("npx", vec!["context-mode"]))
+        } else {
+            None
+        };
+
+        if let Some((program, args)) = cmd {
+            let child = tokio::process::Command::new(program)
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn();
+
+            if let Ok(mut child) = child {
+                let version = if let Some(stderr) = child.stderr.take() {
+                    use tokio::io::{AsyncBufReadExt, BufReader};
+                    let mut reader = BufReader::new(stderr);
+                    let mut first_line = String::new();
+                    let read_result = tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        reader.read_line(&mut first_line),
+                    )
+                    .await;
+                    match read_result {
+                        Ok(Ok(_)) => first_line
+                            .split(" v")
+                            .nth(1)
+                            .and_then(|s| s.split_whitespace().next())
+                            .map(|s| s.to_string()),
+                        _ => None,
+                    }
                 } else {
                     None
-                }
-            })
-    } else {
-        None
+                };
+                let _ = child.kill().await;
+                version
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     };
 
     Ok(ContextModeInfo {
@@ -1678,23 +1712,60 @@ pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
     })
 }
 
-/// Install context-mode via npx -y and return the installed version.
+/// Install context-mode via npm install -g and return the installed version.
 #[tauri::command]
 pub async fn install_context_mode() -> Result<String, String> {
-    let output = tokio::process::Command::new("npx")
-        .args(["-y", "context-mode", "--version"])
+    // Install globally so it's available via npx
+    let output = tokio::process::Command::new("npm")
+        .args(["install", "-g", "context-mode"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .output()
         .await
-        .map_err(|e| format!("Failed to run npx: {e}"))?;
+        .map_err(|e| format!("Failed to run npm: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("Installation failed: {stderr}"));
     }
 
-    String::from_utf8(output.stdout)
-        .map(|s| s.trim().to_string())
-        .map_err(|e| format!("Failed to parse version: {e}"))
+    // Verify by spawning context-mode and reading version from stderr
+    // (stdout is reserved for MCP protocol, version banner goes to stderr)
+    let child = tokio::process::Command::new("npx")
+        .arg("context-mode")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    if let Ok(mut child) = child {
+        let version = if let Some(stderr) = child.stderr.take() {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stderr);
+            let mut first_line = String::new();
+            let read_result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                reader.read_line(&mut first_line),
+            )
+            .await;
+            match read_result {
+                Ok(Ok(_)) => first_line
+                    .split(" v")
+                    .nth(1)
+                    .and_then(|s| s.split_whitespace().next())
+                    .map(|s| s.to_string()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let _ = child.kill().await;
+        version.ok_or_else(|| "Installed but could not determine version".to_string())
+    } else {
+        // Install succeeded but can't verify version
+        Ok("unknown".to_string())
+    }
 }
 
 /// Get context management configuration
@@ -1713,6 +1784,7 @@ pub async fn update_context_management_config(
     catalog_threshold_bytes: Option<usize>,
     response_threshold_bytes: Option<usize>,
     config_manager: State<'_, ConfigManager>,
+    context_mode_vs: State<'_, Arc<lr_mcp::gateway::context_mode::ContextModeVirtualServer>>,
 ) -> Result<(), String> {
     config_manager
         .update(|cfg| {
@@ -1731,8 +1803,127 @@ pub async fn update_context_management_config(
         })
         .map_err(|e| e.to_string())?;
 
+    // Propagate updated config to the in-memory virtual server
+    let new_config = config_manager.get().context_management.clone();
+    context_mode_vs.update_config(new_config);
+
     config_manager.save().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Preview catalog compression at a given threshold.
+///
+/// Returns both compressed and uncompressed welcome messages plus stats,
+/// using hardcoded mock data so no live MCP session is needed.
+#[derive(Serialize)]
+pub struct CatalogCompressionPreview {
+    pub welcome_message: String,
+    pub welcome_message_uncompressed: String,
+    pub uncompressed_size: usize,
+    pub compressed_size: usize,
+    pub compressed_descriptions_count: usize,
+    pub deferred_items_count: usize,
+    pub truncated_servers_count: usize,
+    pub tools: Vec<PreviewToolEntry>,
+}
+
+#[derive(Serialize)]
+pub struct PreviewToolEntry {
+    pub name: String,
+    pub server: String,
+    pub is_virtual: bool,
+    pub compression_state: String,
+}
+
+#[tauri::command]
+pub async fn preview_catalog_compression(
+    catalog_threshold_bytes: usize,
+) -> Result<CatalogCompressionPreview, String> {
+    use lr_mcp::gateway::{
+        build_gateway_instructions, build_preview_instructions_context,
+        compute_catalog_compression_plan,
+    };
+
+    let mut ctx = build_preview_instructions_context();
+
+    // Build uncompressed version (no plan)
+    ctx.catalog_compression = None;
+    let uncompressed = build_gateway_instructions(&ctx)
+        .unwrap_or_default();
+    let uncompressed_size = uncompressed.len();
+
+    // Compute compression plan
+    let plan = compute_catalog_compression_plan(&ctx, catalog_threshold_bytes, true, true, true);
+    let compressed_descriptions_count = plan.compressed_descriptions.len();
+    let deferred_items_count = plan.deferred_items.len();
+    let truncated_servers_count = plan.truncated_servers.len();
+
+    // Build per-tool compression state lookups
+    let compressed_names: std::collections::HashSet<&str> = plan
+        .compressed_descriptions
+        .iter()
+        .map(|c| c.namespaced_name.as_str())
+        .collect();
+    let deferred_slugs: std::collections::HashSet<&str> = plan
+        .deferred_items
+        .iter()
+        .map(|d| d.server_slug.as_str())
+        .collect();
+    let truncated_slugs: std::collections::HashSet<&str> = plan
+        .truncated_servers
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+
+    // Build tool list with compression state
+    let mut tools = Vec::new();
+    for vsi in &ctx.virtual_instructions {
+        for name in &vsi.tool_names {
+            tools.push(PreviewToolEntry {
+                name: name.clone(),
+                server: vsi.section_title.clone(),
+                is_virtual: true,
+                compression_state: "visible".to_string(),
+            });
+        }
+    }
+    for server in &ctx.servers {
+        let slug = server.name.to_lowercase().replace(' ', "-");
+        for name in &server.tool_names {
+            let state = if truncated_slugs.contains(slug.as_str()) {
+                "truncated"
+            } else if deferred_slugs.contains(slug.as_str()) {
+                "deferred"
+            } else if compressed_names.contains(name.as_str()) {
+                "compressed"
+            } else {
+                "visible"
+            };
+            tools.push(PreviewToolEntry {
+                name: name.clone(),
+                server: server.name.clone(),
+                is_virtual: false,
+                compression_state: state.to_string(),
+            });
+        }
+    }
+
+    // Set plan and build compressed version
+    ctx.catalog_compression = Some(plan);
+    let compressed = build_gateway_instructions(&ctx)
+        .unwrap_or_default();
+    let compressed_size = compressed.len();
+
+    Ok(CatalogCompressionPreview {
+        welcome_message: compressed,
+        welcome_message_uncompressed: uncompressed,
+        uncompressed_size,
+        compressed_size,
+        compressed_descriptions_count,
+        deferred_items_count,
+        truncated_servers_count,
+        tools,
+    })
 }
 
 /// List active MCP gateway sessions
@@ -1741,6 +1932,53 @@ pub async fn list_active_sessions(
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<Vec<lr_mcp::gateway::ActiveSessionInfo>, String> {
     Ok(state.mcp_gateway.list_active_sessions().await)
+}
+
+/// Terminate an active MCP gateway session by session key
+#[tauri::command]
+pub async fn terminate_session(
+    session_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    state.mcp_gateway.terminate_session(&session_id).await
+}
+
+/// Get catalog sources for a specific session by session key
+#[tauri::command]
+pub async fn get_session_context_sources(
+    session_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Vec<lr_mcp::gateway::CatalogSourceEntry>, String> {
+    state
+        .mcp_gateway
+        .get_session_context_sources(&session_id)
+        .await
+}
+
+/// Get context stats for a specific session (calls ctx_stats on context-mode process)
+#[tauri::command]
+pub async fn get_session_context_stats(
+    session_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    state
+        .mcp_gateway
+        .get_session_context_stats(&session_id)
+        .await
+}
+
+/// Query the context index for a specific session (calls ctx_search on context-mode process)
+#[tauri::command]
+pub async fn query_session_context_index(
+    session_id: String,
+    query: String,
+    source: Option<String>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    state
+        .mcp_gateway
+        .query_session_context_index(&session_id, &query, source.as_deref())
+        .await
 }
 
 /// Get skills configuration

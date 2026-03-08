@@ -34,11 +34,10 @@ pub struct InstructionsContext {
     pub servers: Vec<McpServerInstructionInfo>,
     /// Unavailable MCP servers
     pub unavailable_servers: Vec<UnavailableServerInfo>,
-    /// Whether deferred loading is enabled (legacy)
-    pub deferred_loading: bool,
-    /// Whether context management is enabled (replaces deferred_loading)
+    /// Whether context management is enabled
     pub context_management_enabled: bool,
     /// Whether indexing tools (ctx_execute, etc.) are exposed
+    #[allow(dead_code)]
     pub indexing_tools_enabled: bool,
     /// Catalog compression plan (computed when context management is enabled)
     pub catalog_compression: Option<CatalogCompressionPlan>,
@@ -160,7 +159,7 @@ fn build_server_description(
 /// Structure:
 /// 1. Header
 /// 2. Capability listing: virtual servers first, then regular servers, then unavailable
-/// 3. Instructions in XML tags: virtual always, regular only in non-deferred mode
+/// 3. Instructions in XML tags for virtual and regular servers
 pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     let has_servers = !ctx.servers.is_empty();
     let has_unavailable = !ctx.unavailable_servers.is_empty();
@@ -179,13 +178,10 @@ pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     let mut inst = String::new();
 
     // --- 1. Header ---
-    build_header(&mut inst, has_servers, has_virtual, ctx.deferred_loading);
+    build_header(&mut inst, has_servers, has_virtual);
 
-    // --- 2. Capability listing ---
-    build_capability_listing(&mut inst, ctx);
-
-    // --- 3. Instructions in XML tags ---
-    build_all_instructions_section(&mut inst, ctx);
+    // --- 2. Unified per-server XML blocks ---
+    build_unified_server_blocks(&mut inst, ctx);
 
     Some(inst)
 }
@@ -210,21 +206,12 @@ fn slugify(name: &str) -> String {
     slug
 }
 
-/// Maximum number of tool names shown per server in deferred mode.
-const DEFERRED_TOOL_PREVIEW_LIMIT: usize = 20;
-
 /// Build the header line based on what's available.
-fn build_header(inst: &mut String, has_mcp_servers: bool, has_virtual: bool, deferred: bool) {
+fn build_header(inst: &mut String, has_mcp_servers: bool, has_virtual: bool) {
     if !has_mcp_servers && !has_virtual {
         // Only unavailable servers — nothing usable
         inst.push_str(
             "Unified MCP Gateway: no servers or tools are currently available.\n\n",
-        );
-    } else if deferred {
-        inst.push_str(
-            "Unified MCP Gateway. Tools are loaded on demand \
-             — use the `search` tool to discover and activate them by keyword. \
-             Use `server_info` to get a server's full tool list and detailed instructions.\n\n",
         );
     } else if has_mcp_servers {
         inst.push_str(
@@ -237,83 +224,76 @@ fn build_header(inst: &mut String, has_mcp_servers: bool, has_virtual: bool, def
     }
 }
 
-/// Build the capability listing: virtual servers first, then regular, then unavailable.
-fn build_capability_listing(inst: &mut String, ctx: &InstructionsContext) {
-    // --- Virtual servers first ---
+/// Build all servers as unified XML blocks: virtual servers first, then regular, then unavailable.
+fn build_unified_server_blocks(inst: &mut String, ctx: &InstructionsContext) {
+    // --- Virtual servers (always full, never compressed) ---
     for vsi in &ctx.virtual_instructions {
+        let tag = slugify(&vsi.section_title);
+        inst.push_str(&format!("<{}>\n", tag));
         inst.push_str(&format!("**{}**\n", vsi.section_title));
         for name in &vsi.tool_names {
             inst.push_str(&format!("- `{}` (tool)\n", name));
         }
-        inst.push('\n');
+        if !vsi.content.is_empty() {
+            inst.push('\n');
+            inst.push_str(&vsi.content);
+            if !vsi.content.ends_with('\n') {
+                inst.push('\n');
+            }
+        }
+        inst.push_str(&format!("</{}>\n\n", tag));
     }
 
     // --- Regular MCP servers ---
     for server in &ctx.servers {
+        let tag = slugify(&server.name);
         let total_items = server.tool_names.len()
             + server.resource_names.len()
             + server.prompt_names.len();
+        let has_content = server.instructions.is_some() || server.description.is_some();
 
-        inst.push_str(&format!("**{}**", server.name));
-        if total_items == 0 {
-            inst.push_str(" (no capabilities)\n");
-        } else if ctx.deferred_loading && total_items > DEFERRED_TOOL_PREVIEW_LIMIT {
-            // Show count summary in deferred mode when truncated
-            let mut parts = Vec::new();
-            if !server.tool_names.is_empty() {
-                parts.push(format!("{} tools", server.tool_names.len()));
-            }
-            if !server.resource_names.is_empty() {
-                parts.push(format!("{} resources", server.resource_names.len()));
-            }
-            if !server.prompt_names.is_empty() {
-                parts.push(format!("{} prompts", server.prompt_names.len()));
-            }
-            inst.push_str(&format!(" ({})", parts.join(", ")));
-            inst.push('\n');
+        if total_items == 0 && !has_content {
+            inst.push_str(&format!("**{}** (no capabilities)\n\n", server.name));
+            continue;
+        }
 
-            // Show first N items
-            let mut shown = 0;
-            for name in &server.tool_names {
-                if shown >= DEFERRED_TOOL_PREVIEW_LIMIT {
-                    break;
-                }
-                inst.push_str(&format!("- `{}` (tool)\n", name));
-                shown += 1;
-            }
-            for name in &server.resource_names {
-                if shown >= DEFERRED_TOOL_PREVIEW_LIMIT {
-                    break;
-                }
-                inst.push_str(&format!("- `{}` (resource)\n", name));
-                shown += 1;
-            }
-            for name in &server.prompt_names {
-                if shown >= DEFERRED_TOOL_PREVIEW_LIMIT {
-                    break;
-                }
-                inst.push_str(&format!("- `{}` (prompt)\n", name));
-                shown += 1;
-            }
-            inst.push_str(
-                "- ... (use `search` to find more, or `server_info` for full list)\n",
-            );
-        } else {
+        inst.push_str(&format!("<{}>\n", tag));
+        inst.push_str(&format!("**{}**\n", server.name));
+
+        for name in &server.tool_names {
+            inst.push_str(&format!("- `{}` (tool)\n", name));
+        }
+        for name in &server.resource_names {
+            inst.push_str(&format!("- `{}` (resource)\n", name));
+        }
+        for name in &server.prompt_names {
+            inst.push_str(&format!("- `{}` (prompt)\n", name));
+        }
+
+        if let Some(desc) = &server.description {
             inst.push('\n');
-            for name in &server.tool_names {
-                inst.push_str(&format!("- `{}` (tool)\n", name));
-            }
-            for name in &server.resource_names {
-                inst.push_str(&format!("- `{}` (resource)\n", name));
-            }
-            for name in &server.prompt_names {
-                inst.push_str(&format!("- `{}` (prompt)\n", name));
+            inst.push_str(desc);
+            if !desc.ends_with('\n') {
+                inst.push('\n');
             }
         }
-        inst.push('\n');
+
+        if let Some(instructions) = &server.instructions {
+            if server.description.is_some() {
+                inst.push('\n');
+            } else {
+                inst.push('\n');
+            }
+            inst.push_str(instructions);
+            if !instructions.ends_with('\n') {
+                inst.push('\n');
+            }
+        }
+
+        inst.push_str(&format!("</{}>\n\n", tag));
     }
 
-    // --- Unavailable servers ---
+    // --- Unavailable servers (no XML block, just bold + error) ---
     for server in &ctx.unavailable_servers {
         inst.push_str(&format!(
             "**{}** — unavailable: {}\n\n",
@@ -322,62 +302,11 @@ fn build_capability_listing(inst: &mut String, ctx: &InstructionsContext) {
     }
 }
 
-/// Build all instructions wrapped in XML tags.
-///
-/// Virtual server instructions are always included.
-/// Regular server instructions are only included in non-deferred mode.
-fn build_all_instructions_section(inst: &mut String, ctx: &InstructionsContext) {
-    // Virtual server instructions (always included)
-    for vsi in &ctx.virtual_instructions {
-        if vsi.content.is_empty() {
-            continue;
-        }
-        let tag = slugify(&vsi.section_title);
-        inst.push_str(&format!("\n<{}>\n", tag));
-        inst.push_str(&vsi.content);
-        if !vsi.content.ends_with('\n') {
-            inst.push('\n');
-        }
-        inst.push_str(&format!("</{}>\n", tag));
-    }
-
-    // Regular server instructions (omitted in deferred mode)
-    if !ctx.deferred_loading {
-        for server in &ctx.servers {
-            let has_content = server.instructions.is_some() || server.description.is_some();
-            if !has_content {
-                continue;
-            }
-
-            let tag = slugify(&server.name);
-            inst.push_str(&format!("\n<{}>\n", tag));
-
-            if let Some(desc) = &server.description {
-                inst.push_str(desc);
-                if !desc.ends_with('\n') {
-                    inst.push('\n');
-                }
-            }
-
-            if let Some(instructions) = &server.instructions {
-                if server.description.is_some() {
-                    inst.push('\n');
-                }
-                inst.push_str(instructions);
-                if !instructions.ends_with('\n') {
-                    inst.push('\n');
-                }
-            }
-
-            inst.push_str(&format!("</{}>\n", tag));
-        }
-    }
-}
-
 // ─── Context Management: Compression + Welcome Text ────────────────────────
 
 /// Build welcome text when context management is enabled.
 /// Applies the catalog compression plan to produce compressed output.
+/// Uses unified per-server XML blocks with 4 compression tiers.
 fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<String> {
     let mut inst = String::new();
 
@@ -385,16 +314,19 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
     let server_count = ctx.servers.len();
     if server_count == 0 && ctx.virtual_instructions.is_empty() {
         inst.push_str(
-            "Unified MCP Gateway — Context-Managed: no servers or tools are currently available.\n\n",
+            "Unified MCP Gateway: no servers or tools are currently available.\n\n",
         );
     } else {
-        inst.push_str(&format!(
-            "Unified MCP Gateway — Context-Managed\n\n{} server{} connected. \
-             Use ctx_search to discover MCP capabilities, retrieve compressed content, \
-             and search server docs.\n\n",
-            server_count,
-            if server_count == 1 { "" } else { "s" }
-        ));
+        inst.push_str(
+            "Unified MCP Gateway. Tools from MCP servers are namespaced \
+             with a `servername__` prefix.\n",
+        );
+        if server_count > 0 {
+            inst.push_str(
+                "Use ctx_search to discover capabilities and retrieve compressed content.\n",
+            );
+        }
+        inst.push('\n');
     }
 
     let plan = ctx.catalog_compression.as_ref();
@@ -437,20 +369,29 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
         .map(|p| p.truncated_servers.iter().map(|s| s.as_str()).collect())
         .unwrap_or_default();
 
-    // Virtual server tools first (never compressed)
+    // Virtual servers first (always full, never compressed) — in XML blocks
     for vsi in &ctx.virtual_instructions {
+        let tag = slugify(&vsi.section_title);
+        inst.push_str(&format!("<{}>\n", tag));
         inst.push_str(&format!("**{}**\n", vsi.section_title));
         for name in &vsi.tool_names {
             inst.push_str(&format!("- `{}` (tool)\n", name));
         }
-        inst.push('\n');
+        if !vsi.content.is_empty() {
+            inst.push('\n');
+            inst.push_str(&vsi.content);
+            if !vsi.content.ends_with('\n') {
+                inst.push('\n');
+            }
+        }
+        inst.push_str(&format!("</{}>\n\n", tag));
     }
 
-    // Regular MCP servers
+    // Regular MCP servers — in XML blocks with compression tiers
     for server in &ctx.servers {
         let server_slug = slugify(&server.name);
 
-        // Check if this server is fully truncated to counts
+        // Phase 3: Fully truncated — counts only
         if truncated_servers.contains(server_slug.as_str()) {
             let mut parts = Vec::new();
             if !server.tool_names.is_empty() {
@@ -463,31 +404,37 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
                 parts.push(format!("{} prompts", server.prompt_names.len()));
             }
             inst.push_str(&format!(
-                "- {}: {} — ctx_search(source=\"catalog:{}\") to explore\n",
+                "<{}>\n**{}**\n{} — ctx_search(source=\"catalog:{}\") to explore\n</{}>\n\n",
+                server_slug,
                 server.name,
                 parts.join(", "),
+                server_slug,
                 server_slug
             ));
             continue;
         }
 
+        inst.push_str(&format!("<{}>\n", server_slug));
         inst.push_str(&format!("**{}**\n", server.name));
 
-        // List tools (skip deferred, mark compressed, or show full)
-        if deferred_tools_servers.contains(server_slug.as_str()) {
-            inst.push_str(&format!(
-                "- {} tools — [deferred] ctx_search(source=\"catalog:{}\") to discover\n",
-                server.tool_names.len(),
-                server_slug
-            ));
+        // List tools — deferred, compressed, or full
+        let tools_deferred = deferred_tools_servers.contains(server_slug.as_str());
+        if tools_deferred {
+            if !server.tool_names.is_empty() {
+                for name in &server.tool_names {
+                    inst.push_str(&format!("- {}\n", name));
+                }
+                inst.push_str(&format!(
+                    "\n[deferred] ctx_search(source=\"catalog:{}\") to activate tools and view docs\n",
+                    server_slug
+                ));
+            }
         } else {
             for name in &server.tool_names {
                 if compressed_names.contains(name.as_str()) {
                     inst.push_str(&format!(
-                        "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
-                        name,
-                        name.rsplit("__").next().unwrap_or(name),
-                        name
+                        "- {} — [compressed] ctx_search(source=\"catalog:{}\")\n",
+                        name, name
                     ));
                 } else {
                     inst.push_str(&format!("- `{}` (tool)\n", name));
@@ -495,21 +442,20 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
             }
         }
 
-        // List resources (skip deferred, mark compressed, or show full)
-        if deferred_resources_servers.contains(server_slug.as_str()) {
-            inst.push_str(&format!(
-                "- {} resources — [deferred] ctx_search(source=\"catalog:{}\") to discover\n",
-                server.resource_names.len(),
-                server_slug
-            ));
+        // List resources
+        let resources_deferred = deferred_resources_servers.contains(server_slug.as_str());
+        if resources_deferred {
+            if !server.resource_names.is_empty() {
+                for name in &server.resource_names {
+                    inst.push_str(&format!("- {}\n", name));
+                }
+            }
         } else {
             for name in &server.resource_names {
                 if compressed_names.contains(name.as_str()) {
                     inst.push_str(&format!(
-                        "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
-                        name,
-                        name.rsplit("__").next().unwrap_or(name),
-                        name
+                        "- {} — [compressed] ctx_search(source=\"catalog:{}\")\n",
+                        name, name
                     ));
                 } else {
                     inst.push_str(&format!("- `{}` (resource)\n", name));
@@ -517,21 +463,20 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
             }
         }
 
-        // List prompts (skip deferred, mark compressed, or show full)
-        if deferred_prompts_servers.contains(server_slug.as_str()) {
-            inst.push_str(&format!(
-                "- {} prompts — [deferred] ctx_search(source=\"catalog:{}\") to discover\n",
-                server.prompt_names.len(),
-                server_slug
-            ));
+        // List prompts
+        let prompts_deferred = deferred_prompts_servers.contains(server_slug.as_str());
+        if prompts_deferred {
+            if !server.prompt_names.is_empty() {
+                for name in &server.prompt_names {
+                    inst.push_str(&format!("- {}\n", name));
+                }
+            }
         } else {
             for name in &server.prompt_names {
                 if compressed_names.contains(name.as_str()) {
                     inst.push_str(&format!(
-                        "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
-                        name,
-                        name.rsplit("__").next().unwrap_or(name),
-                        name
+                        "- {} — [compressed] ctx_search(source=\"catalog:{}\")\n",
+                        name, name
                     ));
                 } else {
                     inst.push_str(&format!("- `{}` (prompt)\n", name));
@@ -539,71 +484,44 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
             }
         }
 
-        inst.push('\n');
+        // Server instructions: inline unless compressed
+        let welcome_compressed = compressed_names.contains(server_slug.as_str());
+        if welcome_compressed {
+            inst.push_str(&format!(
+                "\n[compressed] ctx_search(source=\"catalog:{}\") for instructions\n",
+                server_slug
+            ));
+        } else {
+            let has_content = server.instructions.is_some() || server.description.is_some();
+            if has_content {
+                inst.push('\n');
+                if let Some(desc) = &server.description {
+                    inst.push_str(desc);
+                    if !desc.ends_with('\n') {
+                        inst.push('\n');
+                    }
+                }
+                if let Some(instructions) = &server.instructions {
+                    if server.description.is_some() {
+                        inst.push('\n');
+                    }
+                    inst.push_str(instructions);
+                    if !instructions.ends_with('\n') {
+                        inst.push('\n');
+                    }
+                }
+            }
+        }
+
+        inst.push_str(&format!("</{}>\n\n", server_slug));
     }
 
-    // Unavailable servers
+    // Unavailable servers (no XML block)
     for server in &ctx.unavailable_servers {
         inst.push_str(&format!(
             "**{}** — unavailable: {}\n\n",
             server.name, server.error
         ));
-    }
-
-    // Virtual server instructions (always inline, never compressed)
-    for vsi in &ctx.virtual_instructions {
-        if vsi.content.is_empty() {
-            continue;
-        }
-        let tag = slugify(&vsi.section_title);
-        inst.push_str(&format!("\n<{}>\n", tag));
-        inst.push_str(&vsi.content);
-        if !vsi.content.ends_with('\n') {
-            inst.push('\n');
-        }
-        inst.push_str(&format!("</{}>\n", tag));
-    }
-
-    // Server instructions: inline unless compressed
-    for server in &ctx.servers {
-        let server_slug = slugify(&server.name);
-
-        // Skip if server is truncated or its welcome text is compressed
-        if truncated_servers.contains(server_slug.as_str()) {
-            continue;
-        }
-        if compressed_names.contains(server_slug.as_str()) {
-            inst.push_str(&format!(
-                "\n- {} instructions — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
-                server.name, server_slug, server_slug
-            ));
-            continue;
-        }
-
-        // Include inline (same as non-deferred mode)
-        let has_content = server.instructions.is_some() || server.description.is_some();
-        if !has_content {
-            continue;
-        }
-
-        let tag = &server_slug;
-        inst.push_str(&format!("\n<{}>\n", tag));
-        if let Some(desc) = &server.description {
-            inst.push_str(desc);
-            if !desc.ends_with('\n') {
-                inst.push('\n');
-            }
-        }
-        if let Some(instructions) = &server.instructions {
-            if server.description.is_some() {
-                inst.push('\n');
-            }
-            inst.push_str(instructions);
-            if !instructions.ends_with('\n') {
-                inst.push('\n');
-            }
-        }
-        inst.push_str(&format!("</{}>\n", tag));
     }
 
     Some(inst)
@@ -650,6 +568,116 @@ pub fn build_full_server_content(server: &McpServerInstructionInfo) -> String {
     }
 
     content
+}
+
+/// Build a mock `InstructionsContext` for the compression preview UI.
+/// Contains realistic hardcoded data so the preview is meaningful without
+/// a live MCP session.
+pub fn build_preview_instructions_context() -> InstructionsContext {
+    use super::virtual_server::VirtualInstructions;
+
+    InstructionsContext {
+        servers: vec![
+            McpServerInstructionInfo {
+                name: "Filesystem".to_string(),
+                description: Some("Provides filesystem operations for reading, writing, and managing files and directories on the local system.".to_string()),
+                instructions: Some("Use read_file to read files, write_file to write, list_directory to browse, and search_files for content search. Always use absolute paths.".to_string()),
+                tool_names: vec![
+                    "filesystem__read_file".to_string(),
+                    "filesystem__write_file".to_string(),
+                    "filesystem__list_directory".to_string(),
+                    "filesystem__search_files".to_string(),
+                    "filesystem__get_file_info".to_string(),
+                    "filesystem__create_directory".to_string(),
+                    "filesystem__move_file".to_string(),
+                    "filesystem__delete_file".to_string(),
+                ],
+                resource_names: vec!["filesystem__cwd".to_string()],
+                prompt_names: Vec::new(),
+            },
+            McpServerInstructionInfo {
+                name: "GitHub".to_string(),
+                description: Some("GitHub API integration for managing repositories, issues, pull requests, and code.".to_string()),
+                instructions: None,
+                tool_names: vec![
+                    "github__create_issue".to_string(),
+                    "github__list_issues".to_string(),
+                    "github__create_pull_request".to_string(),
+                    "github__get_file_contents".to_string(),
+                    "github__search_code".to_string(),
+                    "github__list_repos".to_string(),
+                ],
+                resource_names: Vec::new(),
+                prompt_names: vec!["github__review_pr".to_string()],
+            },
+            McpServerInstructionInfo {
+                name: "Database".to_string(),
+                description: Some("PostgreSQL database access for querying and managing data.".to_string()),
+                instructions: Some("Use query for SELECT operations and execute for INSERT/UPDATE/DELETE. Always use parameterized queries to prevent SQL injection.".to_string()),
+                tool_names: vec![
+                    "database__query".to_string(),
+                    "database__execute".to_string(),
+                    "database__list_tables".to_string(),
+                    "database__describe_table".to_string(),
+                ],
+                resource_names: vec!["database__schema".to_string()],
+                prompt_names: Vec::new(),
+            },
+        ],
+        unavailable_servers: vec![UnavailableServerInfo {
+            name: "Slack".to_string(),
+            error: "Connection refused".to_string(),
+        }],
+        context_management_enabled: true,
+        indexing_tools_enabled: true,
+        catalog_compression: None, // computed by caller
+        virtual_instructions: vec![
+            VirtualInstructions {
+                section_title: "Context Management".to_string(),
+                content: "Use ctx_search to discover MCP capabilities and retrieve compressed content.".to_string(),
+                tool_names: vec![
+                    "ctx_search".to_string(),
+                    "ctx_execute".to_string(),
+                    "ctx_execute_file".to_string(),
+                    "ctx_batch_execute".to_string(),
+                    "ctx_index".to_string(),
+                    "ctx_fetch_and_index".to_string(),
+                ],
+                priority: 0,
+            },
+            VirtualInstructions {
+                section_title: "Coding Agents".to_string(),
+                content: "You have access to **Claude Code** as a coding agent. Use the unified tools: `coding_agent_start`, `coding_agent_say`, `coding_agent_status`.\n".to_string(),
+                tool_names: vec![
+                    "coding_agent_start".to_string(),
+                    "coding_agent_say".to_string(),
+                    "coding_agent_status".to_string(),
+                    "coding_agent_respond".to_string(),
+                    "coding_agent_interrupt".to_string(),
+                    "coding_agent_list".to_string(),
+                ],
+                priority: 10,
+            },
+            VirtualInstructions {
+                section_title: "Marketplace".to_string(),
+                content: "Use marketplace tools to discover and install new MCP servers and skills.\n".to_string(),
+                tool_names: vec![
+                    "marketplace_search".to_string(),
+                    "marketplace_install".to_string(),
+                ],
+                priority: 20,
+            },
+            VirtualInstructions {
+                section_title: "Skills".to_string(),
+                content: "Call a skill's `get_info` tool to view its instructions.\n\n- **code-review**: `skill_code_review_get_info` — Automated code review\n- **deploy**: `skill_deploy_get_info` — Deploy to production\n".to_string(),
+                tool_names: vec![
+                    "skill_code_review_get_info".to_string(),
+                    "skill_deploy_get_info".to_string(),
+                ],
+                priority: 30,
+            },
+        ],
+    }
 }
 
 /// Compute a catalog compression plan using the progressive algorithm.
@@ -711,7 +739,7 @@ pub fn compute_catalog_compression_plan(
             compressible_items.push(CompressibleCandidate {
                 namespaced_name: name.clone(),
                 source_label: format!("catalog:{}", name),
-                full_content: name.clone(), // Will be populated with full description at index time
+                full_content: name.clone(), // Name only; full content indexed separately in handle_initialize
                 item_type: CompressedItemType::Tool,
                 byte_size: line_size,
                 server_slug: server_slug.clone(),
@@ -907,6 +935,9 @@ fn estimate_catalog_size(ctx: &InstructionsContext) -> usize {
 }
 
 /// Internal candidate for compression planning.
+/// Note: `full_content` is only fully populated for `ServerWelcome` items.
+/// For tool/resource/prompt items it contains only the name — the actual full
+/// content (name + description + parameters) is indexed separately in `handle_initialize`.
 struct CompressibleCandidate {
     namespaced_name: String,
     source_label: String,
@@ -1225,7 +1256,6 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1260,7 +1290,6 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1285,7 +1314,6 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1306,7 +1334,6 @@ mod tests {
         let ctx = InstructionsContext {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1315,49 +1342,17 @@ mod tests {
                 content: "Call a skill's `get_info` tool.\n\n- **code-review**: `skill_code_review_get_info` — Automated code review\n"
                     .to_string(),
                 tool_names: vec!["skill_code_review_get_info".to_string()],
+                priority: 30,
             }],
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Virtual tool listing
+        // Virtual tool listing in XML block
+        assert!(instructions.contains("<skills>"));
         assert!(instructions.contains("**Skills**"));
         assert!(instructions.contains("`skill_code_review_get_info` (tool)"));
-        // Virtual instructions in XML tags
-        assert!(instructions.contains("<skills>"));
         assert!(instructions.contains("Automated code review"));
         assert!(instructions.contains("</skills>"));
-    }
-
-    #[test]
-    fn test_build_gateway_instructions_deferred_loading() {
-        let ctx = InstructionsContext {
-            servers: vec![McpServerInstructionInfo {
-                name: "filesystem".to_string(),
-                instructions: Some("Detailed file system instructions.".to_string()),
-                description: None,
-                tool_names: vec![
-                    "filesystem__read_file".to_string(),
-                    "filesystem__write_file".to_string(),
-                ],
-                resource_names: Vec::new(),
-                prompt_names: Vec::new(),
-            }],
-            unavailable_servers: Vec::new(),
-            deferred_loading: true,
-            context_management_enabled: false,
-            indexing_tools_enabled: false,
-            catalog_compression: None,
-            virtual_instructions: Vec::new(),
-        };
-
-        let instructions = build_gateway_instructions(&ctx).unwrap();
-        assert!(instructions.contains("on demand"));
-        assert!(instructions.contains("`search`"));
-        assert!(instructions.contains("`server_info`"));
-        assert!(instructions.contains("`filesystem__read_file` (tool)"));
-        // Deferred mode omits regular server instructions
-        assert!(!instructions.contains("<filesystem>"));
-        assert!(!instructions.contains("Detailed file system instructions."));
     }
 
     #[test]
@@ -1374,7 +1369,6 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1382,6 +1376,7 @@ mod tests {
                 section_title: "Skills".to_string(),
                 content: "Call get_info to unlock.\n".to_string(),
                 tool_names: vec!["skill_deploy_get_info".to_string()],
+                priority: 30,
             }],
         };
 
@@ -1407,7 +1402,6 @@ mod tests {
         let ctx = InstructionsContext {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1425,7 +1419,6 @@ mod tests {
                 name: "broken-server".to_string(),
                 error: "Connection refused".to_string(),
             }],
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1450,7 +1443,6 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1475,7 +1467,6 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1484,7 +1475,9 @@ mod tests {
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
         assert!(instructions.contains("`barebones__tool` (tool)"));
-        assert!(!instructions.contains("<barebones>"));
+        // Servers with tools now always get XML blocks in the unified format
+        assert!(instructions.contains("<barebones>"));
+        assert!(instructions.contains("</barebones>"));
     }
 
     #[test]
@@ -1499,7 +1492,6 @@ mod tests {
                 prompt_names: vec!["knowledge__summarize".to_string()],
             }],
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1550,7 +1542,6 @@ mod tests {
                 name: "broken-server".to_string(),
                 error: "Connection refused".to_string(),
             }],
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1562,6 +1553,7 @@ mod tests {
                         "skill_code_review_get_info".to_string(),
                         "skill_deploy_get_info".to_string(),
                     ],
+                    priority: 30,
                 },
                 VirtualInstructions {
                     section_title: "Marketplace".to_string(),
@@ -1570,6 +1562,7 @@ mod tests {
                         "marketplace__search_mcp_servers".to_string(),
                         "marketplace__install_mcp_server".to_string(),
                     ],
+                    priority: 20,
                 },
             ],
         };
@@ -1599,11 +1592,12 @@ mod tests {
         assert!(instructions.contains("<marketplace>"));
         assert!(instructions.contains("</marketplace>"));
 
-        // XML instructions for regular servers
+        // XML blocks for regular servers (all servers with tools get XML blocks)
         assert!(instructions.contains("<filesystem>"));
         assert!(instructions.contains("</filesystem>"));
-        // knowledge has no instructions/description, so no XML
-        assert!(!instructions.contains("<knowledge>"));
+        // knowledge also gets XML block (unified format)
+        assert!(instructions.contains("<knowledge>"));
+        assert!(instructions.contains("</knowledge>"));
 
         // Unavailable server
         assert!(instructions.contains("**broken-server** — unavailable: Connection refused"));
@@ -1616,7 +1610,6 @@ mod tests {
         let ctx = InstructionsContext {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1627,6 +1620,7 @@ mod tests {
                     "skill_code_review_get_info".to_string(),
                     "skill_deploy_get_info".to_string(),
                 ],
+                priority: 30,
             }],
         };
 
@@ -1639,79 +1633,6 @@ mod tests {
         assert!(instructions.contains("</skills>"));
         // No regular server content
         assert!(!instructions.contains("servername__"));
-    }
-
-    #[test]
-    fn test_deferred_instructions_snapshot() {
-        use crate::gateway::virtual_server::VirtualInstructions;
-
-        // Build a server with >20 tools to test truncation
-        let tool_names: Vec<String> = (1..=25)
-            .map(|i| format!("big-server__tool_{}", i))
-            .collect();
-
-        let ctx = InstructionsContext {
-            servers: vec![
-                McpServerInstructionInfo {
-                    name: "big-server".to_string(),
-                    instructions: Some("Detailed instructions for big server.".to_string()),
-                    description: None,
-                    tool_names,
-                    resource_names: Vec::new(),
-                    prompt_names: Vec::new(),
-                },
-                McpServerInstructionInfo {
-                    name: "small".to_string(),
-                    instructions: Some("Small server instructions.".to_string()),
-                    description: None,
-                    tool_names: vec!["small__tool_a".to_string(), "small__tool_b".to_string()],
-                    resource_names: Vec::new(),
-                    prompt_names: Vec::new(),
-                },
-            ],
-            unavailable_servers: Vec::new(),
-            deferred_loading: true,
-            context_management_enabled: false,
-            indexing_tools_enabled: false,
-            catalog_compression: None,
-            virtual_instructions: vec![VirtualInstructions {
-                section_title: "Skills".to_string(),
-                content: "Skill instructions always shown.\n".to_string(),
-                tool_names: vec!["skill_test_get_info".to_string()],
-            }],
-        };
-
-        let instructions = build_gateway_instructions(&ctx).unwrap();
-
-        // Header mentions deferred
-        assert!(instructions.contains("on demand"));
-        assert!(instructions.contains("`search`"));
-        assert!(instructions.contains("`server_info`"));
-
-        // Virtual instructions always included
-        assert!(instructions.contains("<skills>"));
-        assert!(instructions.contains("Skill instructions always shown."));
-        assert!(instructions.contains("</skills>"));
-
-        // Regular server instructions omitted in deferred mode
-        assert!(!instructions.contains("<big-server>"));
-        assert!(!instructions.contains("Detailed instructions for big server."));
-        assert!(!instructions.contains("<small>"));
-        assert!(!instructions.contains("Small server instructions."));
-
-        // Big server truncated with count summary
-        assert!(instructions.contains("**big-server** (25 tools)"));
-        assert!(instructions.contains("`big-server__tool_1` (tool)"));
-        assert!(instructions.contains("`big-server__tool_20` (tool)"));
-        // Tool 21 should NOT appear (past limit)
-        assert!(!instructions.contains("`big-server__tool_21` (tool)"));
-        // Truncation hint
-        assert!(instructions.contains("use `search` to find more"));
-
-        // Small server NOT truncated (only 2 tools, under limit)
-        assert!(instructions.contains("**small**\n"));
-        assert!(instructions.contains("`small__tool_a` (tool)"));
-        assert!(instructions.contains("`small__tool_b` (tool)"));
     }
 
     #[test]
@@ -1785,7 +1706,6 @@ mod tests {
         let ctx = InstructionsContext {
             servers: vec![],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1807,7 +1727,6 @@ mod tests {
                 prompt_names: vec![],
             }],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1845,7 +1764,6 @@ mod tests {
                 prompt_names: vec![],
             }],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1863,7 +1781,6 @@ mod tests {
         let ctx = InstructionsContext {
             servers: vec![make_large_server("big", 5)],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1900,7 +1817,6 @@ mod tests {
         let ctx = InstructionsContext {
             servers: vec![make_large_server("big", 20), make_large_server("small", 3)],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1932,7 +1848,6 @@ mod tests {
         let ctx = InstructionsContext {
             servers: vec![make_large_server("server", 20)],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1962,7 +1877,6 @@ mod tests {
                 make_large_server("s3", 50),
             ],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -1995,7 +1909,6 @@ mod tests {
                 prompt_names: vec![],
             }],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: Some(CatalogCompressionPlan::default()),
@@ -2003,13 +1916,14 @@ mod tests {
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
-        assert!(inst.contains("Context-Managed"));
-        assert!(inst.contains("1 server connected"));
+        assert!(inst.contains("Unified MCP Gateway"));
+        assert!(inst.contains("servername__"));
         assert!(inst.contains("`filesystem__read_file` (tool)"));
         assert!(inst.contains("`filesystem__config` (resource)"));
-        // Server instructions should be inline
+        // Server instructions should be inline inside XML block
         assert!(inst.contains("<filesystem>"));
         assert!(inst.contains("File system server"));
+        assert!(inst.contains("</filesystem>"));
     }
 
     #[test]
@@ -2039,7 +1953,6 @@ mod tests {
                 prompt_names: vec![],
             }],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: Some(plan),
@@ -2078,7 +1991,6 @@ mod tests {
                 prompt_names: vec![],
             }],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: Some(plan),
@@ -2124,7 +2036,6 @@ mod tests {
                 prompt_names: vec![],
             }],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: Some(plan),
@@ -2132,13 +2043,14 @@ mod tests {
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
-        // Server instructions should be [compressed], not inline
+        // Server instructions should be [compressed] inside XML block
         assert!(
-            inst.contains("instructions — [compressed]"),
+            inst.contains("[compressed] ctx_search(source=\"catalog:filesystem\") for instructions"),
             "Server welcome should be compressed. Got:\n{}",
             inst
         );
-        assert!(!inst.contains("<filesystem>"));
+        // XML block still present (unified format), but instructions NOT inline
+        assert!(inst.contains("<filesystem>"));
         assert!(!inst.contains("Detailed docs about filesystem server"));
     }
 
@@ -2153,7 +2065,6 @@ mod tests {
         let ctx = InstructionsContext {
             servers: vec![],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: true,
             catalog_compression: Some(plan),
@@ -2161,6 +2072,7 @@ mod tests {
                 section_title: "Context Management".to_string(),
                 content: "Use ctx_search to find things".to_string(),
                 tool_names: vec!["ctx_search".to_string(), "ctx_execute".to_string()],
+                priority: 0,
             }],
         };
 
@@ -2202,7 +2114,6 @@ mod tests {
                 prompt_names: vec!["filesystem__ask".to_string()],
             }],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: Some(plan),
@@ -2210,26 +2121,21 @@ mod tests {
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
-        // Tools should be deferred — not listed individually
+        // Deferred tools listed by name (without type tags) + deferred hint
         assert!(
-            !inst.contains("`filesystem__read_file`"),
-            "Deferred tools should not be listed. Got:\n{}",
+            inst.contains("- filesystem__read_file\n"),
+            "Deferred tools should list names without backticks/type. Got:\n{}",
             inst
         );
         assert!(
-            inst.contains("2 tools — [deferred]"),
-            "Should show deferred count for tools. Got:\n{}",
+            inst.contains("[deferred] ctx_search"),
+            "Should show deferred activation hint. Got:\n{}",
             inst
         );
-        // Resources also deferred
+        // Resources also deferred — listed by name
         assert!(
-            !inst.contains("`filesystem__config`"),
-            "Deferred resources should not be listed. Got:\n{}",
-            inst
-        );
-        assert!(
-            inst.contains("1 resources — [deferred]"),
-            "Should show deferred count for resources. Got:\n{}",
+            inst.contains("- filesystem__config\n"),
+            "Deferred resources should list names. Got:\n{}",
             inst
         );
         // Prompts NOT deferred — should be listed normally
@@ -2248,7 +2154,6 @@ mod tests {
                 name: "broken-server".to_string(),
                 error: "Connection refused".to_string(),
             }],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: Some(CatalogCompressionPlan::default()),
@@ -2293,7 +2198,6 @@ mod tests {
                 },
             ],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -2321,7 +2225,6 @@ mod tests {
         let mut ctx_with_plan = InstructionsContext {
             servers: ctx.servers.clone(),
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: Some(plan.clone()),
@@ -2331,9 +2234,9 @@ mod tests {
 
         let inst = build_gateway_instructions(&ctx_with_plan).unwrap();
 
-        // Verify: CM header
+        // Verify: CM header (no longer says "Context-Managed")
         assert!(
-            inst.contains("Context-Managed"),
+            inst.contains("Unified MCP Gateway"),
             "Should use CM instructions path"
         );
 
@@ -2351,7 +2254,6 @@ mod tests {
         let uncompressed_ctx = InstructionsContext {
             servers: ctx.servers.clone(),
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -2378,7 +2280,6 @@ mod tests {
                 prompt_names: vec![],
             }],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,
@@ -2424,7 +2325,6 @@ mod tests {
                 },
             ],
             unavailable_servers: vec![],
-            deferred_loading: false,
             context_management_enabled: true,
             indexing_tools_enabled: false,
             catalog_compression: None,

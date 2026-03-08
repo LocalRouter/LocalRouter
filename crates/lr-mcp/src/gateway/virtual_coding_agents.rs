@@ -181,6 +181,7 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
             section_title: "Coding Agents".to_string(),
             content,
             tool_names: Vec::new(), // populated by gateway
+            priority: 10,
         })
     }
 

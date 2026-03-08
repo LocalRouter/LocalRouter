@@ -139,6 +139,12 @@ impl ContextModeSessionState {
             let transport = spawn_context_mode_process().await?;
             // Initialize the MCP connection
             initialize_context_mode(&transport).await?;
+
+            // Eagerly fetch and cache tool definitions so list_tools() returns the full set
+            if let Ok(tools) = fetch_tools_from_transport(&transport).await {
+                *self.cached_tools.lock().await = Some(tools);
+            }
+
             *guard = Some(transport);
         }
         Ok(guard)
@@ -217,6 +223,14 @@ impl ContextModeSessionState {
         Ok(tools)
     }
 
+    /// Check if tool definitions have been cached from the context-mode process.
+    pub fn has_cached_tools(&self) -> bool {
+        self.cached_tools
+            .try_lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(true) // If locked, assume another task is fetching
+    }
+
     /// Get the next run ID for a given namespaced name (tool/resource/prompt).
     pub fn next_run_id(&mut self, namespaced_name: &str) -> u32 {
         let counter = self.run_counters.entry(namespaced_name.to_string()).or_insert(0);
@@ -258,15 +272,35 @@ impl VirtualSessionState for ContextModeSessionState {
     }
 }
 
-/// Spawn a context-mode STDIO process via npx.
+/// Spawn a context-mode STDIO process.
 ///
-/// First checks if context-mode is already cached via `npx --no-install --version`.
-/// If cached, spawns without install (fast, no network). Otherwise falls back to
-/// `npx -y` to auto-install on first use.
+/// Resolution order (fastest to slowest):
+/// 1. Global install (`context-mode` binary in PATH) — no npx overhead
+/// 2. npx cache (`npx --no-install`) — no network, but npx resolution overhead
+/// 3. Global install (`npm install -g`) — downloads from npm, then spawns directly
 async fn spawn_context_mode_process() -> Result<StdioTransport, String> {
     let env = crate::manager::shell_env();
 
-    // Quick check: is context-mode already in the npx cache?
+    // 1. Try global install first (fastest — no npx overhead)
+    // Use `which` to check PATH without spawning context-mode itself
+    // (context-mode starts a server and doesn't exit on --version)
+    let has_global = tokio::process::Command::new("which")
+        .arg("context-mode")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if has_global {
+        tracing::info!("Spawning context-mode STDIO process (global)");
+        return StdioTransport::spawn("context-mode".to_string(), vec![], env)
+            .await
+            .map_err(|e| format!("Failed to spawn context-mode: {e}"));
+    }
+
+    // 2. Try npx cache (no network, but has npx resolution overhead)
     let is_cached = tokio::process::Command::new("npx")
         .args(["--no-install", "context-mode", "--version"])
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
@@ -278,24 +312,61 @@ async fn spawn_context_mode_process() -> Result<StdioTransport, String> {
         .unwrap_or(false);
 
     if is_cached {
-        tracing::info!("Spawning context-mode STDIO process (cached)");
-        StdioTransport::spawn(
+        tracing::info!("Spawning context-mode STDIO process (npx cached)");
+        return StdioTransport::spawn(
             "npx".to_string(),
             vec!["--no-install".to_string(), "context-mode".to_string()],
             env,
         )
         .await
-        .map_err(|e| format!("Failed to spawn context-mode: {e}"))
-    } else {
-        tracing::info!("context-mode not cached, installing via npx -y");
-        StdioTransport::spawn(
-            "npx".to_string(),
-            vec!["-y".to_string(), "context-mode".to_string()],
-            env,
-        )
+        .map_err(|e| format!("Failed to spawn context-mode: {e}"));
+    }
+
+    // 3. Last resort: install globally and spawn
+    tracing::info!("context-mode not found, installing globally via npm");
+    let install = tokio::process::Command::new("npm")
+        .args(["install", "-g", "context-mode"])
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map_err(|e| format!("Failed to run npm install: {e}"))?;
+
+    if !install.success() {
+        return Err("npm install -g context-mode failed".to_string());
+    }
+
+    tracing::info!("Spawning context-mode STDIO process (freshly installed)");
+    StdioTransport::spawn("context-mode".to_string(), vec![], env)
         .await
         .map_err(|e| format!("Failed to spawn context-mode: {e}"))
+}
+
+/// Fetch tool definitions from an already-initialized context-mode transport.
+async fn fetch_tools_from_transport(transport: &StdioTransport) -> Result<Vec<McpTool>, String> {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(next_request_id()),
+        method: "tools/list".to_string(),
+        params: None,
+    };
+
+    let response = transport
+        .send_request(request)
+        .await
+        .map_err(|e| format!("context-mode tools/list failed: {e}"))?;
+
+    if let Some(error) = response.error {
+        return Err(format!(
+            "context-mode tools/list error: {} (code: {})",
+            error.message, error.code
+        ));
     }
+
+    let result = response.result.unwrap_or(Value::Null);
+    let tools_value = result.get("tools").cloned().unwrap_or(Value::Array(vec![]));
+    serde_json::from_value(tools_value).map_err(|e| format!("Failed to parse tools: {e}"))
 }
 
 /// Initialize the MCP connection with the context-mode process.
@@ -375,6 +446,9 @@ fn build_context_mode_tools(
         tools.push(tool);
     }
 
+    // Ensure ctx_search is listed first
+    tools.sort_by_key(|t| if t.name == CTX_SEARCH { 0 } else { 1 });
+
     tools
 }
 
@@ -449,6 +523,13 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             );
         }
 
+        // Block indexing tools when disabled
+        if !state.indexing_tools_enabled && INDEXING_TOOLS.contains(&tool_name) {
+            return VirtualToolCallResult::ToolError(
+                "Indexing tools are disabled".to_string(),
+            );
+        }
+
         // Forward the tool call to the context-mode STDIO process
         match state.call_tool(tool_name, arguments).await {
             Ok(result) => {
@@ -509,9 +590,13 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             return None;
         }
 
-        // Context-mode's prompting lives entirely in tool descriptions,
-        // so we only need a minimal instructions section
-        None
+        Some(VirtualInstructions {
+            section_title: "Context Management".to_string(),
+            content: "Use ctx_search to discover MCP capabilities and retrieve compressed content."
+                .to_string(),
+            tool_names: Vec::new(), // populated by gateway
+            priority: 0,
+        })
     }
 
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {
@@ -520,7 +605,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 
         Box::new(ContextModeSessionState {
             enabled,
-            indexing_tools_enabled: enabled && config.indexing_tools,
+            indexing_tools_enabled: enabled && client.is_indexing_tools_enabled(&config),
             transport: Mutex::new(None),
             cached_tools: Mutex::new(None),
             catalog_sources: HashMap::new(),
@@ -548,7 +633,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             .expect("wrong state type for ContextModeVirtualServer");
 
         state.enabled = client.is_context_management_enabled(&config);
-        state.indexing_tools_enabled = state.enabled && config.indexing_tools;
+        state.indexing_tools_enabled = state.enabled && client.is_indexing_tools_enabled(&config);
         state.catalog_threshold_bytes = config.catalog_threshold_bytes;
         state.response_threshold_bytes = config.response_threshold_bytes;
     }

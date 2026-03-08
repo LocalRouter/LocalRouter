@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { BookText, Info, RefreshCw, CheckCircle2, XCircle, Loader2, Download } from "lucide-react"
+import { BookText, Info, RefreshCw, CheckCircle2, XCircle, Loader2, Download, Search, Database, BarChart3, AlertTriangle } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -15,7 +15,9 @@ import {
   ResizableHandle,
 } from "@/components/ui/resizable"
 import { cn } from "@/lib/utils"
-import type { ContextManagementConfig, ActiveSessionInfo, ContextModeInfo } from "@/types/tauri-commands"
+import Markdown from "react-markdown"
+import remarkGfm from "remark-gfm"
+import type { ContextManagementConfig, ActiveSessionInfo, ContextModeInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams } from "@/types/tauri-commands"
 
 interface ContextManagementViewProps {
   activeSubTab?: string | null
@@ -30,6 +32,15 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
   const [modeInfo, setModeInfo] = useState<ContextModeInfo | null>(null)
   const [modeInfoLoading, setModeInfoLoading] = useState(true)
   const [installing, setInstalling] = useState(false)
+  const [sessionDetailTab, setSessionDetailTab] = useState<string>("info")
+  const [catalogSources, setCatalogSources] = useState<CatalogSourceEntry[]>([])
+  const [catalogSourcesLoading, setCatalogSourcesLoading] = useState(false)
+  const [contextStats, setContextStats] = useState<string | null>(null)
+  const [contextStatsLoading, setContextStatsLoading] = useState(false)
+  const [contextStatsLoaded, setContextStatsLoaded] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [searchResults, setSearchResults] = useState<string | null>(null)
+  const [searchLoading, setSearchLoading] = useState(false)
 
   const tab = activeSubTab || "info"
 
@@ -58,6 +69,73 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
     }
   }, [])
 
+  const loadCatalogSources = useCallback(async (sessionId: string) => {
+    setCatalogSourcesLoading(true)
+    try {
+      const data = await invoke<CatalogSourceEntry[]>("get_session_context_sources", { sessionId })
+      setCatalogSources(data)
+    } catch (err) {
+      console.error("Failed to load catalog sources:", err)
+      setCatalogSources([])
+    } finally {
+      setCatalogSourcesLoading(false)
+    }
+  }, [])
+
+  const loadContextStats = useCallback(async (sessionId: string) => {
+    setContextStatsLoading(true)
+    try {
+      const result = await invoke<{ content?: Array<{ text?: string }> }>("get_session_context_stats", { sessionId })
+      const text = result?.content?.map((c) => c.text || "").join("\n") || "No stats available"
+      setContextStats(text)
+      setContextStatsLoaded(sessionId)
+    } catch (err) {
+      setContextStats(`Error: ${err}`)
+    } finally {
+      setContextStatsLoading(false)
+    }
+  }, [])
+
+  const runSearch = useCallback(async (sessionId: string) => {
+    if (!searchQuery.trim()) return
+    setSearchLoading(true)
+    try {
+      const result = await invoke<{ content?: Array<{ text?: string }> }>("query_session_context_index", { sessionId, query: searchQuery })
+      const text = result?.content?.map((c) => c.text || "").join("\n") || "No results"
+      setSearchResults(text)
+    } catch (err) {
+      setSearchResults(`Error: ${err}`)
+    } finally {
+      setSearchLoading(false)
+    }
+  }, [searchQuery])
+
+
+
+
+  // Load detail data when session or detail tab changes
+  useEffect(() => {
+    if (!selectedSessionId) return
+    const session = sessions.find((s) => s.session_id === selectedSessionId)
+    if (!session?.context_management_enabled) return
+
+    if (sessionDetailTab === "index") {
+      loadCatalogSources(selectedSessionId)
+    } else if (sessionDetailTab === "stats" && contextStatsLoaded !== selectedSessionId) {
+      loadContextStats(selectedSessionId)
+    }
+  }, [selectedSessionId, sessionDetailTab, sessions, loadCatalogSources, loadContextStats, contextStatsLoaded])
+
+  // Reset detail tab when session changes
+  useEffect(() => {
+    setSessionDetailTab("info")
+    setCatalogSources([])
+    setContextStats(null)
+    setContextStatsLoaded(null)
+    setSearchResults(null)
+    setSearchQuery("")
+  }, [selectedSessionId])
+
   useEffect(() => {
     invoke<ContextManagementConfig>("get_context_management_config")
       .then(setConfig)
@@ -71,7 +149,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
   // Clear selected session if it disappears
   useEffect(() => {
     if (selectedSessionId) {
-      const stillExists = sessions.some((s) => s.client_id === selectedSessionId)
+      const stillExists = sessions.some((s) => s.session_id === selectedSessionId)
       if (!stillExists) {
         setSelectedSessionId(null)
       }
@@ -92,7 +170,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
   }
 
   const selectedSession = selectedSessionId
-    ? sessions.find((s) => s.client_id === selectedSessionId) ?? null
+    ? sessions.find((s) => s.session_id === selectedSessionId) ?? null
     : null
 
   return (
@@ -131,29 +209,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
         {/* Info Tab */}
         <TabsContent value="info" className="flex-1 min-h-0 mt-4">
           <div className="space-y-4 max-w-2xl">
-            {/* How it works */}
-            <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-600/50">
-              <div className="flex items-start gap-3">
-                <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
-                <div className="space-y-2">
-                  <p className="text-sm font-medium text-blue-900 dark:text-blue-300">
-                    How it works
-                  </p>
-                  <p className="text-sm text-blue-900 dark:text-blue-400">
-                    Context management uses FTS5 full-text search to intelligently compress MCP
-                    catalogs and tool responses. Large catalogs are indexed and replaced with a
-                    compact summary, and a search tool lets clients discover capabilities on demand.
-                    Tool responses exceeding the threshold are indexed and replaced with a preview.
-                  </p>
-                  <p className="text-sm text-blue-900 dark:text-blue-400">
-                    Clients can override this setting individually in their MCP tab.
-                    Requires client support for{" "}
-                    <code className="px-1 py-0.5 rounded bg-blue-500/20 text-xs">tools/listChanged</code>.
-                  </p>
-                </div>
-              </div>
-            </div>
-
             {/* Installation Status */}
             <Card>
               <CardHeader className="pb-3">
@@ -275,42 +330,72 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
               </CardContent>
             </Card>
 
-            {/* Global Status */}
+            {/* Enable Context Management */}
             {config && (
               <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Global Status</CardTitle>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">Enable Catalog Indexing</CardTitle>
+                    <Switch
+                      checked={config.enabled}
+                      onCheckedChange={(enabled) => updateField("enabled", enabled)}
+                      disabled={saving}
+                    />
+                  </div>
+                  <CardDescription>
+                    Uses deferred loading of tools, prompts, and resources combined with{" "}
+                    <a href="https://github.com/mksglu/context-mode" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">context-mode</a>{" "}
+                    indexing of welcome messages and tool descriptions. When catalogs exceed the
+                    configured threshold, capabilities are hidden and a{" "}
+                    <code className="px-1 py-0.5 rounded bg-muted text-xs">ctx_search</code>{" "}
+                    tool lets the AI discover and unhide them on demand. This exposes only the search
+                    capability &mdash; to also give AI clients the full indexing tools, enable
+                    Indexing Tools below.
+                  </CardDescription>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Clients can override this setting individually in their Context tab.
+                    Requires client support for{" "}
+                    <code className="px-1 py-0.5 rounded bg-muted text-xs">tools/listChanged</code> notifications.
+                  </p>
+                </CardHeader>
+              </Card>
+            )}
+
+            {/* Indexing Tools */}
+            {config && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">Indexing Tools</CardTitle>
+                    <Switch
+                      checked={config.indexing_tools}
+                      onCheckedChange={(v) => updateField("indexingTools", v)}
+                      disabled={saving}
+                    />
+                  </div>
+                  <CardDescription>
+                    Enables the{" "}
+                    <a href="https://github.com/mksglu/context-mode" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">context-mode</a>{" "}
+                    indexing tools that reduce context window usage for Bash, Read, WebFetch, Grep,
+                    and Task calls. Tool outputs are indexed and searchable rather than returned
+                    directly into the context window, freeing space for the AI to work with larger
+                    results.
+                  </CardDescription>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Clients can override this setting individually in their Context tab.
+                  </p>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div>
-                      <span className="text-muted-foreground">Context Management:</span>{" "}
-                      <Badge variant={config.enabled ? "success" : "secondary"} className="text-[10px]">
-                        {config.enabled ? "Enabled" : "Disabled"}
-                      </Badge>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Indexing Tools:</span>{" "}
-                      <Badge variant={config.indexing_tools ? "success" : "secondary"} className="text-[10px]">
-                        {config.indexing_tools ? "Enabled" : "Disabled"}
-                      </Badge>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Catalog Threshold:</span>{" "}
-                      <span className="font-medium">{config.catalog_threshold_bytes.toLocaleString()} bytes</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Response Threshold:</span>{" "}
-                      <span className="font-medium">{config.response_threshold_bytes.toLocaleString()} bytes</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Active Sessions:</span>{" "}
-                      <span className="font-medium">
-                        {sessions.filter((s) => s.context_management_enabled).length} / {sessions.length}
-                        {sessions.length > 0 && (
-                          <span className="text-muted-foreground font-normal"> with CM</span>
-                        )}
-                      </span>
+                  <div className="p-3 rounded-lg border border-amber-600/50 bg-amber-500/10">
+                    <div className="flex gap-2 items-start">
+                      <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                      <p className="text-sm text-amber-900 dark:text-amber-400">
+                        This is a global setting that applies to all clients by default.
+                        Indexing tools give AI clients the ability to read any file on the system
+                        (by indexing it) and run arbitrary scripts on disk (in a sandbox, indexing the output).
+                        This may not be appropriate for all clients &mdash; consider using per-client
+                        overrides for fine-grained control.
+                      </p>
                     </div>
                   </div>
                 </CardContent>
@@ -353,11 +438,11 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                     <div className="p-2 space-y-1">
                       {sessions.map((s) => (
                         <div
-                          key={s.client_id}
-                          onClick={() => setSelectedSessionId(s.client_id)}
+                          key={s.session_id}
+                          onClick={() => setSelectedSessionId(s.session_id)}
                           className={cn(
                             "flex flex-col gap-1 p-3 rounded-md cursor-pointer",
-                            selectedSessionId === s.client_id
+                            selectedSessionId === s.session_id
                               ? "bg-accent"
                               : "hover:bg-muted"
                           )}
@@ -366,26 +451,18 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                             <p className="text-sm font-medium truncate flex-1">
                               {s.client_name || s.client_id}
                             </p>
-                            {s.context_management_enabled ? (
-                              <Badge variant="success" className="text-[10px] px-1.5 py-0 shrink-0">
-                                CM on
-                              </Badge>
-                            ) : (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
-                                CM off
-                              </Badge>
-                            )}
-                          </div>
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-xs text-muted-foreground truncate">
-                              {s.initialized_servers} server{s.initialized_servers !== 1 ? "s" : ""}
-                              {s.failed_servers > 0 ? ` (${s.failed_servers} failed)` : ""}
-                              {" "}&middot; {s.total_tools} tools
-                            </p>
                             <span className="text-[10px] text-muted-foreground shrink-0">
                               {formatDuration(s.duration_secs)}
                             </span>
                           </div>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {s.initialized_servers} server{s.initialized_servers !== 1 ? "s" : ""}
+                            {s.failed_servers > 0 ? ` (${s.failed_servers} failed)` : ""}
+                            {s.context_management_enabled
+                              ? <>{" "}&middot; {s.cm_activated_tools}/{s.cm_total_tools} tools exposed</>
+                              : <>{" "}&middot; {s.total_tools} tools</>
+                            }
+                          </p>
                         </div>
                       ))}
                     </div>
@@ -398,82 +475,301 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
               {/* Session Detail */}
               <ResizablePanel defaultSize={65}>
                 {selectedSession ? (
-                  <ScrollArea className="h-full">
-                    <div className="p-6 space-y-4">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <h2 className="text-lg font-bold">
+                    <div className="flex flex-col h-full">
+                      <div className="flex-shrink-0 p-4 pb-0">
+                        <div className="flex items-center gap-2 mb-3">
+                          <h2 className="text-lg font-bold truncate">
                             {selectedSession.client_name || selectedSession.client_id}
                           </h2>
-                          {selectedSession.context_management_enabled ? (
-                            <Badge variant="success">CM Active</Badge>
-                          ) : (
-                            <Badge variant="secondary">CM Off</Badge>
-                          )}
                         </div>
-                        {selectedSession.client_name && (
-                          <p className="text-sm text-muted-foreground mt-1">
-                            {selectedSession.client_id}
-                          </p>
-                        )}
+                        {selectedSession.context_management_enabled ? (
+                          <Tabs value={sessionDetailTab} onValueChange={setSessionDetailTab}>
+                            <TabsList className="w-fit">
+                              <TabsTrigger value="info">
+                                <Info className="h-3.5 w-3.5 mr-1" />
+                                Info
+                              </TabsTrigger>
+                              <TabsTrigger value="index">
+                                <Database className="h-3.5 w-3.5 mr-1" />
+                                Index
+                              </TabsTrigger>
+                              <TabsTrigger value="query">
+                                <Search className="h-3.5 w-3.5 mr-1" />
+                                Query
+                              </TabsTrigger>
+                              <TabsTrigger value="stats">
+                                <BarChart3 className="h-3.5 w-3.5 mr-1" />
+                                Stats
+                              </TabsTrigger>
+                            </TabsList>
+                          </Tabs>
+                        ) : null}
                       </div>
 
-                      <Card>
-                        <CardHeader className="pb-3">
-                          <CardTitle className="text-sm">Session Info</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="grid grid-cols-2 gap-3 text-sm">
-                            <div>
-                              <span className="text-muted-foreground">Duration:</span>{" "}
-                              <span className="font-medium">{formatDuration(selectedSession.duration_secs)}</span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">Total Tools:</span>{" "}
-                              <span className="font-medium">{selectedSession.total_tools}</span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">Servers:</span>{" "}
-                              <span className="font-medium">
-                                {selectedSession.initialized_servers}
-                                {selectedSession.failed_servers > 0 && (
-                                  <span className="text-destructive"> ({selectedSession.failed_servers} failed)</span>
-                                )}
-                              </span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">Context Management:</span>{" "}
-                              <span className="font-medium">
-                                {selectedSession.context_management_enabled ? "Enabled" : "Disabled"}
-                              </span>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
+                      <ScrollArea className="flex-1 min-h-0">
+                        <div className="p-4 space-y-4">
+                          {/* Info sub-tab (or only content when CM is off) */}
+                          {(sessionDetailTab === "info" || !selectedSession.context_management_enabled) && (
+                            <>
+                              {selectedSession.client_name && (
+                                <p className="text-sm text-muted-foreground">
+                                  {selectedSession.client_id}
+                                </p>
+                              )}
+                              <Card>
+                                <CardHeader className="pb-3">
+                                  <CardTitle className="text-sm">Session Info</CardTitle>
+                                </CardHeader>
+                                <CardContent>
+                                  <div className="grid grid-cols-2 gap-y-3 gap-x-6 text-sm">
+                                    <div>
+                                      <p className="text-muted-foreground text-xs">Duration</p>
+                                      <p className="font-medium">{formatDuration(selectedSession.duration_secs)}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-muted-foreground text-xs">Connected MCP Servers</p>
+                                      <p className="font-medium">
+                                        {selectedSession.initialized_servers}
+                                        {selectedSession.failed_servers > 0 && (
+                                          <span className="text-destructive"> ({selectedSession.failed_servers} failed)</span>
+                                        )}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
 
-                      {selectedSession.context_management_enabled && (
-                        <Card>
-                          <CardHeader className="pb-3">
-                            <CardTitle className="text-sm">Context Management Stats</CardTitle>
-                          </CardHeader>
-                          <CardContent>
-                            <div className="grid grid-cols-2 gap-3 text-sm">
-                              <div>
-                                <span className="text-muted-foreground">Indexed Sources:</span>{" "}
-                                <span className="font-medium">{selectedSession.cm_indexed_sources}</span>
-                              </div>
-                              <div>
-                                <span className="text-muted-foreground">Activated Tools:</span>{" "}
-                                <span className="font-medium">
-                                  {selectedSession.cm_activated_tools} / {selectedSession.cm_total_tools}
-                                </span>
-                              </div>
+                              {selectedSession.context_management_enabled ? (
+                                <Card>
+                                  <CardHeader className="pb-3">
+                                    <CardTitle className="text-sm">Tool Compression</CardTitle>
+                                    <CardDescription>
+                                      Tools exceeding the catalog threshold are hidden from the client and discoverable via search.
+                                    </CardDescription>
+                                  </CardHeader>
+                                  <CardContent>
+                                    <div className="grid grid-cols-2 gap-y-3 gap-x-6 text-sm">
+                                      <div>
+                                        <p className="text-muted-foreground text-xs">Exposed to Client</p>
+                                        <p className="font-medium">
+                                          {selectedSession.cm_activated_tools} of {selectedSession.cm_total_tools} tools
+                                        </p>
+                                      </div>
+                                      <div>
+                                        <p className="text-muted-foreground text-xs">Hidden (Deferred)</p>
+                                        <p className="font-medium">
+                                          {selectedSession.cm_total_tools - selectedSession.cm_activated_tools} tools
+                                        </p>
+                                      </div>
+                                      <div>
+                                        <p className="text-muted-foreground text-xs">Catalog Threshold</p>
+                                        <p className="font-medium">
+                                          {formatBytes(selectedSession.cm_catalog_threshold_bytes)}
+                                        </p>
+                                      </div>
+                                      <div>
+                                        <p className="text-muted-foreground text-xs">Indexed Sources</p>
+                                        <p className="font-medium">{selectedSession.cm_indexed_sources}</p>
+                                      </div>
+                                      <div>
+                                        <p className="text-muted-foreground text-xs">Indexing Tools</p>
+                                        <p className="font-medium">
+                                          {selectedSession.cm_indexing_tools_enabled ? "Enabled" : "Disabled"}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </CardContent>
+                                </Card>
+                              ) : (
+                                <Card>
+                                  <CardHeader className="pb-3">
+                                    <CardTitle className="text-sm">Tool Compression</CardTitle>
+                                  </CardHeader>
+                                  <CardContent>
+                                    <p className="text-sm text-muted-foreground">
+                                      Disabled for this session. All {selectedSession.total_tools} tools are sent to the client without compression.
+                                    </p>
+                                  </CardContent>
+                                </Card>
+                              )}
+                            </>
+                          )}
+
+                          {/* Index sub-tab */}
+                          {sessionDetailTab === "index" && selectedSession.context_management_enabled && (
+                            <Card>
+                              <CardHeader className="pb-3">
+                                <div className="flex items-center justify-between">
+                                  <CardTitle className="text-sm">Catalog Index</CardTitle>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => loadCatalogSources(selectedSession.session_id)}
+                                    className="h-7 w-7 p-0"
+                                    disabled={catalogSourcesLoading}
+                                  >
+                                    {catalogSourcesLoading ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <RefreshCw className="h-3.5 w-3.5" />
+                                    )}
+                                  </Button>
+                                </div>
+                                <CardDescription>
+                                  {catalogSources.length} source{catalogSources.length !== 1 ? "s" : ""} indexed
+                                  {" "}&middot; {catalogSources.filter((s) => s.activated).length} activated
+                                </CardDescription>
+                              </CardHeader>
+                              <CardContent>
+                                {catalogSourcesLoading && catalogSources.length === 0 ? (
+                                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Loading index...
+                                  </div>
+                                ) : catalogSources.length === 0 ? (
+                                  <p className="text-sm text-muted-foreground">No sources indexed yet.</p>
+                                ) : (
+                                  <>
+                                    <div className="space-y-1">
+                                      {catalogSources.map((source) => (
+                                        <div
+                                          key={source.source_label}
+                                          className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-md text-sm hover:bg-muted"
+                                        >
+                                          <code className="text-xs truncate min-w-0">
+                                            {source.source_label}
+                                          </code>
+                                          <div className="flex items-center gap-2 shrink-0">
+                                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                              {source.item_type}
+                                            </Badge>
+                                            {source.activated ? (
+                                              <Badge variant="success" className="text-[10px] px-1.5 py-0">
+                                                active
+                                              </Badge>
+                                            ) : (
+                                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                              deferred
+                                            </Badge>
+                                          )}
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-6 w-6 p-0"
+                                            title={`Search in ${source.source_label}`}
+                                            onClick={() => {
+                                              setSearchQuery(source.source_label)
+                                              setSearchResults(null)
+                                              setSessionDetailTab("query")
+                                            }}
+                                          >
+                                            <Search className="h-3 w-3" />
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                        </div>
+                                      </>
+                                )}
+                              </CardContent>
+                            </Card>
+                          )}
+
+                          {/* Query sub-tab */}
+                          {sessionDetailTab === "query" && selectedSession.context_management_enabled && (
+                            <div className="space-y-4">
+                              <Card>
+                                <CardHeader className="pb-3">
+                                  <CardTitle className="text-sm">Search Index</CardTitle>
+                                  <CardDescription>
+                                    Search the FTS5 index for this session using batch execute.
+                                  </CardDescription>
+                                </CardHeader>
+                                <CardContent className="space-y-3">
+                                  <div className="flex gap-2">
+                                    <Input
+                                      placeholder="Search query..."
+                                      value={searchQuery}
+                                      onChange={(e) => setSearchQuery(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") runSearch(selectedSession.session_id)
+                                      }}
+                                      className="flex-1"
+                                    />
+                                    <Button
+                                      size="sm"
+                                      onClick={() => runSearch(selectedSession.session_id)}
+                                      disabled={searchLoading || !searchQuery.trim()}
+                                    >
+                                      {searchLoading ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                                      ) : (
+                                        <Search className="h-3.5 w-3.5 mr-1" />
+                                      )}
+                                      Search
+                                    </Button>
+                                  </div>
+                                </CardContent>
+                              </Card>
+
+                              {searchResults !== null && (
+                                <Card>
+                                  <CardHeader className="pb-3">
+                                    <CardTitle className="text-sm">Results</CardTitle>
+                                  </CardHeader>
+                                  <CardContent>
+                                    <div className="prose prose-sm dark:prose-invert max-w-none bg-muted/50 rounded-md p-3 max-h-[400px] overflow-y-auto [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:rounded [&_code]:text-xs [&_p]:my-1 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
+                                      <Markdown remarkPlugins={[remarkGfm]}>{searchResults}</Markdown>
+                                    </div>
+                                  </CardContent>
+                                </Card>
+                              )}
                             </div>
-                          </CardContent>
-                        </Card>
-                      )}
-                    </div>
-                  </ScrollArea>
+                          )}
+
+                          {/* Stats sub-tab */}
+                          {sessionDetailTab === "stats" && selectedSession.context_management_enabled && (
+                            <Card>
+                              <CardHeader className="pb-3">
+                                <div className="flex items-center justify-between">
+                                  <CardTitle className="text-sm">Context-Mode Stats</CardTitle>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => loadContextStats(selectedSession.session_id)}
+                                    className="h-7 w-7 p-0"
+                                    disabled={contextStatsLoading}
+                                  >
+                                    {contextStatsLoading ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <RefreshCw className="h-3.5 w-3.5" />
+                                    )}
+                                  </Button>
+                                </div>
+                                <CardDescription>
+                                  Each refresh calls ctx_stats which counts towards the session stats.
+                                </CardDescription>
+                              </CardHeader>
+                              <CardContent>
+                                {contextStatsLoading && !contextStats ? (
+                                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Loading stats...
+                                  </div>
+                                ) : contextStats ? (
+                                  <div className="prose prose-sm dark:prose-invert max-w-none bg-muted/50 rounded-md p-3 [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:rounded [&_code]:text-xs [&_p]:my-1 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
+                                    <Markdown remarkPlugins={[remarkGfm]}>{contextStats}</Markdown>
+                                  </div>
+                                ) : (
+                                  <p className="text-sm text-muted-foreground">No stats available.</p>
+                                )}
+                              </CardContent>
+                            </Card>
+                        )}
+                      </div>
+                    </ScrollArea>
+                  </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
                     <BookText className="h-12 w-12 opacity-30" />
@@ -491,45 +787,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
         <TabsContent value="settings" className="flex-1 min-h-0 mt-4">
           {config && (
             <div className="space-y-4 max-w-2xl">
-              {/* Enable/Disable */}
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Enable Context Management</CardTitle>
-                    <Switch
-                      checked={config.enabled}
-                      onCheckedChange={(enabled) => updateField("enabled", enabled)}
-                      disabled={saving}
-                    />
-                  </div>
-                  <CardDescription>
-                    Enable context management globally for all clients that don't have a per-client override.
-                  </CardDescription>
-                </CardHeader>
-              </Card>
-
-              {/* Indexing Tools */}
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Indexing Tools</CardTitle>
-                    <Switch
-                      checked={config.indexing_tools}
-                      onCheckedChange={(v) => updateField("indexingTools", v)}
-                      disabled={saving}
-                    />
-                  </div>
-                  <CardDescription>
-                    Expose additional tools to clients:{" "}
-                    <code className="px-1 py-0.5 rounded bg-muted text-xs">ctx_execute</code> lets
-                    clients run code in a sandboxed environment to process large outputs without
-                    flooding their context window, and{" "}
-                    <code className="px-1 py-0.5 rounded bg-muted text-xs">ctx_search</code> lets
-                    clients search through previously indexed catalogs and compressed tool responses.
-                  </CardDescription>
-                </CardHeader>
-              </Card>
-
               {/* Catalog Threshold */}
               <Card>
                 <CardHeader>
@@ -560,6 +817,15 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                       min={0}
                     />
                     <span className="text-sm text-muted-foreground">bytes</span>
+                    {config.catalog_threshold_bytes !== 50000 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => updateField("catalogThresholdBytes", 50000)}
+                      >
+                        Reset to default
+                      </Button>
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
                     Default: 50,000 bytes. Lower values compress more aggressively. Set to 0 to always compress.
@@ -597,17 +863,199 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                       min={0}
                     />
                     <span className="text-sm text-muted-foreground">bytes</span>
+                    {config.response_threshold_bytes !== 10000 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => updateField("responseThresholdBytes", 10000)}
+                      >
+                        Reset to default
+                      </Button>
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
                     Default: 10,000 bytes. Set higher to compress fewer responses. Set to 0 to always compress.
                   </p>
                 </CardContent>
               </Card>
+
+              {/* Compression Preview */}
+              <CompressionPreview initialThreshold={config.catalog_threshold_bytes} />
             </div>
           )}
         </TabsContent>
       </Tabs>
     </div>
+  )
+}
+
+function CompressionPreview({ initialThreshold }: { initialThreshold: number }) {
+  const [threshold, setThreshold] = useState(initialThreshold)
+  const [preview, setPreview] = useState<CatalogCompressionPreview | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const fetchPreview = useCallback(async (bytes: number) => {
+    setLoading(true)
+    try {
+      const result = await invoke<CatalogCompressionPreview>("preview_catalog_compression", {
+        catalogThresholdBytes: bytes,
+      } satisfies PreviewCatalogCompressionParams)
+      setPreview(result)
+    } catch (e) {
+      console.error("Failed to load compression preview:", e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // Load on mount
+  useEffect(() => {
+    fetchPreview(initialThreshold)
+  }, [initialThreshold, fetchPreview])
+
+  // Debounced fetch on slider change
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchPreview(threshold)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [threshold, fetchPreview])
+
+  const savings = preview
+    ? Math.round((1 - preview.compressed_size / preview.uncompressed_size) * 100)
+    : 0
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Compression Preview</CardTitle>
+        <CardDescription>
+          Drag the slider to see how different thresholds affect the welcome message sent to AI clients.
+          Uses mock server data for preview.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Slider */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Threshold</span>
+            <span className="font-mono">{formatBytes(threshold)}</span>
+          </div>
+          <input
+            type="range"
+            value={threshold}
+            onChange={(e) => setThreshold(Number(e.target.value))}
+            min={0}
+            max={100000}
+            step={1000}
+            className="w-full"
+          />
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>0 (max compression)</span>
+            <span>100 KB (no compression)</span>
+          </div>
+        </div>
+
+        {/* Stats bar */}
+        {preview && (
+          <div className="flex flex-wrap gap-3 text-sm">
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Uncompressed:</span>
+              <span className="font-mono">{formatBytes(preview.uncompressed_size)}</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Compressed:</span>
+              <span className="font-mono">{formatBytes(preview.compressed_size)}</span>
+            </div>
+            {savings > 0 && (
+              <Badge variant="outline" className="text-green-600 border-green-600/30">
+                {savings}% saved
+              </Badge>
+            )}
+            {preview.compressed_descriptions_count > 0 && (
+              <Badge variant="outline" className="text-yellow-600 border-yellow-600/30">
+                {preview.compressed_descriptions_count} compressed
+              </Badge>
+            )}
+            {preview.deferred_items_count > 0 && (
+              <Badge variant="outline" className="text-orange-600 border-orange-600/30">
+                {preview.deferred_items_count} deferred
+              </Badge>
+            )}
+            {preview.truncated_servers_count > 0 && (
+              <Badge variant="outline" className="text-red-600 border-red-600/30">
+                {preview.truncated_servers_count} truncated
+              </Badge>
+            )}
+          </div>
+        )}
+
+        {/* Side-by-side preview */}
+        {preview && (
+          <ResizablePanelGroup direction="horizontal" className="rounded-md border min-h-[300px]">
+            <ResizablePanel defaultSize={50} minSize={20}>
+              <div className="h-full flex flex-col">
+                <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
+                  <span>Uncompressed</span>
+                  <span className="font-mono">{formatBytes(preview.uncompressed_size)}</span>
+                </div>
+                <ScrollArea className="flex-1 p-3">
+                  <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{preview.welcome_message_uncompressed}</pre>
+                </ScrollArea>
+              </div>
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel defaultSize={50} minSize={20}>
+              <div className="h-full flex flex-col">
+                <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
+                  <span>Compressed</span>
+                  <span className="font-mono">{formatBytes(preview.compressed_size)}</span>
+                </div>
+                <ScrollArea className="flex-1 p-3">
+                  <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{preview.welcome_message}</pre>
+                </ScrollArea>
+              </div>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        )}
+
+        {/* Tool list */}
+        {preview && preview.tools.length > 0 && (
+          <div>
+            <p className="text-sm font-medium mb-2">Tool Compression States</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+              {preview.tools.map((tool) => (
+                <div key={tool.name} className="flex items-center gap-2 text-xs py-0.5">
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[10px] px-1.5 py-0 min-w-[70px] justify-center",
+                      tool.compression_state === "visible" && "text-green-600 border-green-600/30",
+                      tool.compression_state === "compressed" && "text-yellow-600 border-yellow-600/30",
+                      tool.compression_state === "deferred" && "text-orange-600 border-orange-600/30",
+                      tool.compression_state === "truncated" && "text-red-600 border-red-600/30",
+                    )}
+                  >
+                    {tool.compression_state}
+                  </Badge>
+                  <span className="font-mono truncate">{tool.name}</span>
+                  {tool.is_virtual && (
+                    <span className="text-muted-foreground">(virtual)</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {loading && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Computing...
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -618,4 +1066,13 @@ function formatDuration(secs: number): string {
   const hrs = Math.floor(mins / 60)
   const remainMins = mins % 60
   return `${hrs}h ${remainMins}m`
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B"
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`
+  const mb = kb / 1024
+  return `${mb.toFixed(1)} MB`
 }

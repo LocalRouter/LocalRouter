@@ -85,7 +85,7 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
     fn check_permissions(
         &self,
         state: &dyn VirtualSessionState,
-        _tool_name: &str,
+        tool_name: &str,
         session_approved: bool,
         session_denied: bool,
     ) -> VirtualFirewallResult {
@@ -95,6 +95,17 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
             .expect("wrong state type for MarketplaceVirtualServer");
 
         let decision = access_control::check_marketplace_access(&state.permission);
+
+        // Search tools are read-only and never need approval
+        if lr_marketplace::is_marketplace_search_tool(tool_name) {
+            let result = match decision {
+                AccessDecision::Deny => FirewallCheckResult::Deny,
+                _ => FirewallCheckResult::Allow,
+            };
+            return VirtualFirewallResult::Standard(result);
+        }
+
+        // Install tools go through normal permission flow
         let result = match decision {
             AccessDecision::Allow => FirewallCheckResult::Allow,
             AccessDecision::Deny => FirewallCheckResult::Deny,
@@ -149,6 +160,7 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
             content: "Use marketplace tools to discover and install new MCP servers and skills.\n"
                 .to_string(),
             tool_names: Vec::new(), // populated by gateway
+            priority: 20,
         })
     }
 

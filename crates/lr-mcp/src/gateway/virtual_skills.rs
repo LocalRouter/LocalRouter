@@ -195,6 +195,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             section_title: "Skills".to_string(),
             content,
             tool_names: Vec::new(), // populated by gateway
+            priority: 30,
         })
     }
 

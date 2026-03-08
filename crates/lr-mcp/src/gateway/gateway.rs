@@ -23,7 +23,9 @@ use super::virtual_server::VirtualMcpServer;
 
 /// MCP Gateway - Unified endpoint for multiple MCP servers
 pub struct McpGateway {
-    /// Active sessions (client_id -> session)
+    /// Active sessions (session_key -> session)
+    /// For SSE connections, session_key is a per-connection UUID.
+    /// For non-SSE connections, session_key defaults to client_id.
     pub(crate) sessions: Arc<DashMap<String, Arc<RwLock<GatewaySession>>>>,
 
     /// MCP server manager
@@ -42,6 +44,7 @@ pub struct McpGateway {
         Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
 
     /// Router for LLM provider access (for sampling/createMessage support)
+    #[allow(dead_code)]
     pub(crate) router: Arc<Router>,
 
     /// Elicitation manager for handling structured user input requests
@@ -150,10 +153,12 @@ impl McpGateway {
                     section_title: vs.display_name().to_string(),
                     content: String::new(),
                     tool_names,
+                    priority: 50,
                 });
             }
         }
 
+        result.sort_by_key(|v| v.priority);
         result
     }
 
@@ -262,7 +267,6 @@ impl McpGateway {
         &self,
         client_id: &str,
         allowed_servers: Vec<String>,
-        enable_deferred_loading: bool,
         roots: Vec<crate::protocol::Root>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
@@ -273,8 +277,8 @@ impl McpGateway {
         };
         self.handle_request_with_skills(
             client_id,
+            None, // no session_id, uses client_id as session key
             allowed_servers,
-            enable_deferred_loading,
             roots,
             mcp_permissions,
             lr_config::SkillsPermissions::default(),
@@ -288,12 +292,16 @@ impl McpGateway {
     }
 
     /// Handle an MCP gateway request with skill access
+    ///
+    /// `session_id` is an optional per-connection identifier (UUID). When provided,
+    /// it is used as the session key, allowing multiple simultaneous connections
+    /// from the same client. When `None`, `client_id` is used as the session key.
     #[allow(clippy::too_many_arguments)]
     pub async fn handle_request_with_skills(
         &self,
         client_id: &str,
+        session_id: Option<&str>,
         allowed_servers: Vec<String>,
-        enable_deferred_loading: bool,
         roots: Vec<crate::protocol::Root>,
         mcp_permissions: lr_config::McpPermissions,
         skills_permissions: lr_config::SkillsPermissions,
@@ -304,21 +312,35 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
-        let request_id = request.id.clone();
+        let _request_id = request.id.clone();
         let is_broadcast = should_broadcast(&method);
+        let session_key = session_id.unwrap_or(client_id);
 
-        tracing::info!(
-            "Gateway handle_request: client_id={}, method={}, request_id={:?}, is_broadcast={}, servers={}",
-            client_id,
+        tracing::debug!(
+            "Gateway handle_request: client_id={}, session_key={}, method={}, is_broadcast={}, servers={}",
+            &client_id[..8.min(client_id.len())],
+            &session_key[..8.min(session_key.len())],
             method,
-            request_id,
             is_broadcast,
             allowed_servers.len()
         );
 
+        // For initialize requests, always start with a fresh session.
+        // This prevents lock contention with any previous task that may still
+        // be running on the old session (e.g., from a replaced SSE connection).
+        // The old task continues on its orphaned Arc but won't block new tasks.
+        if method == "initialize" {
+            if self.sessions.remove(session_key).is_some() {
+                tracing::info!(
+                    "Gateway: removed stale session for session_key={} before re-initialize",
+                    session_key
+                );
+            }
+        }
+
         // Get or create session
         let session: Arc<RwLock<GatewaySession>> = self
-            .get_or_create_session(client_id, allowed_servers, enable_deferred_loading, roots)
+            .get_or_create_session(session_key, client_id, allowed_servers, roots)
             .await?;
 
         // Build a synthetic Client for virtual server state updates
@@ -389,15 +411,18 @@ impl McpGateway {
     }
 
     /// Get or create a session
+    ///
+    /// `session_key` is used as the DashMap key (UUID for SSE, client_id for non-SSE).
+    /// `client_id` is stored in the session for identification and permission matching.
     async fn get_or_create_session(
         &self,
+        session_key: &str,
         client_id: &str,
         allowed_servers: Vec<String>,
-        enable_deferred_loading: bool,
         roots: Vec<crate::protocol::Root>,
     ) -> AppResult<Arc<RwLock<GatewaySession>>> {
         // Check if session exists
-        if let Some(session) = self.sessions.get(client_id) {
+        if let Some(session) = self.sessions.get(session_key) {
             let session_read = session.read().await;
 
             // Check if expired
@@ -406,7 +431,7 @@ impl McpGateway {
                 drop(session);
 
                 // Remove expired session
-                self.sessions.remove(client_id);
+                self.sessions.remove(session_key);
             } else {
                 // Check if allowed servers changed (e.g. switching between direct/all modes)
                 // If so, drop the stale session and create a fresh one since cached state
@@ -421,37 +446,18 @@ impl McpGateway {
                 if servers_changed {
                     tracing::info!(
                         "Allowed servers changed for session {} - recreating session",
-                        client_id,
+                        session_key,
                     );
                     drop(session);
-                    self.sessions.remove(client_id);
+                    self.sessions.remove(session_key);
                     // Fall through to create new session below
                 } else {
-                    // Update deferred loading setting if it changed
-                    // This allows the Try it out UI to toggle deferred loading between connections
-                    let session_read = session.read().await;
-                    let current_deferred = session_read.deferred_loading_requested;
-                    drop(session_read);
-
-                    if current_deferred != enable_deferred_loading {
-                        let mut session_write = session.write().await;
-                        session_write.deferred_loading_requested = enable_deferred_loading;
-                        // Reset deferred loading state so it can be re-initialized
-                        session_write.deferred_loading = None;
-                        tracing::info!(
-                            "Updated deferred loading setting for session {}: {} -> {}",
-                            client_id,
-                            current_deferred,
-                            enable_deferred_loading
-                        );
-                    }
-
                     return Ok(session.clone());
                 }
             }
         }
 
-        // Create new session (deferred loading will be set up in handle_initialize if supported)
+        // Create new session
         let ttl = Duration::from_secs(self.config.session_ttl_seconds);
         let session_data = GatewaySession::new(
             client_id.to_string(),
@@ -459,7 +465,6 @@ impl McpGateway {
             ttl,
             self.config.cache_ttl_seconds,
             roots,
-            enable_deferred_loading,
         );
 
         let session = Arc::new(RwLock::new(session_data));
@@ -467,7 +472,8 @@ impl McpGateway {
         // Register GLOBAL notification handlers for each server (if not already registered)
         self.register_notification_handlers(&allowed_servers).await;
 
-        self.sessions.insert(client_id.to_string(), session.clone());
+        self.sessions
+            .insert(session_key.to_string(), session.clone());
 
         Ok(session)
     }
@@ -836,30 +842,73 @@ impl McpGateway {
         let allowed_servers = session_read.allowed_servers.clone();
         drop(session_read);
 
-        // Try to start all servers, collecting failures
+        // Start all servers in parallel, collecting failures
         // We continue even if some servers fail to start
-        let mut start_failures: Vec<ServerFailure> = Vec::new();
-        let mut started_servers: Vec<String> = Vec::new();
+        let start_timeout = tokio::time::Duration::from_secs(15);
+        let mut start_futures = Vec::new();
 
         for server_id in &allowed_servers {
+            let server_name = self
+                .server_manager
+                .get_config(server_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| server_id.clone());
+
             if self.server_manager.is_running(server_id) {
-                started_servers.push(server_id.clone());
+                tracing::debug!("Server '{}' already running, skipping start", server_name);
                 continue;
             }
+            let server_id = server_id.clone();
+            let manager = self.server_manager.clone();
+            start_futures.push(async move {
+                tracing::info!("Starting MCP server '{}' for gateway init...", server_name);
+                let start = std::time::Instant::now();
+                let result = tokio::time::timeout(
+                    start_timeout,
+                    manager.start_server(&server_id),
+                )
+                .await;
+                tracing::info!(
+                    "Server '{}' start completed in {:?}: {}",
+                    server_name,
+                    start.elapsed(),
+                    match &result {
+                        Ok(Ok(())) => "success".to_string(),
+                        Ok(Err(e)) => format!("error: {}", e),
+                        Err(_) => "TIMEOUT".to_string(),
+                    }
+                );
+                (server_id, result)
+            });
+        }
 
-            match self.server_manager.start_server(server_id).await {
-                Ok(()) => {
-                    started_servers.push(server_id.clone());
+        // Already-running servers are immediately successful
+        let mut started_servers: Vec<String> = allowed_servers
+            .iter()
+            .filter(|id| self.server_manager.is_running(id))
+            .cloned()
+            .collect();
+        let mut start_failures: Vec<ServerFailure> = Vec::new();
+
+        let results = futures::future::join_all(start_futures).await;
+        for (server_id, result) in results {
+            match result {
+                Ok(Ok(())) => {
+                    started_servers.push(server_id);
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to start MCP server {} during gateway initialization: {}",
-                        server_id,
-                        e
-                    );
+                Ok(Err(e)) => {
                     start_failures.push(ServerFailure {
-                        server_id: server_id.clone(),
+                        server_id,
                         error: e.to_string(),
+                    });
+                }
+                Err(_) => {
+                    start_failures.push(ServerFailure {
+                        server_id,
+                        error: format!(
+                            "Server startup timed out after {}s",
+                            start_timeout.as_secs()
+                        ),
                     });
                 }
             }
@@ -885,7 +934,6 @@ impl McpGateway {
             let instructions = build_gateway_instructions(&InstructionsContext {
                 servers: Vec::new(),
                 unavailable_servers: unavailable,
-                deferred_loading: false,
                 context_management_enabled: false,
                 indexing_tools_enabled: false,
                 catalog_compression: None,
@@ -999,7 +1047,6 @@ impl McpGateway {
                 let instructions = build_gateway_instructions(&InstructionsContext {
                     servers: Vec::new(),
                     unavailable_servers: unavailable,
-                    deferred_loading: false,
                     context_management_enabled: false,
                     indexing_tools_enabled: false,
                     catalog_compression: None,
@@ -1073,146 +1120,16 @@ impl McpGateway {
             session_write.client_capabilities = client_capabilities.clone();
         }
 
-        // Enable deferred loading if requested AND client supports listChanged notifications
-        // The unified MCP gateway acts as a server to the client and sends listChanged notifications
-        // when tools are activated via the search tool. Backend MCP servers don't need to support
-        // listChanged - they just provide their tools normally.
-        let session_read = session.read().await;
-        let should_enable_deferred = session_read.deferred_loading_requested;
-        let client_id_for_log = session_read.client_id.clone();
-        let allowed_servers_for_deferred = session_read.allowed_servers.clone();
-        drop(session_read);
-
-        if should_enable_deferred {
-            // Check if client supports receiving listChanged notifications
-            // For internal-test client (Try it out UI), we skip this check since we know it can handle notifications
-            let is_internal_test = client_id_for_log == "internal-test";
-            let client_supports_tools_list_changed = is_internal_test
-                || client_capabilities
-                    .as_ref()
-                    .map(|caps| caps.supports_tools_list_changed())
-                    .unwrap_or(false);
-
-            if !client_supports_tools_list_changed {
-                tracing::warn!(
-                    "Deferred loading requested for client {} but client does not support tools.listChanged notifications. \
-                     Falling back to normal mode. Client must declare {{ tools: {{ listChanged: true }} }} in initialize capabilities.",
-                    client_id_for_log
-                );
-            } else {
-                tracing::info!(
-                    "Setting up deferred loading for client {}: client supports listChanged, fetching full catalog from backend servers",
-                    client_id_for_log
-                );
-
-                // Note: Servers should already be started from the initialization phase above.
-                // The allowed_servers_for_deferred list only contains successfully started servers.
-                // We skip any that may have stopped in the meantime.
-                let mut active_servers = Vec::new();
-                for server_id in &allowed_servers_for_deferred {
-                    if self.server_manager.is_running(server_id) {
-                        active_servers.push(server_id.clone());
-                    } else {
-                        // Try to restart if needed, but don't fail the whole operation
-                        match self.server_manager.start_server(server_id).await {
-                            Ok(()) => active_servers.push(server_id.clone()),
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to start server {} for deferred loading catalog: {}",
-                                    server_id,
-                                    e
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Fetch full catalog from active backend servers
-                let (tools, _) = self
-                    .fetch_and_merge_tools(
-                        &active_servers,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!(1)),
-                            "tools/list".to_string(),
-                            None,
-                        ),
-                    )
-                    .await
-                    .unwrap_or_default();
-
-                let (resources, _) = self
-                    .fetch_and_merge_resources(
-                        &active_servers,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!(2)),
-                            "resources/list".to_string(),
-                            None,
-                        ),
-                    )
-                    .await
-                    .unwrap_or_default();
-
-                let (prompts, _) = self
-                    .fetch_and_merge_prompts(
-                        &active_servers,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!(3)),
-                            "prompts/list".to_string(),
-                            None,
-                        ),
-                    )
-                    .await
-                    .unwrap_or_default();
-
-                // Check per-type capabilities for resources and prompts
-                let resources_deferred = is_internal_test
-                    || client_capabilities
-                        .as_ref()
-                        .map(|caps| caps.supports_resources_list_changed())
-                        .unwrap_or(false);
-                let prompts_deferred = is_internal_test
-                    || client_capabilities
-                        .as_ref()
-                        .map(|caps| caps.supports_prompts_list_changed())
-                        .unwrap_or(false);
-
-                let mut session_write = session.write().await;
-                session_write.deferred_loading = Some(DeferredLoadingState {
-                    enabled: true,
-                    resources_deferred,
-                    prompts_deferred,
-                    activated_tools: std::collections::HashSet::new(),
-                    full_catalog: tools.clone(),
-                    activated_resources: std::collections::HashSet::new(),
-                    full_resource_catalog: resources.clone(),
-                    activated_prompts: std::collections::HashSet::new(),
-                    full_prompt_catalog: prompts.clone(),
-                    server_instructions: std::collections::HashMap::new(),
-                    server_tool_lists: std::collections::HashMap::new(),
-                });
-
-                tracing::info!(
-                    "Deferred loading enabled for client {}: {} tools, {} resources, {} prompts in catalog",
-                    client_id_for_log,
-                    tools.len(),
-                    resources.len(),
-                    prompts.len(),
-                );
-            } // end of if client_supports_tools_list_changed
-        } // end of if should_enable_deferred
-
         // Build gateway instructions based on the full context
-        let (deferred_state, active_server_ids) = {
+        let (active_server_ids, client_id_for_log) = {
             let session_read = session.read().await;
             (
-                session_read.deferred_loading.clone(),
                 session_read.allowed_servers.clone(),
+                session_read.client_id.clone(),
             )
         };
 
         let virtual_instructions = self.collect_virtual_instructions(&session).await;
-
-        let deferred_enabled = deferred_state.as_ref().map(|d| d.enabled).unwrap_or(false);
 
         // Check if context management is enabled for this session
         let (cm_enabled, cm_indexing_tools, cm_catalog_threshold) = {
@@ -1235,57 +1152,45 @@ impl McpGateway {
             }
         };
 
-        // Get the full catalogs for building instructions.
-        // In deferred mode, we already have them; in normal mode, fetch now.
-        let (tools_catalog, resources_catalog, prompts_catalog) =
-            if let Some(ref ds) = deferred_state {
-                (
-                    ds.full_catalog.clone(),
-                    ds.full_resource_catalog.clone(),
-                    ds.full_prompt_catalog.clone(),
-                )
-            } else {
-                let tools = self
-                    .fetch_and_merge_tools(
-                        &active_server_ids,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!("_instructions_tools")),
-                            "tools/list".to_string(),
-                            None,
-                        ),
-                    )
-                    .await
-                    .map(|(t, _)| t)
-                    .unwrap_or_default();
+        // Fetch the full catalogs for building instructions.
+        let tools_catalog = self
+            .fetch_and_merge_tools(
+                &active_server_ids,
+                JsonRpcRequest::new(
+                    Some(serde_json::json!("_instructions_tools")),
+                    "tools/list".to_string(),
+                    None,
+                ),
+            )
+            .await
+            .map(|(t, _)| t)
+            .unwrap_or_default();
 
-                let resources = self
-                    .fetch_and_merge_resources(
-                        &active_server_ids,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!("_instructions_resources")),
-                            "resources/list".to_string(),
-                            None,
-                        ),
-                    )
-                    .await
-                    .map(|(r, _)| r)
-                    .unwrap_or_default();
+        let resources_catalog = self
+            .fetch_and_merge_resources(
+                &active_server_ids,
+                JsonRpcRequest::new(
+                    Some(serde_json::json!("_instructions_resources")),
+                    "resources/list".to_string(),
+                    None,
+                ),
+            )
+            .await
+            .map(|(r, _)| r)
+            .unwrap_or_default();
 
-                let prompts = self
-                    .fetch_and_merge_prompts(
-                        &active_server_ids,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!("_instructions_prompts")),
-                            "prompts/list".to_string(),
-                            None,
-                        ),
-                    )
-                    .await
-                    .map(|(p, _)| p)
-                    .unwrap_or_default();
-
-                (tools, resources, prompts)
-            };
+        let prompts_catalog = self
+            .fetch_and_merge_prompts(
+                &active_server_ids,
+                JsonRpcRequest::new(
+                    Some(serde_json::json!("_instructions_prompts")),
+                    "prompts/list".to_string(),
+                    None,
+                ),
+            )
+            .await
+            .map(|(p, _)| p)
+            .unwrap_or_default();
 
         let server_infos = self.build_server_instruction_infos(
             &init_results_for_instructions,
@@ -1295,223 +1200,194 @@ impl McpGateway {
         );
         let unavailable = self.build_unavailable_server_infos(&merged.failures);
 
-        // In deferred mode, store per-server instructions and tool lists for server_info tool
-        if deferred_enabled {
-            let mut si_map = std::collections::HashMap::new();
-            let mut tl_map = std::collections::HashMap::new();
-            for info in &server_infos {
-                let slug = super::types::slugify(&info.name);
-
-                // Build annotated tool list
-                let mut items: Vec<String> = Vec::new();
-                for name in &info.tool_names {
-                    items.push(format!("{} (tool)", name));
-                }
-                for name in &info.resource_names {
-                    items.push(format!("{} (resource)", name));
-                }
-                for name in &info.prompt_names {
-                    items.push(format!("{} (prompt)", name));
-                }
-                tl_map.insert(slug.clone(), items);
-
-                // Build XML instruction block
-                let has_content =
-                    info.instructions.is_some() || info.description.is_some();
-                if has_content {
-                    let mut block = format!("<{}>\n", slug);
-                    if let Some(desc) = &info.description {
-                        block.push_str(desc);
-                        if !desc.ends_with('\n') {
-                            block.push('\n');
-                        }
-                    }
-                    if let Some(inst) = &info.instructions {
-                        if info.description.is_some() {
-                            block.push('\n');
-                        }
-                        block.push_str(inst);
-                        if !inst.ends_with('\n') {
-                            block.push('\n');
-                        }
-                    }
-                    block.push_str(&format!("</{}>\n", slug));
-                    si_map.insert(slug, block);
-                }
-            }
-            let mut session_write = session.write().await;
-            if let Some(ref mut ds) = session_write.deferred_loading {
-                ds.server_instructions = si_map;
-                ds.server_tool_lists = tl_map;
-            }
-            drop(session_write);
-        }
-
-        // Context management: index catalog into FTS5 and store activation state
+        // Context management: index catalog into FTS5 and store activation state.
+        // Run in background so it doesn't block the initialize response.
         if cm_enabled {
-            // Index catalog content into context-mode
-            {
-                let session_read = session.read().await;
-                if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
-                    if let Some(cm_state) = state
-                        .as_any()
-                        .downcast_ref::<super::context_mode::ContextModeSessionState>()
-                    {
-                        // Index server-level content
-                        for info in &server_infos {
-                            let content = build_full_server_content(info);
-                            let slug = super::types::slugify(&info.name);
-                            if let Err(e) = cm_state
-                                .call_tool(
-                                    "ctx_index",
-                                    json!({
-                                        "source": format!("catalog:{}", slug),
-                                        "content": content,
-                                    }),
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    "Failed to index catalog for server {}: {}",
-                                    slug,
-                                    e
-                                );
-                            }
-                        }
+            let session_bg = session.clone();
+            let server_infos_bg = server_infos.clone();
+            let tools_catalog_bg = tools_catalog.clone();
+            let resources_catalog_bg = resources_catalog.clone();
+            let prompts_catalog_bg = prompts_catalog.clone();
+            let client_id_bg = client_id_for_log.clone();
 
-                        // Index individual tools
-                        for tool in &tools_catalog {
-                            let content = format!(
-                                "{}: {}\nInput: {}",
-                                tool.name,
-                                tool.description.as_deref().unwrap_or(""),
-                                serde_json::to_string(&tool.input_schema).unwrap_or_default()
-                            );
-                            if let Err(e) = cm_state
-                                .call_tool(
-                                    "ctx_index",
-                                    json!({
-                                        "source": format!("catalog:{}", tool.name),
-                                        "content": content,
-                                    }),
-                                )
-                                .await
-                            {
-                                tracing::warn!("Failed to index tool {}: {}", tool.name, e);
-                            }
-                        }
-
-                        // Index individual resources
-                        for resource in &resources_catalog {
-                            let content = format!(
-                                "{} ({}): {}",
-                                resource.name,
-                                resource.uri,
-                                resource.description.as_deref().unwrap_or("")
-                            );
-                            if let Err(e) = cm_state
-                                .call_tool(
-                                    "ctx_index",
-                                    json!({
-                                        "source": format!("catalog:{}", resource.name),
-                                        "content": content,
-                                    }),
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    "Failed to index resource {}: {}",
-                                    resource.name,
-                                    e
-                                );
-                            }
-                        }
-
-                        // Index individual prompts
-                        for prompt in &prompts_catalog {
-                            let content = format!(
-                                "{}: {}",
-                                prompt.name,
-                                prompt.description.as_deref().unwrap_or("")
-                            );
-                            if let Err(e) = cm_state
-                                .call_tool(
-                                    "ctx_index",
-                                    json!({
-                                        "source": format!("catalog:{}", prompt.name),
-                                        "content": content,
-                                    }),
-                                )
-                                .await
-                            {
-                                tracing::warn!("Failed to index prompt {}: {}", prompt.name, e);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Store catalog state for activation tracking
-            {
-                let mut session_write = session.write().await;
-                if let Some(state) =
-                    session_write.virtual_server_state.get_mut("_context_mode")
+            tokio::spawn(async move {
+                // Timeout the entire indexing task to prevent hangs
+                // if the context-mode subprocess is unresponsive
+                let indexing_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    async {
+                // Index catalog content into context-mode
                 {
-                    if let Some(cm_state) = state
-                        .as_any_mut()
-                        .downcast_mut::<super::context_mode::ContextModeSessionState>()
+                    let session_read = session_bg.read().await;
+                    if let Some(state) =
+                        session_read.virtual_server_state.get("_context_mode")
                     {
-                        // Build catalog_sources map
-                        for info in &server_infos {
-                            let slug = super::types::slugify(&info.name);
-                            cm_state.catalog_sources.insert(
-                                format!("catalog:{}", slug),
-                                super::context_mode::CatalogItemType::ServerWelcome,
-                            );
-                            for name in &info.tool_names {
-                                cm_state.catalog_sources.insert(
-                                    format!("catalog:{}", name),
-                                    super::context_mode::CatalogItemType::Tool,
-                                );
+                        if let Some(cm_state) = state
+                            .as_any()
+                            .downcast_ref::<super::context_mode::ContextModeSessionState>()
+                        {
+                            for info in &server_infos_bg {
+                                let content = build_full_server_content(info);
+                                let slug = super::types::slugify(&info.name);
+                                if let Err(e) = cm_state
+                                    .call_tool(
+                                        "ctx_index",
+                                        json!({
+                                            "source": format!("catalog:{}", slug),
+                                            "content": content,
+                                        }),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "Failed to index catalog for server {}: {}",
+                                        slug, e
+                                    );
+                                }
                             }
-                            for name in &info.resource_names {
-                                cm_state.catalog_sources.insert(
-                                    format!("catalog:{}", name),
-                                    super::context_mode::CatalogItemType::Resource,
+
+                            for tool in &tools_catalog_bg {
+                                let content = format!(
+                                    "{}: {}\nInput: {}",
+                                    tool.name,
+                                    tool.description.as_deref().unwrap_or(""),
+                                    serde_json::to_string(&tool.input_schema)
+                                        .unwrap_or_default()
                                 );
+                                if let Err(e) = cm_state
+                                    .call_tool(
+                                        "ctx_index",
+                                        json!({
+                                            "source": format!("catalog:{}", tool.name),
+                                            "content": content,
+                                        }),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "Failed to index tool {}: {}", tool.name, e
+                                    );
+                                }
                             }
-                            for name in &info.prompt_names {
-                                cm_state.catalog_sources.insert(
-                                    format!("catalog:{}", name),
-                                    super::context_mode::CatalogItemType::Prompt,
+
+                            for resource in &resources_catalog_bg {
+                                let content = format!(
+                                    "{} ({}): {}",
+                                    resource.name,
+                                    resource.uri,
+                                    resource.description.as_deref().unwrap_or("")
                                 );
+                                if let Err(e) = cm_state
+                                    .call_tool(
+                                        "ctx_index",
+                                        json!({
+                                            "source": format!("catalog:{}", resource.name),
+                                            "content": content,
+                                        }),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "Failed to index resource {}: {}",
+                                        resource.name, e
+                                    );
+                                }
+                            }
+
+                            for prompt in &prompts_catalog_bg {
+                                let content = format!(
+                                    "{}: {}",
+                                    prompt.name,
+                                    prompt.description.as_deref().unwrap_or("")
+                                );
+                                if let Err(e) = cm_state
+                                    .call_tool(
+                                        "ctx_index",
+                                        json!({
+                                            "source": format!("catalog:{}", prompt.name),
+                                            "content": content,
+                                        }),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "Failed to index prompt {}: {}",
+                                        prompt.name, e
+                                    );
+                                }
                             }
                         }
-
-                        // Store full catalogs for search-based activation
-                        cm_state.full_tool_catalog = tools_catalog.clone();
-                        cm_state.full_resource_catalog = resources_catalog.clone();
-                        cm_state.full_prompt_catalog = prompts_catalog.clone();
                     }
                 }
-            }
 
-            tracing::info!(
-                "Context management catalog indexed for client {}: {} servers, {} tools, {} resources, {} prompts",
-                client_id_for_log,
-                server_infos.len(),
-                tools_catalog.len(),
-                resources_catalog.len(),
-                prompts_catalog.len(),
-            );
+                // Store catalog state for activation tracking
+                {
+                    let mut session_write = session_bg.write().await;
+                    if let Some(state) =
+                        session_write.virtual_server_state.get_mut("_context_mode")
+                    {
+                        if let Some(cm_state) = state
+                            .as_any_mut()
+                            .downcast_mut::<super::context_mode::ContextModeSessionState>()
+                        {
+                            for info in &server_infos_bg {
+                                let slug = super::types::slugify(&info.name);
+                                cm_state.catalog_sources.insert(
+                                    format!("catalog:{}", slug),
+                                    super::context_mode::CatalogItemType::ServerWelcome,
+                                );
+                                for name in &info.tool_names {
+                                    cm_state.catalog_sources.insert(
+                                        format!("catalog:{}", name),
+                                        super::context_mode::CatalogItemType::Tool,
+                                    );
+                                }
+                                for name in &info.resource_names {
+                                    cm_state.catalog_sources.insert(
+                                        format!("catalog:{}", name),
+                                        super::context_mode::CatalogItemType::Resource,
+                                    );
+                                }
+                                for name in &info.prompt_names {
+                                    cm_state.catalog_sources.insert(
+                                        format!("catalog:{}", name),
+                                        super::context_mode::CatalogItemType::Prompt,
+                                    );
+                                }
+                            }
+
+                            cm_state.full_tool_catalog = tools_catalog_bg;
+                            cm_state.full_resource_catalog = resources_catalog_bg;
+                            cm_state.full_prompt_catalog = prompts_catalog_bg;
+                        }
+                    }
+                }
+
+                    } // end async block for timeout
+                ).await; // end tokio::time::timeout
+
+                match indexing_result {
+                    Ok(()) => {
+                        tracing::info!(
+                            "Context management catalog indexed for client {}: {} servers",
+                            &client_id_bg[..8.min(client_id_bg.len())],
+                            server_infos_bg.len(),
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "Context management catalog indexing timed out for client {}",
+                            &client_id_bg[..8.min(client_id_bg.len())],
+                        );
+                    }
+                }
+            });
         }
 
         // Build instructions context
-        let is_internal_test = client_id_for_log == "internal-test";
         let mut instructions_ctx = InstructionsContext {
             servers: server_infos,
             unavailable_servers: unavailable,
-            deferred_loading: deferred_enabled,
             context_management_enabled: cm_enabled,
             indexing_tools_enabled: cm_indexing_tools,
             catalog_compression: None,
@@ -1520,21 +1396,11 @@ impl McpGateway {
 
         // Context management: compute compression plan
         if cm_enabled {
-            let supports_tools_changed = is_internal_test
-                || client_capabilities
-                    .as_ref()
-                    .map(|caps| caps.supports_tools_list_changed())
-                    .unwrap_or(false);
-            let supports_resources_changed = is_internal_test
-                || client_capabilities
-                    .as_ref()
-                    .map(|caps| caps.supports_resources_list_changed())
-                    .unwrap_or(false);
-            let supports_prompts_changed = is_internal_test
-                || client_capabilities
-                    .as_ref()
-                    .map(|caps| caps.supports_prompts_list_changed())
-                    .unwrap_or(false);
+            // Context-mode provides its own discovery via ctx_search, so always
+            // enable deferral when it's active — don't require client listChanged support.
+            let supports_tools_changed = true;
+            let supports_resources_changed = true;
+            let supports_prompts_changed = true;
 
             instructions_ctx.catalog_compression = Some(compute_catalog_compression_plan(
                 &instructions_ctx,
@@ -1547,12 +1413,16 @@ impl McpGateway {
 
         let instructions = build_gateway_instructions(&instructions_ctx);
 
-        // Store instructions in merged capabilities
-        if instructions.is_some() {
+        // Store instructions and catalog compression plan in session
+        {
             let mut session_write = session.write().await;
-            if let Some(ref mut mc) = session_write.merged_capabilities {
-                mc.instructions = instructions.clone();
+            if instructions.is_some() {
+                if let Some(ref mut mc) = session_write.merged_capabilities {
+                    mc.instructions = instructions.clone();
+                }
             }
+            // Store compression plan so tools/resources/prompts list handlers can filter deferred items
+            session_write.catalog_compression = instructions_ctx.catalog_compression.take();
         }
 
         // Build response
@@ -1613,7 +1483,7 @@ impl McpGateway {
         let mut to_remove = Vec::new();
 
         for entry in self.sessions.iter() {
-            let client_id = entry.key().clone();
+            let session_key = entry.key().clone();
             let session = entry.value().clone();
 
             // Try to acquire read lock with timeout
@@ -1624,48 +1494,56 @@ impl McpGateway {
             };
 
             if is_expired {
-                to_remove.push(client_id);
+                to_remove.push(session_key);
             }
         }
 
-        for client_id in to_remove {
-            self.sessions.remove(&client_id);
-            tracing::info!("Removed expired gateway session for client: {}", client_id);
+        for session_key in to_remove {
+            self.sessions.remove(&session_key);
+            tracing::info!("Removed expired gateway session: {}", session_key);
         }
     }
 
-    /// Invalidate tools cache for a session (for notification handling)
+    /// Invalidate tools cache for all sessions belonging to a client
     pub fn invalidate_tools_cache(&self, client_id: &str) {
-        if let Some(session) = self.sessions.get(client_id) {
-            if let Ok(mut session_write) = session.try_write() {
-                session_write.invalidate_tools_cache();
+        for entry in self.sessions.iter() {
+            if let Ok(mut session_write) = entry.value().try_write() {
+                if session_write.client_id == client_id {
+                    session_write.invalidate_tools_cache();
+                }
             }
         }
     }
 
-    /// Invalidate resources cache for a session
+    /// Invalidate resources cache for all sessions belonging to a client
     pub fn invalidate_resources_cache(&self, client_id: &str) {
-        if let Some(session) = self.sessions.get(client_id) {
-            if let Ok(mut session_write) = session.try_write() {
-                session_write.invalidate_resources_cache();
+        for entry in self.sessions.iter() {
+            if let Ok(mut session_write) = entry.value().try_write() {
+                if session_write.client_id == client_id {
+                    session_write.invalidate_resources_cache();
+                }
             }
         }
     }
 
-    /// Invalidate prompts cache for a session
+    /// Invalidate prompts cache for all sessions belonging to a client
     pub fn invalidate_prompts_cache(&self, client_id: &str) {
-        if let Some(session) = self.sessions.get(client_id) {
-            if let Ok(mut session_write) = session.try_write() {
-                session_write.invalidate_prompts_cache();
+        for entry in self.sessions.iter() {
+            if let Ok(mut session_write) = entry.value().try_write() {
+                if session_write.client_id == client_id {
+                    session_write.invalidate_prompts_cache();
+                }
             }
         }
     }
 
-    /// Invalidate all caches for a session
+    /// Invalidate all caches for all sessions belonging to a client
     pub fn invalidate_all_caches(&self, client_id: &str) {
-        if let Some(session) = self.sessions.get(client_id) {
-            if let Ok(mut session_write) = session.try_write() {
-                session_write.invalidate_all_caches();
+        for entry in self.sessions.iter() {
+            if let Ok(mut session_write) = entry.value().try_write() {
+                if session_write.client_id == client_id {
+                    session_write.invalidate_all_caches();
+                }
             }
         }
     }
@@ -1687,21 +1565,22 @@ impl McpGateway {
         notify: impl Fn(&str, bool, bool, bool),
     ) {
         for entry in self.sessions.iter() {
-            let client_id = entry.key();
             let session = entry.value();
-
-            // Find matching client in config
-            let Some(client) = clients.iter().find(|c| c.id == *client_id) else {
-                continue; // Client may have been deleted
-            };
 
             // Try to acquire write lock (non-blocking to avoid deadlocks)
             let Ok(mut session_write) = session.try_write() else {
                 tracing::debug!(
                     "Could not acquire session lock for permission check: {}",
-                    client_id
+                    entry.key()
                 );
                 continue;
+            };
+
+            let client_id = session_write.client_id.clone();
+
+            // Find matching client in config
+            let Some(client) = clients.iter().find(|c| c.id == client_id) else {
+                continue; // Client may have been deleted
             };
 
             let old_mcp = &session_write.mcp_permissions;
@@ -1761,7 +1640,7 @@ impl McpGateway {
             session_write.skills_permissions = new_skills.clone();
 
             // Call notify callback
-            notify(client_id, tools_changed, resources_changed, prompts_changed);
+            notify(&client_id, tools_changed, resources_changed, prompts_changed);
         }
     }
 
@@ -1770,15 +1649,34 @@ impl McpGateway {
         self.elicitation_manager.clone()
     }
 
-    /// Get a session by client ID
-    pub fn get_session(&self, client_id: &str) -> Option<Arc<RwLock<GatewaySession>>> {
-        self.sessions.get(client_id).map(|s| s.clone())
+    /// Get a session by session key (direct DashMap lookup)
+    pub fn get_session(&self, session_key: &str) -> Option<Arc<RwLock<GatewaySession>>> {
+        self.sessions.get(session_key).map(|s| s.clone())
+    }
+
+    /// Get all sessions for a client ID (iterates all sessions)
+    pub fn get_sessions_for_client(
+        &self,
+        client_id: &str,
+    ) -> Vec<(String, Arc<RwLock<GatewaySession>>)> {
+        self.sessions
+            .iter()
+            .filter_map(|entry| {
+                if let Ok(session_read) = entry.value().try_read() {
+                    if session_read.client_id == client_id {
+                        return Some((entry.key().clone(), entry.value().clone()));
+                    }
+                }
+                None
+            })
+            .collect()
     }
 
     /// List all active sessions with stats for the UI.
     pub async fn list_active_sessions(&self) -> Vec<ActiveSessionInfo> {
         let mut sessions = Vec::new();
         for entry in self.sessions.iter() {
+            let session_key = entry.key().clone();
             let session = entry.value().read().await;
             if session.is_expired() {
                 continue;
@@ -1787,7 +1685,7 @@ impl McpGateway {
             let duration_secs = session.created_at.elapsed().as_secs();
 
             // Extract context management stats
-            let (cm_enabled, cm_indexed_sources, cm_activated_tools, cm_total_tools) = {
+            let (cm_enabled, cm_indexed_sources, cm_activated_tools, cm_total_tools, cm_catalog_threshold_bytes, cm_indexing_tools_enabled) = {
                 if let Some(state) = session.virtual_server_state.get("_context_mode") {
                     if let Some(cm) = state.as_any().downcast_ref::<super::context_mode::ContextModeSessionState>() {
                         (
@@ -1795,12 +1693,14 @@ impl McpGateway {
                             cm.catalog_sources.len(),
                             cm.activated_tools.len(),
                             cm.full_tool_catalog.len(),
+                            cm.catalog_threshold_bytes,
+                            cm.indexing_tools_enabled,
                         )
                     } else {
-                        (false, 0, 0, 0)
+                        (false, 0, 0, 0, 0, false)
                     }
                 } else {
-                    (false, 0, 0, 0)
+                    (false, 0, 0, 0, 0, false)
                 }
             };
 
@@ -1809,6 +1709,7 @@ impl McpGateway {
             let total_tools = session.tool_mapping.len();
 
             sessions.push(ActiveSessionInfo {
+                session_id: session_key,
                 client_id: session.client_id.clone(),
                 client_name: session.client_name.clone(),
                 duration_secs,
@@ -1819,15 +1720,155 @@ impl McpGateway {
                 cm_indexed_sources,
                 cm_activated_tools,
                 cm_total_tools,
+                cm_catalog_threshold_bytes,
+                cm_indexing_tools_enabled,
             });
         }
         sessions
+    }
+
+    /// Terminate a session by session key (direct lookup).
+    pub async fn terminate_session(&self, session_key: &str) -> Result<(), String> {
+        if self.sessions.remove(session_key).is_some() {
+            tracing::info!(
+                "Gateway: terminated session for session_key={}",
+                session_key
+            );
+            Ok(())
+        } else {
+            Err(format!("Session not found: {session_key}"))
+        }
+    }
+
+    /// Terminate all sessions for a given client ID.
+    pub async fn terminate_sessions_for_client(&self, client_id: &str) -> usize {
+        let keys_to_remove: Vec<String> = self
+            .sessions
+            .iter()
+            .filter_map(|entry| {
+                if let Ok(session_read) = entry.value().try_read() {
+                    if session_read.client_id == client_id {
+                        return Some(entry.key().clone());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        let count = keys_to_remove.len();
+        for key in keys_to_remove {
+            self.sessions.remove(&key);
+        }
+        if count > 0 {
+            tracing::info!(
+                "Gateway: terminated {} session(s) for client_id={}",
+                count,
+                client_id
+            );
+        }
+        count
+    }
+
+    /// Get catalog sources for a specific session by session key.
+    pub async fn get_session_context_sources(
+        &self,
+        session_key: &str,
+    ) -> Result<Vec<CatalogSourceEntry>, String> {
+        let session_arc = self
+            .sessions
+            .get(session_key)
+            .ok_or_else(|| format!("Session not found: {session_key}"))?
+            .clone();
+        let session = session_arc.read().await;
+
+        let state = session.virtual_server_state.get("_context_mode")
+            .ok_or("Context management not available for this session")?;
+        let cm = state.as_any().downcast_ref::<super::context_mode::ContextModeSessionState>()
+            .ok_or("Invalid context mode state")?;
+
+        if !cm.enabled {
+            return Err("Context management is not enabled for this session".to_string());
+        }
+
+        let mut entries: Vec<CatalogSourceEntry> = cm.catalog_sources.iter().map(|(label, item_type)| {
+            let name = label.strip_prefix("catalog:").unwrap_or(label);
+            let activated = match item_type {
+                super::context_mode::CatalogItemType::Tool => cm.activated_tools.contains(name),
+                super::context_mode::CatalogItemType::Resource => cm.activated_resources.contains(name),
+                super::context_mode::CatalogItemType::Prompt => cm.activated_prompts.contains(name),
+                super::context_mode::CatalogItemType::ServerWelcome => true,
+            };
+            CatalogSourceEntry {
+                source_label: label.clone(),
+                item_type: format!("{:?}", item_type),
+                activated,
+            }
+        }).collect();
+        entries.sort_by(|a, b| a.source_label.cmp(&b.source_label));
+        Ok(entries)
+    }
+
+    /// Get context stats for a specific session by calling ctx_stats on its context-mode process.
+    pub async fn get_session_context_stats(
+        &self,
+        session_key: &str,
+    ) -> Result<serde_json::Value, String> {
+        let session_arc = self
+            .sessions
+            .get(session_key)
+            .ok_or_else(|| format!("Session not found: {session_key}"))?
+            .clone();
+        let session = session_arc.read().await;
+
+        let state = session.virtual_server_state.get("_context_mode")
+            .ok_or("Context management not available for this session")?;
+        let cm = state.as_any().downcast_ref::<super::context_mode::ContextModeSessionState>()
+            .ok_or("Invalid context mode state")?;
+
+        if !cm.enabled {
+            return Err("Context management is not enabled for this session".to_string());
+        }
+
+        cm.call_tool("ctx_stats", serde_json::json!({})).await
+    }
+
+    /// Query the context index for a specific session using ctx_batch_execute.
+    /// Uses batch_execute instead of ctx_search to avoid the search rate limiter.
+    pub async fn query_session_context_index(
+        &self,
+        session_key: &str,
+        query: &str,
+        _source: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let session_arc = self
+            .sessions
+            .get(session_key)
+            .ok_or_else(|| format!("Session not found: {session_key}"))?
+            .clone();
+        let session = session_arc.read().await;
+
+        let state = session.virtual_server_state.get("_context_mode")
+            .ok_or("Context management not available for this session")?;
+        let cm = state.as_any().downcast_ref::<super::context_mode::ContextModeSessionState>()
+            .ok_or("Invalid context mode state")?;
+
+        if !cm.enabled {
+            return Err("Context management is not enabled for this session".to_string());
+        }
+
+        let args = serde_json::json!({
+            "commands": [{"label": "search", "command": "true"}],
+            "queries": [query],
+        });
+
+        cm.call_tool("ctx_batch_execute", args).await
     }
 }
 
 /// Info about an active gateway session (for UI display).
 #[derive(serde::Serialize, Clone)]
 pub struct ActiveSessionInfo {
+    pub session_id: String,
     pub client_id: String,
     pub client_name: String,
     pub duration_secs: u64,
@@ -1838,4 +1879,14 @@ pub struct ActiveSessionInfo {
     pub cm_indexed_sources: usize,
     pub cm_activated_tools: usize,
     pub cm_total_tools: usize,
+    pub cm_catalog_threshold_bytes: usize,
+    pub cm_indexing_tools_enabled: bool,
+}
+
+/// A single catalog source entry (for UI display).
+#[derive(serde::Serialize, Clone)]
+pub struct CatalogSourceEntry {
+    pub source_label: String,
+    pub item_type: String,
+    pub activated: bool,
 }

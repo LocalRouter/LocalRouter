@@ -145,8 +145,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       name: args?.name || 'New Client',
       enabled: true,
       strategy_id: 'strategy-default',
-      mcp_deferred_loading: false,
       context_management_enabled: null,
+      indexing_tools_enabled: null,
       created_at: new Date().toISOString(),
       last_used: null,
       mcp_permissions: { global: 'ask' as const, servers: {}, tools: {}, resources: {}, prompts: {} },
@@ -184,18 +184,18 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
-  'toggle_client_deferred_loading': (args) => {
-    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
-    if (client) {
-      client.mcp_deferred_loading = args?.enabled !== undefined ? args.enabled : !client.mcp_deferred_loading
-      setTimeout(() => emit('clients-changed', {}), 10)
-    }
-    return null
-  },
   'toggle_client_context_management': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
     if (client) {
       client.context_management_enabled = args?.enabled ?? null
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
+    return null
+  },
+  'toggle_client_indexing_tools': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
+    if (client) {
+      client.indexing_tools_enabled = args?.enabled ?? null
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
@@ -716,7 +716,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   'list_all_models': () => mockData.models,
   'get_cached_models': () => mockData.models,
-  'refresh_models_incremental': () => {},
+  'refresh_models_incremental': (_args?: { force?: boolean }) => {},
   'list_all_models_detailed': () => {
     const pricingMap: Record<string, { input: number; output: number; source: string }> = {
       'gpt-4o': { input: 2.50, output: 10.00, source: 'catalog' },
@@ -785,6 +785,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_mcp_server_metrics': () => generateMockGraphData("Server Requests", 60, 50),
   'get_mcp_method_breakdown': () => generateMockGraphData("Method Calls", 40, 30),
   'get_health_cache': () => mockData.healthCache,
+  'get_periodic_health_enabled': () => true,
+  'set_periodic_health_enabled': (_args?: { enabled?: boolean }) => {},
   'refresh_all_health': () => {
     toast.info('Health check initiated (demo)')
     // Emit health events for both providers and MCP servers
@@ -920,6 +922,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   }),
   'list_active_sessions': () => ([
     {
+      session_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
       client_id: 'cursor-ide',
       client_name: 'Cursor',
       duration_secs: 3420,
@@ -930,8 +933,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       cm_indexed_sources: 0,
       cm_activated_tools: 0,
       cm_total_tools: 0,
+      cm_catalog_threshold_bytes: 50000,
+      cm_indexing_tools_enabled: false,
     },
     {
+      session_id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
       client_id: 'claude-code',
       client_name: 'Claude Code',
       duration_secs: 890,
@@ -942,12 +948,57 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       cm_indexed_sources: 18,
       cm_activated_tools: 8,
       cm_total_tools: 24,
+      cm_catalog_threshold_bytes: 50000,
+      cm_indexing_tools_enabled: true,
     },
   ]),
   'update_context_management_config': (args) => {
     toast.success('Context management config updated (demo)')
     return null
   },
+  'preview_catalog_compression': (args) => ({
+    welcome_message: 'Unified MCP Gateway. Tools from MCP servers are namespaced with a `servername__` prefix.\nUse ctx_search to discover capabilities and retrieve compressed content.\n\n<context-management>\n**Context Management**\n- `ctx_search` (tool)\n- `ctx_execute` (tool)\n</context-management>\n\n<filesystem>\n**Filesystem**\n- filesystem__read_file — [compressed]\n- filesystem__write_file — [compressed]\n</filesystem>\n',
+    welcome_message_uncompressed: 'Unified MCP Gateway. Tools from MCP servers are namespaced with a `servername__` prefix.\n\n<context-management>\n**Context Management**\n- `ctx_search` (tool)\n- `ctx_execute` (tool)\n</context-management>\n\n<filesystem>\n**Filesystem**\n- `filesystem__read_file` (tool)\n- `filesystem__write_file` (tool)\n\nProvides filesystem operations.\n</filesystem>\n',
+    uncompressed_size: 450,
+    compressed_size: 320,
+    compressed_descriptions_count: 2,
+    deferred_items_count: 0,
+    truncated_servers_count: 0,
+    tools: [
+      { name: 'ctx_search', server: 'Context Management', is_virtual: true, compression_state: 'visible' },
+      { name: 'ctx_execute', server: 'Context Management', is_virtual: true, compression_state: 'visible' },
+      { name: 'filesystem__read_file', server: 'Filesystem', is_virtual: false, compression_state: 'compressed' },
+      { name: 'filesystem__write_file', server: 'Filesystem', is_virtual: false, compression_state: 'compressed' },
+    ],
+  }),
+  'terminate_session': (args) => {
+    toast.success(`Session ${args?.sessionId || 'unknown'} terminated (demo)`)
+    return null
+  },
+  'get_session_context_sources': (args) => ([
+    { source_label: 'catalog:filesystem', item_type: 'ServerWelcome', activated: true },
+    { source_label: 'catalog:filesystem__read_file', item_type: 'Tool', activated: true },
+    { source_label: 'catalog:filesystem__write_file', item_type: 'Tool', activated: true },
+    { source_label: 'catalog:filesystem__list_directory', item_type: 'Tool', activated: false },
+    { source_label: 'catalog:filesystem__search_files', item_type: 'Tool', activated: false },
+    { source_label: 'catalog:github__create_issue', item_type: 'Tool', activated: true },
+    { source_label: 'catalog:github__list_repos', item_type: 'Tool', activated: false },
+    { source_label: 'catalog:github__search_code', item_type: 'Tool', activated: true },
+    { source_label: 'catalog:db__users', item_type: 'Resource', activated: false },
+    { source_label: 'catalog:db__query', item_type: 'Prompt', activated: true },
+  ]),
+  'get_session_context_stats': () => ({
+    content: [{
+      type: 'text',
+      text: '📊 Context-Mode Stats\n━━━━━━━━━━━━━━━━━━━━━\n\nSources indexed: 18\nTotal entries: 142\nFTS5 database size: 48.2 KB\n\nBreakdown:\n  catalog:    10 sources, 86 entries\n  execute:     5 sources, 38 entries\n  batch:       3 sources, 18 entries\n\nSearch queries: 24\nAvg query time: 1.2ms',
+    }],
+  }),
+  'query_session_context_index': (args) => ({
+    content: [{
+      type: 'text',
+      text: `🔍 Search results for "${args?.query || 'query'}"\n━━━━━━━━━━━━━━━━━━━━━\n\n--- [catalog:filesystem__read_file] ---\nRead file content from the filesystem. Supports text and binary files.\nParams: path (string, required) - The file path to read\n\n--- [catalog:filesystem__write_file] ---\nWrite content to a file. Creates parent directories if needed.\nParams: path (string), content (string)\n\n--- [catalog:github__search_code] ---\nSearch for code across GitHub repositories.\nParams: query (string), repo (string, optional)\n\nFound 3 results (1.4ms)`,
+    }],
+  }),
   'get_skills_config': () => ({
     paths: ["~/.localrouter/skills"],
     disabled_skills: ["test-generator"],
@@ -1666,7 +1717,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Firewall
   // ============================================================================
   'get_firewall_approval_details': () => null,
-  'get_firewall_full_arguments': () => JSON.stringify({ path: '/tmp/test.txt', content: 'hello world' }),
+  'get_firewall_full_arguments': () => JSON.stringify({
+    model: 'gpt-4',
+    messages: [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello, how are you?' },
+    ],
+    temperature: 0.7,
+    max_tokens: 1000,
+    top_p: null,
+    frequency_penalty: null,
+    presence_penalty: null,
+    seed: null,
+  }),
   'submit_firewall_approval': () => {
     toast.success('Approval submitted (demo)')
     return null

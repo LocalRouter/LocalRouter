@@ -101,4 +101,6 @@ pub struct VirtualInstructions {
     pub section_title: String,
     pub content: String,
     pub tool_names: Vec<String>,
+    /// Sort priority: lower = listed earlier (0=ctx, 10=coding, 20=marketplace, 30=skills, 50=fallback)
+    pub priority: i32,
 }
