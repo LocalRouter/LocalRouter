@@ -1500,6 +1500,102 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Feature 8: JSON Repair */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <Wrench className="h-5 w-5 text-blue-500" />
+                <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">JSON Repair</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Automatic Response Healing
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                LLMs sometimes return malformed JSON — trailing commas, missing brackets, wrong types. LocalRouter fixes it automatically before it reaches your app, including during streaming.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Syntax repair</span>
+                    <p className="text-sm text-muted-foreground">Fixes trailing commas, missing brackets, unquoted keys, single quotes, markdown fences, and prose wrapping</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Schema coercion</span>
+                    <p className="text-sm text-muted-foreground">Coerces types, normalizes enums, strips extra fields, and inserts defaults to match your JSON Schema</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Works with streaming</span>
+                    <p className="text-sm text-muted-foreground">Character-at-a-time state machine repairs JSON inline as chunks arrive — no full-response buffering</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            {/* Visual: Before → After */}
+            <div className="relative">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl">
+                {/* Before */}
+                <div className="mb-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="h-2 w-2 rounded-full bg-red-500" />
+                    <span className="text-xs text-slate-400 font-medium uppercase">LLM Response</span>
+                  </div>
+                  <pre className="text-xs text-slate-300 font-mono bg-white/5 rounded-lg p-3 border border-white/10 overflow-x-auto">
+{`\`\`\`json
+{name: 'Alice',
+  "age": "28",
+  "role": "admin"
+  "active": True,
+  "extra": "field",}
+\`\`\``}
+                  </pre>
+                </div>
+                {/* Arrow */}
+                <div className="flex items-center justify-center my-3">
+                  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 border border-blue-500/30">
+                    <Wrench className="h-3 w-3 text-blue-400" />
+                    <span className="text-xs text-blue-400 font-medium">JSON Repair</span>
+                  </div>
+                </div>
+                {/* After */}
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="h-2 w-2 rounded-full bg-green-500" />
+                    <span className="text-xs text-slate-400 font-medium uppercase">Repaired Output</span>
+                  </div>
+                  <pre className="text-xs text-slate-300 font-mono bg-white/5 rounded-lg p-3 border border-green-500/30 overflow-x-auto">
+{`{
+  "name": "Alice",
+  "age": 28,
+  "role": "Admin",
+  "active": true
+}`}
+                  </pre>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">fence stripped</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">keys quoted</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">quotes fixed</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">comma added</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">age &rarr; int</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">role &rarr; Admin</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">True &rarr; true</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400">extra removed</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* OLD CAROUSEL SECTIONS - COMMENTED OUT
       {/* Compatible Apps */}
       {/*<section className="border-b py-12 sm:py-16 bg-muted/30 overflow-hidden">

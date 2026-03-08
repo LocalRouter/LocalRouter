@@ -17,11 +17,32 @@ interface JsonRepairViewProps {
 export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProps) {
   const [config, setConfig] = useState<JsonRepairConfig | null>(null)
   const [saving, setSaving] = useState(false)
-  const [testInput, setTestInput] = useState('{"name": "John", "age": "30",}')
-  const [testSchema, setTestSchema] = useState('{"type": "object", "properties": {"name": {"type": "string"}, "age": {"type": "integer"}}}')
+  const [testInput, setTestInput] = useState(`\`\`\`json
+{name: 'Alice' "age": "28" "score": "95.5",
+  "role": "admin", "active": "yes",
+  "tags": ["developer" "lead"],
+  "extra_field": True,
+  "status": "pending"
+}
+\`\`\``)
+  const [testSchema, setTestSchema] = useState(JSON.stringify({
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      age: { type: "integer" },
+      score: { type: "number" },
+      role: { type: "string", enum: ["Admin", "User", "Guest"] },
+      active: { type: "boolean" },
+      tags: { type: "array", items: { type: "string" } },
+      status: { type: "string", enum: ["Pending", "Active", "Inactive"] },
+      joined: { type: "string", default: "2026-01-01" }
+    },
+    required: ["name", "age", "score", "role", "active", "tags", "status", "joined"],
+    additionalProperties: false
+  }, null, 2))
   const [testResult, setTestResult] = useState<JsonRepairTestResult | null>(null)
   const [testLoading, setTestLoading] = useState(false)
-  const [useSchema, setUseSchema] = useState(false)
+  const [useSchema, setUseSchema] = useState(true)
 
   const tab = activeSubTab || "info"
 
@@ -102,35 +123,97 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
         {/* Info Tab */}
         <TabsContent value="info" className="flex-1 min-h-0 mt-4">
           <div className="space-y-4 max-w-2xl overflow-y-auto">
+            {config && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-base">Enable JSON Repair</CardTitle>
+                      <CardDescription>Automatically repair JSON responses for requests with JSON response format</CardDescription>
+                    </div>
+                    <Switch
+                      checked={config.enabled}
+                      onCheckedChange={(enabled) => updateConfig({ enabled })}
+                      disabled={saving}
+                    />
+                  </div>
+                </CardHeader>
+              </Card>
+            )}
+
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">What it does</CardTitle>
+                <CardTitle className="text-base">Syntax Repair</CardTitle>
                 <CardDescription>
-                  When enabled, JSON Repair automatically fixes common JSON issues in LLM responses
-                  for requests using <code className="text-xs bg-muted px-1 py-0.5 rounded">response_format: json_object</code> or <code className="text-xs bg-muted px-1 py-0.5 rounded">json_schema</code>.
+                  Fixes malformed JSON syntax so the response is valid and parseable. Runs character-by-character with near-zero latency.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
-                  <div>
-                    <p className="text-sm font-medium mb-2">Syntax Repair (Part A)</p>
-                    <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
-                      <li>Trailing commas after last element</li>
-                      <li>Missing closing brackets/braces</li>
-                      <li>Unquoted keys and single-quoted strings</li>
-                      <li>Markdown code fences wrapping JSON</li>
-                      <li>Prose text around JSON content</li>
-                      <li>Unescaped control characters</li>
-                    </ul>
+                <div className="space-y-3 text-sm">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">Trailing comma</p>
+                      <code className="text-xs">{'{"a": 1, "b": 2,}'}</code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">Missing comma</p>
+                      <code className="text-xs">{'{"a": 1 "b": 2}'}</code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">Missing bracket</p>
+                      <code className="text-xs">{'{"name": "Alice"'}</code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">Single quotes</p>
+                      <code className="text-xs">{"{'name': 'Alice'}"}</code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">Unquoted keys</p>
+                      <code className="text-xs">{'{name: "Alice"}'}</code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">Python keywords</p>
+                      <code className="text-xs">{'{"a": True, "b": None}'}</code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2 col-span-2">
+                      <p className="text-xs text-muted-foreground mb-1">Markdown fences &amp; prose</p>
+                      <code className="text-xs">{'Here is the data: ```json {"name": "Alice"} ```'}</code>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm font-medium mb-2">Schema Coercion (Part B)</p>
-                    <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
-                      <li>Type coercion: <code className="text-xs bg-muted px-1 py-0.5 rounded">"42"</code> to <code className="text-xs bg-muted px-1 py-0.5 rounded">42</code> when schema expects integer</li>
-                      <li>Enum normalization: case-insensitive matching</li>
-                      <li>Extra field removal when <code className="text-xs bg-muted px-1 py-0.5 rounded">additionalProperties: false</code></li>
-                      <li>Default value insertion for missing required fields</li>
-                    </ul>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Schema Coercion</CardTitle>
+                <CardDescription>
+                  When a JSON Schema is provided via <code className="text-xs bg-muted px-1 py-0.5 rounded">response_format: json_schema</code>, values are coerced to match the schema.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3 text-sm">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">String to integer</p>
+                      <code className="text-xs">{'"42"'} &rarr; <span className="text-green-600 dark:text-green-400">42</span></code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">String to boolean</p>
+                      <code className="text-xs">{'"true"'} &rarr; <span className="text-green-600 dark:text-green-400">true</span></code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">Enum normalization</p>
+                      <code className="text-xs">{'"active"'} &rarr; <span className="text-green-600 dark:text-green-400">{'"Active"'}</span></code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2">
+                      <p className="text-xs text-muted-foreground mb-1">Extra field removal</p>
+                      <code className="text-xs"><span className="text-red-500 line-through">{'"extra": true'}</span></code>
+                    </div>
+                    <div className="bg-muted rounded-md p-2 col-span-2">
+                      <p className="text-xs text-muted-foreground mb-1">Missing required defaults</p>
+                      <code className="text-xs">{'{ }'} &rarr; <span className="text-green-600 dark:text-green-400">{'{"status": "active"}'}</span> <span className="text-muted-foreground">(if default defined)</span></code>
+                    </div>
                   </div>
                 </div>
               </CardContent>
@@ -140,8 +223,8 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Streaming Support</CardTitle>
                 <CardDescription>
-                  Unlike other services, JSON Repair works with streaming responses too.
-                  Syntax repair runs inline as chunks arrive, with near-zero latency overhead.
+                  Unlike other services that only repair non-streaming responses, LocalRouter repairs JSON inline as chunks arrive.
+                  The character-at-a-time state machine buffers only the current token (string, number, keyword) — never the full response.
                 </CardDescription>
               </CardHeader>
             </Card>
@@ -150,8 +233,8 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">How it activates</CardTitle>
                 <CardDescription>
-                  JSON Repair automatically activates for requests with a JSON response format.
-                  It can be disabled globally or per-client. No code changes needed.
+                  JSON Repair automatically activates for requests with <code className="text-xs bg-muted px-1 py-0.5 rounded">response_format: json_object</code> or <code className="text-xs bg-muted px-1 py-0.5 rounded">json_schema</code>.
+                  It can be disabled globally or overridden per-client. No code changes needed on the caller side.
                 </CardDescription>
               </CardHeader>
             </Card>
@@ -174,7 +257,7 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                   <textarea
                     value={testInput}
                     onChange={(e) => setTestInput(e.target.value)}
-                    className="w-full h-32 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="w-full h-48 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
                     placeholder='{"name": "John", "age": "30",}'
                   />
                 </div>
@@ -193,7 +276,7 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                     <textarea
                       value={testSchema}
                       onChange={(e) => setTestSchema(e.target.value)}
-                      className="w-full h-24 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="w-full h-48 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
                       placeholder='{"type": "object", "properties": {...}}'
                     />
                   </div>
@@ -258,28 +341,15 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
               <>
                 <Card>
                   <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="text-base">Enable JSON Repair</CardTitle>
-                        <CardDescription>Automatically repair JSON responses for requests with JSON response format</CardDescription>
-                      </div>
-                      <Switch
-                        checked={config.enabled}
-                        onCheckedChange={(enabled) => updateConfig({ enabled })}
-                        disabled={saving}
-                      />
-                    </div>
-                  </CardHeader>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-3">
                     <CardTitle className="text-base">Syntax Repair</CardTitle>
-                    <CardDescription>Fix JSON syntax errors (trailing commas, missing brackets, etc.)</CardDescription>
+                    <CardDescription>Fix JSON syntax errors in LLM responses</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="flex items-center justify-between">
-                      <span className="text-sm">Syntax repair</span>
+                      <div>
+                        <span className="text-sm font-medium">Fix malformed JSON</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">Trailing commas, missing brackets, unquoted keys, single quotes, markdown fences, missing commas, Python keywords</p>
+                      </div>
                       <Switch
                         checked={config.syntax_repair}
                         onCheckedChange={(syntax_repair) => updateConfig({ syntax_repair })}
@@ -292,11 +362,14 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                 <Card>
                   <CardHeader className="pb-3">
                     <CardTitle className="text-base">Schema Coercion</CardTitle>
-                    <CardDescription>Fix JSON values to match the expected schema (requires json_schema response format)</CardDescription>
+                    <CardDescription>Fix JSON values to match the expected schema (requires <code className="text-xs bg-muted px-1 py-0.5 rounded">json_schema</code> response format)</CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-3">
+                  <CardContent className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <span className="text-sm">Schema coercion</span>
+                      <div>
+                        <span className="text-sm font-medium">Type coercion</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">Convert values to match schema types: <code className="text-xs bg-muted px-0.5 rounded">"42"</code> &rarr; <code className="text-xs bg-muted px-0.5 rounded">42</code>, <code className="text-xs bg-muted px-0.5 rounded">"true"</code> &rarr; <code className="text-xs bg-muted px-0.5 rounded">true</code>, <code className="text-xs bg-muted px-0.5 rounded">42</code> &rarr; <code className="text-xs bg-muted px-0.5 rounded">"42"</code></p>
+                      </div>
                       <Switch
                         checked={config.schema_coercion}
                         onCheckedChange={(schema_coercion) => updateConfig({ schema_coercion })}
@@ -304,7 +377,10 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                       />
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-sm">Normalize enum values</span>
+                      <div>
+                        <span className="text-sm font-medium">Normalize enum values</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">Case-insensitive matching against schema enum: <code className="text-xs bg-muted px-0.5 rounded">"active"</code> &rarr; <code className="text-xs bg-muted px-0.5 rounded">"Active"</code></p>
+                      </div>
                       <Switch
                         checked={config.normalize_enums}
                         onCheckedChange={(normalize_enums) => updateConfig({ normalize_enums })}
@@ -312,7 +388,10 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                       />
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-sm">Strip extra fields</span>
+                      <div>
+                        <span className="text-sm font-medium">Strip extra fields</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">Remove fields not in schema when <code className="text-xs bg-muted px-0.5 rounded">additionalProperties: false</code></p>
+                      </div>
                       <Switch
                         checked={config.strip_extra_fields}
                         onCheckedChange={(strip_extra_fields) => updateConfig({ strip_extra_fields })}
@@ -320,7 +399,10 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                       />
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-sm">Add default values</span>
+                      <div>
+                        <span className="text-sm font-medium">Add default values</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">Insert <code className="text-xs bg-muted px-0.5 rounded">default</code> values for missing required fields defined in schema</p>
+                      </div>
                       <Switch
                         checked={config.add_defaults}
                         onCheckedChange={(add_defaults) => updateConfig({ add_defaults })}

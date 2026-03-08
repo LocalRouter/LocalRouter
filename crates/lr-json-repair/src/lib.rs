@@ -1,17 +1,16 @@
 //! JSON repair and schema coercion for LLM responses.
 //!
-//! Provides two capabilities:
+//! Provides unified streaming repair that handles both:
 //! - **Syntax repair**: Fix malformed JSON (trailing commas, unescaped chars,
-//!   missing brackets, markdown wrappers) using the `jsonrepair` crate.
+//!   missing brackets, markdown wrappers, single quotes, unquoted keys,
+//!   Python/JS keywords) via a character-at-a-time state machine.
 //! - **Schema coercion**: Fix valid JSON that doesn't match the expected schema
 //!   (type coercion, enum normalization, extra field removal, default insertion).
 
-mod schema_coerce;
 pub mod streaming;
-mod syntax_repair;
 pub mod types;
 
-pub use streaming::StreamingSyntaxRepairer;
+pub use streaming::StreamingJsonRepairer;
 pub use types::{RepairAction, RepairOptions, RepairResult};
 
 use serde_json::Value;
@@ -19,69 +18,34 @@ use tracing::info;
 
 /// Repair JSON content, optionally coercing it to match a schema.
 ///
-/// # Arguments
-/// * `content` - The raw JSON content string to repair
-/// * `schema` - Optional JSON schema to coerce values against
-/// * `options` - Repair configuration options
-///
-/// # Returns
-/// A `RepairResult` containing the repaired content and details of what was changed.
+/// Uses the unified `StreamingJsonRepairer` internally — same engine
+/// as the streaming path, just fed the entire content at once.
 pub fn repair_content(
     content: &str,
     schema: Option<&Value>,
     options: &RepairOptions,
 ) -> RepairResult {
-    let mut all_actions = Vec::new();
-    let mut working = content.to_string();
+    let mut repairer = StreamingJsonRepairer::new(schema.cloned(), options.clone());
 
-    // Step 1: Syntax repair
-    if options.syntax_repair {
-        let (repaired, _modified, actions) = syntax_repair::repair_syntax(&working);
-        all_actions.extend(actions);
-        working = repaired;
-    }
+    let mut repaired = repairer.push(content);
+    repaired.push_str(&repairer.finish());
 
-    // Step 2: Schema coercion (only if we have a schema and the content is valid JSON)
-    if let Some(schema) = schema {
-        if options.schema_coercion
-            || options.strip_extra_fields
-            || options.add_defaults
-            || options.normalize_enums
-        {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&working) {
-                let (coerced, actions) = schema_coerce::coerce_to_schema(
-                    &parsed,
-                    schema,
-                    options.strip_extra_fields,
-                    options.add_defaults,
-                    options.normalize_enums,
-                );
+    let actions = repairer.take_actions();
+    let was_modified = repaired != content;
 
-                if !actions.is_empty() {
-                    all_actions.extend(actions);
-                    // Re-serialize with consistent formatting
-                    if let Ok(serialized) = serde_json::to_string(&coerced) {
-                        working = serialized;
-                    }
-                }
-            }
-        }
-    }
-
-    let was_modified = working != content;
     if was_modified {
         info!(
-            repairs = all_actions.len(),
+            repairs = actions.len(),
             "JSON content repaired with {} action(s)",
-            all_actions.len()
+            actions.len()
         );
     }
 
     RepairResult {
         original: content.to_string(),
-        repaired: working,
+        repaired,
         was_modified,
-        repairs: all_actions,
+        repairs: actions,
     }
 }
 
@@ -137,7 +101,6 @@ mod tests {
         assert!(result.was_modified);
         let parsed: Value = serde_json::from_str(&result.repaired).unwrap();
         assert_eq!(parsed["age"], json!(30));
-        // Should have markdown stripping + syntax repair + type coercion
         assert!(result.repairs.len() >= 2);
     }
 
@@ -178,13 +141,12 @@ mod tests {
 
     #[test]
     fn test_disabled_syntax_repair() {
-        let content = r#"{"name": "John",}"#;
+        let content = r#"{"name": "John"}"#;
         let options = RepairOptions {
             syntax_repair: false,
             ..Default::default()
         };
         let result = repair_content(content, None, &options);
-        // Syntax repair disabled, content unchanged
         assert!(!result.was_modified);
     }
 }

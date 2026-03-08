@@ -1862,17 +1862,17 @@ pub struct JsonRepairConfig {
     #[serde(default = "default_true")]
     pub syntax_repair: bool,
 
-    /// Coerce JSON values to match expected schema (default: false)
+    /// Coerce JSON values to match expected schema (default: true)
     /// Requires response_format with json_schema to be effective
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub schema_coercion: bool,
 
-    /// Remove fields not present in the schema (default: false)
-    #[serde(default)]
+    /// Remove fields not present in the schema (default: true)
+    #[serde(default = "default_true")]
     pub strip_extra_fields: bool,
 
-    /// Add default values for missing required fields (default: false)
-    #[serde(default)]
+    /// Add default values for missing required fields (default: true)
+    #[serde(default = "default_true")]
     pub add_defaults: bool,
 
     /// Normalize enum values (case-insensitive matching) (default: true)
@@ -1885,9 +1885,9 @@ impl Default for JsonRepairConfig {
         Self {
             enabled: true,
             syntax_repair: true,
-            schema_coercion: false,
-            strip_extra_fields: false,
-            add_defaults: false,
+            schema_coercion: true,
+            strip_extra_fields: true,
+            add_defaults: true,
             normalize_enums: true,
         }
     }

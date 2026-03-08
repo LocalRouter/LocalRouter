@@ -60,9 +60,9 @@ impl Default for RepairOptions {
     fn default() -> Self {
         Self {
             syntax_repair: true,
-            schema_coercion: false,
-            strip_extra_fields: false,
-            add_defaults: false,
+            schema_coercion: true,
+            strip_extra_fields: true,
+            add_defaults: true,
             normalize_enums: true,
         }
     }

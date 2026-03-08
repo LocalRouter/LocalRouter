@@ -8,10 +8,8 @@ repository.workspace = true
 description = "JSON repair and schema coercion for LLM responses"
 
 [dependencies]
-jsonrepair = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
-jsonschema = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -14,15 +14,13 @@ LLMs frequently produce malformed JSON: trailing commas, unescaped characters, m
 
 2. **Post-processing layer in chat.rs, NOT a feature adapter** — JSON repair is a gateway-level concern (like guardrails/compression), not a provider adaptation. Feature adapters validate-and-reject; repair replaces-and-passes.
 
-3. **Crate: `jsonrepair`** for Part A — Has streaming `StreamRepairer` API with `push()`/`flush()`, handles trailing commas, unescaped chars, missing quotes/brackets. Low dependency footprint.
+3. **Zero external dependencies for repair** — Replaced the `jsonrepair` crate with a custom `StreamingJsonRepairer` state machine that handles BOTH syntax repair AND schema coercion in a single character-at-a-time pass. No `jsonschema` dependency either.
 
-4. **Custom coercion for Part B** — `jsonschema 0.18` already in workspace for validation. Build focused coercion module (~200 lines) rather than pulling in `valico` (old draft v4, heavy).
+4. **Unified streaming engine** — A single `StreamingJsonRepairer` struct handles syntax repair and schema coercion simultaneously. The non-streaming `repair_content()` API uses the same engine internally (push entire content + finish). This eliminates the need for separate implementations.
 
-5. **Streaming strategy for syntax repair (Part A):** Use `jsonrepair`'s `StreamRepairer` with `push()`/`flush()`. Feed content chunks in, get repaired chunks out. The crate handles buffering internally (e.g., holding back a comma until it knows if it's trailing). Near-zero latency — only buffers ambiguous tokens.
+5. **Minimal buffering design** — The state machine buffers only the current token (string, number, keyword — typically <100 chars). Trailing comma handling uses a 1-bit flag + deferred whitespace. Extra field removal uses a depth counter (no memory buffer). Missing defaults are injected at container close.
 
-6. **Streaming strategy for schema coercion (Part B):** Custom incremental JSON parser + schema walker (see "Future: Streaming Schema Coercion" section below). Parses JSON token-by-token, walks the schema in parallel, and repairs values inline as they stream through. Buffers at most one primitive value at a time. **This is a separate implementation phase to be done later.**
-
-7. **Auto-activation** — Activates when request uses `response_format: json_object` or `json_schema`, configurable per-client and globally.
+6. **Auto-activation** — Activates when request uses `response_format: json_object` or `json_schema`, configurable per-client and globally. All repair options default to `true`.
 
 ## Crate Structure
 
