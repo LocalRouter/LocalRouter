@@ -171,7 +171,9 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
             "You have access to **{}** as a coding agent. Use the unified tools: \
              `coding_agent_start`, `coding_agent_say`, `coding_agent_status`, \
              `coding_agent_respond`, `coding_agent_interrupt`, `coding_agent_list`.\n\n\
-             Workflow: Start a session → poll status → respond to questions → get results.\n",
+             Workflow: Start a session → poll status → respond to questions → get results.\n\
+             Use `wait: true` with `coding_agent_status` to block until the agent needs attention, \
+             instead of polling in a loop.\n",
             agent_type.display_name(),
         );
 

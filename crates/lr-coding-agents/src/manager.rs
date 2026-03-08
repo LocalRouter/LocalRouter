@@ -6,6 +6,7 @@ use lr_config::{CodingAgentType, CodingAgentsConfig, CodingPermissionMode};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info};
@@ -280,6 +281,94 @@ impl CodingAgentManager {
         })
     }
 
+    /// Wait for a session to leave the `Active` state, then return its status.
+    ///
+    /// If the session is already non-active, returns immediately.
+    /// On timeout, returns the current status as-is (status will be `active`).
+    pub async fn wait_for_non_active(
+        &self,
+        session_id: &str,
+        client_id: &str,
+        timeout: Duration,
+        output_lines: Option<usize>,
+    ) -> Result<StatusResponse, CodingAgentError> {
+        // Check current status — return immediately if already non-active
+        {
+            let session_arc = self.get_session(session_id, client_id)?;
+            let session = session_arc.lock().await;
+            if session.status != SessionStatus::Active {
+                let lines = output_lines.unwrap_or(50);
+                let pending = session
+                    .pending_question
+                    .as_ref()
+                    .map(|pq| PendingQuestionInfo {
+                        id: pq.id.clone(),
+                        question_type: pq.question_type.clone(),
+                        questions: pq.questions.clone(),
+                    });
+                return Ok(StatusResponse {
+                    session_id: session_id.to_string(),
+                    status: session.status.clone(),
+                    result: session.result.clone(),
+                    recent_output: session.recent_output(lines),
+                    pending_question: pending,
+                    cost_usd: session.cost_usd,
+                    turn_count: session.turn_count,
+                });
+            }
+        }
+
+        // Subscribe to change notifications and wait
+        let mut rx = self.subscribe_changes();
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {
+                    // Timeout — return current status as-is
+                    return self.status(session_id, client_id, output_lines).await;
+                }
+                recv = rx.recv() => {
+                    match recv {
+                        Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                            // Re-check session status
+                            let session_arc = match self.get_session(session_id, client_id) {
+                                Ok(arc) => arc,
+                                Err(e) => return Err(e),
+                            };
+                            let session = session_arc.lock().await;
+                            if session.status != SessionStatus::Active {
+                                let lines = output_lines.unwrap_or(50);
+                                let pending = session
+                                    .pending_question
+                                    .as_ref()
+                                    .map(|pq| PendingQuestionInfo {
+                                        id: pq.id.clone(),
+                                        question_type: pq.question_type.clone(),
+                                        questions: pq.questions.clone(),
+                                    });
+                                return Ok(StatusResponse {
+                                    session_id: session_id.to_string(),
+                                    status: session.status.clone(),
+                                    result: session.result.clone(),
+                                    recent_output: session.recent_output(lines),
+                                    pending_question: pending,
+                                    cost_usd: session.cost_usd,
+                                    turn_count: session.turn_count,
+                                });
+                            }
+                            // Still active, keep waiting
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            // Channel closed — return current status
+                            return self.status(session_id, client_id, output_lines).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Respond to a pending question
     pub async fn respond(
         &self,
@@ -523,7 +612,7 @@ async fn spawn_agent_process(
     // by spawning a new process when the session has ended.
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    cmd.stderr(Stdio::null()); // Discard stderr to prevent pipe buffer deadlock
 
     // Set env vars from config
     for (k, v) in &config.env {

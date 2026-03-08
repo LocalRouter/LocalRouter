@@ -123,7 +123,7 @@ fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
         McpTool {
             name: format!("{}status", TOOL_PREFIX),
             description: Some(format!(
-                "Get current status and recent output of a {} session",
+                "Get current status and recent output of a {} session. Use wait=true to block until the session needs attention (done, awaiting_input, error, interrupted) instead of polling in a loop.",
                 name
             )),
             input_schema: json!({
@@ -136,6 +136,14 @@ fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
                     "outputLines": {
                         "type": "number",
                         "description": "Recent output lines to return (default: 50)"
+                    },
+                    "wait": {
+                        "type": "boolean",
+                        "description": "If true, blocks until the session needs attention (done, awaiting_input, error, interrupted) instead of returning immediately. Default: false"
+                    },
+                    "timeoutSeconds": {
+                        "type": "number",
+                        "description": "Max seconds to wait when wait=true (default: 300, max: 600). Ignored when wait=false."
                     }
                 },
                 "required": ["sessionId"]
@@ -304,11 +312,24 @@ async fn handle_status(
         .as_str()
         .ok_or("Missing required field: sessionId")?;
     let output_lines = args["outputLines"].as_u64().map(|n| n as usize);
+    let wait = args["wait"].as_bool().unwrap_or(false);
 
-    let result = manager
-        .status(session_id, client_id, output_lines)
-        .await
-        .map_err(|e| e.to_mcp_error())?;
+    let result = if wait {
+        let timeout_secs = args["timeoutSeconds"]
+            .as_u64()
+            .unwrap_or(300)
+            .min(600);
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+        manager
+            .wait_for_non_active(session_id, client_id, timeout, output_lines)
+            .await
+            .map_err(|e| e.to_mcp_error())?
+    } else {
+        manager
+            .status(session_id, client_id, output_lines)
+            .await
+            .map_err(|e| e.to_mcp_error())?
+    };
 
     Ok(Some(serde_json::to_value(result).unwrap_or_default()))
 }
