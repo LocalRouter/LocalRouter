@@ -342,6 +342,7 @@ function App() {
           setShowSetupWizard(open)
         }}
         onComplete={handleWizardComplete}
+        showWelcome={true}
       />
     </>
   )

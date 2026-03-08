@@ -1,7 +1,8 @@
 /**
  * ClientCreationWizard
  *
- * Streamlined 4-step wizard for creating a new client:
+ * Streamlined wizard for creating a new client:
+ * 0. Welcome - Introduction to LocalRouter (first launch only, optional)
  * 1. Template - Select an app template (Claude Code, Cursor, etc.)
  * 2. Name + Mode - Name the client and select LLM / MCP / Both
  * 3. Models - Configure model access using StrategyModelConfiguration (skipped for mcp_only)
@@ -26,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/Modal"
 import { Button } from "@/components/ui/Button"
+import { StepWelcome } from "./steps/StepWelcome"
 import { StepTemplate } from "./steps/StepTemplate"
 import { StepNameAndMode } from "./steps/StepNameAndMode"
 import { StepCredentials } from "./steps/StepCredentials"
@@ -35,7 +37,7 @@ import type { ClientMode, SetClientModeParams, SetClientTemplateParams } from "@
 import type { ModelPermissions } from "@/components/permissions/types"
 
 // Logical step identifiers
-type StepId = "template" | "name_mode" | "models" | "credentials"
+type StepId = "welcome" | "template" | "name_mode" | "models" | "credentials"
 
 interface StepDef {
   id: StepId
@@ -61,6 +63,8 @@ interface ClientCreationWizardProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onComplete: (clientId: string) => void
+  /** Show welcome step on first launch */
+  showWelcome?: boolean
   /** Pre-select a template by ID and skip the template step */
   initialTemplateId?: string | null
 }
@@ -83,6 +87,7 @@ export function ClientCreationWizard({
   open,
   onOpenChange,
   onComplete,
+  showWelcome = false,
   initialTemplateId,
 }: ClientCreationWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
@@ -101,18 +106,24 @@ export function ClientCreationWizard({
           clientMode: isCustom ? "both" : template.defaultMode,
           clientName: prev.clientName || (isCustom ? "" : template.name),
         }))
-        // Skip to name+mode step
-        setCurrentStep(1)
+        // Skip to name+mode step (offset by welcome step if present)
+        setCurrentStep(showWelcome ? 2 : 1)
       }
     }
   }, [open, initialTemplateId])
 
   // Build visible steps dynamically based on state
   const visibleSteps = useMemo<StepDef[]>(() => {
-    const steps: StepDef[] = [
+    const steps: StepDef[] = []
+
+    if (showWelcome) {
+      steps.push({ id: "welcome", title: "Welcome", description: "Get started with LocalRouter." })
+    }
+
+    steps.push(
       { id: "template", title: "Choose Application", description: "Select an app to connect to LocalRouter." },
       { id: "name_mode", title: "Setup", description: "Name your client and choose what it can access." },
-    ]
+    )
 
     // Models step: skipped for mcp_only
     if (state.clientMode !== "mcp_only") {
@@ -122,7 +133,7 @@ export function ClientCreationWizard({
     steps.push({ id: "credentials", title: "Your Credentials", description: "Save your credentials securely." })
 
     return steps
-  }, [state.clientMode])
+  }, [showWelcome, state.clientMode])
 
   const currentStepDef = visibleSteps[currentStep]
   const isFirstStep = currentStep === 0
@@ -135,6 +146,7 @@ export function ClientCreationWizard({
   const canProceed = () => {
     if (!currentStepDef) return false
     switch (currentStepDef.id) {
+      case "welcome": return true
       case "template": return false // Auto-advances on selection
       case "name_mode": return state.clientName.trim().length > 0
       case "models": return true
@@ -269,6 +281,8 @@ export function ClientCreationWizard({
     if (!currentStepDef) return null
 
     switch (currentStepDef.id) {
+      case "welcome":
+        return <StepWelcome />
       case "template":
         return <StepTemplate onSelect={handleTemplateSelect} />
       case "name_mode":

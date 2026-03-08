@@ -168,6 +168,7 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
         open={showWizard}
         onOpenChange={setShowWizard}
         onComplete={handleWizardComplete}
+        showWelcome={true}
       />
     </div>
   )

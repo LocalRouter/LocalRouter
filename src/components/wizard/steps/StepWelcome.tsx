@@ -8,7 +8,7 @@ export function StepWelcome() {
   return (
     <div className="flex flex-col items-center justify-center py-6 space-y-6">
       {/* LocalRouter logo */}
-      <div className="relative">
+      <div className="relative overflow-hidden rounded-full p-8">
         <div className="absolute inset-0 blur-2xl opacity-20 bg-primary rounded-full scale-150" />
         <svg
           width="80"
