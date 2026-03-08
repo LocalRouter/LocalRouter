@@ -15,6 +15,7 @@ import { GuardrailsView } from './views/guardrails'
 import { StrongWeakView } from './views/strong-weak'
 import { CodingAgentsView } from './views/coding-agents'
 import { ContextManagementView } from './views/context-management'
+import { MarketplaceView } from './views/marketplace'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
 
 const DebugView = import.meta.env.DEV
@@ -283,6 +284,13 @@ function App() {
       case 'coding-agents':
         return (
           <CodingAgentsView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'marketplace':
+        return (
+          <MarketplaceView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

@@ -12,7 +12,7 @@ import {
   Cpu,
   BookText,
 } from "lucide-react"
-import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon } from "@/components/icons/category-icons"
+import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
 import { cn } from "@/lib/utils"
 import {
@@ -45,7 +45,7 @@ interface HealthCacheState {
 }
 
 export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'context-management' | 'skills'
-  | 'coding-agents' | 'guardrails' | 'strong-weak' | 'settings' | 'debug'
+  | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -83,6 +83,7 @@ const resourceNavEntries: NavEntry[] = [
   { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5' },
   { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6' },
   { id: 'context-management', icon: BookText, label: 'Context' },
+  { id: 'marketplace', icon: StoreIcon, label: 'Marketplace', shortcut: '⌘9' },
 ]
 
 const bottomNavItems: NavItem[] = [
@@ -248,6 +249,10 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
           case '8':
             e.preventDefault()
             onViewChange('strong-weak')
+            break
+          case '9':
+            e.preventDefault()
+            onViewChange('marketplace')
             break
         }
       }
