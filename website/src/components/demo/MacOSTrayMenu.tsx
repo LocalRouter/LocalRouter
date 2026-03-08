@@ -140,6 +140,30 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
                   : `${TRAY_INDENT}Weak Model Routing`}
               />
             )}
+
+            {/* Catalog Compression toggle (per-client override) */}
+            <MenuItem
+              label={(() => {
+                const isInherited = client.catalog_compression_enabled == null
+                const effective = client.catalog_compression_enabled ?? true
+                const suffix = isInherited ? ' (default)' : ''
+                return effective
+                  ? `✓  Catalog Compression${suffix}`
+                  : `${TRAY_INDENT}Catalog Compression${suffix}`
+              })()}
+            />
+
+            {/* Indexing Tools toggle (per-client override) */}
+            <MenuItem
+              label={(() => {
+                const isInherited = client.indexing_tools_enabled == null
+                const effective = client.indexing_tools_enabled ?? true
+                const suffix = isInherited ? ' (default)' : ''
+                return effective
+                  ? `✓  Indexing Tools${suffix}`
+                  : `${TRAY_INDENT}Indexing Tools${suffix}`
+              })()}
+            />
           </>
         )
       })()}

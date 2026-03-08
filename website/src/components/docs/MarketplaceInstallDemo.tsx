@@ -14,9 +14,15 @@ export function MarketplaceInstallDemo() {
       <FirewallApprovalCard
         className="flex flex-col p-4"
         clientName="Claude Code"
-        toolName="marketplace_install"
-        serverName="marketplace"
-        argumentsPreview={JSON.stringify({ package: "@modelcontextprotocol/server-filesystem", version: "2025.1.2" })}
+        toolName="marketplace__install_mcp_server"
+        serverName="Marketplace"
+        marketplaceListing={{
+          name: "@modelcontextprotocol/server-filesystem",
+          description: "Node.js server implementing Model Context Protocol for filesystem operations",
+          vendor: "Anthropic",
+          homepage: "https://github.com/modelcontextprotocol/servers",
+          install_type: "mcp_server",
+        }}
         onAction={noop}
       />
     </div>

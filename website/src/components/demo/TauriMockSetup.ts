@@ -147,6 +147,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       strategy_id: 'strategy-default',
       context_management_enabled: null,
       indexing_tools_enabled: null,
+      catalog_compression_enabled: null,
       created_at: new Date().toISOString(),
       last_used: null,
       mcp_permissions: { global: 'ask' as const, servers: {}, tools: {}, resources: {}, prompts: {} },
@@ -196,6 +197,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
     if (client) {
       client.indexing_tools_enabled = args?.enabled ?? null
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
+    return null
+  },
+  'toggle_client_catalog_compression': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
+    if (client) {
+      client.catalog_compression_enabled = args?.enabled ?? null
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
