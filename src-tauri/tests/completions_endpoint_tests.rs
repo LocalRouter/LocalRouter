@@ -51,6 +51,7 @@ fn standard_completion_request() -> localrouter::providers::CompletionRequest {
         response_format: None,
         logprobs: None,
         top_logprobs: None,
+        pre_computed_routing: None,
     }
 }
 

@@ -471,6 +471,14 @@ pub enum HealthStatus {
     Unhealthy,
 }
 
+/// Pre-computed RouteLLM classification result.
+/// Set by the chat pipeline before routing, so the router can skip classification.
+#[derive(Debug, Clone)]
+pub struct PreComputedRouting {
+    pub is_strong: bool,
+    pub win_rate: f32,
+}
+
 /// Chat completion request (OpenAI-compatible format)
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionRequest {
@@ -535,6 +543,10 @@ pub struct CompletionRequest {
     /// Number of most likely tokens to return at each position (0-20)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_logprobs: Option<u32>,
+
+    /// Pre-computed RouteLLM routing (set by chat pipeline, never serialized)
+    #[serde(skip)]
+    pub pre_computed_routing: Option<PreComputedRouting>,
 }
 
 /// Tool definition for function calling

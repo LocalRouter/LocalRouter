@@ -110,6 +110,7 @@ pub async fn completions(
         // Log probabilities (not supported in legacy completions endpoint)
         logprobs: None,
         top_logprobs: None,
+        pre_computed_routing: None,
     };
 
     // Determine if we can run guardrails in parallel with the LLM request

@@ -356,6 +356,7 @@ mod tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            pre_computed_routing: None,
         };
 
         let breakpoints = PromptCachingAdapter::determine_cache_breakpoints(&request);
@@ -412,6 +413,7 @@ mod tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            pre_computed_routing: None,
         };
 
         let breakpoints = PromptCachingAdapter::determine_cache_breakpoints(&request);
@@ -488,6 +490,7 @@ mod tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            pre_computed_routing: None,
         };
 
         let params = HashMap::new();
@@ -528,6 +531,7 @@ mod tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            pre_computed_routing: None,
         };
 
         let params = HashMap::new();

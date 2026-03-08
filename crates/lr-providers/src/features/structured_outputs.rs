@@ -327,6 +327,7 @@ mod tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            pre_computed_routing: None,
         };
 
         let mut params = HashMap::new();
@@ -375,6 +376,7 @@ mod tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            pre_computed_routing: None,
         };
 
         let mut params = HashMap::new();

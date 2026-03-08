@@ -1593,6 +1593,7 @@ mod tests {
             response_format: None,
             tool_choice: None,
             tools: None,
+            pre_computed_routing: None,
         };
 
         let result = router.complete("invalid-key-id", request).await;

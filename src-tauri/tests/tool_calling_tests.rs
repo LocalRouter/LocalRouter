@@ -86,6 +86,7 @@ fn test_completion_request_with_tools() {
         response_format: None,
         logprobs: None,
         top_logprobs: None,
+        pre_computed_routing: None,
     };
 
     // Verify tools are present

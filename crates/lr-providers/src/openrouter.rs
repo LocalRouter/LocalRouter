@@ -681,6 +681,7 @@ mod tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            pre_computed_routing: None,
         };
 
         let response = provider.complete(request).await.unwrap();

@@ -339,11 +339,7 @@ impl Router {
     /// Report a provider failure to the health cache (debounced)
     fn report_provider_failure(&self, provider: &str, error: &str) {
         if let Some(ref health_cache) = self.health_cache {
-            let cooldown_secs = self
-                .config_manager
-                .get()
-                .health_check
-                .failure_cooldown_secs;
+            let cooldown_secs = self.config_manager.get().health_check.failure_cooldown_secs;
             let cooldown = std::time::Duration::from_secs(cooldown_secs);
             if health_cache.report_provider_failure(provider, error.to_string(), cooldown) {
                 warn!(
@@ -864,11 +860,11 @@ impl Router {
         Ok(response)
     }
 
-    /// Select models for auto-routing using RouteLLM prediction if configured.
+    /// Select models for auto-routing using pre-computed RouteLLM classification.
     ///
     /// Returns a tuple of (selected_models, optional_win_rate).
-    /// - If RouteLLM is enabled and prediction succeeds, returns strong or weak models based on threshold
-    /// - Falls back to prioritized_models if RouteLLM fails or is disabled
+    /// Classification is performed in the chat pipeline as a parallel task;
+    /// this function only reads the pre-computed result from the request.
     async fn select_models_for_auto_routing(
         &self,
         auto_config: &lr_config::AutoModelConfig,
@@ -881,59 +877,30 @@ impl Router {
             format!("RouteLLM ({})", context)
         };
 
-        if let Some(routellm_config) = &auto_config.routellm_config {
-            if routellm_config.enabled {
-                // Extract prompt from request messages
-                let prompt = request
-                    .messages
-                    .iter()
-                    .map(|m| m.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                // Get RouteLLM service
-                if let Some(service) = &self.routellm_service {
-                    // Predict with threshold
-                    match service
-                        .predict_with_threshold(&prompt, routellm_config.threshold)
-                        .await
-                    {
-                        Ok((is_strong, win_rate)) => {
-                            // Select models based on prediction
-                            // Strong models use prioritized_models from auto_config
-                            let models = if is_strong {
-                                &auto_config.prioritized_models
-                            } else {
-                                &routellm_config.weak_models
-                            };
-
-                            info!(
-                                "{}: win_rate={:.3}, threshold={:.3}, selected={}",
-                                log_prefix,
-                                win_rate,
-                                routellm_config.threshold,
-                                if is_strong { "strong" } else { "weak" }
-                            );
-
-                            return (models.clone(), Some(win_rate));
-                        }
-                        Err(e) => {
-                            warn!(
-                                "{} prediction failed: {}, fallback to prioritized models",
-                                log_prefix, e
-                            );
-                        }
-                    }
+        // Use pre-computed classification from chat pipeline
+        if let Some(pre_computed) = &request.pre_computed_routing {
+            if let Some(routellm_config) = &auto_config.routellm_config {
+                let models = if pre_computed.is_strong {
+                    &auto_config.prioritized_models
                 } else {
-                    warn!(
-                        "{} enabled but service not available, using prioritized models",
-                        log_prefix
-                    );
-                }
+                    &routellm_config.weak_models
+                };
+                info!(
+                    "{}: win_rate={:.3}, threshold={:.3}, selected={}",
+                    log_prefix,
+                    pre_computed.win_rate,
+                    routellm_config.threshold,
+                    if pre_computed.is_strong {
+                        "strong"
+                    } else {
+                        "weak"
+                    }
+                );
+                return (models.clone(), Some(pre_computed.win_rate));
             }
         }
 
-        // Default: use prioritized models
+        // No pre-computed routing or RouteLLM not configured — use prioritized models
         (auto_config.prioritized_models.clone(), None)
     }
 
@@ -2115,6 +2082,7 @@ mod tests {
             response_format: None,
             tool_choice: None,
             tools: None,
+            pre_computed_routing: None,
         };
 
         let result = router.complete("invalid-key-id", request).await;

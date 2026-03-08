@@ -50,6 +50,7 @@ pub fn standard_completion_request() -> CompletionRequest {
         response_format: None,
         tool_choice: None,
         tools: None,
+        pre_computed_routing: None,
     }
 }
 
@@ -80,6 +81,7 @@ pub fn standard_streaming_request() -> CompletionRequest {
         response_format: None,
         tool_choice: None,
         tools: None,
+        pre_computed_routing: None,
     }
 }
 

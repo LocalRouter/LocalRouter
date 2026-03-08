@@ -28,7 +28,7 @@ use crate::types::{
 use lr_providers::{
     ChatMessage as ProviderChatMessage, ChatMessageContent as ProviderMessageContent,
     CompletionRequest as ProviderCompletionRequest, ContentPart as ProviderContentPart,
-    ImageUrl as ProviderImageUrl,
+    ImageUrl as ProviderImageUrl, PreComputedRouting,
 };
 use lr_router::UsageInfo;
 
@@ -202,6 +202,9 @@ pub async fn chat_completions(
         }
     }
 
+    // Check rate limits first (reject early before spawning parallel work)
+    check_rate_limits(&state, &auth, &request).await?;
+
     // Start guardrail scan in parallel (will be joined before returning response)
     let guardrail_handle = {
         let state_ref = state.clone();
@@ -222,8 +225,12 @@ pub async fn chat_completions(
         })
     };
 
-    // Check rate limits (in parallel with guardrails + compression)
-    check_rate_limits(&state, &auth, &request).await?;
+    // Start RouteLLM classification in parallel (only for localrouter/auto)
+    let routellm_handle = if request.model == "localrouter/auto" {
+        spawn_routellm_classification(&state, client_auth.as_ref().map(|e| &e.0), &request)
+    } else {
+        None
+    };
 
     // Await compression result (must complete before converting to provider format)
     let compression_result = compression_handle
@@ -260,8 +267,22 @@ pub async fn chat_completions(
         tracing::warn!("Prompt compression failed (continuing without): {}", e);
     }
 
+    // Await RouteLLM classification result
+    let routellm_result = if let Some(handle) = routellm_handle {
+        handle
+            .await
+            .map_err(|e| ApiErrorResponse::internal_error(format!("RouteLLM task failed: {}", e)))?
+    } else {
+        None
+    };
+
     // Convert to provider format (uses possibly-compressed messages)
-    let provider_request = convert_to_provider_request(&request)?;
+    let mut provider_request = convert_to_provider_request(&request)?;
+
+    // Inject pre-computed RouteLLM routing into provider request
+    if let Some(routing) = routellm_result {
+        provider_request.pre_computed_routing = Some(routing);
+    }
 
     // Determine if we can run guardrails in parallel with the LLM request.
     // Parallel mode buffers the response until guardrails pass, reducing latency.
@@ -316,6 +337,58 @@ pub async fn chat_completions(
             handle_non_streaming(state, auth, client_auth, request, provider_request).await
         }
     }
+}
+
+/// Spawn RouteLLM classification as a parallel task.
+/// Returns None if RouteLLM is not configured/enabled for this client.
+fn spawn_routellm_classification(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+    request: &ChatCompletionRequest,
+) -> Option<tokio::task::JoinHandle<Option<PreComputedRouting>>> {
+    let client_id = &client_context?.client_id;
+    let config = state.config_manager.get();
+    let client = config.clients.iter().find(|c| c.id == *client_id)?;
+    let strategy = config
+        .strategies
+        .iter()
+        .find(|s| s.id == client.strategy_id)?;
+    let auto_config = strategy.auto_config.as_ref()?;
+    let routellm_config = auto_config.routellm_config.as_ref().filter(|c| c.enabled)?;
+    let service = state.router.get_routellm_service()?.clone();
+    let threshold = routellm_config.threshold;
+    let request_clone = request.clone();
+
+    Some(tokio::spawn(async move {
+        let prompt = request_clone
+            .messages
+            .iter()
+            .filter_map(|m| match &m.content {
+                Some(MessageContent::Text(text)) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        match service.predict_with_threshold(&prompt, threshold).await {
+            Ok((is_strong, win_rate)) => {
+                tracing::info!(
+                    "RouteLLM classification: win_rate={:.3}, threshold={:.3}, selected={}",
+                    win_rate,
+                    threshold,
+                    if is_strong { "strong" } else { "weak" }
+                );
+                Some(PreComputedRouting {
+                    is_strong,
+                    win_rate,
+                })
+            }
+            Err(e) => {
+                tracing::warn!("RouteLLM classification failed: {}", e);
+                None
+            }
+        }
+    }))
 }
 
 /// Validate the chat completion request
@@ -2015,7 +2088,10 @@ async fn handle_streaming(
                 .unwrap_or(config.json_repair.syntax_repair);
             if enabled && syntax_repair {
                 Some(Arc::new(Mutex::new(
-                    lr_json_repair::StreamingSyntaxRepairer::new(),
+                    lr_json_repair::StreamingJsonRepairer::new(
+                        None,
+                        lr_json_repair::RepairOptions::default(),
+                    ),
                 )))
             } else {
                 None
@@ -2452,7 +2528,10 @@ async fn handle_streaming_parallel(
                     .and_then(|c| c.json_repair.syntax_repair)
                     .unwrap_or(config.json_repair.syntax_repair);
                 if enabled && syntax_repair {
-                    Some(lr_json_repair::StreamingSyntaxRepairer::new())
+                    Some(lr_json_repair::StreamingJsonRepairer::new(
+                        None,
+                        lr_json_repair::RepairOptions::default(),
+                    ))
                 } else {
                     None
                 }
@@ -2476,7 +2555,7 @@ async fn handle_streaming_parallel(
                                  created_ts: i64,
                                  content_acc: &mut String,
                                  finish_reason: &mut String,
-                                 repairer: &mut Option<lr_json_repair::StreamingSyntaxRepairer>|
+                                 repairer: &mut Option<lr_json_repair::StreamingJsonRepairer>|
              -> (Result<Event, std::convert::Infallible>, bool) {
                 let is_done = if let Some(choice) = provider_chunk.choices.first() {
                     if let Some(content) = &choice.delta.content {

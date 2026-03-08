@@ -67,6 +67,7 @@ fn test_structured_outputs_person_schema_openai() {
         response_format: None,
         tool_choice: None,
         tools: None,
+        pre_computed_routing: None,
     };
 
     // Adapt request
@@ -259,6 +260,7 @@ fn test_prompt_caching_anthropic_request() {
         response_format: None,
         tool_choice: None,
         tools: None,
+        pre_computed_routing: None,
     };
 
     // Adapt request
@@ -384,6 +386,7 @@ fn test_logprobs_openai_request() {
         response_format: None,
         tool_choice: None,
         tools: None,
+        pre_computed_routing: None,
     };
 
     // Adapt request
@@ -511,6 +514,7 @@ fn test_logprobs_various_top_values() {
             response_format: None,
             tool_choice: None,
             tools: None,
+            pre_computed_routing: None,
         };
 
         let result = adapter.adapt_request(&mut request, &params);
@@ -575,6 +579,7 @@ fn test_json_mode_openai() {
         response_format: None,
         tool_choice: None,
         tools: None,
+        pre_computed_routing: None,
     };
 
     // Adapt request
@@ -620,6 +625,7 @@ fn test_json_mode_anthropic() {
         response_format: None,
         tool_choice: None,
         tools: None,
+        pre_computed_routing: None,
     };
 
     // Adapt request
@@ -767,6 +773,7 @@ fn test_json_mode_all_providers() {
             response_format: None,
             tool_choice: None,
             tools: None,
+            pre_computed_routing: None,
         };
 
         let result = adapter.adapt_request(&mut request, &HashMap::new());
@@ -838,6 +845,7 @@ fn test_structured_outputs_with_prompt_caching() {
         response_format: None,
         tool_choice: None,
         tools: None,
+        pre_computed_routing: None,
     };
 
     // Apply both adapters
@@ -897,6 +905,7 @@ fn test_json_mode_with_logprobs() {
         response_format: None,
         tool_choice: None,
         tools: None,
+        pre_computed_routing: None,
     };
 
     // Apply both adapters

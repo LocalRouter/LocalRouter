@@ -53,6 +53,7 @@ pub fn convert_sampling_to_chat_request(
         tools: None,
         tool_choice: None,
         extensions: None,
+        pre_computed_routing: None,
     })
 }
 
