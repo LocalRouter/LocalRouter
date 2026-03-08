@@ -1813,8 +1813,8 @@ pub async fn update_context_management_config(
 
 /// Preview catalog compression at a given threshold.
 ///
-/// Returns both compressed and uncompressed welcome messages plus stats,
-/// using hardcoded mock data so no live MCP session is needed.
+/// Returns both compressed and uncompressed welcome messages plus per-server
+/// detail for rendering a side-by-side catalog diff.
 #[derive(Serialize)]
 pub struct CatalogCompressionPreview {
     pub welcome_message: String,
@@ -1824,32 +1824,54 @@ pub struct CatalogCompressionPreview {
     pub compressed_descriptions_count: usize,
     pub deferred_items_count: usize,
     pub truncated_servers_count: usize,
-    pub tools: Vec<PreviewToolEntry>,
+    /// Per-server breakdown with full descriptions and compression state.
+    pub servers: Vec<PreviewServerEntry>,
 }
 
 #[derive(Serialize)]
-pub struct PreviewToolEntry {
+pub struct PreviewServerEntry {
     pub name: String,
-    pub server: String,
     pub is_virtual: bool,
+    pub tool_names: Vec<String>,
+    pub resource_names: Vec<String>,
+    pub prompt_names: Vec<String>,
+    pub description: Option<String>,
+    pub instructions: Option<String>,
+    /// "visible" | "compressed" | "deferred" | "truncated"
     pub compression_state: String,
 }
 
 #[tauri::command]
 pub async fn preview_catalog_compression(
     catalog_threshold_bytes: usize,
+    source: Option<String>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<CatalogCompressionPreview, String> {
     use lr_mcp::gateway::{
-        build_gateway_instructions, build_preview_instructions_context,
+        build_gateway_instructions, build_preview_mock_realistic,
         compute_catalog_compression_plan,
     };
 
-    let mut ctx = build_preview_instructions_context();
+    // Resolve the InstructionsContext based on source
+    let mut ctx = match source.as_deref() {
+        // Mock preset with realistic MCP server data
+        None | Some("mock") => build_preview_mock_realistic(),
+        // Real client by client_id — find their active session
+        Some(client_id) if client_id.starts_with("client:") => {
+            let cid = &client_id["client:".len()..];
+            state
+                .mcp_gateway
+                .get_client_instructions_context(cid)
+                .await?
+        }
+        Some(other) => {
+            return Err(format!("Unknown preview source: {other}"));
+        }
+    };
 
     // Build uncompressed version (no plan)
     ctx.catalog_compression = None;
-    let uncompressed = build_gateway_instructions(&ctx)
-        .unwrap_or_default();
+    let uncompressed = build_gateway_instructions(&ctx).unwrap_or_default();
     let uncompressed_size = uncompressed.len();
 
     // Compute compression plan
@@ -1858,10 +1880,13 @@ pub async fn preview_catalog_compression(
     let deferred_items_count = plan.deferred_items.len();
     let truncated_servers_count = plan.truncated_servers.len();
 
-    // Build per-tool compression state lookups
-    let compressed_names: std::collections::HashSet<&str> = plan
+    // Build compression state lookups
+    let compressed_slugs: std::collections::HashSet<&str> = plan
         .compressed_descriptions
         .iter()
+        .filter(|c| {
+            c.item_type == lr_mcp::gateway::types::CompressedItemType::ServerWelcome
+        })
         .map(|c| c.namespaced_name.as_str())
         .collect();
     let deferred_slugs: std::collections::HashSet<&str> = plan
@@ -1875,43 +1900,50 @@ pub async fn preview_catalog_compression(
         .map(|s| s.as_str())
         .collect();
 
-    // Build tool list with compression state
-    let mut tools = Vec::new();
+    // Build per-server entries
+    let mut servers = Vec::new();
+
+    // Virtual servers (always visible — never compressed)
     for vsi in &ctx.virtual_instructions {
-        for name in &vsi.tool_names {
-            tools.push(PreviewToolEntry {
-                name: name.clone(),
-                server: vsi.section_title.clone(),
-                is_virtual: true,
-                compression_state: "visible".to_string(),
-            });
-        }
+        servers.push(PreviewServerEntry {
+            name: vsi.section_title.clone(),
+            is_virtual: true,
+            tool_names: vsi.tool_names.clone(),
+            resource_names: Vec::new(),
+            prompt_names: Vec::new(),
+            description: Some(vsi.content.clone()),
+            instructions: None,
+            compression_state: "visible".to_string(),
+        });
     }
+
+    // MCP servers
     for server in &ctx.servers {
         let slug = server.name.to_lowercase().replace(' ', "-");
-        for name in &server.tool_names {
-            let state = if truncated_slugs.contains(slug.as_str()) {
-                "truncated"
-            } else if deferred_slugs.contains(slug.as_str()) {
-                "deferred"
-            } else if compressed_names.contains(name.as_str()) {
-                "compressed"
-            } else {
-                "visible"
-            };
-            tools.push(PreviewToolEntry {
-                name: name.clone(),
-                server: server.name.clone(),
-                is_virtual: false,
-                compression_state: state.to_string(),
-            });
-        }
+        let compression_state = if truncated_slugs.contains(slug.as_str()) {
+            "truncated"
+        } else if deferred_slugs.contains(slug.as_str()) {
+            "deferred"
+        } else if compressed_slugs.contains(slug.as_str()) {
+            "compressed"
+        } else {
+            "visible"
+        };
+        servers.push(PreviewServerEntry {
+            name: server.name.clone(),
+            is_virtual: false,
+            tool_names: server.tool_names.clone(),
+            resource_names: server.resource_names.clone(),
+            prompt_names: server.prompt_names.clone(),
+            description: server.description.clone(),
+            instructions: server.instructions.clone(),
+            compression_state: compression_state.to_string(),
+        });
     }
 
     // Set plan and build compressed version
     ctx.catalog_compression = Some(plan);
-    let compressed = build_gateway_instructions(&ctx)
-        .unwrap_or_default();
+    let compressed = build_gateway_instructions(&ctx).unwrap_or_default();
     let compressed_size = compressed.len();
 
     Ok(CatalogCompressionPreview {
@@ -1922,7 +1954,7 @@ pub async fn preview_catalog_compression(
         compressed_descriptions_count,
         deferred_items_count,
         truncated_servers_count,
-        tools,
+        servers,
     })
 }
 

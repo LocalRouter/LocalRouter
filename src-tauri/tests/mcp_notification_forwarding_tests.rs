@@ -70,6 +70,7 @@ fn create_test_app_state() -> AppState {
         client_manager,
         token_store,
         metrics_collector,
+        None,
     )
 }
 

@@ -13,10 +13,12 @@ use std::path::PathBuf;
 pub struct OpenCodeIntegration;
 
 fn config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
-        .join("opencode")
-        .join("opencode.json")
+    // OpenCode uses XDG config path (~/.config/opencode/) on all platforms,
+    // not the macOS-native ~/Library/Application Support/
+    let xdg_config = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".config"));
+    xdg_config.join("opencode").join("opencode.json")
 }
 
 /// Read the existing opencode.json or create an empty object
@@ -56,7 +58,10 @@ fn write_config(
 
     Ok(LaunchResult {
         success: true,
-        message: format!("Configured OpenCode at {}", path.display()),
+        message: format!(
+            "Configured OpenCode at {}. Run /connect in OpenCode to apply changes.",
+            path.display()
+        ),
         modified_files: vec![path.to_string_lossy().to_string()],
         backup_files,
         terminal_command: None,

@@ -742,6 +742,30 @@ pub async fn get_health_cache(
     Ok(app_state.health_cache.get())
 }
 
+/// Get whether periodic health checks are enabled
+#[tauri::command]
+pub async fn get_periodic_health_enabled(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<bool, String> {
+    Ok(config_manager.get().health_check.periodic_enabled)
+}
+
+/// Set whether periodic health checks are enabled
+///
+/// When disabled, only on-failure and user-triggered health checks run.
+/// Requires a server restart to take effect.
+#[tauri::command]
+pub async fn set_periodic_health_enabled(
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    config_manager
+        .update(|config| {
+            config.health_check.periodic_enabled = enabled;
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Refresh all health checks
 ///
 /// Triggers a full refresh of all provider and MCP server health checks.
@@ -911,12 +935,21 @@ struct ModelsRefreshStartedPayload {
 /// When all providers are done, emits `models-changed`.
 ///
 /// Returns immediately - the refresh happens in the background.
+///
+/// # Arguments
+/// * `force` - If true, invalidates all caches before refreshing (bypasses TTL)
 #[tauri::command]
 pub async fn refresh_models_incremental(
     registry: State<'_, Arc<ProviderRegistry>>,
     app: tauri::AppHandle,
+    force: Option<bool>,
 ) -> Result<(), String> {
     let registry = registry.inner().clone();
+
+    // Invalidate caches when force-refreshing so we bypass TTL
+    if force.unwrap_or(false) {
+        registry.invalidate_all_caches();
+    }
 
     if !registry.try_start_refresh() {
         // Another refresh is already in progress

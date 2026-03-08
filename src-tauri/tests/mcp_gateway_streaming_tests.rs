@@ -198,21 +198,6 @@ mod tests {
         // TODO: Implement with proper ownership checking
     }
 
-    // Test: Deferred loading activation notification
-    #[tokio::test]
-    async fn test_deferred_loading_activation_notification() {
-        // This test verifies that search tool activation triggers notifications
-        //
-        // Expected behavior:
-        // 1. Create session with deferred_loading enabled
-        // 2. Initial tools/list returns only search tool
-        // 3. Call activate_tools with ["read_file", "write_file"]
-        // 4. Verify notification/tools/list_changed is sent through SSE
-        // 5. Subsequent tools/list returns newly activated tools
-
-        // TODO: Implement with proper deferred loading verification
-    }
-
     // Test: Error event propagation
     #[tokio::test]
     async fn test_error_event_propagation() {

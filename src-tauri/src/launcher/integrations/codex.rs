@@ -1,14 +1,89 @@
 //! Codex (OpenAI) integration
 //!
-//! LLM-only client — Codex does not have an MCP client layer.
-//! See: <https://developers.openai.com/codex/config-reference/>
+//! Two modes:
+//! - **Try It Out**: Terminal command with env vars (LLM routing).
+//! - **Permanent Config**: Write MCP server entry to `~/.codex/config.toml`.
 //!
-//! - **Try It Out**: Terminal command with env vars.
+//! See: <https://developers.openai.com/codex/config-reference/>
 
+use crate::launcher::backup;
 use crate::launcher::AppIntegration;
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 
 pub struct CodexIntegration;
+
+/// Path to Codex global config file
+fn config_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".codex")
+        .join("config.toml")
+}
+
+/// Read the existing config.toml or create an empty table
+fn read_config(path: &std::path::Path) -> toml::Value {
+    if path.exists() {
+        let data = std::fs::read_to_string(path).unwrap_or_default();
+        data.parse::<toml::Value>()
+            .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    }
+}
+
+/// Insert the LocalRouter MCP server entry into the config
+fn insert_mcp_entry(config: &mut toml::Value, base_url: &str, client_secret: &str) {
+    if let toml::Value::Table(ref mut table) = config {
+        let mcp_servers = table
+            .entry("mcp_servers")
+            .or_insert(toml::Value::Table(toml::map::Map::new()));
+        if let toml::Value::Table(ref mut servers) = mcp_servers {
+            let mut entry = toml::map::Map::new();
+            entry.insert("url".to_string(), toml::Value::String(base_url.to_string()));
+
+            let mut headers = toml::map::Map::new();
+            headers.insert(
+                "Authorization".to_string(),
+                toml::Value::String(format!("Bearer {}", client_secret)),
+            );
+            entry.insert("http_headers".to_string(), toml::Value::Table(headers));
+
+            servers.insert("localrouter".to_string(), toml::Value::Table(entry));
+        }
+    }
+}
+
+/// Write config TOML to disk with backup
+fn write_config(
+    path: &std::path::Path,
+    config: &toml::Value,
+) -> Result<LaunchResult, String> {
+    let data =
+        toml::to_string_pretty(config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+    }
+
+    let backup_path = backup::write_with_backup(path, data.as_bytes())?;
+    let backup_files: Vec<String> = backup_path
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    Ok(LaunchResult {
+        success: true,
+        message: format!(
+            "MCP configured in {}. Restart Codex or run `codex mcp list` to verify.",
+            path.display()
+        ),
+        modified_files: vec![path.to_string_lossy().to_string()],
+        backup_files,
+        terminal_command: None,
+    })
+}
 
 impl AppIntegration for CodexIntegration {
     fn name(&self) -> &str {
@@ -32,9 +107,7 @@ impl AppIntegration for CodexIntegration {
     }
 
     fn supports_permanent_config(&self) -> bool {
-        // Codex is LLM-only — no config file integration needed.
-        // LLM routing is done via env vars at launch time.
-        false
+        true
     }
 
     fn try_it_out(
@@ -57,10 +130,15 @@ impl AppIntegration for CodexIntegration {
 
     fn configure_permanent(
         &self,
-        _base_url: &str,
-        _client_secret: &str,
+        base_url: &str,
+        client_secret: &str,
         _client_id: &str,
     ) -> Result<LaunchResult, String> {
-        Err("Codex does not support permanent configuration — use env vars instead".to_string())
+        let path = config_path();
+        let mut config = read_config(&path);
+
+        insert_mcp_entry(&mut config, base_url, client_secret);
+
+        write_config(&path, &config)
     }
 }

@@ -289,7 +289,6 @@ impl ConfigManager {
             strategy_id: strategy.id.clone(),
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
-            mcp_deferred_loading: false,
             context_management_enabled: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),

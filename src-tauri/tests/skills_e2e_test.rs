@@ -4,7 +4,7 @@
 //! stands up the MCP gateway with skill support, and exercises all skill tool commands
 //! through the gateway's JSON-RPC interface.
 //!
-//! Tools use per-skill namespaced names with deferred loading:
+//! Tools use per-skill namespaced names:
 //! - `skill_{sname}_get_info` — always visible
 //! - `skill_{sname}_run_{sfile}` — visible after get_info
 //! - `skill_{sname}_read_{sfile}` — visible after get_info
@@ -14,7 +14,6 @@ mod mcp_tests;
 use localrouter::config::AppConfig;
 use localrouter::config::ConfigManager;
 use localrouter::config::{PermissionState, SkillsPermissions};
-use localrouter::mcp::gateway::types::DeferredLoadingState;
 use localrouter::mcp::gateway::{GatewayConfig, McpGateway};
 use localrouter::mcp::protocol::JsonRpcRequest;
 use localrouter::mcp::McpServerManager;
@@ -24,7 +23,6 @@ use localrouter::providers::registry::ProviderRegistry;
 use localrouter::router::{RateLimiterManager, Router};
 use localrouter::skills::SkillManager;
 use serde_json::json;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -154,8 +152,8 @@ async fn test_skills_e2e_all_tool_commands() {
     let response = gateway
         .handle_request_with_skills(
             client_id,
+            None,
             vec![],
-            false,
             vec![],
             lr_config::McpPermissions::default(),
             skills_permissions.clone(),
@@ -201,8 +199,8 @@ async fn test_skills_e2e_all_tool_commands() {
     let response = gateway
         .handle_request_with_skills(
             client_id,
+            None,
             vec![],
-            false,
             vec![],
             lr_config::McpPermissions::default(),
             skills_permissions.clone(),
@@ -259,8 +257,8 @@ async fn test_skills_e2e_all_tool_commands() {
     let response = gateway
         .handle_request_with_skills(
             client_id,
+            None,
             vec![],
-            false,
             vec![],
             lr_config::McpPermissions::default(),
             skills_permissions.clone(),
@@ -353,8 +351,8 @@ async fn test_no_skill_tools_when_no_skills_configured() {
     let response = gateway
         .handle_request_with_skills(
             client_id,
+            None,
             vec![],
-            false,
             vec![],
             lr_config::McpPermissions::default(),
             SkillsPermissions::default(),
@@ -396,8 +394,8 @@ async fn test_skill_tools_present_after_cache_hit() {
     let response1 = gateway
         .handle_request_with_skills(
             client_id,
+            None,
             vec![],
-            false,
             vec![],
             lr_config::McpPermissions::default(),
             skills_permissions.clone(),
@@ -422,8 +420,8 @@ async fn test_skill_tools_present_after_cache_hit() {
     let response2 = gateway
         .handle_request_with_skills(
             client_id,
+            None,
             vec![],
-            false,
             vec![],
             lr_config::McpPermissions::default(),
             skills_permissions.clone(),
@@ -444,85 +442,4 @@ async fn test_skill_tools_present_after_cache_hit() {
     );
 }
 
-/// Test: Skill get_info tools must be present even when deferred loading is enabled
-#[tokio::test]
-async fn test_skill_tools_present_with_deferred_loading() {
-    let (gateway, _temp_dir) = setup_gateway_with_skill().await;
-
-    let client_id = "deferred-test-client";
-    let skills_permissions = {
-        let mut perms = SkillsPermissions::default();
-        perms
-            .skills
-            .insert("get-current-time".to_string(), PermissionState::Allow);
-        perms
-    };
-
-    // First call to create the session and set allowed_skills
-    let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
-    gateway
-        .handle_request_with_skills(
-            client_id,
-            vec![],
-            false,
-            vec![],
-            lr_config::McpPermissions::default(),
-            skills_permissions.clone(),
-            "Test Client".to_string(),
-            PermissionState::Off,
-            lr_config::PermissionState::Off,
-            None,
-            req,
-        )
-        .await
-        .expect("initial tools/list should succeed");
-
-    // Manually enable deferred loading on the session
-    let session = gateway
-        .get_session(client_id)
-        .expect("session should exist after first request");
-    {
-        let mut session_write = session.write().await;
-        session_write.deferred_loading = Some(DeferredLoadingState {
-            enabled: true,
-            resources_deferred: false,
-            prompts_deferred: false,
-            activated_tools: HashSet::new(),
-            full_catalog: vec![],
-            activated_resources: HashSet::new(),
-            full_resource_catalog: vec![],
-            activated_prompts: HashSet::new(),
-            full_prompt_catalog: vec![],
-            server_instructions: std::collections::HashMap::new(),
-            server_tool_lists: std::collections::HashMap::new(),
-        });
-    }
-
-    // Now call tools/list again — deferred loading path should still include skill tools
-    let req2 = JsonRpcRequest::with_id(2, "tools/list".to_string(), Some(json!({})));
-    let response = gateway
-        .handle_request_with_skills(
-            client_id,
-            vec![],
-            false,
-            vec![],
-            lr_config::McpPermissions::default(),
-            skills_permissions.clone(),
-            "Test Client".to_string(),
-            PermissionState::Off,
-            lr_config::PermissionState::Off,
-            None,
-            req2,
-        )
-        .await
-        .expect("deferred tools/list should succeed");
-
-    let tool_names = extract_tool_names(&response);
-
-    assert!(
-        tool_names.contains(&"skill_get-current-time_get_info".to_string()),
-        "Deferred loading must still include get_info tool. Found: {:?}",
-        tool_names
-    );
-}
 

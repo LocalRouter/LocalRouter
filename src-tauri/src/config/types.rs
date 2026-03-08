@@ -828,10 +828,6 @@ pub struct Client {
     )]
     pub mcp_server_access: McpServerAccess,
 
-    /// Migration shim: old deferred loading flag (deserialize only)
-    #[serde(default, skip_serializing)]
-    pub mcp_deferred_loading: bool,
-
     /// Enable context management for this client.
     /// None = inherit global setting, Some(false) = disabled regardless of global.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1553,7 +1549,6 @@ impl Client {
             enabled: true,
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
-            mcp_deferred_loading: false,
             context_management_enabled: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),

@@ -1,7 +1,8 @@
 //! OpenClaw integration
 //!
-//! Config-file only (no try-it-out). LLM only, no MCP support.
-//! Modifies `~/.openclaw/openclaw.json`.
+//! Config-file only (no try-it-out).
+//! - **LLM**: `models.providers.localrouter` in `~/.openclaw/openclaw.json`.
+//! - **MCP**: `mcp.servers.localrouter` in the same file.
 
 use crate::launcher::backup;
 use crate::launcher::AppIntegration;
@@ -77,6 +78,27 @@ impl AppIntegration for OpenClawIntegration {
             prov_obj.insert("localrouter".to_string(), provider_entry);
         }
 
+        // 2. Add MCP server entry under mcp.servers
+        let mcp_section = obj
+            .entry("mcp")
+            .or_insert_with(|| serde_json::json!({}));
+        let mcp_servers = mcp_section
+            .as_object_mut()
+            .ok_or("Invalid mcp section")?
+            .entry("servers")
+            .or_insert_with(|| serde_json::json!({}));
+
+        let mcp_entry = serde_json::json!({
+            "url": base_url,
+            "headers": {
+                "Authorization": format!("Bearer {}", client_secret)
+            }
+        });
+
+        if let Some(servers_obj) = mcp_servers.as_object_mut() {
+            servers_obj.insert("localrouter".to_string(), mcp_entry);
+        }
+
         let data = serde_json::to_string_pretty(&config)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
@@ -88,7 +110,10 @@ impl AppIntegration for OpenClawIntegration {
 
         Ok(LaunchResult {
             success: true,
-            message: format!("Configured OpenClaw at {}", path.display()),
+            message: format!(
+                "Configured OpenClaw: LLM provider and MCP server at {}",
+                path.display()
+            ),
             modified_files: vec![path.to_string_lossy().to_string()],
             backup_files,
             terminal_command: None,

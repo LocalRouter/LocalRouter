@@ -57,11 +57,13 @@ impl AppIntegration for ClaudeCodeIntegration {
         _client_id: &str,
     ) -> Result<LaunchResult, String> {
         // Build inline MCP config JSON for --mcp-config flag
+        // Include token in URL query param as fallback for clients that don't send custom headers
+        let mcp_url = format!("{}?token={}", base_url, client_secret);
         let mcp_config = serde_json::json!({
             "mcpServers": {
                 "localrouter": {
                     "type": "http",
-                    "url": base_url,
+                    "url": mcp_url,
                     "headers": {
                         "Authorization": format!("Bearer {}", client_secret)
                     }
@@ -101,9 +103,11 @@ impl AppIntegration for ClaudeCodeIntegration {
             serde_json::json!({})
         };
 
+        // Include token in URL query param as fallback for clients that don't send custom headers
+        let mcp_url = format!("{}?token={}", base_url, client_secret);
         let mcp_entry = serde_json::json!({
             "type": "http",
-            "url": base_url,
+            "url": mcp_url,
             "headers": {
                 "Authorization": format!("Bearer {}", client_secret)
             }

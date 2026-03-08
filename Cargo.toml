@@ -65,6 +65,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+toml = { version = "0.8", features = ["preserve_order"] }
 
 # Logging & tracing
 tracing = "0.1"

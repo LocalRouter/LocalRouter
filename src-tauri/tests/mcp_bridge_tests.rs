@@ -24,7 +24,6 @@ fn test_config() -> AppConfig {
                 "filesystem".to_string(),
                 "web".to_string(),
             ]),
-            mcp_deferred_loading: false,
             context_management_enabled: None,
             skills_access: SkillsAccess::default(),
             created_at: Utc::now(),
@@ -56,7 +55,6 @@ fn test_config() -> AppConfig {
             enabled: false,
             allowed_llm_providers: vec![],
             mcp_server_access: McpServerAccess::Specific(vec!["github".to_string()]),
-            mcp_deferred_loading: false,
             context_management_enabled: None,
             skills_access: SkillsAccess::default(),
             created_at: Utc::now(),
@@ -88,7 +86,6 @@ fn test_config() -> AppConfig {
             enabled: true,
             allowed_llm_providers: vec!["openai".to_string()],
             mcp_server_access: McpServerAccess::None,
-            mcp_deferred_loading: false,
             context_management_enabled: None,
             skills_access: SkillsAccess::default(),
             created_at: Utc::now(),
@@ -252,16 +249,6 @@ fn test_empty_mcp_servers_validation() {
         .unwrap();
 
     assert!(!no_mcp_client.mcp_server_access.has_any_access());
-}
-
-/// Test deferred loading flag
-#[test]
-fn test_deferred_loading_flag() {
-    let mut config = test_config();
-    config.clients[0].mcp_deferred_loading = true;
-
-    let client = &config.clients[0];
-    assert!(client.mcp_deferred_loading);
 }
 
 /// Test multiple clients configuration

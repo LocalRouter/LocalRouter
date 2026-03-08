@@ -62,6 +62,7 @@ async fn gateway_request(
     let response = gateway
         .handle_request_with_skills(
             client_id,
+            None,
             vec![],
             false,
             vec![],

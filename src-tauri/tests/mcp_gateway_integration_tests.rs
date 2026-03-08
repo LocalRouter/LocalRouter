@@ -57,7 +57,7 @@ async fn test_gateway_session_creation() {
 
     // This should create a session even with empty allowed_servers (though it will have no access)
     let result = gateway
-        .handle_request("test-client", vec![], false, vec![], request)
+        .handle_request("test-client", vec![], vec![], request)
         .await;
 
     // Expect an error or empty response since no servers are allowed
@@ -94,7 +94,7 @@ async fn test_gateway_empty_allowed_servers() {
 
     // With empty allowed_servers, should handle gracefully
     let result = gateway
-        .handle_request("test-client", vec![], false, vec![], request)
+        .handle_request("test-client", vec![], vec![], request)
         .await;
 
     // Should either succeed with empty list or return appropriate response
@@ -123,7 +123,6 @@ async fn test_gateway_session_expiration() {
         Duration::from_millis(100),
         300,    // base_cache_ttl_seconds
         vec![], // roots
-        false,  // deferred_loading_requested
     );
 
     assert!(!session.is_expired());
@@ -148,7 +147,7 @@ async fn test_gateway_concurrent_requests() {
             let request = JsonRpcRequest::new(Some(json!(i)), "ping".to_string(), None);
 
             gateway_clone
-                .handle_request(&format!("client-{}", i), vec![], false, vec![], request)
+                .handle_request(&format!("client-{}", i), vec![], vec![], request)
                 .await
         });
 
@@ -233,7 +232,7 @@ async fn test_gateway_cleanup_expired_sessions() {
     let request = JsonRpcRequest::new(Some(json!(1)), "ping".to_string(), None);
 
     let _ = gateway
-        .handle_request("test-client", vec![], false, vec![], request)
+        .handle_request("test-client", vec![], vec![], request)
         .await;
 
     // Wait for session to expire
@@ -244,54 +243,4 @@ async fn test_gateway_cleanup_expired_sessions() {
 
     // Session should be cleaned up (we can't directly verify this without exposing internal state,
     // but the test confirms the cleanup runs without errors)
-}
-
-#[tokio::test]
-async fn test_deferred_loading_search_relevance() {
-    use localrouter::mcp::gateway::deferred::{search_tools, SearchMode};
-    use localrouter::mcp::gateway::types::NamespacedTool;
-    use serde_json::json;
-
-    let tools = vec![
-        NamespacedTool {
-            name: "filesystem__read_file".to_string(),
-            original_name: "read_file".to_string(),
-            server_id: "filesystem".to_string(),
-            description: Some("Read a file from disk".to_string()),
-            input_schema: json!({}),
-        },
-        NamespacedTool {
-            name: "filesystem__write_file".to_string(),
-            original_name: "write_file".to_string(),
-            server_id: "filesystem".to_string(),
-            description: Some("Write a file to disk".to_string()),
-            input_schema: json!({}),
-        },
-        NamespacedTool {
-            name: "github__read_issue".to_string(),
-            original_name: "read_issue".to_string(),
-            server_id: "github".to_string(),
-            description: Some("Read an issue from GitHub".to_string()),
-            input_schema: json!({}),
-        },
-    ];
-
-    let results = search_tools("read", &tools, 10, SearchMode::Bm25);
-
-    // Should return tools with "read" in name or description
-    assert!(!results.is_empty());
-
-    // Verify all results contain "read"
-    for (tool, score) in results {
-        assert!(
-            tool.name.to_lowercase().contains("read")
-                || tool
-                    .description
-                    .as_ref()
-                    .unwrap()
-                    .to_lowercase()
-                    .contains("read")
-        );
-        assert!(score > 0.0);
-    }
 }

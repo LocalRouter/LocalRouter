@@ -139,9 +139,12 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
         let mcp_server_manager = app.try_state::<Arc<McpServerManager>>();
         let config_manager = app.try_state::<ConfigManager>();
 
-        // Get all strategies for quick toggles
-        let all_strategies: Vec<lr_config::Strategy> = config_manager
-            .map(|cm| cm.get().strategies.clone())
+        // Get all strategies and context management config for quick toggles
+        let (all_strategies, global_ctx_config) = config_manager
+            .map(|cm| {
+                let cfg = cm.get();
+                (cfg.strategies.clone(), cfg.context_management.clone())
+            })
             .unwrap_or_default();
 
         if !clients.is_empty() {
@@ -246,6 +249,49 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                                     }
                                 }
                             }
+                        }
+
+                        // Catalog Compression toggle (per-client override)
+                        {
+                            let is_inherited =
+                                client.catalog_compression_enabled.is_none();
+                            let effective = client.is_catalog_compression_enabled();
+                            let label = if effective {
+                                if is_inherited {
+                                    "✓  Catalog Compression (default)".to_string()
+                                } else {
+                                    "✓  Catalog Compression".to_string()
+                                }
+                            } else if is_inherited {
+                                format!("{}Catalog Compression (default)", TRAY_INDENT)
+                            } else {
+                                format!("{}Catalog Compression", TRAY_INDENT)
+                            };
+                            client_submenu = client_submenu.text(
+                                format!("toggle_catalog_compression_{}", client.id),
+                                label,
+                            );
+
+                            // Indexing Tools toggle (per-client override)
+                            let is_inherited_idx =
+                                client.indexing_tools_enabled.is_none();
+                            let effective_idx =
+                                client.is_indexing_tools_enabled(&global_ctx_config);
+                            let label_idx = if effective_idx {
+                                if is_inherited_idx {
+                                    "✓  Indexing Tools (default)".to_string()
+                                } else {
+                                    "✓  Indexing Tools".to_string()
+                                }
+                            } else if is_inherited_idx {
+                                format!("{}Indexing Tools (default)", TRAY_INDENT)
+                            } else {
+                                format!("{}Indexing Tools", TRAY_INDENT)
+                            };
+                            client_submenu = client_submenu.text(
+                                format!("toggle_indexing_tools_{}", client.id),
+                                label_idx,
+                            );
                         }
 
                         client_submenu = client_submenu.separator();
@@ -1090,6 +1136,97 @@ pub(crate) async fn handle_toggle_weak_model<R: Runtime>(
 
     if let Err(e) = app.emit("strategies-changed", ()) {
         error!("Failed to emit strategies-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Handle toggling catalog compression for a client (per-client override).
+/// If currently inherited (None), sets to opposite of default (true).
+/// If currently overridden, clears back to inherited (None).
+pub(crate) async fn handle_toggle_catalog_compression<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+) -> tauri::Result<()> {
+    info!(
+        "Toggling catalog compression override for client {}",
+        client_id
+    );
+
+    let config_manager = app.state::<ConfigManager>();
+
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.catalog_compression_enabled = match client.catalog_compression_enabled {
+                    None => {
+                        // Inherited (default is true) → override to false
+                        Some(!client.is_catalog_compression_enabled())
+                    }
+                    Some(_) => {
+                        // Overridden → clear back to inherited
+                        None
+                    }
+                };
+            }
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    rebuild_tray_menu(app)?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Handle toggling indexing tools for a client (per-client override).
+/// If currently inherited (None), sets to opposite of global.
+/// If currently overridden, clears back to inherited (None).
+pub(crate) async fn handle_toggle_indexing_tools<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+) -> tauri::Result<()> {
+    info!(
+        "Toggling indexing tools override for client {}",
+        client_id
+    );
+
+    let config_manager = app.state::<ConfigManager>();
+
+    config_manager
+        .update(|cfg| {
+            let global_ctx = &cfg.context_management;
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.indexing_tools_enabled = match client.indexing_tools_enabled {
+                    None => {
+                        // Inherited → override to opposite of global
+                        Some(!client.is_indexing_tools_enabled(global_ctx))
+                    }
+                    Some(_) => {
+                        // Overridden → clear back to inherited
+                        None
+                    }
+                };
+            }
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    rebuild_tray_menu(app)?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        error!("Failed to emit clients-changed event: {}", e);
     }
 
     Ok(())

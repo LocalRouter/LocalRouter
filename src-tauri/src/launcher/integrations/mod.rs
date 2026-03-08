@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn test_capability_flags() {
         // Apps that support both try_it_out and permanent_config
-        for id in &["claude-code", "aider", "goose"] {
+        for id in &["claude-code", "codex", "aider", "goose"] {
             let integration = get_integration(id).unwrap();
             assert!(
                 integration.supports_try_it_out(),
@@ -97,21 +97,6 @@ mod tests {
             assert!(
                 integration.supports_permanent_config(),
                 "'{}' should support permanent_config",
-                id
-            );
-        }
-
-        // Apps that support try_it_out only (env-var based, no config file)
-        for id in &["codex"] {
-            let integration = get_integration(id).unwrap();
-            assert!(
-                integration.supports_try_it_out(),
-                "'{}' should support try_it_out",
-                id
-            );
-            assert!(
-                !integration.supports_permanent_config(),
-                "'{}' should NOT support permanent_config",
                 id
             );
         }
@@ -169,7 +154,7 @@ mod tests {
 
     #[test]
     fn test_config_file_integrations_configure_permanent() {
-        for id in &["claude-code", "opencode", "droid", "openclaw", "cursor"] {
+        for id in &["claude-code", "codex", "opencode", "droid", "openclaw", "cursor"] {
             let integration = get_integration(id).unwrap();
             let result = integration.configure_permanent(
                 "http://localhost:3625",
