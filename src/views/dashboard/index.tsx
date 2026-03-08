@@ -266,7 +266,7 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
         <StatsCard
           title="Strong / Weak"
           value={loading ? "-" : routellmRatio}
-          description={routellmTotal > 0 ? `${routellmTotal} classified` : "RouteLLM inactive"}
+          description={routellmTotal > 0 ? `${routellmTotal} classified` : undefined}
           icon={<GitBranch className="h-5 w-5" />}
           loading={loading}
         />
@@ -279,14 +279,12 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
         <StatsCard
           title="Compression Saved"
           value={loading ? "-" : formatTokens(featureStats?.compression_tokens_saved ?? 0)}
-          description="tokens saved"
           icon={<FileDown className="h-5 w-5" />}
           loading={loading}
         />
         <StatsCard
-          title="Context Mgmt Saved"
+          title="Context Saved"
           value={loading ? "-" : formatTokens(featureStats?.context_mgmt_tokens_saved ?? 0)}
-          description="tokens saved"
           icon={<Database className="h-5 w-5" />}
           loading={loading}
         />
