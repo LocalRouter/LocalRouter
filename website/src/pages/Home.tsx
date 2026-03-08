@@ -18,6 +18,9 @@ import {
   Download,
   Terminal,
   Coins,
+  Database,
+  Minimize2,
+  ArrowRight,
 } from 'lucide-react'
 
 export default function Home() {
@@ -1006,10 +1009,10 @@ export default function Home() {
                   </div>
                 </li>
                 <li className="flex gap-3">
-                  <FlaskConical className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <Check className="h-5 w-5 shrink-0 text-emerald-500 mt-0.5" />
                   <div>
-                    <span className="font-medium text-amber-600 dark:text-amber-400">Experimental: Deferred tool loading</span>
-                    <p className="text-sm text-muted-foreground">Load tool schemas on-demand to reduce context token usage</p>
+                    <span className="font-medium">Context Management</span>
+                    <p className="text-sm text-muted-foreground">98% catalog compression with FTS5 search—tools loaded on-demand via <code className="text-xs bg-muted px-1 rounded">ctx_search</code></p>
                   </div>
                 </li>
               </ul>
@@ -1589,6 +1592,219 @@ export default function Home() {
                     <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">True &rarr; true</span>
                     <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400">extra removed</span>
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature 9: Context Management */}
+      <section className="border-b py-16 sm:py-24 bg-muted/30">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <Database className="h-5 w-5 text-teal-500" />
+                <span className="text-sm font-medium text-teal-500 uppercase tracking-wide">Context Management</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                98% Smaller MCP Catalogs
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Progressive compression shrinks massive MCP tool catalogs to fit any context window. A built-in FTS5 search index lets AI discover and activate tools on-demand — nothing is lost, just deferred.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-teal-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">3-phase progressive compression</span>
+                    <p className="text-sm text-muted-foreground">Compresses descriptions, defers entire servers, then truncates to counts — automatically tuned to your threshold</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-teal-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Search-based activation</span>
+                    <p className="text-sm text-muted-foreground">AI calls <code className="text-xs bg-muted px-1 rounded">ctx_search</code> to discover deferred tools by keyword — matched tools are instantly activated</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-teal-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Response compression</span>
+                    <p className="text-sm text-muted-foreground">Large tool outputs are indexed and truncated — AI retrieves full content via search when needed</p>
+                  </div>
+                </li>
+              </ul>
+              <Link to="/docs/context-management" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-teal-500 hover:text-teal-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
+            </div>
+            {/* Visual: Compression Pipeline */}
+            <div className="relative overflow-x-auto">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl min-w-[480px]">
+                {/* Before */}
+                <div className="mb-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-2 w-2 rounded-full bg-red-500" />
+                    <span className="text-xs text-slate-400 font-medium uppercase">Before — 42 tools loaded</span>
+                    <span className="ml-auto text-xs text-red-400 font-mono">~48,000 tokens</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {['filesystem__read', 'filesystem__write', 'filesystem__list', 'filesystem__search', 'github__create_issue', 'github__list_prs', 'github__review', 'github__merge', 'slack__send', 'slack__read', 'slack__search', 'jira__create', 'jira__update', 'jira__search', 'postgres__query'].map((tool) => (
+                      <span key={tool} className="px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-slate-400 border border-white/10 font-mono">{tool}</span>
+                    ))}
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-slate-500 border border-white/10">+27 more...</span>
+                  </div>
+                </div>
+                {/* Arrow */}
+                <div className="flex items-center justify-center my-3">
+                  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-teal-500/20 border border-teal-500/30">
+                    <Database className="h-3 w-3 text-teal-400" />
+                    <span className="text-xs text-teal-400 font-medium">Context Management</span>
+                  </div>
+                </div>
+                {/* After */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-2 w-2 rounded-full bg-green-500" />
+                    <span className="text-xs text-slate-400 font-medium uppercase">After — 1 search tool active</span>
+                    <span className="ml-auto text-xs text-green-400 font-mono">~960 tokens</span>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="rounded-lg bg-teal-500/10 border border-teal-500/30 p-2.5">
+                      <div className="flex items-center gap-2">
+                        <Search className="h-3.5 w-3.5 text-teal-400" />
+                        <span className="text-white text-xs font-medium font-mono">ctx_search</span>
+                        <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-teal-500/20 text-teal-400">FTS5</span>
+                      </div>
+                      <p className="text-slate-400 text-[10px] mt-1">Search across 42 tools, 8 resources, 3 prompts from 5 servers</p>
+                    </div>
+                    <div className="rounded-lg bg-white/5 border border-white/10 p-2 flex items-center gap-2">
+                      <span className="text-slate-500 text-[10px]">AI searches "create github issue"</span>
+                      <ArrowRight className="h-3 w-3 text-slate-600" />
+                      <span className="text-teal-400 text-[10px] font-medium">github__create_issue activated</span>
+                    </div>
+                  </div>
+                </div>
+                {/* Compression ratio */}
+                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center">
+                  <span className="text-teal-400 text-xs font-medium">98% context reduction</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature 10: Prompt Compression */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <Minimize2 className="h-5 w-5 text-orange-500" />
+                <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">Prompt Compression</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                5-14x Fewer Input Tokens
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                LLMLingua-2 compresses chat histories by removing redundant tokens before sending to providers. Extractive only — keeps original tokens, zero hallucination risk.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Extractive token classification</span>
+                    <p className="text-sm text-muted-foreground">BERT-based model identifies and keeps only essential tokens — no paraphrasing, no generated text</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Parallel pipeline execution</span>
+                    <p className="text-sm text-muted-foreground">Runs alongside guardrails and routing — adds no latency to the request pipeline</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Per-client configuration</span>
+                    <p className="text-sm text-muted-foreground">Set compression rate, minimum messages, and preserved recent messages per client</p>
+                  </div>
+                </li>
+              </ul>
+              <Link to="/docs/prompt-compression" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-orange-500 hover:text-orange-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
+            </div>
+            {/* Visual: Before → After compression */}
+            <div className="relative overflow-x-auto order-2 lg:order-1">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl min-w-[480px]">
+                {/* Messages before */}
+                <div className="mb-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-2 w-2 rounded-full bg-red-500" />
+                    <span className="text-xs text-slate-400 font-medium uppercase">Chat history — 8 messages</span>
+                    <span className="ml-auto text-xs text-red-400 font-mono">12,400 tokens</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="rounded bg-blue-500/10 border border-blue-500/20 px-2.5 py-1.5">
+                      <span className="text-blue-400 text-[10px] font-medium">system</span>
+                      <p className="text-slate-400 text-[10px] mt-0.5">You are a helpful assistant that specializes in analyzing...</p>
+                    </div>
+                    <div className="rounded bg-white/5 border border-white/10 px-2.5 py-1.5">
+                      <span className="text-slate-300 text-[10px] font-medium">user</span>
+                      <p className="text-slate-500 text-[10px] mt-0.5">I need you to look at the following codebase and identify...</p>
+                    </div>
+                    <div className="rounded bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5">
+                      <span className="text-emerald-400 text-[10px] font-medium">assistant</span>
+                      <p className="text-slate-500 text-[10px] mt-0.5">I've analyzed the codebase and found several issues that...</p>
+                    </div>
+                    <div className="flex items-center gap-1 px-2">
+                      <div className="h-0.5 w-0.5 rounded-full bg-slate-600" />
+                      <div className="h-0.5 w-0.5 rounded-full bg-slate-600" />
+                      <div className="h-0.5 w-0.5 rounded-full bg-slate-600" />
+                      <span className="text-slate-600 text-[10px] ml-1">5 more messages</span>
+                    </div>
+                  </div>
+                </div>
+                {/* Arrow */}
+                <div className="flex items-center justify-center my-3">
+                  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-orange-500/20 border border-orange-500/30">
+                    <Minimize2 className="h-3 w-3 text-orange-400" />
+                    <span className="text-xs text-orange-400 font-medium">LLMLingua-2</span>
+                    <span className="text-[10px] text-orange-400/70">20ms</span>
+                  </div>
+                </div>
+                {/* After */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-2 w-2 rounded-full bg-green-500" />
+                    <span className="text-xs text-slate-400 font-medium uppercase">Compressed — recent 4 preserved</span>
+                    <span className="ml-auto text-xs text-green-400 font-mono">2,480 tokens</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="rounded bg-orange-500/10 border border-orange-500/20 px-2.5 py-1.5">
+                      <span className="text-orange-400 text-[10px] font-medium">compressed (4 messages)</span>
+                      <p className="text-slate-500 text-[10px] mt-0.5"><span className="line-through text-slate-600">You are a</span> helpful assistant <span className="line-through text-slate-600">that specializes in</span> analyzing...</p>
+                    </div>
+                    <div className="rounded bg-white/5 border border-white/10 px-2.5 py-1.5 ring-1 ring-green-500/30">
+                      <div className="flex items-center gap-1">
+                        <span className="text-slate-300 text-[10px] font-medium">user</span>
+                        <span className="text-green-400 text-[9px] ml-auto">preserved</span>
+                      </div>
+                      <p className="text-slate-400 text-[10px] mt-0.5">Can you also check the authentication module for...</p>
+                    </div>
+                  </div>
+                </div>
+                {/* Savings */}
+                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center gap-6">
+                  <span className="text-orange-400 text-xs font-medium">5x compression</span>
+                  <span className="text-slate-500 text-xs">|</span>
+                  <span className="text-green-400 text-xs font-medium">80% cost savings</span>
                 </div>
               </div>
             </div>

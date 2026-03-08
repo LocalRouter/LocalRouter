@@ -27,6 +27,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Terminal,
+  Database,
+  Minimize2,
 } from 'lucide-react'
 
 // --- Section data ---
@@ -250,6 +252,43 @@ const sections: DocSection[] = [
     ],
   },
   {
+    id: 'context-management',
+    title: 'Context Management',
+    icon: <Database className="h-4 w-4" />,
+    subsections: [
+      { id: 'context-management-overview', title: 'Overview' },
+      { id: 'catalog-compression', title: 'Catalog Compression', children: [
+        { id: 'compression-phase-1', title: 'Phase 1: Description Compression' },
+        { id: 'compression-phase-2', title: 'Phase 2: Server Deferral' },
+        { id: 'compression-phase-3', title: 'Phase 3: List Truncation' },
+      ]},
+      { id: 'search-based-activation', title: 'Search-Based Activation' },
+      { id: 'response-compression', title: 'Response Compression' },
+      { id: 'context-management-config', title: 'Configuration', children: [
+        { id: 'context-thresholds', title: 'Threshold Settings' },
+        { id: 'context-per-client', title: 'Per-Client Override' },
+      ]},
+    ],
+  },
+  {
+    id: 'prompt-compression',
+    title: 'Prompt Compression',
+    icon: <Minimize2 className="h-4 w-4" />,
+    subsections: [
+      { id: 'prompt-compression-overview', title: 'Overview' },
+      { id: 'llmlingua-2', title: 'LLMLingua-2 Engine', children: [
+        { id: 'extractive-classification', title: 'Extractive Token Classification' },
+        { id: 'compression-models', title: 'Model Options' },
+      ]},
+      { id: 'compression-pipeline', title: 'Compression Pipeline' },
+      { id: 'prompt-compression-config', title: 'Configuration', children: [
+        { id: 'compression-rate', title: 'Compression Rate' },
+        { id: 'compression-message-settings', title: 'Message Settings' },
+        { id: 'compression-per-client', title: 'Per-Client Override' },
+      ]},
+    ],
+  },
+  {
     id: 'marketplace',
     title: 'Marketplace',
     icon: <Store className="h-4 w-4" />,
@@ -355,6 +394,7 @@ const sidebarGroups: SidebarGroup[] = [
   { label: 'Getting Started', sectionIds: ['introduction', 'getting-started'] },
   { label: 'Core Features', sectionIds: ['clients', 'providers', 'model-selection-routing', 'rate-limiting'] },
   { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'skills', 'coding-agents', 'marketplace'] },
+  { label: 'Optimization', sectionIds: ['context-management', 'prompt-compression'] },
   { label: 'Security', sectionIds: ['firewall', 'guardrails', 'privacy-security'] },
   { label: 'Operations', sectionIds: ['monitoring', 'configuration'] },
   { label: 'API Reference', sectionIds: ['api-openai-gateway', 'api-mcp-gateway'] },
