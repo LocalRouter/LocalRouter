@@ -80,6 +80,7 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
         &self,
         state: &dyn VirtualSessionState,
         _tool_name: &str,
+        _arguments: Option<&Value>,
         _session_approved: bool,
         _session_denied: bool,
     ) -> VirtualFirewallResult {

@@ -1,13 +1,21 @@
 //! MCP tool definitions for skills
 //!
-//! Generates per-skill `get_info` McpTool definitions. Clients use
-//! `ctx_execute_file` with absolute paths to run scripts.
+//! Exposes a single `skill_get_info` meta-tool that takes a skill name
+//! parameter. This follows the same progressive-disclosure pattern as
+//! Claude Code's built-in `Skill` tool, but uses the `skill_` prefix to
+//! avoid naming collisions (Claude Code's tool is called `Skill`;
+//! ours becomes `mcp__<server>__skill_get_info` after MCP namespacing).
+//!
+//! Clients use `ctx_execute_file` with absolute paths to run scripts.
 
 use super::manager::SkillManager;
-use super::types::{sanitize_name, SkillDefinition};
+use super::types::SkillDefinition;
 use lr_config::SkillsPermissions;
 use lr_types::McpTool;
 use serde_json::json;
+
+/// The single meta-tool name for skill info retrieval.
+pub const SKILL_META_TOOL_NAME: &str = "skill_get_info";
 
 /// Result of handling a skill tool call.
 pub enum SkillToolResult {
@@ -15,33 +23,48 @@ pub enum SkillToolResult {
     Response(serde_json::Value),
 }
 
-/// Parsed skill tool name
-enum SkillToolParsed {
-    GetInfo { skill_name: String },
-}
-
 // ---------------------------------------------------------------------------
-// Tool builders
+// Tool builder
 // ---------------------------------------------------------------------------
 
-/// Build a `skill_{sname}_get_info` tool
-fn build_get_info_tool(skill: &SkillDefinition) -> McpTool {
-    let sname = sanitize_name(&skill.metadata.name);
-    let description = skill
-        .metadata
-        .description
-        .clone()
-        .unwrap_or_else(|| format!("Show instructions for skill '{}'", skill.metadata.name));
+/// Build the single `skill_get_info` meta-tool with an enum of available skills.
+///
+/// The tool accepts a `skill` parameter whose allowed values are the
+/// sanitized names of all enabled & permitted skills for this client.
+fn build_meta_tool(accessible_skills: &[&SkillDefinition]) -> McpTool {
+    let enum_values: Vec<serde_json::Value> = accessible_skills
+        .iter()
+        .map(|s| json!(s.metadata.name))
+        .collect();
+
+    let skill_descriptions: Vec<String> = accessible_skills
+        .iter()
+        .map(|s| {
+            let desc = s
+                .metadata
+                .description
+                .as_deref()
+                .unwrap_or("No description");
+            format!("- `{}`: {}", s.metadata.name, desc)
+        })
+        .collect();
 
     McpTool {
-        name: format!("skill_{}_get_info", sname),
+        name: SKILL_META_TOOL_NAME.to_string(),
         description: Some(format!(
-            "Show full instructions for skill '{}'. {}",
-            skill.metadata.name, description
+            "Load full instructions for a skill. Available skills:\n{}",
+            skill_descriptions.join("\n")
         )),
         input_schema: json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "skill": {
+                    "type": "string",
+                    "description": "Name of the skill to load",
+                    "enum": enum_values
+                }
+            },
+            "required": ["skill"],
             "additionalProperties": false
         }),
     }
@@ -53,8 +76,9 @@ fn build_get_info_tool(skill: &SkillDefinition) -> McpTool {
 
 /// Generate skill MCP tools for a client's allowed skills.
 ///
-/// Only includes `get_info` tools. Clients use `ctx_execute_file` with
-/// absolute paths (shown in get_info response) to run scripts.
+/// Returns a single `skill_get_info` meta-tool if there are accessible skills.
+/// Clients use `ctx_execute_file` with absolute paths (shown in the response)
+/// to run scripts.
 pub fn build_skill_tools(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
@@ -65,84 +89,65 @@ pub fn build_skill_tools(
     }
 
     let all_skills = skill_manager.get_all();
-
-    all_skills
+    let accessible: Vec<&SkillDefinition> = all_skills
         .iter()
         .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
-        .map(|s| build_get_info_tool(s))
-        .collect()
-}
+        .collect();
 
-// ---------------------------------------------------------------------------
-// Tool name parsing
-// ---------------------------------------------------------------------------
-
-/// Parse a tool name into its skill tool variant.
-fn parse_skill_tool_name(
-    tool_name: &str,
-    skill_manager: &SkillManager,
-    permissions: &SkillsPermissions,
-) -> Option<SkillToolParsed> {
-    if !tool_name.starts_with("skill_") {
-        return None;
+    if accessible.is_empty() {
+        return Vec::new();
     }
 
-    let all_skills = skill_manager.get_all();
-
-    for skill in all_skills.iter() {
-        if !skill.enabled || !permissions.resolve_skill(&skill.metadata.name).is_enabled() {
-            continue;
-        }
-
-        let sname = sanitize_name(&skill.metadata.name);
-        let prefix = format!("skill_{}_", sname);
-
-        if let Some(rest) = tool_name.strip_prefix(&prefix) {
-            if rest == "get_info" {
-                return Some(SkillToolParsed::GetInfo {
-                    skill_name: skill.metadata.name.clone(),
-                });
-            }
-        }
-    }
-
-    None
+    vec![build_meta_tool(&accessible)]
 }
 
 // ---------------------------------------------------------------------------
 // Tool call handler
 // ---------------------------------------------------------------------------
 
-/// Check if a tool name matches a skill tool pattern.
+/// Check if a tool name matches the skill meta-tool.
 pub fn is_skill_tool(tool_name: &str) -> bool {
-    tool_name.starts_with("skill_")
+    tool_name == SKILL_META_TOOL_NAME
 }
 
 /// Handle a skill tool call.
 ///
-/// Returns `Ok(Some(result))` if the tool was a skill tool,
+/// Returns `Ok(Some(result))` if the tool was the skill meta-tool,
 /// `Ok(None)` if it's not a skill tool (should be routed elsewhere).
 pub async fn handle_skill_tool_call(
     tool_name: &str,
-    _arguments: &serde_json::Value,
+    arguments: &serde_json::Value,
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
 ) -> Result<Option<SkillToolResult>, String> {
-    let parsed = match parse_skill_tool_name(tool_name, skill_manager, permissions) {
-        Some(p) => p,
-        None => return Ok(None),
-    };
-
-    match parsed {
-        SkillToolParsed::GetInfo { skill_name } => {
-            let skill = skill_manager
-                .get(&skill_name)
-                .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
-
-            let response = build_get_info_response(&skill);
-            Ok(Some(SkillToolResult::Response(response)))
-        }
+    if tool_name != SKILL_META_TOOL_NAME {
+        return Ok(None);
     }
+
+    let skill_name = arguments
+        .get("skill")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required 'skill' parameter".to_string())?;
+
+    // Verify the skill is accessible
+    let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+    if !has_any_access {
+        return Err("No skill access".to_string());
+    }
+    if !permissions.resolve_skill(skill_name).is_enabled() {
+        return Err(format!("Skill '{}' is not permitted", skill_name));
+    }
+
+    let skill = skill_manager
+        .get(skill_name)
+        .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
+
+    if !skill.enabled {
+        return Err(format!("Skill '{}' is disabled", skill_name));
+    }
+
+    let response = build_get_info_response(&skill);
+    Ok(Some(SkillToolResult::Response(response)))
 }
 
 // ---------------------------------------------------------------------------
@@ -183,10 +188,7 @@ fn build_get_info_response(skill: &SkillDefinition) -> serde_json::Value {
         text.push_str("## Scripts\n\n");
         text.push_str("Run scripts with `ctx_execute_file(path, language, code)`.\n\n");
         for script in &skill.scripts {
-            text.push_str(&format!(
-                "- `{}/{}`\n",
-                skill_dir, script
-            ));
+            text.push_str(&format!("- `{}/{}`\n", skill_dir, script));
         }
         text.push('\n');
     }
@@ -195,10 +197,7 @@ fn build_get_info_response(skill: &SkillDefinition) -> serde_json::Value {
         text.push_str("## References\n\n");
         text.push_str("Read files with `ctx_execute_file(path, language, code)` using `cat`.\n\n");
         for reference in &skill.references {
-            text.push_str(&format!(
-                "- `{}/{}`\n",
-                skill_dir, reference
-            ));
+            text.push_str(&format!("- `{}/{}`\n", skill_dir, reference));
         }
         text.push('\n');
     }
@@ -206,10 +205,7 @@ fn build_get_info_response(skill: &SkillDefinition) -> serde_json::Value {
     if !skill.assets.is_empty() {
         text.push_str("## Assets\n\n");
         for asset in &skill.assets {
-            text.push_str(&format!(
-                "- `{}/{}`\n",
-                skill_dir, asset
-            ));
+            text.push_str(&format!("- `{}/{}`\n", skill_dir, asset));
         }
         text.push('\n');
     }

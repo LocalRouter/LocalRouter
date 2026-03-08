@@ -289,8 +289,9 @@ impl McpGateway {
 
         // Context management: compress large responses
         if let Ok(response) = result {
-            let compressed =
-                self.maybe_compress_response(&session, &tool_name, response).await;
+            let compressed = self
+                .maybe_compress_response(&session, &tool_name, response)
+                .await;
             Ok(compressed)
         } else {
             result
@@ -508,10 +509,7 @@ impl McpGateway {
 
     /// Ensure context-mode tools are cached by eagerly initializing the transport if needed.
     /// Must be called before `append_virtual_server_tools` so `list_tools()` returns the full set.
-    async fn ensure_context_mode_tools_cached(
-        &self,
-        session: &Arc<RwLock<GatewaySession>>,
-    ) {
+    async fn ensure_context_mode_tools_cached(&self, session: &Arc<RwLock<GatewaySession>>) {
         let session_read = session.read().await;
         if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
             if let Some(cm_state) = state
@@ -534,8 +532,8 @@ impl McpGateway {
                 if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
                     if let Some(cm_state) = state
                         .as_any()
-                        .downcast_ref::<super::context_mode::ContextModeSessionState>()
-                    {
+                        .downcast_ref::<super::context_mode::ContextModeSessionState>(
+                    ) {
                         match cm_state.get_transport().await {
                             Ok(_) => {
                                 tracing::info!("Context-mode transport initialized and tools cached for tools/list");
@@ -598,7 +596,12 @@ impl McpGateway {
             };
             let approved = session_read.firewall_session_approvals.contains(tool_name);
             let denied = session_read.firewall_session_denials.contains(tool_name);
-            let result = vs.check_permissions(state.as_ref(), tool_name, approved, denied);
+            let arguments = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("arguments"));
+            let result =
+                vs.check_permissions(state.as_ref(), tool_name, arguments, approved, denied);
             (
                 result,
                 session_read.client_id.clone(),
@@ -753,8 +756,8 @@ impl McpGateway {
             if let Some(state) = session_write.virtual_server_state.get_mut("_context_mode") {
                 if let Some(cm_state) = state
                     .as_any_mut()
-                    .downcast_mut::<super::context_mode::ContextModeSessionState>()
-                {
+                    .downcast_mut::<super::context_mode::ContextModeSessionState>(
+                ) {
                     if !cm_state.enabled || full_text.len() <= cm_state.response_threshold_bytes {
                         return response;
                     }
@@ -912,9 +915,7 @@ fn apply_catalog_compression_tools(
             let server_slug = extract_server_slug(&tool.name);
             // Include if not from a deferred server, or individually activated via ctx_search
             !deferred_servers.contains(server_slug)
-                || activated
-                    .map(|a| a.contains(&tool.name))
-                    .unwrap_or(false)
+                || activated.map(|a| a.contains(&tool.name)).unwrap_or(false)
         })
         .cloned()
         .collect();
@@ -960,9 +961,7 @@ pub(crate) fn apply_catalog_compression_resources(
         .iter()
         .filter(|r| {
             !deferred_servers.contains(extract_server_slug(&r.name))
-                || activated
-                    .map(|a| a.contains(&r.name))
-                    .unwrap_or(false)
+                || activated.map(|a| a.contains(&r.name)).unwrap_or(false)
         })
         .cloned()
         .collect();
@@ -1008,9 +1007,7 @@ pub(crate) fn apply_catalog_compression_prompts(
         .iter()
         .filter(|p| {
             !deferred_servers.contains(extract_server_slug(&p.name))
-                || activated
-                    .map(|a| a.contains(&p.name))
-                    .unwrap_or(false)
+                || activated.map(|a| a.contains(&p.name)).unwrap_or(false)
         })
         .cloned()
         .collect();

@@ -11,7 +11,7 @@ use super::gateway_tools::FirewallDecisionResult;
 use super::virtual_server::*;
 use crate::protocol::McpTool;
 use lr_skills::manager::SkillManager;
-use lr_skills::types::sanitize_name;
+use lr_skills::mcp_tools::SKILL_META_TOOL_NAME;
 
 /// Virtual MCP server for AgentSkills.io skills.
 pub struct SkillsVirtualServer {
@@ -42,17 +42,15 @@ impl VirtualSessionState for SkillsSessionState {
     }
 }
 
-/// Extract skill name from a skill tool name for firewall rule matching.
-fn extract_skill_name_from_tool(tool_name: &str) -> String {
-    let rest = tool_name.strip_prefix("skill_").unwrap_or(tool_name);
-
-    if let Some(pos) = rest.find("_get_info") {
-        if pos > 0 {
-            return rest[..pos].to_string();
-        }
-    }
-
-    rest.to_string()
+/// Extract skill name from tool call arguments for firewall rule matching.
+///
+/// With the meta-tool pattern, the skill name comes from the `skill`
+/// argument rather than being encoded in the tool name.
+fn extract_skill_name_from_arguments(arguments: Option<&Value>) -> Option<String> {
+    arguments
+        .and_then(|args| args.get("skill"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 #[async_trait]
@@ -66,7 +64,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
     }
 
     fn owns_tool(&self, tool_name: &str) -> bool {
-        lr_skills::mcp_tools::is_skill_tool(tool_name)
+        tool_name == SKILL_META_TOOL_NAME
     }
 
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
@@ -80,26 +78,26 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
-        lr_skills::mcp_tools::build_skill_tools(
-            &self.skill_manager,
-            &state.permissions,
-        )
+        lr_skills::mcp_tools::build_skill_tools(&self.skill_manager, &state.permissions)
     }
 
     fn check_permissions(
         &self,
         state: &dyn VirtualSessionState,
         tool_name: &str,
+        arguments: Option<&Value>,
         session_approved: bool,
         session_denied: bool,
     ) -> VirtualFirewallResult {
-        let skill_name = extract_skill_name_from_tool(tool_name);
-
-        // Global utility tools (e.g. skill_get_async_status) have no skill name.
-        // These don't execute skill code, so skip permission checks.
-        if skill_name.is_empty() {
-            return VirtualFirewallResult::Handled(FirewallDecisionResult::Proceed);
-        }
+        // Extract skill name from the `skill` argument of the meta-tool
+        let skill_name = match extract_skill_name_from_arguments(arguments) {
+            Some(name) => name,
+            None => {
+                // No skill specified — allow the call through; handle_tool_call
+                // will return a proper error for the missing parameter.
+                return VirtualFirewallResult::Handled(FirewallDecisionResult::Proceed);
+            }
+        };
 
         let state = state
             .as_any()
@@ -176,7 +174,12 @@ impl VirtualMcpServer for SkillsVirtualServer {
             return None;
         }
 
-        let content = "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string();
+        // Build skill catalog with metadata for progressive disclosure.
+        // The model sees this list in the system prompt and calls
+        // `skill_get_info` with the skill name to load full instructions.
+        let content = String::from(
+            "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n",
+        );
 
         Some(VirtualInstructions {
             section_title: "Skills".to_string(),

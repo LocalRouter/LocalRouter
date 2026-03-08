@@ -59,8 +59,7 @@ Other indexed content (from ctx_execute, ctx_index, etc.):
   (omit source to search everything)"#;
 
 /// Additional source guide appended to ctx_search's `source` parameter description.
-const CTX_SEARCH_SOURCE_PARAM_GUIDE: &str =
-    r#" MCP examples: "catalog:" for all MCP entries, "catalog:filesystem" for one server, "filesystem__read_file:" for a tool's responses."#;
+const CTX_SEARCH_SOURCE_PARAM_GUIDE: &str = r#" MCP examples: "catalog:" for all MCP entries, "catalog:filesystem" for one server, "filesystem__read_file:" for a tool's responses."#;
 
 /// Atomic counter for generating unique JSON-RPC request IDs.
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -133,7 +132,9 @@ pub struct ContextModeSessionState {
 
 impl ContextModeSessionState {
     /// Get or spawn the STDIO transport for this session.
-    pub async fn get_transport(&self) -> Result<tokio::sync::MutexGuard<'_, Option<StdioTransport>>, String> {
+    pub async fn get_transport(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<StdioTransport>>, String> {
         let mut guard = self.transport.lock().await;
         if guard.is_none() {
             let transport = spawn_context_mode_process().await?;
@@ -214,8 +215,8 @@ impl ContextModeSessionState {
 
         let result = response.result.unwrap_or(Value::Null);
         let tools_value = result.get("tools").cloned().unwrap_or(Value::Array(vec![]));
-        let tools: Vec<McpTool> =
-            serde_json::from_value(tools_value).map_err(|e| format!("Failed to parse tools: {e}"))?;
+        let tools: Vec<McpTool> = serde_json::from_value(tools_value)
+            .map_err(|e| format!("Failed to parse tools: {e}"))?;
 
         // Cache the tools
         *self.cached_tools.lock().await = Some(tools.clone());
@@ -233,7 +234,10 @@ impl ContextModeSessionState {
 
     /// Get the next run ID for a given namespaced name (tool/resource/prompt).
     pub fn next_run_id(&mut self, namespaced_name: &str) -> u32 {
-        let counter = self.run_counters.entry(namespaced_name.to_string()).or_insert(0);
+        let counter = self
+            .run_counters
+            .entry(namespaced_name.to_string())
+            .or_insert(0);
         *counter += 1;
         *counter
     }
@@ -294,7 +298,7 @@ async fn spawn_context_mode_process() -> Result<StdioTransport, String> {
         .unwrap_or(false);
 
     if has_global {
-        tracing::info!("Spawning context-mode STDIO process (global)");
+        tracing::debug!("Spawning context-mode process (global)");
         return StdioTransport::spawn("context-mode".to_string(), vec![], env)
             .await
             .map_err(|e| format!("Failed to spawn context-mode: {e}"));
@@ -312,7 +316,7 @@ async fn spawn_context_mode_process() -> Result<StdioTransport, String> {
         .unwrap_or(false);
 
     if is_cached {
-        tracing::info!("Spawning context-mode STDIO process (npx cached)");
+        tracing::debug!("Spawning context-mode process (npx cached)");
         return StdioTransport::spawn(
             "npx".to_string(),
             vec!["--no-install".to_string(), "context-mode".to_string()],
@@ -397,7 +401,7 @@ async fn initialize_context_mode(transport: &StdioTransport) -> Result<(), Strin
         ));
     }
 
-    tracing::info!("context-mode initialized successfully");
+    tracing::debug!("context-mode initialized successfully");
     Ok(())
 }
 
@@ -497,6 +501,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
         &self,
         _state: &dyn VirtualSessionState,
         _tool_name: &str,
+        _arguments: Option<&Value>,
         _session_approved: bool,
         _session_denied: bool,
     ) -> VirtualFirewallResult {
@@ -525,9 +530,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 
         // Block indexing tools when disabled
         if !state.indexing_tools_enabled && INDEXING_TOOLS.contains(&tool_name) {
-            return VirtualToolCallResult::ToolError(
-                "Indexing tools are disabled".to_string(),
-            );
+            return VirtualToolCallResult::ToolError("Indexing tools are disabled".to_string());
         }
 
         // Forward the tool call to the context-mode STDIO process
@@ -535,7 +538,13 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             Ok(result) => {
                 if tool_name == CTX_SEARCH {
                     // Post-process search results for catalog activation
-                    let activated = extract_catalog_activations(&result, &state.catalog_sources, &state.activated_tools, &state.activated_resources, &state.activated_prompts);
+                    let activated = extract_catalog_activations(
+                        &result,
+                        &state.catalog_sources,
+                        &state.activated_tools,
+                        &state.activated_resources,
+                        &state.activated_prompts,
+                    );
 
                     if activated.is_empty() {
                         VirtualToolCallResult::Success(result)
@@ -551,19 +560,28 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 
                         // Build state updater to mark items as activated by their correct type
                         let activated_clone = activated.clone();
-                        let state_update: Box<dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send> =
-                            Box::new(move |s| {
-                                if let Some(cm) = s.as_any_mut().downcast_mut::<ContextModeSessionState>() {
-                                    for (name, item_type) in &activated_clone {
-                                        match item_type {
-                                            CatalogItemType::Tool => { cm.activated_tools.insert(name.clone()); }
-                                            CatalogItemType::Resource => { cm.activated_resources.insert(name.clone()); }
-                                            CatalogItemType::Prompt => { cm.activated_prompts.insert(name.clone()); }
-                                            CatalogItemType::ServerWelcome => {} // No activation needed
+                        let state_update: Box<
+                            dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send,
+                        > = Box::new(move |s| {
+                            if let Some(cm) =
+                                s.as_any_mut().downcast_mut::<ContextModeSessionState>()
+                            {
+                                for (name, item_type) in &activated_clone {
+                                    match item_type {
+                                        CatalogItemType::Tool => {
+                                            cm.activated_tools.insert(name.clone());
                                         }
+                                        CatalogItemType::Resource => {
+                                            cm.activated_resources.insert(name.clone());
+                                        }
+                                        CatalogItemType::Prompt => {
+                                            cm.activated_prompts.insert(name.clone());
+                                        }
+                                        CatalogItemType::ServerWelcome => {} // No activation needed
                                     }
                                 }
-                            });
+                            }
+                        });
 
                         VirtualToolCallResult::SuccessWithSideEffects {
                             response: modified_result,
@@ -870,14 +888,8 @@ mod tests {
             "catalog:filesystem__write_file".to_string(),
             CatalogItemType::Tool,
         );
-        sources.insert(
-            "catalog:db__users".to_string(),
-            CatalogItemType::Resource,
-        );
-        sources.insert(
-            "catalog:db__query".to_string(),
-            CatalogItemType::Prompt,
-        );
+        sources.insert("catalog:db__users".to_string(), CatalogItemType::Resource);
+        sources.insert("catalog:db__query".to_string(), CatalogItemType::Prompt);
         sources.insert(
             "catalog:filesystem".to_string(),
             CatalogItemType::ServerWelcome,
@@ -1069,7 +1081,11 @@ mod tests {
     fn test_fallback_tool_structure() {
         let tool = build_fallback_ctx_search_tool(false);
         assert_eq!(tool.name, "ctx_search");
-        assert!(tool.description.as_ref().unwrap().contains("Search indexed content"));
+        assert!(tool
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("Search indexed content"));
         assert!(tool.input_schema["properties"]["queries"].is_object());
         assert!(tool.input_schema["properties"]["source"].is_object());
         assert!(tool.input_schema["properties"]["limit"].is_object());

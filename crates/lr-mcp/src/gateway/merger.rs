@@ -212,9 +212,7 @@ fn slugify(name: &str) -> String {
 fn build_header(inst: &mut String, has_mcp_servers: bool, has_virtual: bool) {
     if !has_mcp_servers && !has_virtual {
         // Only unavailable servers — nothing usable
-        inst.push_str(
-            "Unified MCP Gateway: no servers or tools are currently available.\n\n",
-        );
+        inst.push_str("Unified MCP Gateway: no servers or tools are currently available.\n\n");
     } else if has_mcp_servers {
         inst.push_str(
             "Unified MCP Gateway. Tools from MCP servers are namespaced \
@@ -248,9 +246,8 @@ fn build_unified_server_blocks(inst: &mut String, ctx: &InstructionsContext) {
     // --- Regular MCP servers ---
     for server in &ctx.servers {
         let tag = slugify(&server.name);
-        let total_items = server.tool_names.len()
-            + server.resource_names.len()
-            + server.prompt_names.len();
+        let total_items =
+            server.tool_names.len() + server.resource_names.len() + server.prompt_names.len();
         let has_content = server.instructions.is_some() || server.description.is_some();
 
         if total_items == 0 && !has_content {
@@ -313,9 +310,7 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
     // Header
     let server_count = ctx.servers.len();
     if server_count == 0 && ctx.virtual_instructions.is_empty() {
-        inst.push_str(
-            "Unified MCP Gateway: no servers or tools are currently available.\n\n",
-        );
+        inst.push_str("Unified MCP Gateway: no servers or tools are currently available.\n\n");
     } else {
         inst.push_str(
             "Unified MCP Gateway. Tools from MCP servers are namespaced \
@@ -668,8 +663,7 @@ pub fn build_preview_instructions_context() -> InstructionsContext {
                 section_title: "Skills".to_string(),
                 content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string(),
                 tool_names: vec![
-                    "skill_code_review_get_info".to_string(),
-                    "skill_deploy_get_info".to_string(),
+                    "skill_get_info".to_string(),
                 ],
                 priority: 30,
             },
@@ -720,8 +714,7 @@ fn preview_virtual_instructions() -> Vec<super::virtual_server::VirtualInstructi
             section_title: "Skills".to_string(),
             content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string(),
             tool_names: vec![
-                "skill_code_review_get_info".to_string(),
-                "skill_deploy_get_info".to_string(),
+                "skill_get_info".to_string(),
             ],
             priority: 30,
         },
@@ -1047,16 +1040,8 @@ pub fn compute_catalog_compression_plan(
         let server_slug = slugify(&server.name);
 
         // Server welcome/instructions text
-        let welcome_size = server
-            .description
-            .as_ref()
-            .map(|d| d.len())
-            .unwrap_or(0)
-            + server
-                .instructions
-                .as_ref()
-                .map(|i| i.len())
-                .unwrap_or(0);
+        let welcome_size = server.description.as_ref().map(|d| d.len()).unwrap_or(0)
+            + server.instructions.as_ref().map(|i| i.len()).unwrap_or(0);
         if welcome_size > 0 {
             compressible_items.push(CompressibleCandidate {
                 namespaced_name: server_slug.clone(),
@@ -1179,16 +1164,32 @@ pub fn compute_catalog_compression_plan(
         }
 
         // Estimate savings from deferring this server's items (only count actually deferred types)
-        if let Some(server) = ctx.servers.iter().find(|s| slugify(&s.name) == *server_slug) {
+        if let Some(server) = ctx
+            .servers
+            .iter()
+            .find(|s| slugify(&s.name) == *server_slug)
+        {
             let mut items_bytes = 0usize;
             if supports_tools_list_changed {
-                items_bytes += server.tool_names.iter().map(|n| n.len() + 20).sum::<usize>();
+                items_bytes += server
+                    .tool_names
+                    .iter()
+                    .map(|n| n.len() + 20)
+                    .sum::<usize>();
             }
             if supports_resources_list_changed {
-                items_bytes += server.resource_names.iter().map(|n| n.len() + 20).sum::<usize>();
+                items_bytes += server
+                    .resource_names
+                    .iter()
+                    .map(|n| n.len() + 20)
+                    .sum::<usize>();
             }
             if supports_prompts_list_changed {
-                items_bytes += server.prompt_names.iter().map(|n| n.len() + 20).sum::<usize>();
+                items_bytes += server
+                    .prompt_names
+                    .iter()
+                    .map(|n| n.len() + 20)
+                    .sum::<usize>();
             }
             saved += items_bytes;
         }
@@ -1215,7 +1216,11 @@ pub fn compute_catalog_compression_plan(
         plan.truncated_servers.push(server_slug.clone());
 
         // Estimate savings
-        if let Some(server) = ctx.servers.iter().find(|s| slugify(&s.name) == *server_slug) {
+        if let Some(server) = ctx
+            .servers
+            .iter()
+            .find(|s| slugify(&s.name) == *server_slug)
+        {
             let items_bytes: usize = server
                 .tool_names
                 .iter()
@@ -1676,7 +1681,7 @@ mod tests {
                 section_title: "Skills".to_string(),
                 content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n"
                     .to_string(),
-                tool_names: vec!["skill_code_review_get_info".to_string()],
+                tool_names: vec!["skill_get_info".to_string()],
                 priority: 30,
             }],
         };
@@ -1684,7 +1689,7 @@ mod tests {
         let instructions = build_gateway_instructions(&ctx).unwrap();
         // Virtual tool listing in XML block (no bold header, tag is enough)
         assert!(instructions.contains("<skills>"));
-        assert!(instructions.contains("`skill_code_review_get_info` (tool)"));
+        assert!(instructions.contains("`skill_get_info` (tool)"));
         assert!(instructions.contains("ctx_execute_file"));
         assert!(instructions.contains("</skills>"));
     }
@@ -1709,7 +1714,7 @@ mod tests {
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
                 content: "Call get_info to unlock.\n".to_string(),
-                tool_names: vec!["skill_deploy_get_info".to_string()],
+                tool_names: vec!["skill_get_info".to_string()],
                 priority: 30,
             }],
         };
@@ -1722,7 +1727,7 @@ mod tests {
         let github_pos = instructions.find("<github>").unwrap();
         assert!(skills_pos < github_pos, "Virtual servers should come first");
         // Virtual tool listing
-        assert!(instructions.contains("`skill_deploy_get_info` (tool)"));
+        assert!(instructions.contains("`skill_get_info` (tool)"));
         // Regular tool listing
         assert!(instructions.contains("`github__create_issue` (tool)"));
         // Virtual instructions in XML
@@ -1884,8 +1889,7 @@ mod tests {
                     section_title: "Skills".to_string(),
                     content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string(),
                     tool_names: vec![
-                        "skill_code_review_get_info".to_string(),
-                        "skill_deploy_get_info".to_string(),
+                        "skill_get_info".to_string(),
                     ],
                     priority: 30,
                 },
@@ -1913,7 +1917,7 @@ mod tests {
         assert!(filesystem_pos < broken_pos);
 
         // Tool annotations
-        assert!(instructions.contains("`skill_code_review_get_info` (tool)"));
+        assert!(instructions.contains("`skill_get_info` (tool)"));
         assert!(instructions.contains("`marketplace__search_mcp_servers` (tool)"));
         assert!(instructions.contains("`filesystem__read_file` (tool)"));
         assert!(instructions.contains("`knowledge__search` (tool)"));
@@ -1951,8 +1955,7 @@ mod tests {
                 section_title: "Skills".to_string(),
                 content: "Call get_info to unlock skills.\n".to_string(),
                 tool_names: vec![
-                    "skill_code_review_get_info".to_string(),
-                    "skill_deploy_get_info".to_string(),
+                    "skill_get_info".to_string(),
                 ],
                 priority: 30,
             }],
@@ -1960,8 +1963,7 @@ mod tests {
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
         assert!(instructions.contains("<skills>"));
-        assert!(instructions.contains("`skill_code_review_get_info` (tool)"));
-        assert!(instructions.contains("`skill_deploy_get_info` (tool)"));
+        assert!(instructions.contains("`skill_get_info` (tool)"));
         assert!(instructions.contains("Call get_info to unlock skills."));
         assert!(instructions.contains("</skills>"));
         // No regular server content
@@ -2317,9 +2319,7 @@ mod tests {
                 name: "Big Server".to_string(),
                 description: Some("Lots of tools".to_string()),
                 instructions: None,
-                tool_names: (0..10)
-                    .map(|i| format!("big-server__tool_{}", i))
-                    .collect(),
+                tool_names: (0..10).map(|i| format!("big-server__tool_{}", i)).collect(),
                 resource_names: vec!["big-server__data".to_string()],
                 prompt_names: vec![],
             }],
@@ -2378,7 +2378,9 @@ mod tests {
         let inst = build_context_managed_instructions(&ctx).unwrap();
         // Server instructions should be [compressed] inside XML block
         assert!(
-            inst.contains("[compressed] ctx_search(source=\"catalog:filesystem\") for instructions"),
+            inst.contains(
+                "[compressed] ctx_search(source=\"catalog:filesystem\") for instructions"
+            ),
             "Server welcome should be compressed. Got:\n{}",
             inst
         );
@@ -2510,12 +2512,8 @@ mod tests {
                     name: "filesystem".to_string(),
                     description: Some("X".repeat(2000)),
                     instructions: Some("Y".repeat(2000)),
-                    tool_names: (0..30)
-                        .map(|i| format!("filesystem__tool_{}", i))
-                        .collect(),
-                    resource_names: (0..5)
-                        .map(|i| format!("filesystem__res_{}", i))
-                        .collect(),
+                    tool_names: (0..30).map(|i| format!("filesystem__tool_{}", i)).collect(),
+                    resource_names: (0..5).map(|i| format!("filesystem__res_{}", i)).collect(),
                     prompt_names: vec!["filesystem__ask".to_string()],
                 },
                 McpServerInstructionInfo {
@@ -2642,9 +2640,7 @@ mod tests {
                     name: "big".to_string(),
                     description: Some("D".repeat(3000)),
                     instructions: Some("I".repeat(3000)),
-                    tool_names: (0..20)
-                        .map(|i| format!("big__tool_{}", i))
-                        .collect(),
+                    tool_names: (0..20).map(|i| format!("big__tool_{}", i)).collect(),
                     resource_names: vec![],
                     prompt_names: vec![],
                 },

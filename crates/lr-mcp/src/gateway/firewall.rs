@@ -857,9 +857,9 @@ mod tests {
             rules.resolve_skill_tool("skill_deploy_run_script", "deploy"),
             &FirewallPolicy::Deny
         );
-        // Skill rule for other tools
+        // Skill rule for other tools (meta-tool uses skill_get_info)
         assert_eq!(
-            rules.resolve_skill_tool("skill_deploy_get_info", "deploy"),
+            rules.resolve_skill_tool("skill_get_info", "deploy"),
             &FirewallPolicy::Ask
         );
         // Default for unknown skill

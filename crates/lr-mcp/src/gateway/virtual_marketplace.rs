@@ -86,6 +86,7 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
         &self,
         state: &dyn VirtualSessionState,
         tool_name: &str,
+        _arguments: Option<&Value>,
         session_approved: bool,
         session_denied: bool,
     ) -> VirtualFirewallResult {

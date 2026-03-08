@@ -4,10 +4,8 @@
 //! stands up the MCP gateway with skill support, and exercises all skill tool commands
 //! through the gateway's JSON-RPC interface.
 //!
-//! Tools use per-skill namespaced names:
-//! - `skill_{sname}_get_info` — always visible
-//! - `skill_{sname}_run_{sfile}` — visible after get_info
-//! - `skill_{sname}_read_{sfile}` — visible after get_info
+//! Skills use a single meta-tool pattern:
+//! - `skill_get_info` — takes a `skill` parameter to load full instructions
 
 mod mcp_tests;
 
@@ -123,17 +121,12 @@ async fn test_skills_e2e_all_tool_commands() {
     assert_eq!(skills.len(), 1, "Expected exactly one skill");
     assert_eq!(skills[0].name, "get-current-time");
 
-    // ScriptExecutor
-
-
-    // McpServerManager + Gateway (with async enabled for testing)
+    // McpServerManager + Gateway
     let server_manager = Arc::new(McpServerManager::new());
     let router = create_test_router();
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
     gateway.register_virtual_server(Arc::new(
-        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
-            skill_manager,
-        ),
+        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(skill_manager),
     ));
     let gateway = Arc::new(gateway);
 
@@ -146,8 +139,8 @@ async fn test_skills_e2e_all_tool_commands() {
         perms
     };
 
-    // ── Step 1: tools/list (before get_info) ──────────────────────
-    // Only get_info tools should be visible initially
+    // ── Step 1: tools/list ──────────────────────────────────────────
+    // Should contain the single `skill_get_info` meta-tool
     let tools_list_req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     let response = gateway
         .handle_request_with_skills(
@@ -174,26 +167,35 @@ async fn test_skills_e2e_all_tool_commands() {
     let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
     assert!(
-        tool_names.contains(&"skill_get-current-time_get_info"),
-        "Missing get_info tool. Found: {:?}",
-        tool_names
-    );
-    // Run/read tools should NOT be visible before get_info
-    assert!(
-        !tool_names
-            .iter()
-            .any(|n| n.contains("_run_") || n.contains("_read_")),
-        "Run/read tools should not appear before get_info. Found: {:?}",
+        tool_names.contains(&"skill_get_info"),
+        "Missing skill_get_info meta-tool. Found: {:?}",
         tool_names
     );
 
-    // ── Step 2: skill_get-current-time_get_info ───────────────────
+    // Verify the meta-tool has the skill listed in its enum
+    let skill_tool = tools
+        .iter()
+        .find(|t| t["name"].as_str() == Some("skill_get_info"))
+        .expect("skill_get_info tool should exist");
+    let schema = &skill_tool["inputSchema"];
+    let skill_enum = schema["properties"]["skill"]["enum"]
+        .as_array()
+        .expect("skill parameter should have enum values");
+    assert!(
+        skill_enum
+            .iter()
+            .any(|v| v.as_str() == Some("get-current-time")),
+        "Enum should contain 'get-current-time'. Found: {:?}",
+        skill_enum
+    );
+
+    // ── Step 2: skill_get_info with skill parameter ─────────────────
     let show_req = JsonRpcRequest::with_id(
         2,
         "tools/call".to_string(),
         Some(json!({
-            "name": "skill_get-current-time_get_info",
-            "arguments": {}
+            "name": "skill_get_info",
+            "arguments": { "skill": "get-current-time" }
         })),
     );
     let response = gateway
@@ -211,12 +213,12 @@ async fn test_skills_e2e_all_tool_commands() {
             show_req,
         )
         .await
-        .expect("get_info should succeed");
+        .expect("skill_get_info should succeed");
 
-    let result = response.result.expect("get_info should have a result");
+    let result = response.result.expect("skill_get_info should have a result");
     let content = result["content"]
         .as_array()
-        .expect("get_info should have content array");
+        .expect("skill_get_info should have content array");
     let text = content[0]["text"]
         .as_str()
         .expect("content should have text");
@@ -237,22 +239,12 @@ async fn test_skills_e2e_all_tool_commands() {
         text.contains("references/notes.md"),
         "get_info response should list references"
     );
-    // Verify absolute paths and ctx_execute_file references
     assert!(
         text.contains("ctx_execute_file"),
         "get_info should reference ctx_execute_file for running scripts"
     );
-    assert!(
-        text.contains("scripts/get-time.js"),
-        "get_info should show script path"
-    );
-    assert!(
-        text.contains("references/notes.md"),
-        "get_info should show reference path"
-    );
 
-    // ── Step 2b: tools/list (after get_info) ──────────────────────
-    // Only get_info tools should exist (no run/read/async tools)
+    // ── Step 3: tools/list unchanged after get_info ─────────────────
     let tools_list_req2 = JsonRpcRequest::with_id(20, "tools/list".to_string(), Some(json!({})));
     let response = gateway
         .handle_request_with_skills(
@@ -278,16 +270,8 @@ async fn test_skills_e2e_all_tool_commands() {
     let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
     assert!(
-        tool_names.contains(&"skill_get-current-time_get_info"),
-        "get_info tool should still be present. Found: {:?}",
-        tool_names
-    );
-    // No run/read/async tools should exist
-    assert!(
-        !tool_names
-            .iter()
-            .any(|n| n.contains("_run_") || n.contains("_read_") || n.contains("_async")),
-        "No run/read/async tools should exist. Found: {:?}",
+        tool_names.contains(&"skill_get_info"),
+        "skill_get_info should still be present. Found: {:?}",
         tool_names
     );
 }
@@ -307,14 +291,11 @@ async fn setup_gateway_with_skill() -> (Arc<McpGateway>, TempDir) {
         &[],
     );
 
-
     let server_manager = Arc::new(McpServerManager::new());
     let router = create_test_router();
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
     gateway.register_virtual_server(Arc::new(
-        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
-            skill_manager,
-        ),
+        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(skill_manager),
     ));
 
     (Arc::new(gateway), temp_dir)
@@ -410,8 +391,8 @@ async fn test_skill_tools_present_after_cache_hit() {
 
     let names1 = extract_tool_names(&response1);
     assert!(
-        names1.contains(&"skill_get-current-time_get_info".to_string()),
-        "First call should include get_info tool. Found: {:?}",
+        names1.contains(&"skill_get_info".to_string()),
+        "First call should include skill_get_info tool. Found: {:?}",
         names1
     );
 
@@ -436,10 +417,8 @@ async fn test_skill_tools_present_after_cache_hit() {
 
     let names2 = extract_tool_names(&response2);
     assert!(
-        names2.contains(&"skill_get-current-time_get_info".to_string()),
-        "Cached tools/list must still include get_info tool. Found: {:?}",
+        names2.contains(&"skill_get_info".to_string()),
+        "Cached tools/list must still include skill_get_info tool. Found: {:?}",
         names2
     );
 }
-
-

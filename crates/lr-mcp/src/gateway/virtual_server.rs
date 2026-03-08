@@ -34,10 +34,14 @@ pub trait VirtualMcpServer: Send + Sync {
     fn list_tools(&self, state: &dyn VirtualSessionState) -> Vec<McpTool>;
 
     /// Check permissions for a tool call.
+    ///
+    /// `arguments` is passed so meta-tools (e.g. `skill_get_info`) can
+    /// extract the target resource name for per-item permission checks.
     fn check_permissions(
         &self,
         state: &dyn VirtualSessionState,
         tool_name: &str,
+        arguments: Option<&Value>,
         session_approved: bool,
         session_denied: bool,
     ) -> VirtualFirewallResult;
