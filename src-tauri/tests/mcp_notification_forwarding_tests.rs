@@ -228,7 +228,6 @@ async fn test_gateway_forwards_notifications() {
         .handle_request(
             "test_client",
             vec!["test_server".to_string()],
-            false,
             vec![], // Empty roots for test
             JsonRpcRequest::new(
                 Some(serde_json::json!(1)),

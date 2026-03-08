@@ -64,7 +64,6 @@ async fn gateway_request(
             client_id,
             None,
             vec![],
-            false,
             vec![],
             lr_config::McpPermissions::default(),
             lr_config::SkillsPermissions::default(),

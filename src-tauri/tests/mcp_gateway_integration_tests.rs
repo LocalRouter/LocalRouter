@@ -165,27 +165,6 @@ async fn test_gateway_concurrent_requests() {
 }
 
 #[tokio::test]
-async fn test_search_tool_creation() {
-    use localrouter::mcp::gateway::deferred::create_search_tool;
-
-    let search_tool = create_search_tool(false, false);
-
-    assert_eq!(search_tool.name, "search");
-    assert_eq!(search_tool.server_id, "_gateway");
-    assert!(search_tool.description.is_some());
-
-    // Verify input schema
-    let schema = search_tool.input_schema;
-    assert!(schema.get("type").is_some());
-    assert_eq!(schema.get("type").unwrap(), "object");
-
-    let properties = schema.get("properties").unwrap();
-    assert!(properties.get("query").is_some());
-    assert!(properties.get("type").is_some());
-    assert!(properties.get("limit").is_some());
-}
-
-#[tokio::test]
 async fn test_gateway_method_routing() {
     use localrouter::mcp::gateway::router::should_broadcast;
 
