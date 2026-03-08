@@ -287,7 +287,9 @@ fn validate_client_strategy_refs(config: &AppConfig) -> AppResult<()> {
 fn validate_mcp_servers(servers: &[McpServerConfig]) -> AppResult<()> {
     for server in servers {
         if server.id.trim().is_empty() {
-            return Err(AppError::Config("MCP server ID cannot be empty".to_string()));
+            return Err(AppError::Config(
+                "MCP server ID cannot be empty".to_string(),
+            ));
         }
 
         match &server.transport_config {
@@ -304,12 +306,14 @@ fn validate_mcp_servers(servers: &[McpServerConfig]) -> AppResult<()> {
                 }
 
                 // Validate URL scheme is http or https (or ws/wss for WebSocket)
-                let allowed_schemes: &[&str] =
-                    if matches!(&server.transport_config, McpTransportConfig::WebSocket { .. }) {
-                        &["http://", "https://", "ws://", "wss://"]
-                    } else {
-                        &["http://", "https://"]
-                    };
+                let allowed_schemes: &[&str] = if matches!(
+                    &server.transport_config,
+                    McpTransportConfig::WebSocket { .. }
+                ) {
+                    &["http://", "https://", "ws://", "wss://"]
+                } else {
+                    &["http://", "https://"]
+                };
 
                 let has_valid_scheme = allowed_schemes
                     .iter()

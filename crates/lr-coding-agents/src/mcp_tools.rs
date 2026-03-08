@@ -315,10 +315,7 @@ async fn handle_status(
     let wait = args["wait"].as_bool().unwrap_or(false);
 
     let result = if wait {
-        let timeout_secs = args["timeoutSeconds"]
-            .as_u64()
-            .unwrap_or(300)
-            .min(600);
+        let timeout_secs = args["timeoutSeconds"].as_u64().unwrap_or(300).min(600);
         let timeout = std::time::Duration::from_secs(timeout_secs);
         manager
             .wait_for_non_active(session_id, client_id, timeout, output_lines)

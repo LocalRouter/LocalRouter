@@ -29,7 +29,7 @@ mod tests;
 // Re-export public API
 pub use gateway::{ActiveSessionInfo, CatalogSourceEntry, McpGateway};
 pub use merger::{
-    build_gateway_instructions, build_preview_instructions_context,
-    build_preview_mock_realistic, compute_catalog_compression_plan, InstructionsContext,
+    build_gateway_instructions, build_preview_instructions_context, build_preview_mock_realistic,
+    compute_catalog_compression_plan, InstructionsContext,
 };
 pub use types::GatewayConfig;

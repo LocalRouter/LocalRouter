@@ -54,10 +54,7 @@ fn insert_mcp_entry(config: &mut toml::Value, base_url: &str, client_secret: &st
 }
 
 /// Write config TOML to disk with backup
-fn write_config(
-    path: &std::path::Path,
-    config: &toml::Value,
-) -> Result<LaunchResult, String> {
+fn write_config(path: &std::path::Path, config: &toml::Value) -> Result<LaunchResult, String> {
     let data =
         toml::to_string_pretty(config).map_err(|e| format!("Failed to serialize config: {}", e))?;
 

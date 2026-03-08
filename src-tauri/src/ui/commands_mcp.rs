@@ -67,8 +67,12 @@ impl std::fmt::Debug for FrontendAuthConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FrontendAuthConfig::None => write!(f, "None"),
-            FrontendAuthConfig::BearerToken { .. } => write!(f, "BearerToken {{ token: [REDACTED] }}"),
-            FrontendAuthConfig::CustomHeaders { .. } => write!(f, "CustomHeaders {{ headers: [REDACTED] }}"),
+            FrontendAuthConfig::BearerToken { .. } => {
+                write!(f, "BearerToken {{ token: [REDACTED] }}")
+            }
+            FrontendAuthConfig::CustomHeaders { .. } => {
+                write!(f, "CustomHeaders {{ headers: [REDACTED] }}")
+            }
             FrontendAuthConfig::OAuth { .. } => write!(f, "OAuth {{ [REDACTED] }}"),
             FrontendAuthConfig::EnvVars { .. } => write!(f, "EnvVars {{ env: [REDACTED] }}"),
             FrontendAuthConfig::OAuthBrowser { .. } => write!(f, "OAuthBrowser {{ [REDACTED] }}"),

@@ -5,13 +5,12 @@
 #![allow(dead_code)]
 
 use crate::ui::tray_menu::{
-    build_tray_menu, copy_to_clipboard, handle_add_mcp_to_client,
-    handle_copy_mcp_bearer, handle_copy_mcp_url, handle_copy_url,
-    handle_create_and_copy_api_key, handle_open_client_settings, handle_prioritized_list,
-    handle_toggle_catalog_compression, handle_toggle_client_enabled,
-    handle_toggle_coding_agent_access, handle_toggle_free_tier, handle_toggle_indexing_tools,
-    handle_toggle_mcp_access, handle_toggle_rate_limit, handle_toggle_skill_access,
-    handle_toggle_weak_model,
+    build_tray_menu, copy_to_clipboard, handle_add_mcp_to_client, handle_copy_mcp_bearer,
+    handle_copy_mcp_url, handle_copy_url, handle_create_and_copy_api_key,
+    handle_open_client_settings, handle_prioritized_list, handle_toggle_catalog_compression,
+    handle_toggle_client_enabled, handle_toggle_coding_agent_access, handle_toggle_free_tier,
+    handle_toggle_indexing_tools, handle_toggle_mcp_access, handle_toggle_rate_limit,
+    handle_toggle_skill_access, handle_toggle_weak_model,
 };
 use lr_utils::test_mode::is_test_mode;
 use parking_lot::RwLock;
@@ -340,7 +339,9 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                         let app_clone = app.clone();
                         let client_id = client_id.to_string();
                         tauri::async_runtime::spawn(async move {
-                            if let Err(e) = handle_toggle_catalog_compression(&app_clone, &client_id).await {
+                            if let Err(e) =
+                                handle_toggle_catalog_compression(&app_clone, &client_id).await
+                            {
                                 error!("Failed to toggle catalog compression: {}", e);
                             }
                         });
@@ -351,7 +352,9 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                         let app_clone = app.clone();
                         let client_id = client_id.to_string();
                         tauri::async_runtime::spawn(async move {
-                            if let Err(e) = handle_toggle_indexing_tools(&app_clone, &client_id).await {
+                            if let Err(e) =
+                                handle_toggle_indexing_tools(&app_clone, &client_id).await
+                            {
                                 error!("Failed to toggle indexing tools: {}", e);
                             }
                         });

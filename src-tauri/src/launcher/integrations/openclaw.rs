@@ -79,9 +79,7 @@ impl AppIntegration for OpenClawIntegration {
         }
 
         // 2. Add MCP server entry under mcp.servers
-        let mcp_section = obj
-            .entry("mcp")
-            .or_insert_with(|| serde_json::json!({}));
+        let mcp_section = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
         let mcp_servers = mcp_section
             .as_object_mut()
             .ok_or("Invalid mcp section")?

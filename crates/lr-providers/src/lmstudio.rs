@@ -284,11 +284,10 @@ impl ModelProvider for LMStudioProvider {
             AppError::Provider(format!("Failed to read LM Studio models response: {}", e))
         })?;
 
-        let models_response: LMStudioModelsResponse =
-            serde_json::from_str(&body).map_err(|e| {
-                debug!("LM Studio raw response: {}", body);
-                AppError::Provider(format!("Failed to parse LM Studio models response: {}", e))
-            })?;
+        let models_response: LMStudioModelsResponse = serde_json::from_str(&body).map_err(|e| {
+            debug!("LM Studio raw response: {}", body);
+            AppError::Provider(format!("Failed to parse LM Studio models response: {}", e))
+        })?;
 
         let models: Vec<ModelInfo> = models_response
             .data

@@ -69,10 +69,8 @@ impl OAuthFlowManager {
         );
 
         // Generate PKCE challenge and CSRF state using cryptographically secure RNG
-        let pkce = generate_pkce_challenge()
-            .map_err(|e| AppError::Config(e.to_string()))?;
-        let csrf_state = generate_state()
-            .map_err(|e| AppError::Config(e.to_string()))?;
+        let pkce = generate_pkce_challenge().map_err(|e| AppError::Config(e.to_string()))?;
+        let csrf_state = generate_state().map_err(|e| AppError::Config(e.to_string()))?;
 
         // Build authorization URL
         let auth_url = self.build_authorization_url(&config, &pkce.code_challenge, &csrf_state)?;

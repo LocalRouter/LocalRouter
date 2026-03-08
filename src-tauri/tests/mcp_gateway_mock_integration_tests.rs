@@ -722,12 +722,7 @@ async fn test_gateway_tools_call_routes_to_correct_server() {
     );
 
     let response = gateway
-        .handle_request(
-            "test-client-call",
-            allowed_servers,
-            vec![],
-            call_request,
-        )
+        .handle_request("test-client-call", allowed_servers, vec![], call_request)
         .await
         .unwrap();
 
@@ -776,18 +771,12 @@ async fn test_gateway_tools_call_unknown_tool() {
     );
 
     let result = gateway
-        .handle_request(
-            "test-client-unknown",
-            allowed_servers,
-            vec![],
-            call_request,
-        )
+        .handle_request("test-client-unknown", allowed_servers, vec![], call_request)
         .await;
 
     // Should fail
     assert!(result.is_err() || result.unwrap().error.is_some());
 }
-
 
 // ============================================================================
 // ERROR HANDLING TESTS
@@ -909,12 +898,7 @@ async fn test_resources_read_routes_by_uri() {
     let read_request = request_with_params("resources/read", json!({"uri": "file:///config.json"}));
 
     let response = gateway
-        .handle_request(
-            "test-client-res",
-            allowed_servers,
-            vec![],
-            read_request,
-        )
+        .handle_request("test-client-res", allowed_servers, vec![], read_request)
         .await
         .unwrap();
 
@@ -981,12 +965,7 @@ async fn test_resources_read_by_name() {
         request_with_params("resources/read", json!({"name": "test-server-1__logs"}));
 
     let response = gateway
-        .handle_request(
-            "test-client-res2",
-            allowed_servers,
-            vec![],
-            read_request,
-        )
+        .handle_request("test-client-res2", allowed_servers, vec![], read_request)
         .await
         .unwrap();
 
@@ -1027,12 +1006,7 @@ async fn test_resources_read_not_found() {
     );
 
     let result = gateway
-        .handle_request(
-            "test-client-res3",
-            allowed_servers,
-            vec![],
-            read_request,
-        )
+        .handle_request("test-client-res3", allowed_servers, vec![], read_request)
         .await;
 
     // Should return error or error response
@@ -1086,12 +1060,7 @@ async fn test_resources_read_binary_content() {
     let read_request = request_with_params("resources/read", json!({"uri": "file:///image.png"}));
 
     let response = gateway
-        .handle_request(
-            "test-client-res4",
-            allowed_servers,
-            vec![],
-            read_request,
-        )
+        .handle_request("test-client-res4", allowed_servers, vec![], read_request)
         .await
         .unwrap();
 
@@ -1141,12 +1110,7 @@ async fn test_resources_list_with_templates() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request(
-            "test-client-templates",
-            allowed_servers,
-            vec![],
-            request,
-        )
+        .handle_request("test-client-templates", allowed_servers, vec![], request)
         .await
         .unwrap();
 
@@ -1219,12 +1183,7 @@ async fn test_prompts_get_routes_by_namespace() {
     let get_request = request_with_params("prompts/get", json!({"name": "test-server-1__review"}));
 
     let response = gateway
-        .handle_request(
-            "test-client-prompt",
-            allowed_servers,
-            vec![],
-            get_request,
-        )
+        .handle_request("test-client-prompt", allowed_servers, vec![], get_request)
         .await
         .unwrap();
 
@@ -1286,12 +1245,7 @@ async fn test_prompts_get_with_arguments() {
     );
 
     let response = gateway
-        .handle_request(
-            "test-client-prompt2",
-            allowed_servers,
-            vec![],
-            get_request,
-        )
+        .handle_request("test-client-prompt2", allowed_servers, vec![], get_request)
         .await
         .unwrap();
 
@@ -1327,12 +1281,7 @@ async fn test_prompts_get_not_found() {
         request_with_params("prompts/get", json!({"name": "test-server-1__nonexistent"}));
 
     let result = gateway
-        .handle_request(
-            "test-client-prompt3",
-            allowed_servers,
-            vec![],
-            get_request,
-        )
+        .handle_request("test-client-prompt3", allowed_servers, vec![], get_request)
         .await;
 
     // Should return error
@@ -1479,12 +1428,7 @@ async fn test_tools_call_strips_namespace() {
     );
 
     let response = gateway
-        .handle_request(
-            "test-client-strip",
-            allowed_servers,
-            vec![],
-            call_request,
-        )
+        .handle_request("test-client-strip", allowed_servers, vec![], call_request)
         .await
         .unwrap();
 
@@ -1539,12 +1483,7 @@ async fn test_tools_call_passes_arguments() {
     );
 
     let response = gateway
-        .handle_request(
-            "test-client-args2",
-            allowed_servers,
-            vec![],
-            call_request,
-        )
+        .handle_request("test-client-args2", allowed_servers, vec![], call_request)
         .await
         .unwrap();
 
@@ -1586,12 +1525,7 @@ async fn test_tools_call_handles_error_response() {
     );
 
     let response = gateway
-        .handle_request(
-            "test-client-err",
-            allowed_servers,
-            vec![],
-            call_request,
-        )
+        .handle_request("test-client-err", allowed_servers, vec![], call_request)
         .await
         .unwrap();
 
@@ -1663,12 +1597,7 @@ async fn test_concurrent_clients() {
 
     // Client 2 request
     let response2 = gateway
-        .handle_request(
-            "client2",
-            vec!["server2".to_string()],
-            vec![],
-            request,
-        )
+        .handle_request("client2", vec!["server2".to_string()], vec![], request)
         .await
         .unwrap();
 
@@ -2000,12 +1929,7 @@ async fn test_tools_call_overhead() {
 
     let start = Instant::now();
     let _ = gateway
-        .handle_request(
-            "test-client-perf4",
-            allowed_servers,
-            vec![],
-            call_request,
-        )
+        .handle_request("test-client-perf4", allowed_servers, vec![], call_request)
         .await
         .unwrap();
     let elapsed = start.elapsed();
@@ -2073,12 +1997,7 @@ async fn test_all_servers_timeout() {
 
     // This should timeout and handle gracefully
     let result = gateway
-        .handle_request(
-            "test-client-timeout",
-            allowed_servers,
-            vec![],
-            request,
-        )
+        .handle_request("test-client-timeout", allowed_servers, vec![], request)
         .await;
 
     // Should return error or empty result after timeout
@@ -2106,12 +2025,7 @@ async fn test_malformed_json_response() {
 
     let allowed_servers = vec!["server1".to_string()];
     let result = gateway
-        .handle_request(
-            "test-client-malformed",
-            allowed_servers,
-            vec![],
-            request,
-        )
+        .handle_request("test-client-malformed", allowed_servers, vec![], request)
         .await;
 
     // Should handle gracefully without crashing
@@ -2160,12 +2074,7 @@ async fn test_connection_refused() {
 
     let allowed_servers = vec!["nonexistent_server".to_string()];
     let result = gateway
-        .handle_request(
-            "test-client-refused",
-            allowed_servers,
-            vec![],
-            request,
-        )
+        .handle_request("test-client-refused", allowed_servers, vec![], request)
         .await;
 
     // Should handle connection refused gracefully
@@ -2202,12 +2111,7 @@ async fn test_invalid_namespace_format() {
     );
 
     let result = gateway
-        .handle_request(
-            "test-client-invalid",
-            allowed_servers,
-            vec![],
-            call_request,
-        )
+        .handle_request("test-client-invalid", allowed_servers, vec![], call_request)
         .await;
 
     // Should return error about invalid namespace
@@ -2234,12 +2138,7 @@ async fn test_initialize_all_servers_fail() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let result = gateway
-        .handle_request(
-            "test-client-init-fail",
-            allowed_servers,
-            vec![],
-            request,
-        )
+        .handle_request("test-client-init-fail", allowed_servers, vec![], request)
         .await;
 
     // Should return error when all servers fail
@@ -2262,12 +2161,7 @@ async fn test_tools_list_partial_failure() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request(
-            "test-client-partial",
-            allowed_servers,
-            vec![],
-            request,
-        )
+        .handle_request("test-client-partial", allowed_servers, vec![], request)
         .await
         .unwrap();
 

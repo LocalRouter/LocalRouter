@@ -496,22 +496,23 @@ impl McpServerManager {
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
 
                     // Get client secret from keychain
-                    let client_secret = match keychain
-                        .get("LocalRouter-McpServers", client_secret_ref)
-                    {
-                        Ok(Some(secret)) => secret,
-                        Ok(None) => {
-                            tracing::warn!("OAuth client secret not found in keychain for MCP server");
-                            return Err(AppError::Mcp(format!(
-                                "OAuth client secret not found for server: {}",
-                                server_id
-                            )));
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to retrieve OAuth client secret: {}", e);
-                            return Err(e);
-                        }
-                    };
+                    let client_secret =
+                        match keychain.get("LocalRouter-McpServers", client_secret_ref) {
+                            Ok(Some(secret)) => secret,
+                            Ok(None) => {
+                                tracing::warn!(
+                                    "OAuth client secret not found in keychain for MCP server"
+                                );
+                                return Err(AppError::Mcp(format!(
+                                    "OAuth client secret not found for server: {}",
+                                    server_id
+                                )));
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to retrieve OAuth client secret: {}", e);
+                                return Err(e);
+                            }
+                        };
 
                     // Acquire OAuth token via Client Credentials flow
                     tracing::debug!("Acquiring OAuth token for SSE server: {}", server_id);
@@ -679,22 +680,23 @@ impl McpServerManager {
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
 
                     // Get client secret from keychain
-                    let client_secret = match keychain
-                        .get("LocalRouter-McpServers", client_secret_ref)
-                    {
-                        Ok(Some(secret)) => secret,
-                        Ok(None) => {
-                            tracing::warn!("OAuth client secret not found in keychain for MCP server");
-                            return Err(AppError::Mcp(format!(
-                                "OAuth client secret not found for server: {}",
-                                server_id
-                            )));
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to retrieve OAuth client secret: {}", e);
-                            return Err(e);
-                        }
-                    };
+                    let client_secret =
+                        match keychain.get("LocalRouter-McpServers", client_secret_ref) {
+                            Ok(Some(secret)) => secret,
+                            Ok(None) => {
+                                tracing::warn!(
+                                    "OAuth client secret not found in keychain for MCP server"
+                                );
+                                return Err(AppError::Mcp(format!(
+                                    "OAuth client secret not found for server: {}",
+                                    server_id
+                                )));
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to retrieve OAuth client secret: {}", e);
+                                return Err(e);
+                            }
+                        };
 
                     // Acquire OAuth token
                     tracing::debug!("Acquiring OAuth token for WebSocket server: {}", server_id);

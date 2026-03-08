@@ -253,8 +253,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
 
                         // Catalog Compression toggle (per-client override)
                         {
-                            let is_inherited =
-                                client.catalog_compression_enabled.is_none();
+                            let is_inherited = client.catalog_compression_enabled.is_none();
                             let effective = client.is_catalog_compression_enabled();
                             let label = if effective {
                                 if is_inherited {
@@ -267,14 +266,11 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                             } else {
                                 format!("{}Catalog Compression", TRAY_INDENT)
                             };
-                            client_submenu = client_submenu.text(
-                                format!("toggle_catalog_compression_{}", client.id),
-                                label,
-                            );
+                            client_submenu = client_submenu
+                                .text(format!("toggle_catalog_compression_{}", client.id), label);
 
                             // Indexing Tools toggle (per-client override)
-                            let is_inherited_idx =
-                                client.indexing_tools_enabled.is_none();
+                            let is_inherited_idx = client.indexing_tools_enabled.is_none();
                             let effective_idx =
                                 client.is_indexing_tools_enabled(&global_ctx_config);
                             let label_idx = if effective_idx {
@@ -288,10 +284,8 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                             } else {
                                 format!("{}Indexing Tools", TRAY_INDENT)
                             };
-                            client_submenu = client_submenu.text(
-                                format!("toggle_indexing_tools_{}", client.id),
-                                label_idx,
-                            );
+                            client_submenu = client_submenu
+                                .text(format!("toggle_indexing_tools_{}", client.id), label_idx);
                         }
 
                         client_submenu = client_submenu.separator();
@@ -1193,10 +1187,7 @@ pub(crate) async fn handle_toggle_indexing_tools<R: Runtime>(
     app: &AppHandle<R>,
     client_id: &str,
 ) -> tauri::Result<()> {
-    info!(
-        "Toggling indexing tools override for client {}",
-        client_id
-    );
+    info!("Toggling indexing tools override for client {}", client_id);
 
     let config_manager = app.state::<ConfigManager>();
 

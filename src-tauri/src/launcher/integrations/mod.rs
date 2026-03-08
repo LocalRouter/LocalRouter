@@ -154,7 +154,14 @@ mod tests {
 
     #[test]
     fn test_config_file_integrations_configure_permanent() {
-        for id in &["claude-code", "codex", "opencode", "droid", "openclaw", "cursor"] {
+        for id in &[
+            "claude-code",
+            "codex",
+            "opencode",
+            "droid",
+            "openclaw",
+            "cursor",
+        ] {
             let integration = get_integration(id).unwrap();
             let result = integration.configure_permanent(
                 "http://localhost:3625",

@@ -120,7 +120,7 @@ pub async fn broadcast_request(
                                 "Request timeout after {}ms",
                                 request_timeout.as_millis()
                             ))),
-                        )
+                        );
                     }
                 }
             }

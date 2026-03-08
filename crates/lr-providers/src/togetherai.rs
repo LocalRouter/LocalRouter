@@ -193,10 +193,7 @@ impl ModelProvider for TogetherAIProvider {
                         status: HealthStatus::Unhealthy,
                         latency_ms: Some(latency_ms),
                         last_checked: Utc::now(),
-                        error_message: Some(format!(
-                            "API returned status {}",
-                            status
-                        )),
+                        error_message: Some(format!("API returned status {}", status)),
                     }
                 }
             }

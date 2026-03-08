@@ -974,10 +974,7 @@ pub async fn refresh_models_incremental(
                 let registry = registry.clone();
                 let app = app.clone();
                 tokio::spawn(async move {
-                    match registry
-                        .list_provider_models_cached(&instance_name)
-                        .await
-                    {
+                    match registry.list_provider_models_cached(&instance_name).await {
                         Ok(mut models) => {
                             for model in &mut models {
                                 model.provider = instance_name.clone();
