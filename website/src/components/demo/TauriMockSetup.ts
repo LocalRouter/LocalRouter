@@ -917,9 +917,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     ]
   },
   'get_context_mode_info': () => ({
-    npxAvailable: true,
-    npxPath: '/usr/local/bin/npx',
-    npxVersion: '10.8.2',
+    nodeAvailable: true,
+    nodePath: '/usr/local/bin/node',
+    nodeVersion: '22.12.0',
     contextModeVersion: '1.2.0',
   }),
   'install_context_mode': () => '1.2.0',
@@ -974,8 +974,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     deferred_items_count: 0,
     truncated_servers_count: 0,
     servers: [
-      { name: 'Context Management', is_virtual: true, tool_names: ['ctx_search', 'ctx_execute'], resource_names: [], prompt_names: [], description: 'Use ctx_search to discover MCP capabilities.', instructions: null, compression_state: 'visible' },
-      { name: 'Filesystem', is_virtual: false, tool_names: ['filesystem__read_file', 'filesystem__write_file'], resource_names: [], prompt_names: [], description: 'Provides filesystem operations.', instructions: 'Use read_file to read files.', compression_state: 'compressed' },
+      { name: 'Context Management', is_virtual: true, tool_names: ['ctx_search', 'ctx_execute'], resource_names: [], prompt_names: [], description: 'Use ctx_search to discover MCP capabilities.', instructions: null, compression_state: 'visible', tools: [], resources: [], prompts: [] },
+      { name: 'Filesystem', is_virtual: false, tool_names: ['filesystem__read_file', 'filesystem__write_file'], resource_names: [], prompt_names: [], description: 'Provides filesystem operations.', instructions: 'Use read_file to read files.', compression_state: 'compressed', tools: [{ name: 'filesystem__read_file', description: 'Read a file from the filesystem', input_schema: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path' } }, required: ['path'] } }, { name: 'filesystem__write_file', description: 'Write content to a file', input_schema: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path' }, content: { type: 'string', description: 'Content to write' } }, required: ['path', 'content'] } }], resources: [], prompts: [] },
     ],
   }),
   'terminate_session': (args) => {

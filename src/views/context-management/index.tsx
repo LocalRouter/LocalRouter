@@ -141,14 +141,32 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
   }, [selectedSessionId])
 
   useEffect(() => {
+    let ignore = false
+
     invoke<ContextManagementConfig>("get_context_management_config")
-      .then(setConfig)
+      .then((cfg) => { if (!ignore) setConfig(cfg) })
       .catch((err) => console.error("Failed to load context management config:", err))
     loadSessions()
-    loadModeInfo()
+
+    // Inline mode info fetch with ignore flag to handle StrictMode double-mount
+    ;(async () => {
+      setModeInfoLoading(true)
+      try {
+        const info = await invoke<ContextModeInfo>("get_context_mode_info")
+        if (!ignore) setModeInfo(info)
+      } catch (err) {
+        console.error("Failed to load context-mode info:", err)
+      } finally {
+        if (!ignore) setModeInfoLoading(false)
+      }
+    })()
+
     const interval = setInterval(loadSessions, 5000)
-    return () => clearInterval(interval)
-  }, [loadSessions, loadModeInfo])
+    return () => {
+      ignore = true
+      clearInterval(interval)
+    }
+  }, [loadSessions])
 
   // Clear selected session if it disappears
   useEffect(() => {
@@ -199,6 +217,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="info">Info</TabsTrigger>
+          <TabsTrigger value="preview">Preview</TabsTrigger>
           <TabsTrigger value="sessions">
             Sessions
             {sessions.length > 0 && (
@@ -208,7 +227,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
             )}
           </TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
-          <TabsTrigger value="preview">Preview</TabsTrigger>
         </TabsList>
 
         {/* Info Tab */}
@@ -234,8 +252,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                   </Button>
                 </div>
                 <CardDescription>
-                  Context-mode runs via <code className="px-1 py-0.5 rounded bg-muted text-xs">npx context-mode</code> as
-                  a per-session STDIO process.
+                  Context-mode runs as a per-session STDIO process, installed globally via <code className="px-1 py-0.5 rounded bg-muted text-xs">npm install -g context-mode</code>.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -246,31 +263,31 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                   </div>
                 ) : modeInfo ? (
                   <div className="space-y-3">
-                    {/* npx */}
-                    <div className={cn("flex items-center gap-2.5", !modeInfo.npxAvailable && "opacity-45")}>
-                      {modeInfo.npxAvailable ? (
+                    {/* Node.js */}
+                    <div className={cn("flex items-center gap-2.5", !modeInfo.nodeAvailable && "opacity-45")}>
+                      {modeInfo.nodeAvailable ? (
                         <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
                       ) : (
                         <XCircle className="h-4 w-4 text-destructive shrink-0" />
                       )}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium">npx</p>
-                          {modeInfo.npxAvailable ? (
+                          <p className="text-sm font-medium">Node.js</p>
+                          {modeInfo.nodeAvailable ? (
                             <Badge variant="success" className="text-[10px] px-1 py-0">available</Badge>
                           ) : (
                             <Badge variant="destructive" className="text-[10px] px-1 py-0">not found</Badge>
                           )}
                         </div>
-                        {modeInfo.npxPath && (
+                        {modeInfo.nodePath && (
                           <p className="text-xs text-muted-foreground truncate">
-                            {modeInfo.npxPath}
-                            {modeInfo.npxVersion && ` (v${modeInfo.npxVersion})`}
+                            {modeInfo.nodePath}
+                            {modeInfo.nodeVersion && ` (v${modeInfo.nodeVersion})`}
                           </p>
                         )}
-                        {!modeInfo.npxAvailable && (
+                        {!modeInfo.nodeAvailable && (
                           <p className="text-xs text-muted-foreground">
-                            Install Node.js to get npx, which is required for context-mode.
+                            Install Node.js, which is required for context-mode.
                           </p>
                         )}
                       </div>
@@ -297,12 +314,12 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                         <p className="text-xs text-muted-foreground">
                           {modeInfo.contextModeVersion
                             ? "Installed and ready. Will be spawned per-session when enabled."
-                            : modeInfo.npxAvailable
+                            : modeInfo.nodeAvailable
                               ? "Not yet installed. Install now or it will be auto-installed on first use."
-                              : "Requires npx to be available."}
+                              : "Requires Node.js to be available."}
                         </p>
                       </div>
-                      {!modeInfo.contextModeVersion && modeInfo.npxAvailable && (
+                      {!modeInfo.contextModeVersion && modeInfo.nodeAvailable && (
                         <Button
                           variant="outline"
                           size="sm"
@@ -1002,20 +1019,20 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Threshold</span>
-              <span className="font-mono">{formatBytes(threshold)}</span>
+              <span className="font-mono">{threshold >= 10240 ? "No limit" : formatBytes(threshold)}</span>
             </div>
             <input
               type="range"
               value={threshold}
               onChange={(e) => setThreshold(Number(e.target.value))}
               min={0}
-              max={100000}
-              step={500}
+              max={10240}
+              step={100}
               className="w-full"
             />
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>0 (max compression)</span>
-              <span>100 KB (no compression)</span>
+              <span>No limit</span>
             </div>
           </div>
 
@@ -1154,19 +1171,9 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
   const isTruncated = server.compression_state === "truncated"
   const isCompressed = server.compression_state === "compressed"
 
-  // In compressed mode, deferred servers are omitted entirely
+  // In compressed mode, deferred servers are completely omitted
   if (mode === "compressed" && isDeferred) {
-    return (
-      <div className="opacity-40">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-semibold">{server.name}</span>
-          <Badge variant="outline" className="text-[10px] px-1 py-0 text-orange-600 border-orange-600/30">deferred</Badge>
-        </div>
-        <p className="text-[10px] text-muted-foreground italic">
-          {server.tool_names.length + server.resource_names.length + server.prompt_names.length} items — activate via ctx_search
-        </p>
-      </div>
-    )
+    return null
   }
 
   // In compressed mode, truncated servers show only counts
@@ -1184,7 +1191,9 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
     )
   }
 
-  const showDescription = mode === "full" || !isCompressed
+  const tools = server.tools ?? []
+  const resources = server.resources ?? []
+  const prompts = server.prompts ?? []
   const totalItems = server.tool_names.length + server.resource_names.length + server.prompt_names.length
 
   return (
@@ -1198,32 +1207,80 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
         <span className="text-[10px] text-muted-foreground">{totalItems} items</span>
       </div>
 
-      {/* Tool/resource/prompt names */}
-      <div className="ml-2 space-y-0.5">
-        {server.tool_names.map((name) => (
+      {/* Tool details */}
+      <div className="ml-2 space-y-1">
+        {tools.length > 0 ? tools.map((tool) => (
+          <div key={tool.name}>
+            <div className="text-[11px] font-mono">
+              <span className="text-foreground/70">•</span>{" "}
+              <code className="text-foreground/80">{tool.name}</code>{" "}
+              <span className="text-muted-foreground/60">(tool)</span>
+            </div>
+            {tool.description && (
+              <div className="ml-4 text-[10px] text-muted-foreground">{tool.description}</div>
+            )}
+            {(() => {
+              const schema = tool.input_schema as Record<string, unknown> | null
+              const props = schema?.properties as Record<string, Record<string, string>> | undefined
+              if (!props) return null
+              const reqArr = Array.isArray(schema?.required) ? (schema.required as string[]) : []
+              return (
+                <div className="ml-4 text-[10px] text-muted-foreground/70 font-mono">
+                  {Object.entries(props).map(([key, prop]) => (
+                    <div key={key} className="ml-2">
+                      <span className="text-foreground/60">{key}</span>
+                      {prop.type && <span className="text-blue-500/60">{`: ${prop.type}`}</span>}
+                      {reqArr.includes(key) && <span className="text-red-500/50">*</span>}
+                      {prop.description && <span className="text-muted-foreground/50">{` — ${prop.description}`}</span>}
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
+          </div>
+        )) : server.tool_names.map((name) => (
           <div key={name} className="text-[11px] font-mono text-muted-foreground">
             <span className="text-foreground/70">•</span> <code className="text-foreground/80">{name}</code> <span className="text-muted-foreground/60">(tool)</span>
           </div>
         ))}
-        {server.resource_names.map((name) => (
+
+        {/* Resources */}
+        {resources.length > 0 ? resources.map((res) => (
+          <div key={res.name}>
+            <div className="text-[11px] font-mono">
+              <span className="text-foreground/70">•</span>{" "}
+              <code className="text-foreground/80">{res.name}</code>{" "}
+              <span className="text-blue-500/60">(resource)</span>
+            </div>
+            {res.description && (
+              <div className="ml-4 text-[10px] text-muted-foreground">{res.description}</div>
+            )}
+          </div>
+        )) : server.resource_names.map((name) => (
           <div key={name} className="text-[11px] font-mono text-muted-foreground">
             <span className="text-foreground/70">•</span> <code className="text-foreground/80">{name}</code> <span className="text-blue-500/60">(resource)</span>
           </div>
         ))}
-        {server.prompt_names.map((name) => (
+
+        {/* Prompts */}
+        {prompts.length > 0 ? prompts.map((prompt) => (
+          <div key={prompt.name}>
+            <div className="text-[11px] font-mono">
+              <span className="text-foreground/70">•</span>{" "}
+              <code className="text-foreground/80">{prompt.name}</code>{" "}
+              <span className="text-purple-500/60">(prompt)</span>
+            </div>
+            {prompt.description && (
+              <div className="ml-4 text-[10px] text-muted-foreground">{prompt.description}</div>
+            )}
+          </div>
+        )) : server.prompt_names.map((name) => (
           <div key={name} className="text-[11px] font-mono text-muted-foreground">
             <span className="text-foreground/70">•</span> <code className="text-foreground/80">{name}</code> <span className="text-purple-500/60">(prompt)</span>
           </div>
         ))}
       </div>
 
-      {/* Description + instructions */}
-      {showDescription && (server.description || server.instructions) && (
-        <div className="ml-2 mt-1.5 text-[10px] text-muted-foreground leading-relaxed whitespace-pre-wrap border-l-2 border-muted pl-2">
-          {server.description && <p>{server.description}</p>}
-          {server.instructions && <p className="mt-1">{server.instructions}</p>}
-        </div>
-      )}
       {mode === "compressed" && isCompressed && (
         <div className="ml-2 mt-1.5 text-[10px] text-yellow-600/80 italic border-l-2 border-yellow-600/20 pl-2">
           [compressed] ctx_search(source=&quot;catalog:{server.name.toLowerCase().replace(/ /g, "-")}&quot;) to view full details

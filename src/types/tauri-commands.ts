@@ -585,9 +585,9 @@ export interface SkillsConfig {
  * Rust: src-tauri/src/ui/commands.rs - ContextModeInfo struct
  */
 export interface ContextModeInfo {
-  npxAvailable: boolean
-  npxPath: string | null
-  npxVersion: string | null
+  nodeAvailable: boolean
+  nodePath: string | null
+  nodeVersion: string | null
   contextModeVersion: string | null
 }
 
@@ -633,6 +633,29 @@ export interface PreviewServerEntry {
   instructions: string | null
   /** "visible" | "compressed" | "deferred" | "truncated" */
   compression_state: string
+  tools: PreviewToolDetail[]
+  resources: PreviewResourceDetail[]
+  prompts: PreviewPromptDetail[]
+}
+
+/** Tool detail for compression preview */
+export interface PreviewToolDetail {
+  name: string
+  description: string | null
+  input_schema: unknown | null
+}
+
+/** Resource detail for compression preview */
+export interface PreviewResourceDetail {
+  name: string
+  uri: string | null
+  description: string | null
+}
+
+/** Prompt detail for compression preview */
+export interface PreviewPromptDetail {
+  name: string
+  description: string | null
 }
 
 /** Params for preview_catalog_compression */

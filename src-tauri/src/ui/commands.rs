@@ -1617,24 +1617,29 @@ pub async fn get_skill(
         .ok_or_else(|| format!("Skill '{}' not found", skill_name))
 }
 
-/// Get context-mode tool installation info (npx availability, version).
+/// Get context-mode tool installation info (node availability, version).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextModeInfo {
-    pub npx_available: bool,
-    pub npx_path: Option<String>,
-    pub npx_version: Option<String>,
+    pub node_available: bool,
+    pub node_path: Option<String>,
+    pub node_version: Option<String>,
     pub context_mode_version: Option<String>,
 }
 
 #[tauri::command]
 pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
-    let npx_path = which::which("npx").ok();
-    let npx_available = npx_path.is_some();
+    let env = lr_mcp::manager::shell_env();
+    let shell_path = env.get("PATH").cloned().unwrap_or_default();
 
-    let npx_version = if npx_available {
-        tokio::process::Command::new("npx")
+    // Check for node using shell_env PATH (resolves nvm/fnm/homebrew on macOS)
+    let node_path = which::which_in("node", Some(&shell_path), "/").ok();
+    let node_available = node_path.is_some();
+
+    let node_version = if node_available {
+        tokio::process::Command::new("node")
             .arg("--version")
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -1645,7 +1650,7 @@ pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
                 if o.status.success() {
                     String::from_utf8(o.stdout)
                         .ok()
-                        .map(|s| s.trim().to_string())
+                        .map(|s| s.trim().trim_start_matches('v').to_string())
                 } else {
                     None
                 }
@@ -1654,62 +1659,35 @@ pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
         None
     };
 
-    // Check for context-mode: try global install first, then fall back to npx.
-    // It prints "Context Mode MCP server v1.0.15 running on stdio" to stderr on start
-    // (stdout is reserved for MCP protocol over stdio)
-    let context_mode_version = {
-        // 1. Try global binary first (matches spawn_context_mode_process resolution order)
-        let cmd = if which::which("context-mode").is_ok() {
-            Some(("context-mode", vec![]))
-        } else if npx_available {
-            Some(("npx", vec!["context-mode"]))
-        } else {
-            None
-        };
+    // Check for context-mode version via `npm list -g context-mode --json --depth=0`.
+    // This avoids spawning the full MCP server process (which is flaky with stdin=null).
+    let context_mode_version = if node_available {
+        let output = tokio::process::Command::new("npm")
+            .args(["list", "-g", "context-mode", "--json", "--depth=0"])
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .await
+            .ok();
 
-        if let Some((program, args)) = cmd {
-            let child = tokio::process::Command::new(program)
-                .args(&args)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .spawn();
-
-            if let Ok(mut child) = child {
-                let version = if let Some(stderr) = child.stderr.take() {
-                    use tokio::io::{AsyncBufReadExt, BufReader};
-                    let mut reader = BufReader::new(stderr);
-                    let mut first_line = String::new();
-                    let read_result = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        reader.read_line(&mut first_line),
-                    )
-                    .await;
-                    match read_result {
-                        Ok(Ok(_)) => first_line
-                            .split(" v")
-                            .nth(1)
-                            .and_then(|s| s.split_whitespace().next())
-                            .map(|s| s.to_string()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                let _ = child.kill().await;
-                version
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        output.and_then(|o| {
+            let json: serde_json::Value = serde_json::from_slice(&o.stdout).ok()?;
+            json.get("dependencies")
+                .and_then(|d| d.get("context-mode"))
+                .and_then(|cm| cm.get("version"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+    } else {
+        None
     };
 
     Ok(ContextModeInfo {
-        npx_available,
-        npx_path: npx_path.map(|p| p.display().to_string()),
-        npx_version,
+        node_available,
+        node_path: node_path.map(|p| p.display().to_string()),
+        node_version,
         context_mode_version,
     })
 }
@@ -1841,6 +1819,44 @@ pub struct PreviewServerEntry {
     pub instructions: Option<String>,
     /// "visible" | "compressed" | "deferred" | "truncated"
     pub compression_state: String,
+    pub tools: Vec<PreviewToolDetail>,
+    pub resources: Vec<PreviewResourceDetail>,
+    pub prompts: Vec<PreviewPromptDetail>,
+}
+
+#[derive(Serialize)]
+pub struct PreviewToolDetail {
+    pub name: String,
+    pub description: Option<String>,
+    pub input_schema: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+pub struct PreviewResourceDetail {
+    pub name: String,
+    pub uri: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PreviewPromptDetail {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Generate a human-readable description from a namespaced tool name.
+/// e.g. "github__issue_read" → "Issue read", "filesystem__read_file" → "Read file"
+fn humanize_tool_name(name: &str) -> String {
+    let raw = name
+        .split("__")
+        .last()
+        .unwrap_or(name)
+        .replace('_', " ");
+    let mut chars = raw.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+        None => raw,
+    }
 }
 
 #[tauri::command]
@@ -1857,18 +1873,21 @@ pub async fn preview_catalog_compression(
     let mut ctx = match source.as_deref() {
         // Mock preset with realistic MCP server data
         None | Some("mock") => build_preview_mock_realistic(),
-        // Real client by client_id — find their active session
+        // Real client by client_id
         Some(client_id) if client_id.starts_with("client:") => {
             let cid = &client_id["client:".len()..];
-            state
-                .mcp_gateway
-                .get_client_instructions_context(cid)
-                .await?
+            // Try active session first, then any session, then build from running servers
+            state.mcp_gateway.get_or_build_preview_context(cid).await?
         }
         Some(other) => {
             return Err(format!("Unknown preview source: {other}"));
         }
     };
+
+    // Fetch tool catalog for detailed tool info (descriptions, schemas).
+    // Always try — if servers are running we get real data even for mock source.
+    let (tool_catalog, resource_catalog, prompt_catalog) =
+        state.mcp_gateway.fetch_preview_catalogs().await;
 
     // Build uncompressed version (no plan)
     ctx.catalog_compression = None;
@@ -1910,6 +1929,9 @@ pub async fn preview_catalog_compression(
             description: Some(vsi.content.clone()),
             instructions: None,
             compression_state: "visible".to_string(),
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
         });
     }
 
@@ -1925,6 +1947,52 @@ pub async fn preview_catalog_compression(
         } else {
             "visible"
         };
+
+        // Build tool details from catalog, falling back to generated description
+        let tools: Vec<PreviewToolDetail> = server
+            .tool_names
+            .iter()
+            .map(|name| {
+                let catalog_tool = tool_catalog.iter().find(|t| &t.name == name);
+                PreviewToolDetail {
+                    name: name.clone(),
+                    description: catalog_tool
+                        .and_then(|t| t.description.clone())
+                        .or_else(|| Some(humanize_tool_name(name))),
+                    input_schema: catalog_tool.map(|t| t.input_schema.clone()),
+                }
+            })
+            .collect();
+
+        let resources: Vec<PreviewResourceDetail> = server
+            .resource_names
+            .iter()
+            .map(|name| {
+                let catalog_res = resource_catalog.iter().find(|r| &r.name == name);
+                PreviewResourceDetail {
+                    name: name.clone(),
+                    uri: catalog_res.map(|r| r.uri.clone()),
+                    description: catalog_res
+                        .and_then(|r| r.description.clone())
+                        .or_else(|| Some(humanize_tool_name(name))),
+                }
+            })
+            .collect();
+
+        let prompts: Vec<PreviewPromptDetail> = server
+            .prompt_names
+            .iter()
+            .map(|name| {
+                let catalog_prompt = prompt_catalog.iter().find(|p| &p.name == name);
+                PreviewPromptDetail {
+                    name: name.clone(),
+                    description: catalog_prompt
+                        .and_then(|p| p.description.clone())
+                        .or_else(|| Some(humanize_tool_name(name))),
+                }
+            })
+            .collect();
+
         servers.push(PreviewServerEntry {
             name: server.name.clone(),
             is_virtual: false,
@@ -1934,6 +2002,9 @@ pub async fn preview_catalog_compression(
             description: server.description.clone(),
             instructions: server.instructions.clone(),
             compression_state: compression_state.to_string(),
+            tools,
+            resources,
+            prompts,
         });
     }
 
