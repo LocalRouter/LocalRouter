@@ -144,9 +144,8 @@ pub async fn chat_completions(
                                 apply_firewall_request_edits(&mut request, req_edits);
 
                                 // Check if user selected a specific model (bypass auto-routing)
-                                let selected_model = req_edits
-                                    .get("model")
-                                    .and_then(|v| v.as_str());
+                                let selected_model =
+                                    req_edits.get("model").and_then(|v| v.as_str());
                                 if let Some(model) = selected_model {
                                     if model != "localrouter/auto" {
                                         tracing::info!(
@@ -213,10 +212,55 @@ pub async fn chat_completions(
         })
     };
 
-    // Check rate limits (in parallel with guardrails scan)
+    // Start prompt compression in parallel (if enabled for this client)
+    let compression_handle = {
+        let state_ref = state.clone();
+        let client_ctx = client_auth.as_ref().map(|e| e.0.clone());
+        let request_clone = request.clone();
+        tokio::spawn(async move {
+            run_prompt_compression(&state_ref, client_ctx.as_ref(), &request_clone).await
+        })
+    };
+
+    // Check rate limits (in parallel with guardrails + compression)
     check_rate_limits(&state, &auth, &request).await?;
 
-    // Convert to provider format
+    // Await compression result (must complete before converting to provider format)
+    let compression_result = compression_handle
+        .await
+        .map_err(|e| ApiErrorResponse::internal_error(format!("Compression task failed: {}", e)))?;
+
+    // Apply compression: replace request messages if compression succeeded
+    if let Ok(Some(compressed)) = &compression_result {
+        tracing::info!(
+            "Prompt compressed: {} -> {} msgs, ~{:.0}% reduction ({}ms)",
+            compressed.original_count,
+            compressed.compressed_messages.len(),
+            if compressed.original_tokens > 0 {
+                100.0
+                    - (compressed.compressed_tokens as f64 / compressed.original_tokens as f64
+                        * 100.0)
+            } else {
+                0.0
+            },
+            compressed.duration_ms,
+        );
+        request.messages = compressed
+            .compressed_messages
+            .iter()
+            .map(|m| ChatMessage {
+                role: m.role.clone(),
+                content: Some(MessageContent::Text(m.content.clone())),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            })
+            .collect();
+    } else if let Err(e) = &compression_result {
+        tracing::warn!("Prompt compression failed (continuing without): {}", e);
+    }
+
+    // Convert to provider format (uses possibly-compressed messages)
     let provider_request = convert_to_provider_request(&request)?;
 
     // Determine if we can run guardrails in parallel with the LLM request.
@@ -578,10 +622,7 @@ async fn validate_client_provider_access(
 ///
 /// Supports model params (temperature, max_tokens, etc.) and messages.
 /// Used by both the model firewall and auto-router approval flows.
-fn apply_firewall_request_edits(
-    request: &mut ChatCompletionRequest,
-    edits: &serde_json::Value,
-) {
+fn apply_firewall_request_edits(request: &mut ChatCompletionRequest, edits: &serde_json::Value) {
     if let Some(model) = edits.get("model").and_then(|v| v.as_str()) {
         request.model = model.to_string();
     }
@@ -752,8 +793,8 @@ async fn check_model_firewall_permission(
             );
 
             // Capture the full request for the edit mode popup
-            let mut full_request = serde_json::to_value(&request)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            let mut full_request =
+                serde_json::to_value(&request).unwrap_or_else(|_| serde_json::json!({}));
             if let Some(obj) = full_request.as_object_mut() {
                 obj.remove("stream"); // not user-editable
             }
@@ -834,6 +875,93 @@ fn has_side_effects(request: &ChatCompletionRequest) -> bool {
 ///
 /// Returns Some(SafetyCheckResult) if violations were found that need action,
 /// or None if no scan is needed or content is safe.
+/// Run prompt compression if enabled for this client.
+/// Returns compressed messages or None if compression is not needed/enabled.
+async fn run_prompt_compression(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+    request: &ChatCompletionRequest,
+) -> Result<Option<lr_compression::CompressionResult>, String> {
+    // Need compression engine
+    let engine = state.compression_service.read().clone();
+    let Some(engine) = engine else {
+        return Ok(None);
+    };
+
+    let config = state.config_manager.get();
+    if !config.prompt_compression.enabled {
+        return Ok(None);
+    }
+
+    // Resolve per-client settings (client overrides > global defaults)
+    let (enabled, min_messages, preserve_recent, rate, compress_system) =
+        if let Some(client_ctx) = client_context {
+            if let Some(client) = state.client_manager.get_client(&client_ctx.client_id) {
+                let pc = &client.prompt_compression;
+                (
+                    pc.enabled.unwrap_or(true), // inherit global (enabled)
+                    pc.min_messages
+                        .unwrap_or(config.prompt_compression.min_messages),
+                    pc.preserve_recent
+                        .unwrap_or(config.prompt_compression.preserve_recent),
+                    pc.rate.unwrap_or(config.prompt_compression.default_rate),
+                    pc.compress_system_prompt
+                        .unwrap_or(config.prompt_compression.compress_system_prompt),
+                )
+            } else {
+                return Ok(None); // Unknown client
+            }
+        } else {
+            // No client context — use global defaults
+            (
+                true,
+                config.prompt_compression.min_messages,
+                config.prompt_compression.preserve_recent,
+                config.prompt_compression.default_rate,
+                config.prompt_compression.compress_system_prompt,
+            )
+        };
+
+    if !enabled {
+        return Ok(None);
+    }
+
+    // Check minimum message count
+    if request.messages.len() < min_messages as usize {
+        return Ok(None);
+    }
+
+    // Convert request messages to CompressedMessage format
+    let messages: Vec<lr_compression::CompressedMessage> = request
+        .messages
+        .iter()
+        .map(|m| lr_compression::CompressedMessage {
+            role: m.role.clone(),
+            content: match &m.content {
+                Some(MessageContent::Text(t)) => t.clone(),
+                Some(MessageContent::Parts(parts)) => parts
+                    .iter()
+                    .filter_map(|p| {
+                        if let crate::types::ContentPart::Text { text } = p {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None => String::new(),
+            },
+        })
+        .collect();
+
+    let result = engine
+        .compress_messages(&messages, rate, preserve_recent, compress_system)
+        .await?;
+
+    Ok(Some(result))
+}
+
 async fn run_guardrails_scan(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
@@ -1260,6 +1388,7 @@ fn convert_to_provider_request(
         // Log probabilities (Bug #6 fix)
         logprobs: request.logprobs,
         top_logprobs: request.top_logprobs,
+        pre_computed_routing: None,
     })
 }
 
@@ -1654,6 +1783,8 @@ async fn build_non_streaming_response(
                             // If content is empty and we have tool calls, content can be None
                             None
                         } else {
+                            // Apply JSON repair if enabled and response_format is JSON
+                            let text = maybe_repair_json_content(text, &request, &state, &auth);
                             Some(MessageContent::Text(text))
                         }
                     }
@@ -1864,6 +1995,37 @@ async fn handle_streaming(
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<()>();
     let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
 
+    // Set up streaming JSON repair if enabled and response_format is JSON
+    let streaming_repairer = {
+        let is_json_format = matches!(
+            &request.response_format,
+            Some(crate::types::ResponseFormat::JsonObject { .. })
+                | Some(crate::types::ResponseFormat::JsonSchema { .. })
+        );
+        if is_json_format {
+            let config = state.config_manager.get();
+            let client = state.client_manager.get_client(&auth.api_key_id);
+            let enabled = client
+                .as_ref()
+                .and_then(|c| c.json_repair.enabled)
+                .unwrap_or(config.json_repair.enabled);
+            let syntax_repair = client
+                .as_ref()
+                .and_then(|c| c.json_repair.syntax_repair)
+                .unwrap_or(config.json_repair.syntax_repair);
+            if enabled && syntax_repair {
+                Some(Arc::new(Mutex::new(
+                    lr_json_repair::StreamingSyntaxRepairer::new(),
+                )))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    let streaming_repairer_map = streaming_repairer.clone();
+
     // Clone for the stream.map closure
     let content_accumulator_map = content_accumulator.clone();
     let finish_reason_map = finish_reason.clone();
@@ -1911,39 +2073,64 @@ async fn handle_streaming(
                         object: "chat.completion.chunk".to_string(),
                         created: created_timestamp,
                         model: provider_chunk.model.clone(),
-                        choices: provider_chunk
-                            .choices
-                            .into_iter()
-                            .map(|choice| {
-                                // Convert provider tool_calls delta to server tool_calls delta
-                                let tool_calls = choice.delta.tool_calls.map(|provider_deltas| {
-                                    provider_deltas
-                                        .into_iter()
-                                        .map(|delta| crate::types::ToolCallDelta {
-                                            index: delta.index,
-                                            id: delta.id,
-                                            tool_type: delta.tool_type,
-                                            function: delta.function.map(|f| {
-                                                crate::types::FunctionCallDelta {
-                                                    name: f.name,
-                                                    arguments: f.arguments,
-                                                }
-                                            }),
-                                        })
-                                        .collect()
-                                });
+                        choices: {
+                            let mut choices: Vec<ChatCompletionChunkChoice> = provider_chunk
+                                .choices
+                                .into_iter()
+                                .map(|choice| {
+                                    // Convert provider tool_calls delta to server tool_calls delta
+                                    let tool_calls =
+                                        choice.delta.tool_calls.map(|provider_deltas| {
+                                            provider_deltas
+                                                .into_iter()
+                                                .map(|delta| crate::types::ToolCallDelta {
+                                                    index: delta.index,
+                                                    id: delta.id,
+                                                    tool_type: delta.tool_type,
+                                                    function: delta.function.map(|f| {
+                                                        crate::types::FunctionCallDelta {
+                                                            name: f.name,
+                                                            arguments: f.arguments,
+                                                        }
+                                                    }),
+                                                })
+                                                .collect()
+                                        });
+                                    ChatCompletionChunkChoice {
+                                        index: choice.index,
+                                        delta: ChunkDelta {
+                                            role: choice.delta.role,
+                                            content: choice.delta.content,
+                                            tool_calls,
+                                        },
+                                        finish_reason: choice.finish_reason,
+                                    }
+                                })
+                                .collect();
 
-                                ChatCompletionChunkChoice {
-                                    index: choice.index,
-                                    delta: ChunkDelta {
-                                        role: choice.delta.role,
-                                        content: choice.delta.content,
-                                        tool_calls,
-                                    },
-                                    finish_reason: choice.finish_reason,
+                            // Apply streaming JSON repair outside the map closure
+                            if let Some(ref repairer) = streaming_repairer_map {
+                                for choice in &mut choices {
+                                    if let Some(text) = choice.delta.content.take() {
+                                        let repaired = repairer.lock().push_content(&text);
+                                        if !repaired.is_empty() {
+                                            choice.delta.content = Some(repaired);
+                                        }
+                                    }
+                                    if choice.finish_reason.is_some() {
+                                        let flushed = repairer.lock().finish();
+                                        if !flushed.is_empty() {
+                                            let existing =
+                                                choice.delta.content.take().unwrap_or_default();
+                                            choice.delta.content =
+                                                Some(format!("{}{}", existing, flushed));
+                                        }
+                                    }
                                 }
-                            })
-                            .collect(),
+                            }
+
+                            choices
+                        },
                         usage: None, // Not available in streaming chunks
                     };
 
@@ -2244,6 +2431,36 @@ async fn handle_streaming_parallel(
         let mut gate_rx = gate_rx;
         let mut stream = stream;
 
+        // Set up streaming JSON repair if enabled and response_format is JSON
+        let parallel_streaming_repairer = {
+            let is_json_format = matches!(
+                &request.response_format,
+                Some(crate::types::ResponseFormat::JsonObject { .. })
+                    | Some(crate::types::ResponseFormat::JsonSchema { .. })
+            );
+            if is_json_format {
+                let config = state_clone.config_manager.get();
+                let client = state_clone
+                    .client_manager
+                    .get_client(&auth_clone.api_key_id);
+                let enabled = client
+                    .as_ref()
+                    .and_then(|c| c.json_repair.enabled)
+                    .unwrap_or(config.json_repair.enabled);
+                let syntax_repair = client
+                    .as_ref()
+                    .and_then(|c| c.json_repair.syntax_repair)
+                    .unwrap_or(config.json_repair.syntax_repair);
+                if enabled && syntax_repair {
+                    Some(lr_json_repair::StreamingSyntaxRepairer::new())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
         tokio::spawn(async move {
             let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
             let mut gate_resolved = false;
@@ -2251,13 +2468,15 @@ async fn handle_streaming_parallel(
             let mut content_accumulator = String::new();
             let mut finish_reason_val = String::from("stop");
             let mut stream_done = false;
+            let mut streaming_repairer = parallel_streaming_repairer;
 
             // Helper to convert a provider chunk to an SSE event
             let convert_chunk = |provider_chunk: lr_providers::CompletionChunk,
                                  gen_id: &str,
                                  created_ts: i64,
                                  content_acc: &mut String,
-                                 finish_reason: &mut String|
+                                 finish_reason: &mut String,
+                                 repairer: &mut Option<lr_json_repair::StreamingSyntaxRepairer>|
              -> (Result<Event, std::convert::Infallible>, bool) {
                 let is_done = if let Some(choice) = provider_chunk.choices.first() {
                     if let Some(content) = &choice.delta.content {
@@ -2278,37 +2497,62 @@ async fn handle_streaming_parallel(
                     object: "chat.completion.chunk".to_string(),
                     created: created_ts,
                     model: provider_chunk.model.clone(),
-                    choices: provider_chunk
-                        .choices
-                        .into_iter()
-                        .map(|choice| {
-                            let tool_calls = choice.delta.tool_calls.map(|provider_deltas| {
-                                provider_deltas
-                                    .into_iter()
-                                    .map(|delta| crate::types::ToolCallDelta {
-                                        index: delta.index,
-                                        id: delta.id,
-                                        tool_type: delta.tool_type,
-                                        function: delta.function.map(|f| {
-                                            crate::types::FunctionCallDelta {
-                                                name: f.name,
-                                                arguments: f.arguments,
-                                            }
-                                        }),
-                                    })
-                                    .collect()
-                            });
-                            ChatCompletionChunkChoice {
-                                index: choice.index,
-                                delta: ChunkDelta {
-                                    role: choice.delta.role,
-                                    content: choice.delta.content,
-                                    tool_calls,
-                                },
-                                finish_reason: choice.finish_reason,
+                    choices: {
+                        let mut choices: Vec<ChatCompletionChunkChoice> = provider_chunk
+                            .choices
+                            .into_iter()
+                            .map(|choice| {
+                                let tool_calls = choice.delta.tool_calls.map(|provider_deltas| {
+                                    provider_deltas
+                                        .into_iter()
+                                        .map(|delta| crate::types::ToolCallDelta {
+                                            index: delta.index,
+                                            id: delta.id,
+                                            tool_type: delta.tool_type,
+                                            function: delta.function.map(|f| {
+                                                crate::types::FunctionCallDelta {
+                                                    name: f.name,
+                                                    arguments: f.arguments,
+                                                }
+                                            }),
+                                        })
+                                        .collect()
+                                });
+                                ChatCompletionChunkChoice {
+                                    index: choice.index,
+                                    delta: ChunkDelta {
+                                        role: choice.delta.role,
+                                        content: choice.delta.content,
+                                        tool_calls,
+                                    },
+                                    finish_reason: choice.finish_reason,
+                                }
+                            })
+                            .collect();
+
+                        // Apply streaming JSON repair outside the map closure
+                        if let Some(ref mut rep) = repairer {
+                            for choice in &mut choices {
+                                if let Some(text) = choice.delta.content.take() {
+                                    let repaired = rep.push_content(&text);
+                                    if !repaired.is_empty() {
+                                        choice.delta.content = Some(repaired);
+                                    }
+                                }
+                                if choice.finish_reason.is_some() {
+                                    let flushed = rep.finish();
+                                    if !flushed.is_empty() {
+                                        let existing =
+                                            choice.delta.content.take().unwrap_or_default();
+                                        choice.delta.content =
+                                            Some(format!("{}{}", existing, flushed));
+                                    }
+                                }
                             }
-                        })
-                        .collect(),
+                        }
+
+                        choices
+                    },
                     usage: None,
                 };
 
@@ -2327,6 +2571,7 @@ async fn handle_streaming_parallel(
                                     created_timestamp,
                                     &mut content_accumulator,
                                     &mut finish_reason_val,
+                                    &mut streaming_repairer,
                                 );
                                 if is_done {
                                     stream_done = true;
@@ -2553,6 +2798,62 @@ async fn handle_streaming_parallel(
     Ok(Sse::new(ReceiverStream::new(event_rx))
         .keep_alive(KeepAlive::default())
         .into_response())
+}
+
+/// Apply JSON repair to content if enabled and the request uses a JSON response format.
+fn maybe_repair_json_content(
+    content: String,
+    request: &ChatCompletionRequest,
+    state: &AppState,
+    auth: &AuthContext,
+) -> String {
+    // Only repair if response_format is JSON
+    let schema = match &request.response_format {
+        Some(crate::types::ResponseFormat::JsonObject { .. }) => None,
+        Some(crate::types::ResponseFormat::JsonSchema { schema, .. }) => Some(schema),
+        _ => return content,
+    };
+
+    // Check global config
+    let config = state.config_manager.get();
+    let repair_config = &config.json_repair;
+
+    // Check per-client override
+    let client = state.client_manager.get_client(&auth.api_key_id);
+    let enabled = client
+        .as_ref()
+        .and_then(|c| c.json_repair.enabled)
+        .unwrap_or(repair_config.enabled);
+    if !enabled {
+        return content;
+    }
+
+    let syntax_repair = client
+        .as_ref()
+        .and_then(|c| c.json_repair.syntax_repair)
+        .unwrap_or(repair_config.syntax_repair);
+    let schema_coercion = client
+        .as_ref()
+        .and_then(|c| c.json_repair.schema_coercion)
+        .unwrap_or(repair_config.schema_coercion);
+
+    let options = lr_json_repair::RepairOptions {
+        syntax_repair,
+        schema_coercion,
+        strip_extra_fields: repair_config.strip_extra_fields,
+        add_defaults: repair_config.add_defaults,
+        normalize_enums: repair_config.normalize_enums,
+    };
+
+    let result = lr_json_repair::repair_content(&content, schema, &options);
+    if result.was_modified {
+        tracing::info!(
+            repairs = result.repairs.len(),
+            "JSON repair applied {} fix(es) to response",
+            result.repairs.len()
+        );
+    }
+    result.repaired
 }
 
 /// Estimate token count from messages (rough estimate)

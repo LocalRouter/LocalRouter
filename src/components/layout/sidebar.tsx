@@ -11,6 +11,8 @@ import {
   Shield,
   Cpu,
   BookText,
+  Minimize2,
+  Wrench,
 } from "lucide-react"
 import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
@@ -45,7 +47,7 @@ interface HealthCacheState {
 }
 
 export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'context-management' | 'skills'
-  | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'settings' | 'debug'
+  | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -78,6 +80,8 @@ const resourceNavEntries: NavEntry[] = [
   { id: 'resources', icon: ProvidersIcon, label: 'Providers', shortcut: '⌘3' },
   { id: 'guardrails', icon: Shield, label: 'GuardRails', shortcut: '⌘7' },
   { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak', shortcut: '⌘8' },
+  { id: 'compression', icon: Minimize2, label: 'Compression' },
+  { id: 'json-repair', icon: Wrench, label: 'JSON Repair' },
   { heading: 'MCP' },
   { id: 'mcp-servers', icon: McpIcon, label: 'Servers', shortcut: '⌘4' },
   { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5' },

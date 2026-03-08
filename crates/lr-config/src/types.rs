@@ -422,6 +422,14 @@ pub struct AppConfig {
     /// Context management configuration (context-mode integration)
     #[serde(default)]
     pub context_management: ContextManagementConfig,
+
+    /// Prompt compression configuration (LLMLingua-2 integration)
+    #[serde(default)]
+    pub prompt_compression: PromptCompressionConfig,
+
+    /// JSON repair configuration (automatic JSON healing)
+    #[serde(default)]
+    pub json_repair: JsonRepairConfig,
 }
 
 /// Pricing override for a specific model
@@ -1761,6 +1769,146 @@ fn default_safety_models() -> Vec<SafetyModelConfig> {
     vec![]
 }
 
+/// Prompt compression configuration (LLMLingua-2 via Candle)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PromptCompressionConfig {
+    /// Enable prompt compression globally (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Model for LLMLingua-2: "bert" (660MB, BERT Base Multilingual) or "xlm-roberta" (2.2GB, XLM-RoBERTa Large)
+    #[serde(default = "default_compression_model_size")]
+    pub model_size: String,
+
+    /// Default compression rate (0.0-1.0, lower = more compression, default: 0.5)
+    #[serde(default = "default_compression_rate")]
+    pub default_rate: f32,
+
+    /// Compress system prompts too (default: false)
+    #[serde(default)]
+    pub compress_system_prompt: bool,
+
+    /// Minimum messages before compression activates (default: 6)
+    #[serde(default = "default_min_messages")]
+    pub min_messages: u32,
+
+    /// Keep last N messages uncompressed (default: 4)
+    #[serde(default = "default_preserve_recent")]
+    pub preserve_recent: u32,
+}
+
+fn default_compression_model_size() -> String {
+    "bert".to_string()
+}
+
+fn default_compression_rate() -> f32 {
+    0.5
+}
+
+fn default_min_messages() -> u32 {
+    6
+}
+
+fn default_preserve_recent() -> u32 {
+    4
+}
+
+impl Default for PromptCompressionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_size: default_compression_model_size(),
+            default_rate: default_compression_rate(),
+            compress_system_prompt: false,
+            min_messages: default_min_messages(),
+            preserve_recent: default_preserve_recent(),
+        }
+    }
+}
+
+/// Per-client prompt compression configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ClientPromptCompressionConfig {
+    /// Enable compression for this client (None=inherit global, Some(bool)=override)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// Minimum messages before compression activates (overrides global)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_messages: Option<u32>,
+
+    /// Keep last N messages uncompressed (overrides global)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserve_recent: Option<u32>,
+
+    /// Compression rate override (0.0-1.0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f32>,
+
+    /// Override global compress_system_prompt setting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compress_system_prompt: Option<bool>,
+}
+
+/// JSON repair configuration (automatic JSON healing for LLM responses)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JsonRepairConfig {
+    /// Enable JSON repair globally (default: true)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Repair JSON syntax errors: trailing commas, unescaped chars,
+    /// missing brackets, markdown wrappers (default: true)
+    #[serde(default = "default_true")]
+    pub syntax_repair: bool,
+
+    /// Coerce JSON values to match expected schema (default: false)
+    /// Requires response_format with json_schema to be effective
+    #[serde(default)]
+    pub schema_coercion: bool,
+
+    /// Remove fields not present in the schema (default: false)
+    #[serde(default)]
+    pub strip_extra_fields: bool,
+
+    /// Add default values for missing required fields (default: false)
+    #[serde(default)]
+    pub add_defaults: bool,
+
+    /// Normalize enum values (case-insensitive matching) (default: true)
+    #[serde(default = "default_true")]
+    pub normalize_enums: bool,
+}
+
+impl Default for JsonRepairConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            syntax_repair: true,
+            schema_coercion: false,
+            strip_extra_fields: false,
+            add_defaults: false,
+            normalize_enums: true,
+        }
+    }
+}
+
+/// Per-client JSON repair configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ClientJsonRepairConfig {
+    /// Enable JSON repair for this client (None=inherit global, Some(bool)=override)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// Override syntax repair setting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub syntax_repair: Option<bool>,
+
+    /// Override schema coercion setting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_coercion: Option<bool>,
+}
+
 /// Deserializer for SkillsAccess (migration shim)
 pub(crate) fn deserialize_skills_access<'de, D>(deserializer: D) -> Result<SkillsAccess, D::Error>
 where
@@ -1976,6 +2124,14 @@ pub struct Client {
     /// Per-client guardrails configuration
     #[serde(default)]
     pub guardrails: ClientGuardrailsConfig,
+
+    /// Per-client prompt compression configuration
+    #[serde(default)]
+    pub prompt_compression: ClientPromptCompressionConfig,
+
+    /// Per-client JSON repair configuration
+    #[serde(default)]
+    pub json_repair: ClientJsonRepairConfig,
 }
 
 /// MCP server configuration
@@ -2651,6 +2807,8 @@ impl Default for AppConfig {
             guardrails: GuardrailsConfig::default(),
             coding_agents: CodingAgentsConfig::default(),
             context_management: ContextManagementConfig::default(),
+            prompt_compression: PromptCompressionConfig::default(),
+            json_repair: JsonRepairConfig::default(),
         }
     }
 }
@@ -2839,6 +2997,8 @@ impl Client {
             sync_config: false,
             guardrails_enabled: None,
             guardrails: ClientGuardrailsConfig::default(),
+            prompt_compression: ClientPromptCompressionConfig::default(),
+            json_repair: ClientJsonRepairConfig::default(),
             coding_agents_permissions: CodingAgentsPermissions::default(),
             coding_agent_permission: PermissionState::default(),
             coding_agent_type: None,

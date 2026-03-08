@@ -33,6 +33,8 @@ lr-server = { workspace = true }
 lr-marketplace = { workspace = true }
 lr-guardrails = { workspace = true }
 lr-coding-agents = { workspace = true }
+lr-compression = { workspace = true }
+lr-json-repair = { workspace = true }
 
 # External dependencies still needed by src-tauri (main.rs, ui/, updater/)
 tokio = { workspace = true }

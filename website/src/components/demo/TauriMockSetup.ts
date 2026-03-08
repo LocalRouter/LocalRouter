@@ -1638,6 +1638,85 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
 
   // ============================================================================
+  // Prompt Compression
+  // ============================================================================
+  'get_compression_config': () => ({
+    enabled: false,
+    model_size: 'bert',
+    default_rate: 0.5,
+    compress_system_prompt: false,
+    min_messages: 6,
+    preserve_recent: 4,
+  }),
+  'update_compression_config': () => {
+    toast.success('Compression configuration saved (demo)')
+    return null
+  },
+  'get_compression_status': () => ({
+    model_downloaded: false,
+    model_loaded: false,
+    model_size_bytes: null,
+    model_repo: 'microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank',
+  }),
+  'install_compression': () => {
+    toast.success('Compression model downloaded (demo)')
+    return null
+  },
+  'rebuild_compression_engine': () => null,
+  'test_compression': (args) => {
+    const text = args?.text || ''
+    const rate = args?.rate || 0.5
+    const words = text.split(/\s+/).filter(Boolean)
+    const keepCount = Math.max(1, Math.round(words.length * rate))
+    const compressed = words.slice(0, keepCount).join(' ')
+    return {
+      compressed_text: compressed,
+      original_tokens: words.length,
+      compressed_tokens: keepCount,
+      ratio: words.length / Math.max(1, keepCount),
+    }
+  },
+  'get_client_compression_config': () => ({
+    enabled: null,
+    min_messages: null,
+    preserve_recent: null,
+    rate: null,
+    compress_system_prompt: null,
+  }),
+  'update_client_compression_config': () => {
+    toast.success('Client compression configuration saved (demo)')
+    return null
+  },
+
+  // ============================================================================
+  // JSON Repair
+  // ============================================================================
+  'get_json_repair_config': () => ({
+    enabled: true,
+    syntax_repair: true,
+    schema_coercion: false,
+    strip_extra_fields: false,
+    add_defaults: false,
+    normalize_enums: true,
+  }),
+  'update_json_repair_config': () => {
+    toast.success('JSON repair configuration saved (demo)')
+    return null
+  },
+  'test_json_repair': (args) => {
+    const content = args?.content || ''
+    // Simple demo: just try to fix trailing commas
+    const repaired = content.replace(/,\s*([}\]])/g, '$1')
+    const wasModified = repaired !== content
+    return {
+      original: content,
+      repaired: repaired,
+      was_modified: wasModified,
+      repairs: wasModified ? ['syntax_repaired'] : [],
+    }
+  },
+
+  // ============================================================================
   // Free Tier
   // ============================================================================
   'get_free_tier_status': () => {

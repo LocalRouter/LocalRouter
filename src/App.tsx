@@ -15,6 +15,8 @@ import { GuardrailsView } from './views/guardrails'
 import { StrongWeakView } from './views/strong-weak'
 import { CodingAgentsView } from './views/coding-agents'
 import { ContextManagementView } from './views/context-management'
+import { CompressionView } from './views/compression'
+import { JsonRepairView } from './views/json-repair'
 import { MarketplaceView } from './views/marketplace'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
 
@@ -305,6 +307,20 @@ function App() {
       case 'strong-weak':
         return (
           <StrongWeakView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'compression':
+        return (
+          <CompressionView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'json-repair':
+        return (
+          <JsonRepairView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

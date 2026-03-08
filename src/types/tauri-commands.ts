@@ -2511,3 +2511,115 @@ export interface SetPeriodicHealthEnabledParams {
 export interface SetSidebarExpandedParams {
   expanded: boolean
 }
+
+// =============================================================================
+// Prompt Compression Types
+// Rust: crates/lr-config/src/types.rs, crates/lr-compression/src/types.rs
+// =============================================================================
+
+/** Global prompt compression configuration */
+export interface PromptCompressionConfig {
+  enabled: boolean
+  model_size: string
+  default_rate: number
+  compress_system_prompt: boolean
+  min_messages: number
+  preserve_recent: number
+}
+
+/** Per-client prompt compression configuration */
+export interface ClientPromptCompressionConfig {
+  enabled: boolean | null
+  min_messages: number | null
+  preserve_recent: number | null
+  rate: number | null
+  compress_system_prompt: boolean | null
+}
+
+/** Compression model status */
+export interface CompressionStatus {
+  model_downloaded: boolean
+  model_loaded: boolean
+  model_size_bytes: number | null
+  model_repo: string
+}
+
+/** Compression test result (from compress_prompt tool) */
+export interface CompressionTestResult {
+  compressed_text: string
+  original_tokens: number
+  compressed_tokens: number
+  ratio: number
+}
+
+/** Params for test_compression */
+export interface TestCompressionParams {
+  text: string
+  rate: number
+}
+
+/** Params for update_compression_config */
+export interface UpdateCompressionConfigParams {
+  configJson: string
+}
+
+/** Params for get_client_compression_config */
+export interface GetClientCompressionConfigParams {
+  clientId: string
+}
+
+/** Params for update_client_compression_config */
+export interface UpdateClientCompressionConfigParams {
+  clientId: string
+  configJson: string
+}
+
+// ============================================================================
+// JSON Repair
+// ============================================================================
+
+/** Rust: src-tauri/src/ui/commands.rs - JsonRepairConfig (via lr_config) */
+export interface JsonRepairConfig {
+  enabled: boolean
+  syntax_repair: boolean
+  schema_coercion: boolean
+  strip_extra_fields: boolean
+  add_defaults: boolean
+  normalize_enums: boolean
+}
+
+/** Per-client JSON repair configuration */
+export interface ClientJsonRepairConfig {
+  enabled: boolean | null
+  syntax_repair: boolean | null
+  schema_coercion: boolean | null
+}
+
+/** JSON repair test result */
+export interface JsonRepairTestResult {
+  original: string
+  repaired: string
+  was_modified: boolean
+  repairs: JsonRepairAction[]
+}
+
+/** A single repair action that was performed */
+export type JsonRepairAction =
+  | 'stripped_markdown_fences'
+  | 'stripped_prose'
+  | 'syntax_repaired'
+  | { type_coerced: { path: string; from: string; to: string } }
+  | { extra_field_removed: { path: string } }
+  | { default_added: { path: string } }
+  | { enum_normalized: { path: string; from: string; to: string } }
+
+/** Params for update_json_repair_config */
+export interface UpdateJsonRepairConfigParams {
+  configJson: string
+}
+
+/** Params for test_json_repair */
+export interface TestJsonRepairParams {
+  content: string
+  schema: string | null
+}

@@ -17,6 +17,7 @@ lr-clients = { workspace = true }
 lr-monitoring = { workspace = true }
 lr-skills = { workspace = true }
 lr-catalog = { workspace = true }
+lr-json-repair = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -46,6 +47,7 @@ lr-api-keys = { workspace = true }
 lr-oauth = { workspace = true }
 reqwest = { workspace = true }
 lr-guardrails = { workspace = true }
+lr-compression = { workspace = true }
 
 [features]
 default = []

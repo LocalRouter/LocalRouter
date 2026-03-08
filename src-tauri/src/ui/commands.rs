@@ -1643,7 +1643,9 @@ pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
             .ok()
             .and_then(|o| {
                 if o.status.success() {
-                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                    String::from_utf8(o.stdout)
+                        .ok()
+                        .map(|s| s.trim().to_string())
                 } else {
                     None
                 }
@@ -1848,8 +1850,7 @@ pub async fn preview_catalog_compression(
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<CatalogCompressionPreview, String> {
     use lr_mcp::gateway::{
-        build_gateway_instructions, build_preview_mock_realistic,
-        compute_catalog_compression_plan,
+        build_gateway_instructions, build_preview_mock_realistic, compute_catalog_compression_plan,
     };
 
     // Resolve the InstructionsContext based on source
@@ -1884,9 +1885,7 @@ pub async fn preview_catalog_compression(
     let compressed_slugs: std::collections::HashSet<&str> = plan
         .compressed_descriptions
         .iter()
-        .filter(|c| {
-            c.item_type == lr_mcp::gateway::types::CompressedItemType::ServerWelcome
-        })
+        .filter(|c| c.item_type == lr_mcp::gateway::types::CompressedItemType::ServerWelcome)
         .map(|c| c.namespaced_name.as_str())
         .collect();
     let deferred_slugs: std::collections::HashSet<&str> = plan
@@ -1894,11 +1893,8 @@ pub async fn preview_catalog_compression(
         .iter()
         .map(|d| d.server_slug.as_str())
         .collect();
-    let truncated_slugs: std::collections::HashSet<&str> = plan
-        .truncated_servers
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
+    let truncated_slugs: std::collections::HashSet<&str> =
+        plan.truncated_servers.iter().map(|s| s.as_str()).collect();
 
     // Build per-server entries
     let mut servers = Vec::new();
@@ -3070,4 +3066,200 @@ pub async fn pull_provider_model(
     });
 
     Ok(())
+}
+
+// ─── Prompt Compression Commands ─────────────────────────────────────────────
+
+/// Get current prompt compression configuration
+#[tauri::command]
+pub async fn get_compression_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    serde_json::to_value(&config.prompt_compression).map_err(|e| e.to_string())
+}
+
+/// Update prompt compression configuration
+#[tauri::command]
+pub async fn update_compression_config(
+    config_json: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    let new_config: lr_config::PromptCompressionConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    config_manager
+        .update(|config| {
+            config.prompt_compression = new_config;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Get compression service status (model download state, loaded state)
+#[tauri::command]
+pub async fn get_compression_status(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let service = state.compression_service.read().clone();
+    let status = if let Some(svc) = service {
+        svc.get_status().await
+    } else {
+        lr_compression::CompressionStatus {
+            model_downloaded: false,
+            model_loaded: false,
+            model_size_bytes: None,
+            model_repo: "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
+                .to_string(),
+        }
+    };
+    serde_json::to_value(&status).map_err(|e| e.to_string())
+}
+
+/// Download the LLMLingua-2 model from HuggingFace
+#[tauri::command]
+pub async fn install_compression(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let config = config_manager.get();
+    let svc = ensure_compression_service(&state, &config).await?;
+    svc.download(Some(app)).await?;
+    Ok("Model downloaded successfully".to_string())
+}
+
+/// Rebuild the compression service from current config
+#[tauri::command]
+pub async fn rebuild_compression_engine(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    let config = config_manager.get();
+
+    if config.prompt_compression.enabled {
+        let svc = Arc::new(lr_compression::CompressionService::new(
+            config.prompt_compression.clone(),
+        )?);
+        *state.compression_service.write() = Some(svc);
+        tracing::info!("Compression service rebuilt");
+    } else {
+        let existing = state.compression_service.read().clone();
+        if let Some(svc) = existing.as_ref() {
+            svc.unload().await;
+        }
+        *state.compression_service.write() = None;
+        tracing::info!("Compression service disabled");
+    }
+
+    Ok(())
+}
+
+/// Test compression on sample text (for try-it-out tab)
+#[tauri::command]
+pub async fn test_compression(
+    text: String,
+    rate: f32,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let svc = ensure_compression_service(&state, &config).await?;
+
+    let (compressed_text, original_tokens, compressed_tokens) =
+        svc.compress_text(&text, rate).await?;
+
+    let ratio = if compressed_tokens > 0 {
+        original_tokens as f32 / compressed_tokens as f32
+    } else {
+        1.0
+    };
+
+    serde_json::to_value(&serde_json::json!({
+        "compressed_text": compressed_text,
+        "original_tokens": original_tokens,
+        "compressed_tokens": compressed_tokens,
+        "ratio": ratio,
+    }))
+    .map_err(|e| e.to_string())
+}
+
+/// Helper: ensure a CompressionService exists in state, creating one if needed
+async fn ensure_compression_service(
+    state: &Arc<lr_server::state::AppState>,
+    config: &lr_config::AppConfig,
+) -> Result<Arc<lr_compression::CompressionService>, String> {
+    let existing = state.compression_service.read().clone();
+    if let Some(svc) = existing {
+        return Ok(svc);
+    }
+    let svc = Arc::new(lr_compression::CompressionService::new(
+        config.prompt_compression.clone(),
+    )?);
+    *state.compression_service.write() = Some(svc.clone());
+    Ok(svc)
+}
+
+// ============================================================================
+// JSON Repair commands
+// ============================================================================
+
+/// Get current JSON repair configuration
+#[tauri::command]
+pub async fn get_json_repair_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    serde_json::to_value(&config.json_repair).map_err(|e| e.to_string())
+}
+
+/// Update JSON repair configuration
+#[tauri::command]
+pub async fn update_json_repair_config(
+    config_json: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    let new_config: lr_config::JsonRepairConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    config_manager
+        .update(|config| {
+            config.json_repair = new_config;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Test JSON repair on sample input
+#[tauri::command]
+pub async fn test_json_repair(
+    content: String,
+    schema: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let schema_value = if let Some(s) = schema {
+        Some(
+            serde_json::from_str::<serde_json::Value>(&s)
+                .map_err(|e| format!("Invalid schema JSON: {}", e))?,
+        )
+    } else {
+        None
+    };
+
+    let options = lr_json_repair::RepairOptions {
+        syntax_repair: true,
+        schema_coercion: schema_value.is_some(),
+        strip_extra_fields: true,
+        add_defaults: true,
+        normalize_enums: true,
+    };
+
+    let result = lr_json_repair::repair_content(&content, schema_value.as_ref(), &options);
+
+    serde_json::to_value(&result).map_err(|e| e.to_string())
 }
