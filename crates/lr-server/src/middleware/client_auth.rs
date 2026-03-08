@@ -16,7 +16,6 @@ use axum::{
     Json,
 };
 
-
 /// Client authentication context
 ///
 /// Attached to request extensions after successful authentication.
@@ -166,7 +165,7 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     // Try OAuth access token first (short-lived tokens from /oauth/token)
     let client_id = if let Some(id) = state.token_store.verify_token(&token) {
         // Token is a valid OAuth access token
-        tracing::info!(
+        tracing::debug!(
             event = "auth_success",
             client_id = %id,
             method = "oauth_token",
@@ -177,7 +176,7 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
         // Try direct client secret (long-lived credentials)
         match state.client_manager.verify_secret(&token) {
             Ok(Some(client)) => {
-                tracing::info!(
+                tracing::debug!(
                     event = "auth_success",
                     client_id = %client.id,
                     method = "client_secret",

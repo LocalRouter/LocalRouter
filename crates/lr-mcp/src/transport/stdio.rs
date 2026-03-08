@@ -91,7 +91,7 @@ impl StdioTransport {
         args: Vec<String>,
         env: HashMap<String, String>,
     ) -> AppResult<Self> {
-        tracing::info!("Spawning MCP STDIO process: {} {:?}", command, args);
+        tracing::debug!("Spawning MCP STDIO process: {} {:?}", command, args);
 
         // Spawn the child process
         let mut child = Command::new(&command)
@@ -145,7 +145,7 @@ impl StdioTransport {
             reader_task: Arc::new(RwLock::new(Some(reader_task))),
         };
 
-        tracing::info!("MCP STDIO process spawned successfully");
+        tracing::debug!("MCP STDIO process spawned successfully");
 
         Ok(transport)
     }
@@ -188,7 +188,7 @@ impl StdioTransport {
                 match reader.read_line(&mut line).await {
                     Ok(0) => {
                         // EOF - process terminated
-                        tracing::info!("MCP STDIO process stdout closed (EOF)");
+                        tracing::debug!("MCP STDIO process stdout closed (EOF)");
                         *closed.write() = true;
                         break;
                     }
@@ -453,8 +453,6 @@ impl Transport for StdioTransport {
             self.pending.write().remove(&request_id);
             AppError::Mcp(format!("Failed to serialize request: {}", e))
         })?;
-
-
 
         json.push('\n');
 

@@ -43,27 +43,20 @@ fn send_response(
     response: JsonRpcResponse,
 ) -> Response {
     let response_id = response.id.clone();
-    let has_error = response.error.is_some();
-
-    tracing::info!(
-        "send_response called: connection_key={}, response_id={:?}, has_error={}",
-        connection_key,
-        response_id,
-        has_error
-    );
 
     // Try to send via SSE stream first (required for MCP SDK's SSEClientTransport)
     if sse_manager.send_response(connection_key, response.clone()) {
-        tracing::info!(
-            "Response sent via SSE for connection {}, returning 202 Accepted",
-            connection_key
+        tracing::debug!(
+            "Response sent via SSE: connection={}, response_id={:?}",
+            &connection_key[..8.min(connection_key.len())],
+            response_id
         );
         (axum::http::StatusCode::ACCEPTED, "").into_response()
     } else {
         // No SSE connection - fall back to returning in HTTP body
-        tracing::warn!(
-            "No SSE connection for {}, returning response in HTTP body (response_id={:?})",
-            connection_key,
+        tracing::debug!(
+            "No SSE connection, returning response in HTTP body: connection={}, response_id={:?}",
+            &connection_key[..8.min(connection_key.len())],
             response_id
         );
         Json(response).into_response()
@@ -207,7 +200,7 @@ pub async fn mcp_gateway_get_handler(
         // Send endpoint event first (MCP SSE transport spec)
         // Include sessionId in the endpoint URL so POST requests are routed back to this connection
         let endpoint = format!("/?sessionId={}", session_id);
-        tracing::info!("SSE stream started for client {} (session={}), sending endpoint event: {}", client_id, &session_id[..8], endpoint);
+        tracing::debug!("SSE stream started: client={}, session={}", &client_id[..8.min(client_id.len())], &session_id[..8]);
         yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint));
 
         loop {
@@ -226,9 +219,9 @@ pub async fn mcp_gateway_get_handler(
                                     let response_id = response.id.clone();
                                     match serde_json::to_string(&response) {
                                         Ok(json) => {
-                                            tracing::info!(
-                                                "SSE stream yielding response for client {}: id={:?}, json_len={}",
-                                                client_id,
+                                            tracing::debug!(
+                                                "SSE response: client={}, id={:?}, len={}",
+                                                &client_id[..8.min(client_id.len())],
                                                 response_id,
                                                 json.len()
                                             );
@@ -393,10 +386,7 @@ pub async fn mcp_gateway_handler(
     // Extract per-connection session ID from query params (set by SSE endpoint event)
     let session_id = query.and_then(|q| q.0.session_id);
     // Connection key for SSE routing: session_id if available, otherwise client_id
-    let connection_key = session_id
-        .as_deref()
-        .unwrap_or(&client_id)
-        .to_string();
+    let connection_key = session_id.as_deref().unwrap_or(&client_id).to_string();
 
     // Record client activity for connection graph
     state.record_client_activity(&client_id);
@@ -497,11 +487,9 @@ pub async fn mcp_gateway_handler(
         // - Otherwise: disabled
         match &coding_agent_access_header {
             Some(agent_type_str) if !agent_type_str.is_empty() => {
-                if let Ok(agent_type) =
-                    serde_json::from_value::<lr_config::CodingAgentType>(
-                        serde_json::Value::String(agent_type_str.clone()),
-                    )
-                {
+                if let Ok(agent_type) = serde_json::from_value::<lr_config::CodingAgentType>(
+                    serde_json::Value::String(agent_type_str.clone()),
+                ) {
                     test_client.coding_agent_permission = lr_config::PermissionState::Allow;
                     test_client.coding_agent_type = Some(agent_type);
                 }
@@ -545,14 +533,11 @@ pub async fn mcp_gateway_handler(
         (client, allowed)
     };
 
-    let request_id = request.id.clone();
     tracing::info!(
-        "Gateway POST request from client {}: method={}, request_id={:?}, servers={}, skills_support={}",
-        client_id,
+        "MCP request: client={}, method={}, servers={}",
+        &client_id[..8.min(client_id.len())],
         request.method,
-        request_id,
-        allowed_servers.len(),
-        state.mcp_gateway.has_skill_support()
+        allowed_servers.len()
     );
 
     // Merge global and per-client roots
@@ -594,7 +579,11 @@ pub async fn mcp_gateway_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &connection_key, response);
+                        return send_response(
+                            &state.sse_connection_manager,
+                            &connection_key,
+                            response,
+                        );
                     }
                 },
                 None => {
@@ -623,7 +612,11 @@ pub async fn mcp_gateway_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &connection_key, response);
+                        return send_response(
+                            &state.sse_connection_manager,
+                            &connection_key,
+                            response,
+                        );
                     }
                 };
 
@@ -664,7 +657,11 @@ pub async fn mcp_gateway_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &connection_key, response);
+                        return send_response(
+                            &state.sse_connection_manager,
+                            &connection_key,
+                            response,
+                        );
                     }
                 };
 
@@ -697,10 +694,9 @@ pub async fn mcp_gateway_handler(
         let request_method = request.method.clone();
         let is_initialize = request_method == "initialize";
 
-        tracing::info!(
-            "SSE async path: spawning task for client={}, connection_key={}, method={}, request_id={:?}",
-            client_id,
-            &connection_key[..8.min(connection_key.len())],
+        tracing::debug!(
+            "SSE async: client={}, method={}, request_id={:?}",
+            &client_id[..8.min(client_id.len())],
             request_method,
             request_id
         );
@@ -731,24 +727,30 @@ pub async fn mcp_gateway_handler(
                 Ok(Err(err)) => {
                     tracing::error!(
                         "Gateway error: client={}, method={}, error={}",
-                        client_id_owned, request_method, err
+                        client_id_owned,
+                        request_method,
+                        err
                     );
                     lr_mcp::protocol::JsonRpcResponse::error(
                         request_id.unwrap_or(serde_json::Value::Null),
                         lr_mcp::protocol::JsonRpcError::internal_error(format!(
-                            "Gateway error: {}", err
+                            "Gateway error: {}",
+                            err
                         )),
                     )
                 }
                 Err(_) => {
                     tracing::error!(
                         "Gateway timeout ({}s): client={}, method={}",
-                        gateway_timeout.as_secs(), client_id_owned, request_method
+                        gateway_timeout.as_secs(),
+                        client_id_owned,
+                        request_method
                     );
                     lr_mcp::protocol::JsonRpcResponse::error(
                         request_id.unwrap_or(serde_json::Value::Null),
                         lr_mcp::protocol::JsonRpcError::internal_error(format!(
-                            "Gateway request timed out after {}s", gateway_timeout.as_secs()
+                            "Gateway request timed out after {}s",
+                            gateway_timeout.as_secs()
                         )),
                     )
                 }
@@ -757,7 +759,8 @@ pub async fn mcp_gateway_handler(
             if !sse_manager.send_response(&connection_key_owned, response) {
                 tracing::error!(
                     "Failed to send response via SSE: connection_key={}, method={}",
-                    connection_key_owned, request_method
+                    connection_key_owned,
+                    request_method
                 );
             }
         });
@@ -793,8 +796,7 @@ pub async fn mcp_gateway_handler(
             Ok(response) => send_response(&state.sse_connection_manager, &connection_key, response),
             Err(err) => {
                 tracing::error!("Gateway error for client {}: {}", client_id, err);
-                ApiErrorResponse::internal_error(format!("Gateway error: {}", err))
-                    .into_response()
+                ApiErrorResponse::internal_error(format!("Gateway error: {}", err)).into_response()
             }
         }
     }
