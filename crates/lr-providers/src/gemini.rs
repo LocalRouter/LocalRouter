@@ -207,26 +207,34 @@ impl ModelProvider for GeminiProvider {
 
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
-        let url = format!("{}/models?key={}", self.base_url, self.api_key);
+
+        // Query a single model instead of listing all models.
+        // Accept both 200 (exists) and 404 (retired but API up, auth valid).
+        // A bad API key returns 401/403, correctly treated as unhealthy.
+        let url = format!(
+            "{}/models/gemini-2.0-flash?key={}",
+            self.base_url, self.api_key
+        );
 
         match self.client.get(&url).send().await {
-            Ok(response) if response.status().is_success() => {
-                let latency = start.elapsed().as_millis() as u64;
-                ProviderHealth {
-                    status: HealthStatus::Healthy,
-                    latency_ms: Some(latency),
-                    last_checked: Utc::now(),
-                    error_message: None,
-                }
-            }
             Ok(response) => {
-                let status_code = response.status();
-                warn!("Gemini health check failed with status: {}", status_code);
-                ProviderHealth {
-                    status: HealthStatus::Unhealthy,
-                    latency_ms: None,
-                    last_checked: Utc::now(),
-                    error_message: Some(format!("HTTP {}", status_code)),
+                let latency_ms = start.elapsed().as_millis() as u64;
+                let status = response.status();
+                if status.is_success() || status.as_u16() == 404 {
+                    ProviderHealth {
+                        status: HealthStatus::Healthy,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: None,
+                    }
+                } else {
+                    warn!("Gemini health check failed with status: {}", status);
+                    ProviderHealth {
+                        status: HealthStatus::Unhealthy,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: Some(format!("HTTP {}", status)),
+                    }
                 }
             }
             Err(e) => {

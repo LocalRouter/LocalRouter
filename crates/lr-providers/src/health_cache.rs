@@ -9,7 +9,9 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+use tokio::sync::Notify;
 use tracing::{debug, info};
 
 /// Aggregate health status for the entire system
@@ -181,6 +183,10 @@ pub struct HealthCacheManager {
     cache: Arc<RwLock<HealthCacheState>>,
     /// Tauri app handle for emitting events (set after app initialization)
     app_handle: Arc<RwLock<Option<AppHandle>>>,
+    /// Tracks when each provider was last marked unhealthy (for debounce)
+    last_marked_unhealthy: Arc<RwLock<HashMap<String, Instant>>>,
+    /// Notifier for recovery task - signaled when a provider is marked unhealthy
+    recovery_notify: Arc<Notify>,
 }
 
 impl HealthCacheManager {
@@ -189,6 +195,8 @@ impl HealthCacheManager {
         Self {
             cache: Arc::new(RwLock::new(HealthCacheState::default())),
             app_handle: Arc::new(RwLock::new(None)),
+            last_marked_unhealthy: Arc::new(RwLock::new(HashMap::new())),
+            recovery_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -301,6 +309,54 @@ impl HealthCacheManager {
         self.emit_status_changed();
     }
 
+    /// Report a provider failure from a request (debounced).
+    ///
+    /// Marks the provider as unhealthy and notifies the recovery task.
+    /// Debounced: if the same provider was marked unhealthy within `cooldown`,
+    /// the update is skipped to avoid flooding events.
+    ///
+    /// Returns true if the health was actually updated (not debounced).
+    pub fn report_provider_failure(&self, name: &str, error: String, cooldown: Duration) -> bool {
+        let now = Instant::now();
+        {
+            let last_marked = self.last_marked_unhealthy.read();
+            if let Some(last) = last_marked.get(name) {
+                if now.duration_since(*last) < cooldown {
+                    return false; // Debounced
+                }
+            }
+        }
+        // Acquire write lock and double-check
+        {
+            let mut last_marked = self.last_marked_unhealthy.write();
+            if let Some(last) = last_marked.get(name) {
+                if now.duration_since(*last) < cooldown {
+                    return false;
+                }
+            }
+            last_marked.insert(name.to_string(), now);
+        }
+        self.update_provider(name, ItemHealth::unhealthy(name.to_string(), error));
+        self.recovery_notify.notify_one();
+        true
+    }
+
+    /// Get the recovery notifier (for the recovery background task)
+    pub fn recovery_notify(&self) -> Arc<Notify> {
+        self.recovery_notify.clone()
+    }
+
+    /// Get names of currently unhealthy providers
+    pub fn get_unhealthy_providers(&self) -> Vec<String> {
+        let cache = self.cache.read();
+        cache
+            .providers
+            .iter()
+            .filter(|(_, h)| h.status == ItemHealthStatus::Unhealthy)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     /// Mark the time of a full refresh
     pub fn mark_refresh(&self) {
         let mut cache = self.cache.write();
@@ -382,6 +438,8 @@ impl Clone for HealthCacheManager {
         Self {
             cache: self.cache.clone(),
             app_handle: self.app_handle.clone(),
+            last_marked_unhealthy: self.last_marked_unhealthy.clone(),
+            recovery_notify: self.recovery_notify.clone(),
         }
     }
 }

@@ -130,21 +130,42 @@ impl ModelProvider for CerebrasProvider {
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
 
-        match self.list_models().await {
-            Ok(_) => {
-                let latency = start.elapsed().as_millis() as u64;
-                ProviderHealth {
-                    status: HealthStatus::Healthy,
-                    latency_ms: Some(latency),
-                    last_checked: Utc::now(),
-                    error_message: None,
+        // Query a single model via /models/{id} instead of listing all models.
+        // Accept both 200 (exists) and 404 (retired but API up, auth valid).
+        // A bad API key returns 401, correctly treated as unhealthy.
+        let result = self
+            .client
+            .get(format!("{}/models/llama3.1-8b", CEREBRAS_API_BASE))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await;
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() || status.as_u16() == 404 {
+                    ProviderHealth {
+                        status: HealthStatus::Healthy,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: None,
+                    }
+                } else {
+                    ProviderHealth {
+                        status: HealthStatus::Unhealthy,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: Some(format!("API returned status {}", status)),
+                    }
                 }
             }
             Err(e) => ProviderHealth {
                 status: HealthStatus::Unhealthy,
                 latency_ms: None,
                 last_checked: Utc::now(),
-                error_message: Some(e.to_string()),
+                error_message: Some(format!("Connection failed: {}", e)),
             },
         }
     }

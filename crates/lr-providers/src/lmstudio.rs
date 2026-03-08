@@ -104,15 +104,19 @@ impl Default for LMStudioProvider {
 struct LMStudioModel {
     id: String,
     #[allow(dead_code)]
+    #[serde(default)]
     object: String,
     #[allow(dead_code)]
+    #[serde(default)]
     created: i64,
     #[allow(dead_code)]
+    #[serde(default)]
     owned_by: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct LMStudioModelsResponse {
+    #[serde(default)]
     data: Vec<LMStudioModel>,
 }
 
@@ -276,9 +280,15 @@ impl ModelProvider for LMStudioProvider {
             )));
         }
 
-        let models_response: LMStudioModelsResponse = response.json().await.map_err(|e| {
-            AppError::Provider(format!("Failed to parse LM Studio models response: {}", e))
+        let body = response.text().await.map_err(|e| {
+            AppError::Provider(format!("Failed to read LM Studio models response: {}", e))
         })?;
+
+        let models_response: LMStudioModelsResponse =
+            serde_json::from_str(&body).map_err(|e| {
+                debug!("LM Studio raw response: {}", body);
+                AppError::Provider(format!("Failed to parse LM Studio models response: {}", e))
+            })?;
 
         let models: Vec<ModelInfo> = models_response
             .data
@@ -553,57 +563,64 @@ impl ModelProvider for LMStudioProvider {
         use futures::StreamExt;
 
         // Parse SSE (Server-Sent Events) stream
-        let stream = response.bytes_stream().filter_map(|result| async move {
-            match result {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
+        let stream = response
+            .bytes_stream()
+            .map(|result| -> Vec<AppResult<CompletionChunk>> {
+                match result {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        let mut chunks = Vec::new();
 
-                    // Parse SSE format: "data: {...}\n\n"
-                    for line in text.lines() {
-                        if let Some(json_str) = line.strip_prefix("data: ") {
-                            // Check for [DONE] marker
-                            if json_str.trim() == "[DONE]" {
-                                continue;
-                            }
-
-                            // Parse JSON chunk
-                            match serde_json::from_str::<LMStudioStreamChunk>(json_str) {
-                                Ok(lmstudio_chunk) => {
-                                    return Some(Ok(CompletionChunk {
-                                        id: lmstudio_chunk.id,
-                                        object: lmstudio_chunk.object,
-                                        created: lmstudio_chunk.created,
-                                        model: lmstudio_chunk.model,
-                                        choices: lmstudio_chunk
-                                            .choices
-                                            .into_iter()
-                                            .map(|choice| ChunkChoice {
-                                                index: choice.index,
-                                                delta: ChunkDelta {
-                                                    role: choice.delta.role,
-                                                    content: choice.delta.content,
-                                                    tool_calls: None,
-                                                },
-                                                finish_reason: choice.finish_reason,
-                                            })
-                                            .collect(),
-                                        extensions: None,
-                                    }));
+                        // Parse SSE format: "data: {...}\n\n"
+                        for line in text.lines() {
+                            if let Some(json_str) = line.strip_prefix("data: ") {
+                                // Check for [DONE] marker
+                                if json_str.trim() == "[DONE]" {
+                                    continue;
                                 }
-                                Err(e) => {
-                                    return Some(Err(AppError::Provider(format!(
-                                        "Failed to parse LM Studio chunk: {}",
-                                        e
-                                    ))));
+
+                                // Parse JSON chunk
+                                match serde_json::from_str::<LMStudioStreamChunk>(json_str) {
+                                    Ok(lmstudio_chunk) => {
+                                        chunks.push(Ok(CompletionChunk {
+                                            id: lmstudio_chunk.id,
+                                            object: lmstudio_chunk.object,
+                                            created: lmstudio_chunk.created,
+                                            model: lmstudio_chunk.model,
+                                            choices: lmstudio_chunk
+                                                .choices
+                                                .into_iter()
+                                                .map(|choice| ChunkChoice {
+                                                    index: choice.index,
+                                                    delta: ChunkDelta {
+                                                        role: choice.delta.role,
+                                                        content: choice.delta.content,
+                                                        tool_calls: None,
+                                                    },
+                                                    finish_reason: choice.finish_reason,
+                                                })
+                                                .collect(),
+                                            extensions: None,
+                                        }));
+                                    }
+                                    Err(e) => {
+                                        chunks.push(Err(AppError::Provider(format!(
+                                            "Failed to parse LM Studio chunk: {}",
+                                            e
+                                        ))));
+                                    }
                                 }
                             }
                         }
+
+                        chunks
                     }
-                    None
+                    Err(e) => {
+                        vec![Err(AppError::Provider(format!("Stream error: {}", e)))]
+                    }
                 }
-                Err(e) => Some(Err(AppError::Provider(format!("Stream error: {}", e)))),
-            }
-        });
+            })
+            .flat_map(futures::stream::iter);
 
         Ok(Box::pin(stream))
     }

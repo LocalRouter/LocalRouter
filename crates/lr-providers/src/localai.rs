@@ -538,54 +538,61 @@ impl ModelProvider for LocalAIProvider {
 
         use futures::StreamExt;
 
-        let stream = response.bytes_stream().filter_map(|result| async move {
-            match result {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
+        let stream = response
+            .bytes_stream()
+            .map(|result| -> Vec<AppResult<CompletionChunk>> {
+                match result {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        let mut chunks = Vec::new();
 
-                    for line in text.lines() {
-                        if let Some(json_str) = line.strip_prefix("data: ") {
-                            if json_str.trim() == "[DONE]" {
-                                continue;
-                            }
-
-                            match serde_json::from_str::<LocalAIStreamChunk>(json_str) {
-                                Ok(chunk) => {
-                                    return Some(Ok(CompletionChunk {
-                                        id: chunk.id,
-                                        object: chunk.object,
-                                        created: chunk.created,
-                                        model: chunk.model,
-                                        choices: chunk
-                                            .choices
-                                            .into_iter()
-                                            .map(|choice| ChunkChoice {
-                                                index: choice.index,
-                                                delta: ChunkDelta {
-                                                    role: choice.delta.role,
-                                                    content: choice.delta.content,
-                                                    tool_calls: None,
-                                                },
-                                                finish_reason: choice.finish_reason,
-                                            })
-                                            .collect(),
-                                        extensions: None,
-                                    }));
+                        for line in text.lines() {
+                            if let Some(json_str) = line.strip_prefix("data: ") {
+                                if json_str.trim() == "[DONE]" {
+                                    continue;
                                 }
-                                Err(e) => {
-                                    return Some(Err(AppError::Provider(format!(
-                                        "Failed to parse LocalAI chunk: {}",
-                                        e
-                                    ))));
+
+                                match serde_json::from_str::<LocalAIStreamChunk>(json_str) {
+                                    Ok(chunk) => {
+                                        chunks.push(Ok(CompletionChunk {
+                                            id: chunk.id,
+                                            object: chunk.object,
+                                            created: chunk.created,
+                                            model: chunk.model,
+                                            choices: chunk
+                                                .choices
+                                                .into_iter()
+                                                .map(|choice| ChunkChoice {
+                                                    index: choice.index,
+                                                    delta: ChunkDelta {
+                                                        role: choice.delta.role,
+                                                        content: choice.delta.content,
+                                                        tool_calls: None,
+                                                    },
+                                                    finish_reason: choice.finish_reason,
+                                                })
+                                                .collect(),
+                                            extensions: None,
+                                        }));
+                                    }
+                                    Err(e) => {
+                                        chunks.push(Err(AppError::Provider(format!(
+                                            "Failed to parse LocalAI chunk: {}",
+                                            e
+                                        ))));
+                                    }
                                 }
                             }
                         }
+
+                        chunks
                     }
-                    None
+                    Err(e) => {
+                        vec![Err(AppError::Provider(format!("Stream error: {}", e)))]
+                    }
                 }
-                Err(e) => Some(Err(AppError::Provider(format!("Stream error: {}", e)))),
-            }
-        });
+            })
+            .flat_map(futures::stream::iter);
 
         Ok(Box::pin(stream))
     }
