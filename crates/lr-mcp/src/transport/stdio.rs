@@ -99,7 +99,7 @@ impl StdioTransport {
             .envs(env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null()) // Discard stderr to prevent pipe buffer deadlock
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| {
@@ -180,6 +180,7 @@ impl StdioTransport {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
+            tracing::debug!("STDIO stdout reader task started");
 
             loop {
                 line.clear();
@@ -187,11 +188,12 @@ impl StdioTransport {
                 match reader.read_line(&mut line).await {
                     Ok(0) => {
                         // EOF - process terminated
-                        tracing::info!("MCP STDIO process stdout closed");
+                        tracing::info!("MCP STDIO process stdout closed (EOF)");
                         *closed.write() = true;
                         break;
                     }
-                    Ok(_) => {
+                    Ok(n) => {
+                        tracing::debug!("STDIO stdout received {} bytes", n);
                         // Parse JSON-RPC message (could be response, notification, or request)
                         let trimmed = line.trim();
                         if trimmed.is_empty() {
@@ -202,12 +204,11 @@ impl StdioTransport {
                             Ok(JsonRpcMessage::Response(response)) => {
                                 // Handle response using normalized ID
                                 let id_str = normalize_response_id(&response.id);
-
                                 if let Some(sender) = pending.write().remove(&id_str) {
                                     // Send response to waiting caller
                                     if sender.send(response).is_err() {
                                         tracing::warn!(
-                                            "Failed to send response for request ID: {}",
+                                            "Failed to send response for request ID: {} (receiver dropped)",
                                             id_str
                                         );
                                     }
@@ -453,10 +454,7 @@ impl Transport for StdioTransport {
             AppError::Mcp(format!("Failed to serialize request: {}", e))
         })?;
 
-        // Debug: log the actual JSON being sent for initialize requests
-        if request.method == "initialize" {
-            tracing::info!("STDIO sending initialize request: {}", json);
-        }
+
 
         json.push('\n');
 
@@ -483,15 +481,33 @@ impl Transport for StdioTransport {
         }
 
         // Wait for response (with timeout)
+        let wait_start = std::time::Instant::now();
         let mut response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
             .await
             .map_err(|_| {
                 self.pending.write().remove(&request_id);
+                tracing::warn!(
+                    "STDIO request timeout (30s): method={}, id={}",
+                    request.method,
+                    request_id
+                );
                 AppError::Mcp(format!("Request timeout for ID: {}", request_id))
             })?
             .map_err(|_| {
+                tracing::warn!(
+                    "STDIO response channel closed: method={}, id={}, elapsed={:?}",
+                    request.method,
+                    request_id,
+                    wait_start.elapsed()
+                );
                 AppError::Mcp(format!("Response channel closed for ID: {}", request_id))
             })?;
+        tracing::debug!(
+            "STDIO response: method={}, id={}, elapsed={:?}",
+            request.method,
+            request_id,
+            wait_start.elapsed()
+        );
 
         // Restore original request ID in response
         response.id = original_request_id.unwrap_or(Value::Null);

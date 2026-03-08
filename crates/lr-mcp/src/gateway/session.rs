@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use super::context_mode::ContextModeSessionState;
 use super::types::*;
 use super::virtual_server::VirtualSessionState;
 use crate::protocol::Root;
@@ -36,12 +37,6 @@ pub struct GatewaySession {
 
     /// Prompt name mapping: namespaced_name -> (server_id, original_name)
     pub prompt_mapping: HashMap<String, (String, String)>,
-
-    /// Whether deferred loading is requested by client config
-    pub deferred_loading_requested: bool,
-
-    /// Deferred loading state (if enabled after capability check)
-    pub deferred_loading: Option<DeferredLoadingState>,
 
     /// Cached tools list
     pub cached_tools: Option<CachedList<NamespacedTool>>,
@@ -95,6 +90,14 @@ pub struct GatewaySession {
 
     /// Per-virtual-server session state (server_id -> state)
     pub virtual_server_state: HashMap<String, Box<dyn VirtualSessionState>>,
+
+    /// Catalog compression plan (computed during initialize when context management is enabled).
+    /// Used to filter deferred items from tools/resources/prompts lists and compress descriptions.
+    pub catalog_compression: Option<CatalogCompressionPlan>,
+
+    /// Instructions context snapshot (without compression plan) from initialization.
+    /// Used by the compression preview UI to re-compute plans at different thresholds.
+    pub instructions_context: Option<super::merger::InstructionsContext>,
 }
 
 impl GatewaySession {
@@ -105,7 +108,6 @@ impl GatewaySession {
         ttl: std::time::Duration,
         base_cache_ttl_seconds: u64,
         roots: Vec<Root>,
-        deferred_loading_requested: bool,
     ) -> Self {
         let now = Instant::now();
         let mut server_init_status = HashMap::new();
@@ -125,8 +127,6 @@ impl GatewaySession {
             resource_mapping: HashMap::new(),
             resource_uri_mapping: HashMap::new(),
             prompt_mapping: HashMap::new(),
-            deferred_loading_requested,
-            deferred_loading: None,
             cached_tools: None,
             cached_resources: None,
             cached_prompts: None,
@@ -144,7 +144,33 @@ impl GatewaySession {
             firewall_session_approvals: HashSet::new(),
             firewall_session_denials: HashSet::new(),
             virtual_server_state: HashMap::new(),
+            catalog_compression: None,
+            instructions_context: None,
         }
+    }
+
+    /// Get activated tools from context-mode session state (if any).
+    pub fn activated_tools(&self) -> Option<&HashSet<String>> {
+        self.virtual_server_state
+            .get("_context_mode")
+            .and_then(|s| s.as_any().downcast_ref::<ContextModeSessionState>())
+            .map(|cm| &cm.activated_tools)
+    }
+
+    /// Get activated resources from context-mode session state (if any).
+    pub fn activated_resources(&self) -> Option<&HashSet<String>> {
+        self.virtual_server_state
+            .get("_context_mode")
+            .and_then(|s| s.as_any().downcast_ref::<ContextModeSessionState>())
+            .map(|cm| &cm.activated_resources)
+    }
+
+    /// Get activated prompts from context-mode session state (if any).
+    pub fn activated_prompts(&self) -> Option<&HashSet<String>> {
+        self.virtual_server_state
+            .get("_context_mode")
+            .and_then(|s| s.as_any().downcast_ref::<ContextModeSessionState>())
+            .map(|cm| &cm.activated_prompts)
     }
 
     /// Check if session is expired
@@ -322,7 +348,6 @@ mod tests {
             Duration::from_secs(3600),
             300,
             Vec::new(),
-            false,
         );
 
         assert_eq!(session.client_id, "client-123");
@@ -339,7 +364,6 @@ mod tests {
             Duration::from_millis(100),
             300,
             Vec::new(),
-            false,
         );
 
         assert!(!session.is_expired());
@@ -361,7 +385,6 @@ mod tests {
             Duration::from_secs(3600),
             300,
             Vec::new(),
-            false,
         );
 
         let tools = vec![NamespacedTool {
@@ -389,7 +412,6 @@ mod tests {
             Duration::from_secs(3600),
             300,
             Vec::new(),
-            false,
         );
 
         // Set caches
@@ -414,7 +436,6 @@ mod tests {
             Duration::from_secs(3600),
             300,
             Vec::new(),
-            false,
         );
 
         // Subscribe to a resource
@@ -450,7 +471,6 @@ mod tests {
             Duration::from_secs(3600),
             300,
             Vec::new(),
-            false,
         );
 
         // Subscribe to resources from different servers

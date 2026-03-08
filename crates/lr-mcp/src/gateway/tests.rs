@@ -198,71 +198,6 @@ mod tests {
     }
 
     #[test]
-    fn test_search_tool_relevance() {
-        let tools = vec![
-            types::NamespacedTool {
-                name: "filesystem__read_file".to_string(),
-                original_name: "read_file".to_string(),
-                server_id: "filesystem".to_string(),
-                description: Some("Read a file from disk".to_string()),
-                input_schema: json!({}),
-            },
-            types::NamespacedTool {
-                name: "filesystem__write_file".to_string(),
-                original_name: "write_file".to_string(),
-                server_id: "filesystem".to_string(),
-                description: Some("Write a file to disk".to_string()),
-                input_schema: json!({}),
-            },
-            types::NamespacedTool {
-                name: "github__read_issue".to_string(),
-                original_name: "read_issue".to_string(),
-                server_id: "github".to_string(),
-                description: Some("Read an issue from GitHub".to_string()),
-                input_schema: json!({}),
-            },
-        ];
-
-        let results = deferred::search_tools("read", &tools, 10, deferred::SearchMode::Regex);
-
-        // Should return tools with "read" in name or description
-        assert!(!results.is_empty());
-        assert!(results.iter().any(|(tool, _)| tool.name.contains("read")));
-    }
-
-    #[test]
-    fn test_search_tool_minimum_activations() {
-        let tools = vec![
-            types::NamespacedTool {
-                name: "tool1".to_string(),
-                original_name: "tool1".to_string(),
-                server_id: "server".to_string(),
-                description: Some("related".to_string()),
-                input_schema: json!({}),
-            },
-            types::NamespacedTool {
-                name: "tool2".to_string(),
-                original_name: "tool2".to_string(),
-                server_id: "server".to_string(),
-                description: Some("also related".to_string()),
-                input_schema: json!({}),
-            },
-            types::NamespacedTool {
-                name: "tool3".to_string(),
-                original_name: "tool3".to_string(),
-                server_id: "server".to_string(),
-                description: Some("related too".to_string()),
-                input_schema: json!({}),
-            },
-        ];
-
-        let results = deferred::search_tools("related", &tools, 10, deferred::SearchMode::Regex);
-
-        // Should activate at least MIN_ACTIVATIONS (3) if available
-        assert!(results.len() >= 3 || results.len() == tools.len());
-    }
-
-    #[test]
     fn test_session_creation() {
         use std::time::Duration;
 
@@ -272,7 +207,6 @@ mod tests {
             Duration::from_secs(3600),
             300,
             Vec::new(),
-            false,
         );
 
         assert_eq!(session.client_id, "client-123");
@@ -291,7 +225,6 @@ mod tests {
             Duration::from_millis(100),
             300,
             Vec::new(),
-            false,
         );
 
         assert!(!session.is_expired());

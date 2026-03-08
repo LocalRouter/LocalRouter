@@ -1413,7 +1413,7 @@ impl McpGateway {
 
         let instructions = build_gateway_instructions(&instructions_ctx);
 
-        // Store instructions and catalog compression plan in session
+        // Store instructions, compression plan, and context snapshot in session
         {
             let mut session_write = session.write().await;
             if instructions.is_some() {
@@ -1423,6 +1423,10 @@ impl McpGateway {
             }
             // Store compression plan so tools/resources/prompts list handlers can filter deferred items
             session_write.catalog_compression = instructions_ctx.catalog_compression.take();
+            // Store context snapshot (without compression) for the compression preview UI
+            let mut ctx_snapshot = instructions_ctx.clone();
+            ctx_snapshot.catalog_compression = None;
+            session_write.instructions_context = Some(ctx_snapshot);
         }
 
         // Build response
@@ -1862,6 +1866,41 @@ impl McpGateway {
         });
 
         cm.call_tool("ctx_batch_execute", args).await
+    }
+
+    /// Get the instructions context snapshot for a session (for compression preview UI).
+    pub async fn get_session_instructions_context(
+        &self,
+        session_key: &str,
+    ) -> Result<super::merger::InstructionsContext, String> {
+        let session_arc = self
+            .sessions
+            .get(session_key)
+            .ok_or_else(|| format!("Session not found: {session_key}"))?
+            .clone();
+        let session = session_arc.read().await;
+        session
+            .instructions_context
+            .clone()
+            .ok_or_else(|| "Session has no instructions context (not yet initialized)".to_string())
+    }
+
+    /// Get the instructions context for a client by finding their active session.
+    pub async fn get_client_instructions_context(
+        &self,
+        client_id: &str,
+    ) -> Result<super::merger::InstructionsContext, String> {
+        for entry in self.sessions.iter() {
+            let session = entry.value().read().await;
+            if session.client_id == client_id && !session.is_expired() {
+                if let Some(ctx) = &session.instructions_context {
+                    return Ok(ctx.clone());
+                }
+            }
+        }
+        Err(format!(
+            "No active session for client {client_id}. Connect the client first to preview its compression."
+        ))
     }
 }
 

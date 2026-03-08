@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -460,45 +459,6 @@ pub struct ServerInfo {
     pub description: Option<String>,
 }
 
-/// Deferred loading state
-#[derive(Debug, Clone)]
-pub struct DeferredLoadingState {
-    /// Whether deferred loading is enabled (tools are always deferred when this is true)
-    pub enabled: bool,
-
-    /// Whether resources are deferred (requires client resources.listChanged capability)
-    pub resources_deferred: bool,
-
-    /// Whether prompts are deferred (requires client prompts.listChanged capability)
-    pub prompts_deferred: bool,
-
-    /// Activated tools (persist for session lifetime)
-    pub activated_tools: HashSet<String>,
-
-    /// Full catalog of all available tools
-    pub full_catalog: Vec<NamespacedTool>,
-
-    /// Activated resources
-    pub activated_resources: HashSet<String>,
-
-    /// Activated prompts
-    pub activated_prompts: HashSet<String>,
-
-    /// Full resource catalog
-    pub full_resource_catalog: Vec<NamespacedResource>,
-
-    /// Full prompt catalog
-    pub full_prompt_catalog: Vec<NamespacedPrompt>,
-
-    /// Per-server instructions for the `server_info` tool.
-    /// Maps slugified server name to the rendered XML instruction block.
-    pub server_instructions: HashMap<String, String>,
-
-    /// Full tool names per server for the `server_info` tool.
-    /// Maps slugified server name to all tool/resource/prompt names for that server.
-    pub server_tool_lists: HashMap<String, Vec<String>>,
-}
-
 /// Catalog compression plan — describes how to progressively compress the welcome text.
 ///
 /// Computed during session init when context management is enabled.
@@ -521,7 +481,10 @@ pub struct CatalogCompressionPlan {
 pub struct CompressedItem {
     /// Source label for FTS5 indexing (e.g., "catalog:filesystem__read_file").
     pub source_label: String,
-    /// The full content that was indexed.
+    /// The full content that was indexed. Only reliably populated for `ServerWelcome`
+    /// items (via `build_full_server_content`). For tool/resource/prompt items, this
+    /// contains only the name — the actual full content is indexed separately in
+    /// `handle_initialize` from the full catalog (name + description + input schema).
     pub full_content: String,
     /// The type of item (tool, resource, prompt, or server welcome).
     pub item_type: CompressedItemType,

@@ -317,6 +317,7 @@ impl FirewallManager {
         client_id: String,
         client_name: String,
         models_preview: String,
+        full_arguments: Option<serde_json::Value>,
     ) -> AppResult<FirewallApprovalResponse> {
         self.request_approval_internal(
             client_id,
@@ -329,7 +330,7 @@ impl FirewallManager {
             false,                          // not guardrail
             false,                          // not free-tier fallback
             true,                           // auto-router request
-            None,
+            full_arguments,
             None,
         )
         .await

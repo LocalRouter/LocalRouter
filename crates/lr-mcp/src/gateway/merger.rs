@@ -21,6 +21,7 @@ pub struct McpServerInstructionInfo {
 }
 
 /// An unavailable server for instruction building
+#[derive(Clone)]
 pub struct UnavailableServerInfo {
     /// Human-readable name
     pub name: String,
@@ -29,6 +30,7 @@ pub struct UnavailableServerInfo {
 }
 
 /// Context for building gateway instructions
+#[derive(Clone)]
 pub struct InstructionsContext {
     /// Available MCP servers with their info
     pub servers: Vec<McpServerInstructionInfo>,
@@ -672,6 +674,344 @@ pub fn build_preview_instructions_context() -> InstructionsContext {
                 priority: 30,
             },
         ],
+    }
+}
+
+/// Standard virtual instructions shared across all preview presets.
+fn preview_virtual_instructions() -> Vec<super::virtual_server::VirtualInstructions> {
+    use super::virtual_server::VirtualInstructions;
+    vec![
+        VirtualInstructions {
+            section_title: "Context Management".to_string(),
+            content: "Use ctx_search to discover MCP capabilities and retrieve compressed content.".to_string(),
+            tool_names: vec![
+                "ctx_search".to_string(),
+                "ctx_execute".to_string(),
+                "ctx_execute_file".to_string(),
+                "ctx_batch_execute".to_string(),
+                "ctx_index".to_string(),
+                "ctx_fetch_and_index".to_string(),
+            ],
+            priority: 0,
+        },
+        VirtualInstructions {
+            section_title: "Coding Agents".to_string(),
+            content: "You have access to **Claude Code** as a coding agent. Use the unified tools: `coding_agent_start`, `coding_agent_say`, `coding_agent_status`.\n".to_string(),
+            tool_names: vec![
+                "coding_agent_start".to_string(),
+                "coding_agent_say".to_string(),
+                "coding_agent_status".to_string(),
+                "coding_agent_respond".to_string(),
+                "coding_agent_interrupt".to_string(),
+                "coding_agent_list".to_string(),
+            ],
+            priority: 10,
+        },
+        VirtualInstructions {
+            section_title: "Marketplace".to_string(),
+            content: "Use marketplace tools to discover and install new MCP servers and skills.\n".to_string(),
+            tool_names: vec![
+                "marketplace_search".to_string(),
+                "marketplace_install".to_string(),
+            ],
+            priority: 20,
+        },
+        VirtualInstructions {
+            section_title: "Skills".to_string(),
+            content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string(),
+            tool_names: vec![
+                "skill_code_review_get_info".to_string(),
+                "skill_deploy_get_info".to_string(),
+            ],
+            priority: 30,
+        },
+    ]
+}
+
+/// Build a realistic mock `InstructionsContext` for the compression preview UI.
+/// Modeled after real MCP servers (GitHub, Atlassian, Filesystem, PostgreSQL, Slack)
+/// with verbose multi-line descriptions and instructions like real servers have.
+pub fn build_preview_mock_realistic() -> InstructionsContext {
+    InstructionsContext {
+        servers: vec![
+            // -- GitHub MCP Server (modeled after github/github-mcp-server) --
+            McpServerInstructionInfo {
+                name: "GitHub".to_string(),
+                description: Some(
+                    "GitHub's official MCP server for repository management, issues, pull requests, \
+                     code search, actions workflows, and code security scanning. Provides full \
+                     read/write access to the authenticated user's repositories and organizations."
+                        .to_string(),
+                ),
+                instructions: Some(
+                    "## Issues\n\
+                     - Use `github__issue_read` with method='get' to get issue details, method='get_comments' for \
+                     comments, method='get_sub_issues' for sub-issues, or method='get_labels' for labels.\n\
+                     - Use `github__issue_write` to create or update issues. Always set the `method` parameter:\n\
+                       - 'create' — create a new issue (requires owner, repo, title)\n\
+                       - 'update' — update an existing issue (requires owner, repo, issue_number)\n\
+                       - 'close' — close an issue\n\
+                       - 'reopen' — reopen a closed issue\n\
+                     - Use `github__add_issue_comment` to add a comment. This also works for pull requests \
+                     (pass the PR number as issue_number), but only if the user is not asking specifically \
+                     to add review comments.\n\n\
+                     ## Pull Requests\n\
+                     - Use `github__pull_request_read` to get PR data. The `method` parameter controls what data:\n\
+                       1. 'get' — Get details of a specific pull request\n\
+                       2. 'get_diff' — Get the diff of a pull request\n\
+                       3. 'get_status' — Get combined commit status of the head commit\n\
+                       4. 'get_files' — Get the list of files changed. Use pagination to control results.\n\
+                       5. 'get_reviews' — Get reviews on a pull request\n\
+                       6. 'get_review_comments' — Get review comments on a pull request\n\
+                     - `github__create_pull_request` creates a new PR. Requires owner, repo, title, head, base.\n\
+                     - `github__update_pull_request` modifies title, body, state, base, or maintainer_can_modify.\n\
+                     - `github__merge_pull_request` merges via 'merge', 'squash', or 'rebase' method.\n\n\
+                     ## Repository & Code\n\
+                     - `github__get_file_contents` retrieves file/directory contents. For directories it returns \
+                     a listing; for files it returns the content. Always specify the `ref` parameter for \
+                     branch-specific reads.\n\
+                     - `github__create_or_update_file` creates or updates a single file. If updating, provide the \
+                     SHA of the existing file. To obtain the SHA: `git rev-parse <branch>:<path>`.\n\
+                     - `github__push_files` commits and pushes multiple files in a single commit.\n\
+                     - `github__search_code` searches code across repositories using GitHub code search syntax.\n\n\
+                     ## Actions\n\
+                     - `github__list_workflow_runs` lists workflow runs with optional filtering by status, branch, \
+                     or event type. Returns at least 30 results per page.\n\
+                     - `github__get_workflow_run_logs` retrieves logs for a specific run (may be large).\n\
+                     - `github__rerun_workflow` re-runs a failed or completed workflow run.\n"
+                        .to_string(),
+                ),
+                tool_names: vec![
+                    "github__issue_read".to_string(),
+                    "github__issue_write".to_string(),
+                    "github__search_issues".to_string(),
+                    "github__list_issues".to_string(),
+                    "github__add_issue_comment".to_string(),
+                    "github__sub_issue_write".to_string(),
+                    "github__pull_request_read".to_string(),
+                    "github__create_pull_request".to_string(),
+                    "github__update_pull_request".to_string(),
+                    "github__merge_pull_request".to_string(),
+                    "github__add_pull_request_review_comment".to_string(),
+                    "github__get_file_contents".to_string(),
+                    "github__create_or_update_file".to_string(),
+                    "github__push_files".to_string(),
+                    "github__search_code".to_string(),
+                    "github__search_repositories".to_string(),
+                    "github__list_commits".to_string(),
+                    "github__list_branches".to_string(),
+                    "github__create_branch".to_string(),
+                    "github__list_workflow_runs".to_string(),
+                    "github__get_workflow_run_logs".to_string(),
+                    "github__rerun_workflow".to_string(),
+                    "github__get_code_scanning_alerts".to_string(),
+                    "github__get_me".to_string(),
+                ],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            },
+            // -- Atlassian MCP Server (Jira + Confluence) --
+            McpServerInstructionInfo {
+                name: "Atlassian".to_string(),
+                description: Some(
+                    "Atlassian Cloud integration providing access to Jira (project tracking, issues, sprints, \
+                     workflows) and Confluence (wiki pages, spaces, comments). Supports both read and write \
+                     operations across all accessible Atlassian Cloud sites."
+                        .to_string(),
+                ),
+                instructions: Some(
+                    "## Jira\n\
+                     - Use `atlassian__searchJiraIssuesUsingJql` to find issues. JQL examples:\n\
+                       - `project = PROJ AND status = 'In Progress'`\n\
+                       - `assignee = currentUser() AND resolution = Unresolved ORDER BY priority DESC`\n\
+                       - `labels in (bug, critical) AND created >= -7d`\n\
+                     - `atlassian__getJiraIssue` retrieves a single issue by key (e.g., 'PROJ-123'). Returns \
+                     fields including summary, description, status, assignee, priority, labels, components, \
+                     fix versions, and custom fields.\n\
+                     - `atlassian__createJiraIssue` creates an issue. Required: project key, issue type, summary. \
+                     Use `atlassian__getJiraProjectIssueTypesMetadata` first to discover valid issue types and \
+                     required fields for the target project.\n\
+                     - `atlassian__editJiraIssue` updates issue fields. Pass only the fields you want to change.\n\
+                     - `atlassian__transitionJiraIssue` moves an issue through workflow states. Use \
+                     `atlassian__getTransitionsForJiraIssue` first to discover available transitions from \
+                     the current state.\n\
+                     - `atlassian__addCommentToJiraIssue` adds a comment using Atlassian Document Format (ADF).\n\
+                     - `atlassian__addWorklogToJiraIssue` logs time spent. Specify timeSpentSeconds or use \
+                     timeSpent string format (e.g., '2h 30m').\n\n\
+                     ## Confluence\n\
+                     - `atlassian__searchConfluenceUsingCql` searches pages/blogs using CQL. Examples:\n\
+                       - `type = page AND space = DEV AND text ~ 'architecture'`\n\
+                       - `creator = currentUser() AND lastModified > now('-7d')`\n\
+                     - `atlassian__getConfluencePage` retrieves page content in 'storage' (raw HTML) or 'atlas_doc_format' \
+                     (structured JSON). For reading, prefer 'atlas_doc_format'.\n\
+                     - `atlassian__createConfluencePage` creates a page. Requires spaceId, title, and body in either \
+                     'storage' or 'atlas_doc_format'. Set parentId to nest under an existing page.\n\
+                     - `atlassian__updateConfluencePage` updates page content. You must pass the current version \
+                     number (from getConfluencePage) to avoid conflicts.\n\
+                     - Comments: Use `atlassian__createConfluenceFooterComment` for page-level comments and \
+                     `atlassian__createConfluenceInlineComment` for inline annotations on specific content.\n"
+                        .to_string(),
+                ),
+                tool_names: vec![
+                    "atlassian__getJiraIssue".to_string(),
+                    "atlassian__createJiraIssue".to_string(),
+                    "atlassian__editJiraIssue".to_string(),
+                    "atlassian__searchJiraIssuesUsingJql".to_string(),
+                    "atlassian__transitionJiraIssue".to_string(),
+                    "atlassian__getTransitionsForJiraIssue".to_string(),
+                    "atlassian__addCommentToJiraIssue".to_string(),
+                    "atlassian__addWorklogToJiraIssue".to_string(),
+                    "atlassian__getJiraProjectIssueTypesMetadata".to_string(),
+                    "atlassian__lookupJiraAccountId".to_string(),
+                    "atlassian__getConfluencePage".to_string(),
+                    "atlassian__createConfluencePage".to_string(),
+                    "atlassian__updateConfluencePage".to_string(),
+                    "atlassian__searchConfluenceUsingCql".to_string(),
+                    "atlassian__getConfluenceSpaces".to_string(),
+                    "atlassian__createConfluenceFooterComment".to_string(),
+                    "atlassian__createConfluenceInlineComment".to_string(),
+                    "atlassian__getConfluencePageDescendants".to_string(),
+                ],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            },
+            // -- Filesystem MCP Server --
+            McpServerInstructionInfo {
+                name: "Filesystem".to_string(),
+                description: Some(
+                    "Secure filesystem operations with configurable access controls. Provides tools for reading, \
+                     writing, creating, moving, and searching files and directories within allowed paths. All \
+                     operations are sandboxed to the configured root directories."
+                        .to_string(),
+                ),
+                instructions: Some(
+                    "- `filesystem__read_file` reads the complete contents of a file. Returns text content \
+                     with UTF-8 encoding. For binary files, returns base64-encoded content.\n\
+                     - `filesystem__read_multiple_files` reads several files at once. More efficient than \
+                     multiple individual read_file calls. Returns results in the same order as requested paths.\n\
+                     - `filesystem__write_file` creates or overwrites a file. Creates parent directories if \
+                     they don't exist. Content must be a string (use base64 for binary).\n\
+                     - `filesystem__edit_file` applies targeted edits using a diff-like format. Supports \
+                     multiple edits in a single call. Each edit specifies oldText (must match exactly) and \
+                     newText. More reliable than write_file for partial modifications.\n\
+                     - `filesystem__create_directory` creates a directory (and parents). No error if it exists.\n\
+                     - `filesystem__list_directory` lists entries in a directory. Returns [FILE] or [DIR] prefix \
+                     for each entry. Does not recurse into subdirectories.\n\
+                     - `filesystem__directory_tree` returns a recursive tree structure of a directory up to a \
+                     configurable depth. Useful for understanding project layout.\n\
+                     - `filesystem__move_file` moves or renames a file or directory. Fails if destination exists.\n\
+                     - `filesystem__search_files` searches for files matching a glob pattern (e.g., '**/*.ts'). \
+                     Searches recursively from the given path.\n\
+                     - `filesystem__get_file_info` returns metadata: size, creation time, modification time, \
+                     permissions, and whether the path is a file or directory.\n"
+                        .to_string(),
+                ),
+                tool_names: vec![
+                    "filesystem__read_file".to_string(),
+                    "filesystem__read_multiple_files".to_string(),
+                    "filesystem__write_file".to_string(),
+                    "filesystem__edit_file".to_string(),
+                    "filesystem__create_directory".to_string(),
+                    "filesystem__list_directory".to_string(),
+                    "filesystem__directory_tree".to_string(),
+                    "filesystem__move_file".to_string(),
+                    "filesystem__search_files".to_string(),
+                    "filesystem__get_file_info".to_string(),
+                ],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            },
+            // -- PostgreSQL MCP Server --
+            McpServerInstructionInfo {
+                name: "PostgreSQL".to_string(),
+                description: Some(
+                    "PostgreSQL database integration for executing queries, managing schemas, analyzing \
+                     query performance, and browsing database structure. Connected to the project's \
+                     development database with read-write access."
+                        .to_string(),
+                ),
+                instructions: Some(
+                    "- `postgres__query` executes a read-only SQL query (SELECT, EXPLAIN, SHOW). Returns \
+                     results as JSON rows. Use LIMIT to avoid returning excessive data. Parameterized \
+                     queries are supported: pass `params` as an array of values and use $1, $2, etc.\n\
+                     - `postgres__execute` runs a write SQL statement (INSERT, UPDATE, DELETE, CREATE, ALTER, \
+                     DROP). Returns the number of affected rows. Always use parameterized queries for \
+                     user-provided values to prevent SQL injection.\n\
+                     - `postgres__list_schemas` returns all schemas in the database with their descriptions.\n\
+                     - `postgres__list_tables` lists tables in a schema with row counts and descriptions. \
+                     Defaults to the 'public' schema if not specified.\n\
+                     - `postgres__describe_table` returns column definitions (name, type, nullable, default, \
+                     constraints) for a given table. Also shows indexes, foreign keys, and check constraints.\n\
+                     - `postgres__explain_query` runs EXPLAIN ANALYZE on a query and returns the execution \
+                     plan. Useful for optimizing slow queries. The query is executed within a rolled-back \
+                     transaction, so no data is modified.\n"
+                        .to_string(),
+                ),
+                tool_names: vec![
+                    "postgres__query".to_string(),
+                    "postgres__execute".to_string(),
+                    "postgres__list_schemas".to_string(),
+                    "postgres__list_tables".to_string(),
+                    "postgres__describe_table".to_string(),
+                    "postgres__explain_query".to_string(),
+                ],
+                resource_names: vec![
+                    "postgres__schema://public".to_string(),
+                ],
+                prompt_names: Vec::new(),
+            },
+            // -- Slack MCP Server --
+            McpServerInstructionInfo {
+                name: "Slack".to_string(),
+                description: Some(
+                    "Slack workspace integration for messaging, channel management, user lookups, \
+                     file sharing, and conversation search. Operates in the authenticated user's \
+                     workspace with permissions scoped to their access level."
+                        .to_string(),
+                ),
+                instructions: Some(
+                    "- `slack__send_message` posts a message to a channel or DM. Use the channel ID (not name). \
+                     Supports Slack mrkdwn formatting. For threads, include `thread_ts` parameter.\n\
+                     - `slack__list_channels` returns workspace channels with IDs, names, topics, and member \
+                     counts. Use `types` parameter to filter: 'public_channel', 'private_channel', 'im', 'mpim'. \
+                     Results are paginated — use `cursor` parameter for subsequent pages.\n\
+                     - `slack__search_messages` performs a full-text search across messages the user has access to. \
+                     Supports Slack search modifiers: `in:#channel`, `from:@user`, `before:2024-01-01`, \
+                     `has:link`, `has:reaction`. Returns message text, channel, timestamp, and permalink.\n\
+                     - `slack__get_thread` retrieves all replies in a thread given a channel ID and thread \
+                     timestamp. Returns messages in chronological order.\n\
+                     - `slack__get_channel_history` fetches recent messages from a channel. Use `oldest` and \
+                     `latest` parameters (Unix timestamps) to specify a time range.\n\
+                     - `slack__get_users` lists workspace members with display names, real names, email, \
+                     and status. Use to resolve user IDs for mentions.\n\
+                     - `slack__add_reaction` adds an emoji reaction to a message. Requires channel and timestamp.\n\
+                     - `slack__upload_file` uploads a file to a channel with optional initial comment.\n"
+                        .to_string(),
+                ),
+                tool_names: vec![
+                    "slack__send_message".to_string(),
+                    "slack__list_channels".to_string(),
+                    "slack__search_messages".to_string(),
+                    "slack__get_thread".to_string(),
+                    "slack__get_channel_history".to_string(),
+                    "slack__get_users".to_string(),
+                    "slack__add_reaction".to_string(),
+                    "slack__upload_file".to_string(),
+                ],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            },
+        ],
+        unavailable_servers: vec![
+            UnavailableServerInfo {
+                name: "Sentry".to_string(),
+                error: "Connection refused — is the Sentry MCP server running?".to_string(),
+            },
+        ],
+        context_management_enabled: true,
+        indexing_tools_enabled: true,
+        catalog_compression: None,
+        virtual_instructions: preview_virtual_instructions(),
     }
 }
 

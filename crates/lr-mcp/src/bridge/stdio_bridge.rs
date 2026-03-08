@@ -392,7 +392,6 @@ mod tests {
                 enabled: true,
                 allowed_llm_providers: vec![],
                 mcp_server_access: McpServerAccess::Specific(vec!["filesystem".to_string()]),
-                mcp_deferred_loading: false,
                 context_management_enabled: None,
                 created_at: Utc::now(),
                 last_used: None,
@@ -417,6 +416,7 @@ mod tests {
                 sync_config: false,
                 guardrails_enabled: None,
                 guardrails: lr_config::ClientGuardrailsConfig::default(),
+                indexing_tools_enabled: None,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -424,7 +424,6 @@ mod tests {
                 enabled: false,
                 allowed_llm_providers: vec![],
                 mcp_server_access: McpServerAccess::Specific(vec!["web".to_string()]),
-                mcp_deferred_loading: false,
                 context_management_enabled: None,
                 created_at: Utc::now(),
                 last_used: None,
@@ -449,6 +448,7 @@ mod tests {
                 sync_config: false,
                 guardrails_enabled: None,
                 guardrails: lr_config::ClientGuardrailsConfig::default(),
+                indexing_tools_enabled: None,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -456,7 +456,6 @@ mod tests {
                 enabled: true,
                 allowed_llm_providers: vec![],
                 mcp_server_access: McpServerAccess::None,
-                mcp_deferred_loading: false,
                 context_management_enabled: None,
                 created_at: Utc::now(),
                 last_used: None,
@@ -481,6 +480,7 @@ mod tests {
                 sync_config: false,
                 guardrails_enabled: None,
                 guardrails: lr_config::ClientGuardrailsConfig::default(),
+                indexing_tools_enabled: None,
             },
         ];
         config

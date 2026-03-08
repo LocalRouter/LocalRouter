@@ -97,6 +97,7 @@ pub enum VirtualToolCallResult {
 }
 
 /// Instructions section produced by a virtual server for the system prompt.
+#[derive(Clone)]
 pub struct VirtualInstructions {
     pub section_title: String,
     pub content: String,

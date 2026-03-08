@@ -12,6 +12,7 @@ use super::session::GatewaySession;
 use super::types::*;
 
 use super::gateway::McpGateway;
+use super::gateway_tools::apply_catalog_compression_resources;
 
 impl McpGateway {
     /// Handle resources/list request
@@ -23,36 +24,14 @@ impl McpGateway {
         let request_id = request.id.clone();
         let session_read = session.read().await;
 
-        // Check for deferred loading (only if client supports resources.listChanged)
-        if let Some(deferred) = &session_read.deferred_loading {
-            if deferred.enabled && deferred.resources_deferred {
-                // Return only activated resources
-                let resources: Vec<serde_json::Value> = deferred
-                    .full_resource_catalog
-                    .iter()
-                    .filter(|r| deferred.activated_resources.contains(&r.name))
-                    .map(|r| serde_json::to_value(r).unwrap_or_default())
-                    .collect();
-
-                drop(session_read);
-
-                tracing::debug!(
-                    "resources/list returning {} deferred resources (request_id={:?})",
-                    resources.len(),
-                    request_id
-                );
-
-                return Ok(JsonRpcResponse::success(
-                    request.id.unwrap_or(Value::Null),
-                    json!({"resources": resources}),
-                ));
-            }
-        }
-
         // Check cache
         if let Some(cached) = &session_read.cached_resources {
             if cached.is_valid() {
-                let resources = cached.data.clone();
+                let resources = apply_catalog_compression_resources(
+                    &cached.data,
+                    session_read.catalog_compression.as_ref(),
+                    session_read.activated_resources(),
+                );
                 drop(session_read);
 
                 tracing::debug!(
@@ -99,6 +78,17 @@ impl McpGateway {
             let cache_ttl = session_write.cache_ttl_manager.get_ttl();
             session_write.cached_resources = Some(CachedList::new(resources.clone(), cache_ttl));
         }
+
+        // Apply catalog compression (filter deferred resources)
+        let resources = {
+            let session_read = session.read().await;
+            let filtered = apply_catalog_compression_resources(
+                &resources,
+                session_read.catalog_compression.as_ref(),
+                session_read.activated_resources(),
+            );
+            filtered
+        };
 
         let mut result = json!({"resources": resources});
         if !failures.is_empty() {

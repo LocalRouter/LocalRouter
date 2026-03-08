@@ -19,14 +19,32 @@ pub async fn broadcast_request(
     request_timeout: Duration,
     max_retries: u8,
 ) -> Vec<(String, AppResult<Value>)> {
+    let method = request.method.clone();
+    tracing::debug!(
+        "broadcast_request: method={}, servers={}, timeout={}s",
+        method,
+        server_ids.len(),
+        request_timeout.as_secs(),
+    );
+    let broadcast_start = std::time::Instant::now();
+
     let futures = server_ids.iter().map(|server_id| {
         let request = request.clone();
         let server_id = server_id.clone();
         let server_manager = server_manager.clone();
+        let method = method.clone();
 
         async move {
             let mut retries = 0;
             loop {
+                tracing::debug!(
+                    "broadcast: sending {} to server {}, attempt={}",
+                    method,
+                    &server_id[..8.min(server_id.len())],
+                    retries
+                );
+                let attempt_start = std::time::Instant::now();
+
                 let result = timeout(
                     request_timeout,
                     server_manager.send_request(&server_id, request.clone()),
@@ -35,12 +53,26 @@ pub async fn broadcast_request(
 
                 match result {
                     // Success
-                    Ok(Ok(resp)) => return (server_id, Ok(resp.result.unwrap_or(Value::Null))),
+                    Ok(Ok(resp)) => {
+                        tracing::debug!(
+                            "broadcast: {} success from server {} in {:?}",
+                            method,
+                            &server_id[..8.min(server_id.len())],
+                            attempt_start.elapsed()
+                        );
+                        return (server_id, Ok(resp.result.unwrap_or(Value::Null)));
+                    }
 
                     // Request failed but we can retry
                     Ok(Err(e)) if retries < max_retries && is_retryable(&e) => {
+                        tracing::warn!(
+                            "broadcast: {} error (retryable) from server {} in {:?}: {}",
+                            method,
+                            &server_id[..8.min(server_id.len())],
+                            attempt_start.elapsed(),
+                            e
+                        );
                         retries += 1;
-                        // Exponential backoff with cap at 10 seconds
                         let backoff_ms = (100 * (1 << retries)).min(10_000);
                         let backoff = Duration::from_millis(backoff_ms);
                         tokio::time::sleep(backoff).await;
@@ -48,12 +80,26 @@ pub async fn broadcast_request(
                     }
 
                     // Request failed and we can't retry
-                    Ok(Err(e)) => return (server_id, Err(e)),
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            "broadcast: {} error (final) from server {} in {:?}: {}",
+                            method,
+                            &server_id[..8.min(server_id.len())],
+                            attempt_start.elapsed(),
+                            e
+                        );
+                        return (server_id, Err(e));
+                    }
 
                     // Timeout but we can retry
                     Err(_) if retries < max_retries => {
+                        tracing::warn!(
+                            "broadcast: {} TIMEOUT (retrying) from server {} after {:?}",
+                            method,
+                            &server_id[..8.min(server_id.len())],
+                            attempt_start.elapsed()
+                        );
                         retries += 1;
-                        // Add exponential backoff for timeouts too (was missing!)
                         let backoff_ms = (100 * (1 << retries)).min(10_000);
                         let backoff = Duration::from_millis(backoff_ms);
                         tokio::time::sleep(backoff).await;
@@ -62,6 +108,12 @@ pub async fn broadcast_request(
 
                     // Timeout and no more retries
                     Err(_) => {
+                        tracing::warn!(
+                            "broadcast: {} TIMEOUT (final) from server {} after {:?}",
+                            method,
+                            &server_id[..8.min(server_id.len())],
+                            attempt_start.elapsed()
+                        );
                         return (
                             server_id,
                             Err(AppError::Mcp(format!(
@@ -75,7 +127,14 @@ pub async fn broadcast_request(
         }
     });
 
-    futures::future::join_all(futures).await
+    let results = futures::future::join_all(futures).await;
+    tracing::debug!(
+        "broadcast_request done: method={}, elapsed={:?}, results={}",
+        method,
+        broadcast_start.elapsed(),
+        results.len()
+    );
+    results
 }
 
 /// Check if an error is retryable

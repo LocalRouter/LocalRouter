@@ -12,6 +12,7 @@ use super::session::GatewaySession;
 use super::types::*;
 
 use super::gateway::McpGateway;
+use super::gateway_tools::apply_catalog_compression_prompts;
 
 impl McpGateway {
     /// Handle prompts/list request
@@ -22,30 +23,14 @@ impl McpGateway {
     ) -> AppResult<JsonRpcResponse> {
         let session_read = session.read().await;
 
-        // Check for deferred loading (only if client supports prompts.listChanged)
-        if let Some(deferred) = &session_read.deferred_loading {
-            if deferred.enabled && deferred.prompts_deferred {
-                // Return only activated prompts
-                let prompts: Vec<serde_json::Value> = deferred
-                    .full_prompt_catalog
-                    .iter()
-                    .filter(|p| deferred.activated_prompts.contains(&p.name))
-                    .map(|p| serde_json::to_value(p).unwrap_or_default())
-                    .collect();
-
-                drop(session_read);
-
-                return Ok(JsonRpcResponse::success(
-                    request.id.unwrap_or(Value::Null),
-                    json!({"prompts": prompts}),
-                ));
-            }
-        }
-
         // Check cache
         if let Some(cached) = &session_read.cached_prompts {
             if cached.is_valid() {
-                let prompts = cached.data.clone();
+                let prompts = apply_catalog_compression_prompts(
+                    &cached.data,
+                    session_read.catalog_compression.as_ref(),
+                    session_read.activated_prompts(),
+                );
                 drop(session_read);
 
                 return Ok(JsonRpcResponse::success(
@@ -72,6 +57,17 @@ impl McpGateway {
             let cache_ttl = session_write.cache_ttl_manager.get_ttl();
             session_write.cached_prompts = Some(CachedList::new(prompts.clone(), cache_ttl));
         }
+
+        // Apply catalog compression (filter deferred prompts)
+        let prompts = {
+            let session_read = session.read().await;
+            let filtered = apply_catalog_compression_prompts(
+                &prompts,
+                session_read.catalog_compression.as_ref(),
+                session_read.activated_prompts(),
+            );
+            filtered
+        };
 
         let mut result = json!({"prompts": prompts});
         if !failures.is_empty() {

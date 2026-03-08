@@ -8,9 +8,6 @@ use crate::protocol::{
 };
 use lr_types::{AppError, AppResult};
 
-use super::deferred::create_search_tool;
-use super::deferred::create_server_info_tool;
-use super::deferred::{search_prompts, search_resources, search_tools, SearchMode};
 use super::merger::merge_tools;
 use super::router::{broadcast_request, separate_results};
 use super::session::GatewaySession;
@@ -39,61 +36,20 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        // Eagerly initialize context-mode transport so list_tools() returns all tools
+        self.ensure_context_mode_tools_cached(&session).await;
+
         let session_read = session.read().await;
-
-        // Check for deferred loading
-        tracing::info!(
-            "handle_tools_list: deferred_loading={:?}, deferred_loading_requested={}, cached_tools_valid={}",
-            session_read.deferred_loading.as_ref().map(|d| d.enabled),
-            session_read.deferred_loading_requested,
-            session_read.cached_tools.as_ref().is_some_and(|c| c.is_valid()),
-        );
-
-        if let Some(deferred) = &session_read.deferred_loading {
-            if deferred.enabled {
-                // Return search tool + server_info tool + activated tools + virtual server tools
-                let mut tools: Vec<serde_json::Value> = vec![
-                    serde_json::to_value(create_search_tool(
-                        deferred.resources_deferred,
-                        deferred.prompts_deferred,
-                    ))
-                    .unwrap_or_default(),
-                    serde_json::to_value(create_server_info_tool()).unwrap_or_default(),
-                ];
-
-                for tool_name in &deferred.activated_tools {
-                    if let Some(tool) = deferred.full_catalog.iter().find(|t| t.name == *tool_name)
-                    {
-                        tools.push(serde_json::to_value(tool).unwrap_or_default());
-                    }
-                }
-
-                // Append tools from virtual servers
-                self.append_virtual_server_tools(&mut tools, &session_read);
-                drop(session_read);
-
-                let tool_names: Vec<String> = tools
-                    .iter()
-                    .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
-                    .collect();
-                tracing::info!(
-                    "handle_tools_list DEFERRED: returning {} tools: {:?}",
-                    tools.len(),
-                    tool_names,
-                );
-
-                return Ok(JsonRpcResponse::success(
-                    request.id.unwrap_or(Value::Null),
-                    json!({"tools": tools}),
-                ));
-            }
-        }
 
         // Check cache
         if let Some(cached) = &session_read.cached_tools {
             if cached.is_valid() {
-                let mut tools: Vec<serde_json::Value> = cached
-                    .data
+                let filtered = apply_catalog_compression_tools(
+                    &cached.data,
+                    session_read.catalog_compression.as_ref(),
+                    session_read.activated_tools(),
+                );
+                let mut tools: Vec<serde_json::Value> = filtered
                     .iter()
                     .map(|t| serde_json::to_value(t).unwrap_or_default())
                     .collect();
@@ -137,7 +93,12 @@ impl McpGateway {
         } else {
             None
         };
-        let mut all_tools: Vec<serde_json::Value> = tools
+        let filtered = apply_catalog_compression_tools(
+            &tools,
+            session_read.catalog_compression.as_ref(),
+            session_read.activated_tools(),
+        );
+        let mut all_tools: Vec<serde_json::Value> = filtered
             .iter()
             .map(|t| serde_json::to_value(t).unwrap_or_default())
             .collect();
@@ -234,16 +195,6 @@ impl McpGateway {
                 ));
             }
         };
-
-        // Check if it's the virtual search tool
-        if tool_name == "search" {
-            return self.handle_search_tool(session, request).await;
-        }
-
-        // Check if it's the virtual server_info tool
-        if tool_name == "server_info" {
-            return self.handle_server_info_tool(session, request).await;
-        }
 
         // Check virtual servers
         let matching_vs = {
@@ -555,232 +506,48 @@ impl McpGateway {
         }
     }
 
-    /// Handle search tool call (for deferred loading)
-    pub(crate) async fn handle_search_tool(
+    /// Ensure context-mode tools are cached by eagerly initializing the transport if needed.
+    /// Must be called before `append_virtual_server_tools` so `list_tools()` returns the full set.
+    async fn ensure_context_mode_tools_cached(
         &self,
-        session: Arc<RwLock<GatewaySession>>,
-        request: JsonRpcRequest,
-    ) -> AppResult<JsonRpcResponse> {
-        let mut session_write = session.write().await;
-
-        let deferred = match session_write.deferred_loading.as_mut() {
-            Some(d) => d,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params("Deferred loading not enabled"),
-                ));
-            }
-        };
-
-        // Extract arguments from params
-        // MCP tools/call format: params.arguments contains the tool arguments
-        let params = match request.params.as_ref() {
-            Some(p) => p,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params("Missing params"),
-                ));
-            }
-        };
-
-        let arguments = match params.get("arguments") {
-            Some(a) => a,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params("Missing arguments in params"),
-                ));
-            }
-        };
-
-        let query = match arguments.get("query").and_then(|q| q.as_str()) {
-            Some(q) => q,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params("Missing query parameter"),
-                ));
-            }
-        };
-
-        let search_type = arguments
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("all");
-
-        let limit = arguments
-            .get("limit")
-            .and_then(|l| l.as_u64())
-            .unwrap_or(10) as usize;
-
-        let mode = SearchMode::parse_str(
-            arguments
-                .get("mode")
-                .and_then(|m| m.as_str())
-                .unwrap_or("regex"),
-        );
-
-        // Search based on type
-        let mut activated_names = Vec::new();
-        let mut all_matches = Vec::new();
-
-        if search_type == "tools" || search_type == "all" {
-            let matches = search_tools(query, &deferred.full_catalog, limit, mode);
-            for (tool, _score) in &matches {
-                deferred.activated_tools.insert(tool.name.clone());
-                activated_names.push(tool.name.clone());
-            }
-            all_matches.extend(matches.into_iter().map(|(tool, score)| {
-                json!({
-                    "type": "tool",
-                    "name": tool.name,
-                    "relevance": score,
-                    "description": tool.description,
-                })
-            }));
-        }
-
-        if search_type == "resources" || search_type == "all" {
-            let matches = search_resources(query, &deferred.full_resource_catalog, limit, mode);
-            for (resource, _score) in &matches {
-                deferred.activated_resources.insert(resource.name.clone());
-                activated_names.push(resource.name.clone());
-            }
-            all_matches.extend(matches.into_iter().map(|(resource, score)| {
-                json!({
-                    "type": "resource",
-                    "name": resource.name,
-                    "relevance": score,
-                    "description": resource.description,
-                })
-            }));
-        }
-
-        if search_type == "prompts" || search_type == "all" {
-            let matches = search_prompts(query, &deferred.full_prompt_catalog, limit, mode);
-            for (prompt, _score) in &matches {
-                deferred.activated_prompts.insert(prompt.name.clone());
-                activated_names.push(prompt.name.clone());
-            }
-            all_matches.extend(matches.into_iter().map(|(prompt, score)| {
-                json!({
-                    "type": "prompt",
-                    "name": prompt.name,
-                    "relevance": score,
-                    "description": prompt.description,
-                })
-            }));
-        }
-
-        drop(session_write);
-
-        // Return search results
-        Ok(JsonRpcResponse::success(
-            request.id.unwrap_or(Value::Null),
-            json!({
-                "activated": activated_names,
-                "message": format!("Activated {} items. Use tools/list, resources/list, or prompts/list to see them.", activated_names.len()),
-                "matches": all_matches,
-            }),
-        ))
-    }
-
-    /// Handle server_info tool call (for deferred loading).
-    ///
-    /// Returns the full tool list and instructions for a specific MCP server.
-    /// Does NOT activate tools — the LLM still needs `search` to activate them.
-    pub(crate) async fn handle_server_info_tool(
-        &self,
-        session: Arc<RwLock<GatewaySession>>,
-        request: JsonRpcRequest,
-    ) -> AppResult<JsonRpcResponse> {
+        session: &Arc<RwLock<GatewaySession>>,
+    ) {
         let session_read = session.read().await;
+        if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
+            if let Some(cm_state) = state
+                .as_any()
+                .downcast_ref::<super::context_mode::ContextModeSessionState>()
+            {
+                if !cm_state.enabled {
+                    return;
+                }
+                // Check if tools are already cached
+                if cm_state.has_cached_tools() {
+                    return;
+                }
+                // Need to spawn transport and fetch tools — this is async
+                // Drop the session read lock first to avoid deadlock
+                drop(session_read);
 
-        let deferred = match &session_read.deferred_loading {
-            Some(d) if d.enabled => d,
-            _ => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params("Deferred loading not enabled"),
-                ));
-            }
-        };
-
-        let params = match request.params.as_ref() {
-            Some(p) => p,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params("Missing params"),
-                ));
-            }
-        };
-
-        let arguments = match params.get("arguments") {
-            Some(a) => a,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params("Missing arguments in params"),
-                ));
-            }
-        };
-
-        let server_name = match arguments.get("server").and_then(|s| s.as_str()) {
-            Some(s) => s,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params("Missing server parameter"),
-                ));
-            }
-        };
-
-        // Look up by slugified name
-        let slug = super::types::slugify(server_name);
-        let tool_list = deferred.server_tool_lists.get(&slug);
-        let instructions = deferred.server_instructions.get(&slug);
-
-        if tool_list.is_none() && instructions.is_none() {
-            return Ok(JsonRpcResponse::success(
-                request.id.unwrap_or(Value::Null),
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!("Server '{}' not found. Check the server name in the tool listing.", server_name)
-                    }],
-                    "isError": true
-                }),
-            ));
-        }
-
-        let mut result_text = String::new();
-        if let Some(tools) = tool_list {
-            result_text.push_str(&format!("**{}** — {} items\n\n", server_name, tools.len()));
-            for name in tools {
-                result_text.push_str(&format!("- `{}`\n", name));
+                // Re-acquire read lock and trigger transport initialization
+                let session_read = session.read().await;
+                if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
+                    if let Some(cm_state) = state
+                        .as_any()
+                        .downcast_ref::<super::context_mode::ContextModeSessionState>()
+                    {
+                        match cm_state.get_transport().await {
+                            Ok(_) => {
+                                tracing::info!("Context-mode transport initialized and tools cached for tools/list");
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to initialize context-mode transport for tools/list: {}", e);
+                            }
+                        }
+                    }
+                }
             }
         }
-        if let Some(inst) = instructions {
-            if !result_text.is_empty() {
-                result_text.push('\n');
-            }
-            result_text.push_str(inst);
-        }
-
-        drop(session_read);
-
-        Ok(JsonRpcResponse::success(
-            request.id.unwrap_or(Value::Null),
-            json!({
-                "content": [{
-                    "type": "text",
-                    "text": result_text
-                }]
-            }),
-        ))
     }
 
     /// Append tools from all registered virtual servers to the tools list.
@@ -1101,4 +868,161 @@ fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Extract the server slug (namespace prefix) from a namespaced name.
+/// e.g., "everything-mcp-server__echo" -> "everything-mcp-server"
+fn extract_server_slug(namespaced_name: &str) -> &str {
+    namespaced_name
+        .find(NAMESPACE_SEPARATOR)
+        .map(|idx| &namespaced_name[..idx])
+        .unwrap_or(namespaced_name)
+}
+
+/// Apply catalog compression plan to a tools list:
+/// 1. Filter out tools from servers whose tools are deferred
+/// 2. Re-include tools that were individually activated via ctx_search
+fn apply_catalog_compression_tools(
+    tools: &[NamespacedTool],
+    plan: Option<&CatalogCompressionPlan>,
+    activated: Option<&std::collections::HashSet<String>>,
+) -> Vec<NamespacedTool> {
+    let plan = match plan {
+        Some(p) => p,
+        None => return tools.to_vec(),
+    };
+
+    // Collect server slugs whose tools are fully deferred
+    let deferred_servers: std::collections::HashSet<&str> = plan
+        .deferred_items
+        .iter()
+        .filter(|d| d.item_type == DeferredItemType::Tools)
+        .map(|d| d.server_slug.as_str())
+        .collect();
+
+    if deferred_servers.is_empty() {
+        return tools.to_vec();
+    }
+
+    let original_count = tools.len();
+
+    let result: Vec<NamespacedTool> = tools
+        .iter()
+        .filter(|tool| {
+            let server_slug = extract_server_slug(&tool.name);
+            // Include if not from a deferred server, or individually activated via ctx_search
+            !deferred_servers.contains(server_slug)
+                || activated
+                    .map(|a| a.contains(&tool.name))
+                    .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    if result.len() < original_count {
+        tracing::info!(
+            "Catalog compression: deferred {}/{} tools (servers: {:?})",
+            original_count - result.len(),
+            original_count,
+            deferred_servers,
+        );
+    }
+
+    result
+}
+
+/// Apply catalog compression plan to a resources list:
+/// Filter out resources from servers whose resources are deferred,
+/// re-including individually activated resources.
+pub(crate) fn apply_catalog_compression_resources(
+    resources: &[NamespacedResource],
+    plan: Option<&CatalogCompressionPlan>,
+    activated: Option<&std::collections::HashSet<String>>,
+) -> Vec<NamespacedResource> {
+    let plan = match plan {
+        Some(p) => p,
+        None => return resources.to_vec(),
+    };
+
+    let deferred_servers: std::collections::HashSet<&str> = plan
+        .deferred_items
+        .iter()
+        .filter(|d| d.item_type == DeferredItemType::Resources)
+        .map(|d| d.server_slug.as_str())
+        .collect();
+
+    if deferred_servers.is_empty() {
+        return resources.to_vec();
+    }
+
+    let original_count = resources.len();
+    let result: Vec<NamespacedResource> = resources
+        .iter()
+        .filter(|r| {
+            !deferred_servers.contains(extract_server_slug(&r.name))
+                || activated
+                    .map(|a| a.contains(&r.name))
+                    .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    if result.len() < original_count {
+        tracing::info!(
+            "Catalog compression: deferred {}/{} resources (servers: {:?})",
+            original_count - result.len(),
+            original_count,
+            deferred_servers,
+        );
+    }
+
+    result
+}
+
+/// Apply catalog compression plan to a prompts list:
+/// Filter out prompts from servers whose prompts are deferred,
+/// re-including individually activated prompts.
+pub(crate) fn apply_catalog_compression_prompts(
+    prompts: &[NamespacedPrompt],
+    plan: Option<&CatalogCompressionPlan>,
+    activated: Option<&std::collections::HashSet<String>>,
+) -> Vec<NamespacedPrompt> {
+    let plan = match plan {
+        Some(p) => p,
+        None => return prompts.to_vec(),
+    };
+
+    let deferred_servers: std::collections::HashSet<&str> = plan
+        .deferred_items
+        .iter()
+        .filter(|d| d.item_type == DeferredItemType::Prompts)
+        .map(|d| d.server_slug.as_str())
+        .collect();
+
+    if deferred_servers.is_empty() {
+        return prompts.to_vec();
+    }
+
+    let original_count = prompts.len();
+    let result: Vec<NamespacedPrompt> = prompts
+        .iter()
+        .filter(|p| {
+            !deferred_servers.contains(extract_server_slug(&p.name))
+                || activated
+                    .map(|a| a.contains(&p.name))
+                    .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    if result.len() < original_count {
+        tracing::info!(
+            "Catalog compression: deferred {}/{} prompts (servers: {:?})",
+            original_count - result.len(),
+            original_count,
+            deferred_servers,
+        );
+    }
+
+    result
 }
