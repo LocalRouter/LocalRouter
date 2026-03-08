@@ -10,11 +10,12 @@
 
 use axum::{
     extract::Request,
+    http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
+    Json,
 };
 
-use crate::middleware::error::ApiErrorResponse;
 
 /// Client authentication context
 ///
@@ -51,12 +52,55 @@ fn extract_bearer_token(auth_header: &str) -> Option<String> {
     })
 }
 
+/// Extract token from URL query parameter (?token=<value>)
+///
+/// Fallback authentication for MCP clients (like Claude Code) that don't send
+/// custom headers with Streamable HTTP transport.
+fn extract_query_token(query: &str) -> Option<String> {
+    for pair in query.split('&') {
+        if let Some(value) = pair.strip_prefix("token=") {
+            let value = value.trim();
+            if value.is_empty() || value.len() > 256 {
+                return None;
+            }
+            if !value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+            {
+                return None;
+            }
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// Return an OAuth-compatible 401 response
+///
+/// MCP clients (Claude Code) expect RFC 6749 format: {"error": "string", "error_description": "string"}
+/// NOT the OpenAI format: {"error": {"message": "...", "type": "..."}}
+fn mcp_unauthorized_response(description: &str) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({
+            "error": "unauthorized",
+            "error_description": description
+        })),
+    )
+        .into_response()
+}
+
 /// Client authentication middleware for MCP proxy routes
 ///
-/// Validates bearer tokens from Authorization header.
-/// Supports two token types:
-/// 1. OAuth access tokens (validated via TokenStore)
-/// 2. Direct client secrets (validated via ClientManager)
+/// Validates bearer tokens from Authorization header or URL query parameter.
+/// Supports three token sources:
+/// 1. Authorization: Bearer <token> header
+/// 2. ?token=<value> query parameter (fallback for MCP HTTP clients)
+///
+/// And three token types:
+/// 1. Internal test token (for UI testing, bypasses restrictions)
+/// 2. OAuth access tokens (short-lived, from /oauth/token endpoint)
+/// 3. Direct client secrets (validated via ClientManager)
 ///
 /// On success, attaches ClientAuthContext to request extensions.
 pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
@@ -75,34 +119,34 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
         return next.run(req).await;
     }
 
-    // Extract Authorization header
-    let auth_header = match req
+    // Extract token: try Authorization header first, then query parameter
+    let token = if let Some(auth_header) = req
         .headers()
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
     {
-        Some(h) => h,
-        None => {
-            return ApiErrorResponse::unauthorized("Missing Authorization header").into_response();
+        match extract_bearer_token(auth_header) {
+            Some(t) => t,
+            None => {
+                return mcp_unauthorized_response(
+                    "Invalid Authorization header format. Expected: Bearer <token>",
+                );
+            }
         }
-    };
-
-    // Extract bearer token
-    let token = match extract_bearer_token(auth_header) {
-        Some(t) => t,
-        None => {
-            return ApiErrorResponse::unauthorized(
-                "Invalid Authorization header format. Expected: Bearer <token>",
-            )
-            .into_response();
-        }
+    } else if let Some(t) = req.uri().query().and_then(extract_query_token) {
+        t
+    } else {
+        return mcp_unauthorized_response("Missing authentication. Provide Authorization: Bearer <token> header or ?token=<value> query parameter");
     };
 
     // Extract state from request extensions
     let state = match req.extensions().get::<crate::state::AppState>() {
         Some(s) => s.clone(),
         None => {
-            return ApiErrorResponse::internal_error("Missing application state").into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "server_error", "error_description": "Missing application state"})),
+            ).into_response();
         }
     };
 
@@ -147,11 +191,11 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
                     reason = "invalid_token",
                     "Authentication failed: invalid bearer token"
                 );
-                return ApiErrorResponse::unauthorized("Invalid bearer token").into_response();
+                return mcp_unauthorized_response("Invalid bearer token");
             }
             Err(e) => {
                 tracing::error!("Error verifying client secret: {}", e);
-                return ApiErrorResponse::internal_error("Authentication error").into_response();
+                return mcp_unauthorized_response("Authentication error");
             }
         }
     };

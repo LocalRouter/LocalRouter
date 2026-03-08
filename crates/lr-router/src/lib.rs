@@ -285,6 +285,7 @@ pub struct Router {
     metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
     routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
     free_tier_manager: Arc<FreeTierManager>,
+    health_cache: Option<Arc<lr_providers::health_cache::HealthCacheManager>>,
 }
 
 impl Router {
@@ -303,6 +304,7 @@ impl Router {
             metrics_collector,
             routellm_service: None,
             free_tier_manager: Arc::new(FreeTierManager::new(None)),
+            health_cache: None,
         }
     }
 
@@ -321,6 +323,34 @@ impl Router {
             metrics_collector,
             routellm_service: None,
             free_tier_manager,
+            health_cache: None,
+        }
+    }
+
+    /// Set the health cache for on-failure health marking
+    pub fn with_health_cache(
+        mut self,
+        health_cache: Arc<lr_providers::health_cache::HealthCacheManager>,
+    ) -> Self {
+        self.health_cache = Some(health_cache);
+        self
+    }
+
+    /// Report a provider failure to the health cache (debounced)
+    fn report_provider_failure(&self, provider: &str, error: &str) {
+        if let Some(ref health_cache) = self.health_cache {
+            let cooldown_secs = self
+                .config_manager
+                .get()
+                .health_check
+                .failure_cooldown_secs;
+            let cooldown = std::time::Duration::from_secs(cooldown_secs);
+            if health_cache.report_provider_failure(provider, error.to_string(), cooldown) {
+                warn!(
+                    "Provider '{}' marked unhealthy due to request failure: {}",
+                    provider, error
+                );
+            }
         }
     }
 
@@ -439,7 +469,16 @@ impl Router {
             let free_tier = self.get_effective_free_tier(&final_provider);
             let mut modified_request = request;
             modified_request.model = final_model.clone();
-            let stream = provider_instance.stream_complete(modified_request).await?;
+            let stream = match provider_instance.stream_complete(modified_request).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let router_error = RouterError::classify(&e, &final_provider, &final_model);
+                    if matches!(router_error, RouterError::Unreachable { .. }) {
+                        self.report_provider_failure(&final_provider, &e.to_string());
+                    }
+                    return Err(e);
+                }
+            };
             let resolved_model = format!("{}/{}", final_provider, final_model);
             Ok(wrap_stream_with_usage_tracking(
                 stream,
@@ -761,7 +800,17 @@ impl Router {
         }
 
         // Execute the completion
-        let mut response = provider_instance.complete(modified_request).await?;
+        let mut response = match provider_instance.complete(modified_request).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                // Mark provider unhealthy for infrastructure errors (not content/policy/rate-limit)
+                let router_error = RouterError::classify(&e, provider, model);
+                if matches!(router_error, RouterError::Unreachable { .. }) {
+                    self.report_provider_failure(provider, &e.to_string());
+                }
+                return Err(e);
+            }
+        };
 
         // Apply feature adapters to response if needed
         if let Some(ref extensions) = request.extensions {
@@ -1198,6 +1247,11 @@ impl Router {
                         router_error.to_log_string()
                     );
 
+                    // Mark provider unhealthy for infrastructure errors
+                    if matches!(router_error, RouterError::Unreachable { .. }) {
+                        self.report_provider_failure(provider, &e.to_string());
+                    }
+
                     // Record backoff for rate-limited errors
                     if router_error.should_retry() {
                         if let RouterError::RateLimited {
@@ -1525,7 +1579,16 @@ impl Router {
             let free_tier = self.get_effective_free_tier(&provider);
             let mut modified_request = request.clone();
             modified_request.model = model.clone();
-            let stream = provider_instance.stream_complete(modified_request).await?;
+            let stream = match provider_instance.stream_complete(modified_request).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let router_error = RouterError::classify(&e, &provider, &model);
+                    if matches!(router_error, RouterError::Unreachable { .. }) {
+                        self.report_provider_failure(&provider, &e.to_string());
+                    }
+                    return Err(e);
+                }
+            };
             let resolved_model = format!("{}/{}", provider, model);
             return Ok(wrap_stream_with_usage_tracking(
                 stream,
@@ -1622,7 +1685,16 @@ impl Router {
         let free_tier = self.get_effective_free_tier(&final_provider);
         let mut modified_request = request.clone();
         modified_request.model = final_model.clone();
-        let stream = provider_instance.stream_complete(modified_request).await?;
+        let stream = match provider_instance.stream_complete(modified_request).await {
+            Ok(s) => s,
+            Err(e) => {
+                let router_error = RouterError::classify(&e, &final_provider, &final_model);
+                if matches!(router_error, RouterError::Unreachable { .. }) {
+                    self.report_provider_failure(&final_provider, &e.to_string());
+                }
+                return Err(e);
+            }
+        };
         let resolved_model = format!("{}/{}", final_provider, final_model);
         Ok(wrap_stream_with_usage_tracking(
             stream,
@@ -1665,7 +1737,16 @@ impl Router {
         };
 
         // Execute the embedding
-        let response = provider_instance.embed(modified_request).await?;
+        let response = match provider_instance.embed(modified_request).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                let router_error = RouterError::classify(&e, provider, model);
+                if matches!(router_error, RouterError::Unreachable { .. }) {
+                    self.report_provider_failure(provider, &e.to_string());
+                }
+                return Err(e);
+            }
+        };
 
         // Record usage for rate limiting (embeddings have simpler usage)
         let usage = UsageInfo {

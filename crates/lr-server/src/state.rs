@@ -53,6 +53,10 @@ pub struct SseConnectionManager {
     /// Map of (client_id, request_id) -> response sender for server-initiated requests
     /// Used to match responses from clients to pending server requests
     pending_server_requests: DashMap<String, tokio::sync::oneshot::Sender<JsonRpcResponse>>,
+    /// Abort handles for spawned gateway tasks per client.
+    /// Used to cancel old tasks when a new request arrives for the same client,
+    /// preventing lock contention on the gateway session.
+    gateway_task_handles: DashMap<String, tokio::task::AbortHandle>,
     /// Tauri app handle for emitting connection events (optional)
     app_handle: RwLock<Option<tauri::AppHandle>>,
 }
@@ -62,8 +66,22 @@ impl SseConnectionManager {
         Self {
             connections: DashMap::new(),
             pending_server_requests: DashMap::new(),
+            gateway_task_handles: DashMap::new(),
             app_handle: RwLock::new(None),
         }
+    }
+
+    /// Register a spawned gateway task for a client, aborting any previous task.
+    /// Returns the JoinHandle for the new task.
+    pub fn register_gateway_task(&self, client_id: &str, handle: tokio::task::AbortHandle) {
+        if let Some((_, old_handle)) = self.gateway_task_handles.remove(client_id) {
+            tracing::info!(
+                "Aborting previous gateway task for client {}",
+                &client_id[..8.min(client_id.len())]
+            );
+            old_handle.abort();
+        }
+        self.gateway_task_handles.insert(client_id.to_string(), handle);
     }
 
     /// Set the Tauri app handle for event emission
@@ -126,9 +144,10 @@ impl SseConnectionManager {
         let active_connections: Vec<String> =
             self.connections.iter().map(|e| e.key().clone()).collect();
 
-        tracing::debug!(
-            "SseConnectionManager::send_response: looking for client_id={}, active_connections={:?}",
+        tracing::info!(
+            "SseConnectionManager::send_response: client_id={}, response_id={:?}, active_connections={:?}",
             client_id,
+            response_id,
             active_connections
         );
 
@@ -719,6 +738,7 @@ impl AppState {
         client_manager: Arc<ClientManager>,
         token_store: Arc<TokenStore>,
         metrics_collector: Arc<MetricsCollector>,
+        health_cache: Option<Arc<HealthCacheManager>>,
     ) -> Self {
         // Generate a random bearer token for internal UI testing
         // This is regenerated on every app start and never persisted
@@ -780,7 +800,7 @@ impl AppState {
             client_notification_broadcast: Arc::new(client_notification_tx),
             sse_connection_manager: Arc::new(SseConnectionManager::new()),
             mcp_notification_handlers_registered: Arc::new(DashMap::new()),
-            health_cache: Arc::new(HealthCacheManager::new()),
+            health_cache: health_cache.unwrap_or_else(|| Arc::new(HealthCacheManager::new())),
             model_approval_tracker: Arc::new(ModelApprovalTracker::new()),
             guardrail_approval_tracker: Arc::new(GuardrailApprovalTracker::new()),
             guardrail_denial_tracker: Arc::new(GuardrailDenialTracker::new()),

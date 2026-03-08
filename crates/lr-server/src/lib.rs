@@ -76,6 +76,7 @@ pub async fn start_server(
     client_manager: Arc<lr_clients::ClientManager>,
     token_store: Arc<lr_clients::TokenStore>,
     metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
+    health_cache: Option<Arc<lr_providers::health_cache::HealthCacheManager>>,
 ) -> anyhow::Result<(AppState, tokio::task::JoinHandle<()>, u16)> {
     info!("Starting web server on {}:{}", config.host, config.port);
 
@@ -88,6 +89,7 @@ pub async fn start_server(
         client_manager,
         token_store,
         metrics_collector,
+        health_cache,
     )
     .with_mcp(mcp_server_manager);
 

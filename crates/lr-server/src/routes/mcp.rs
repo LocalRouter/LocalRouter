@@ -5,7 +5,7 @@
 //! GET / returns SSE stream if Accept: text/event-stream, otherwise API info.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::header,
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -14,6 +14,7 @@ use axum::{
     Json,
 };
 use std::convert::Infallible;
+use uuid::Uuid;
 
 use super::helpers::get_enabled_client_from_manager;
 use crate::middleware::client_auth::ClientAuthContext;
@@ -22,40 +23,47 @@ use crate::state::{AppState, SseConnectionManager, SseMessage};
 use lr_config::RootConfig;
 use lr_mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
 
+/// Query parameters for MCP POST requests
+#[derive(serde::Deserialize, Default)]
+pub struct McpQueryParams {
+    /// Per-connection session ID (sent in the SSE endpoint event)
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+}
+
 /// Send a JSON-RPC response via SSE stream (preferred) or HTTP body (fallback)
 ///
 /// The MCP SDK's SSEClientTransport expects responses via the SSE stream.
 /// We send via SSE if a connection exists, and also include in HTTP body as fallback.
+///
+/// `connection_key` is either a per-connection session UUID (for SSE) or client_id (for non-SSE).
 fn send_response(
     sse_manager: &SseConnectionManager,
-    client_id: &str,
+    connection_key: &str,
     response: JsonRpcResponse,
 ) -> Response {
     let response_id = response.id.clone();
     let has_error = response.error.is_some();
 
-    tracing::debug!(
-        "send_response called: client_id={}, response_id={:?}, has_error={}",
-        client_id,
+    tracing::info!(
+        "send_response called: connection_key={}, response_id={:?}, has_error={}",
+        connection_key,
         response_id,
         has_error
     );
 
     // Try to send via SSE stream first (required for MCP SDK's SSEClientTransport)
-    if sse_manager.send_response(client_id, response.clone()) {
-        // Response sent via SSE - return 202 Accepted with empty body
-        // The SDK will receive the response on the SSE stream
-        tracing::debug!(
-            "Response sent via SSE for client {}, returning 202 Accepted",
-            client_id
+    if sse_manager.send_response(connection_key, response.clone()) {
+        tracing::info!(
+            "Response sent via SSE for connection {}, returning 202 Accepted",
+            connection_key
         );
         (axum::http::StatusCode::ACCEPTED, "").into_response()
     } else {
         // No SSE connection - fall back to returning in HTTP body
-        // This handles cases where client connects without SSE
         tracing::warn!(
-            "No SSE connection for client {}, returning response in HTTP body (response_id={:?})",
-            client_id,
+            "No SSE connection for {}, returning response in HTTP body (response_id={:?})",
+            connection_key,
             response_id
         );
         Json(response).into_response()
@@ -168,15 +176,21 @@ pub async fn mcp_gateway_get_handler(
         }
     };
 
+    // Generate a unique session ID for this SSE connection.
+    // This allows multiple simultaneous connections from the same client,
+    // each with its own gateway session and ContextMode process.
+    let session_id = Uuid::new_v4().to_string();
+
     tracing::debug!(
-        "Unified SSE connection established for client {} with {} servers (skills support: {})",
+        "Unified SSE connection established for client {} (session={}) with {} servers (skills support: {})",
         client_id,
+        &session_id[..8],
         allowed_servers.len(),
         state.mcp_gateway.has_skill_support()
     );
 
-    // Register with SSE connection manager to receive responses
-    let mut response_rx = state.sse_connection_manager.register(&client_id);
+    // Register with SSE connection manager using session_id (not client_id)
+    let mut response_rx = state.sse_connection_manager.register(&session_id);
 
     // Subscribe to notification broadcast
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
@@ -185,15 +199,16 @@ pub async fn mcp_gateway_get_handler(
     let mut client_notification_rx = state.client_notification_broadcast.subscribe();
 
     // Clone for cleanup
-    let client_id_cleanup = client_id.clone();
+    let session_id_cleanup = session_id.clone();
     let sse_manager = state.sse_connection_manager.clone();
 
     // Create SSE stream that forwards both responses and notifications
     let sse_stream = async_stream::stream! {
         // Send endpoint event first (MCP SSE transport spec)
-        // The data should be just the endpoint path, not a JSON object
-        tracing::info!("SSE stream started for client {}, sending endpoint event", client_id);
-        yield Ok::<_, Infallible>(Event::default().event("endpoint").data("/"));
+        // Include sessionId in the endpoint URL so POST requests are routed back to this connection
+        let endpoint = format!("/?sessionId={}", session_id);
+        tracing::info!("SSE stream started for client {} (session={}), sending endpoint event: {}", client_id, &session_id[..8], endpoint);
+        yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint));
 
         loop {
             // Use biased select to prioritize responses over notifications
@@ -325,8 +340,8 @@ pub async fn mcp_gateway_get_handler(
         }
 
         // Cleanup: unregister from SSE manager when stream ends
-        sse_manager.unregister(&client_id_cleanup);
-        tracing::debug!("SSE stream ended for client {}", client_id_cleanup);
+        sse_manager.unregister(&session_id_cleanup);
+        tracing::debug!("SSE stream ended for session {}", session_id_cleanup);
     };
 
     Sse::new(sse_stream)
@@ -363,6 +378,7 @@ pub async fn mcp_gateway_handler(
     State(state): State<AppState>,
     client_auth: Option<axum::Extension<ClientAuthContext>>,
     headers: axum::http::HeaderMap,
+    query: Option<Query<McpQueryParams>>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Response {
     // Extract client_id from auth context (no URL parameter)
@@ -374,18 +390,20 @@ pub async fn mcp_gateway_handler(
         }
     };
 
+    // Extract per-connection session ID from query params (set by SSE endpoint event)
+    let session_id = query.and_then(|q| q.0.session_id);
+    // Connection key for SSE routing: session_id if available, otherwise client_id
+    let connection_key = session_id
+        .as_deref()
+        .unwrap_or(&client_id)
+        .to_string();
+
     // Record client activity for connection graph
     state.record_client_activity(&client_id);
 
     // Check for headers used by Try it out UI
     // Only applies to internal-test client for security - external clients use their config
     // Use lowercase header name as that's how browsers/http2 send it
-    let deferred_loading_header = headers
-        .get("x-deferred-loading")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
     let mcp_access_header = headers
         .get("x-mcp-access")
         .and_then(|v| v.to_str().ok())
@@ -419,8 +437,6 @@ pub async fn mcp_gateway_handler(
         );
         test_client.id = "internal-test".to_string();
         test_client.mcp_sampling_enabled = true;
-        // Apply deferred loading from header for internal test client only
-        test_client.mcp_deferred_loading = deferred_loading_header;
 
         // Apply MCP server access from header using mcp_permissions
         let allowed = if mcp_access_header.eq_ignore_ascii_case("none") {
@@ -496,16 +512,8 @@ pub async fn mcp_gateway_handler(
             }
         }
 
-        // Deferred loading:
-        // - "All" mode: use header setting
-        // - Direct mode: always off
-        if !is_all_mode {
-            test_client.mcp_deferred_loading = false;
-        }
-
         tracing::info!(
-            "Internal test client: deferred_loading={}, mcp_access={}, skills_access={:?}, marketplace={:?}, coding_agent={:?}, is_all_mode={}",
-            test_client.mcp_deferred_loading,
+            "Internal test client: mcp_access={}, skills_access={:?}, marketplace={:?}, coding_agent={:?}, is_all_mode={}",
             mcp_access_header,
             skills_access_header,
             test_client.marketplace_permission,
@@ -570,7 +578,7 @@ pub async fn mcp_gateway_handler(
                     error,
                 );
 
-                return send_response(&state.sse_connection_manager, &client_id, response);
+                return send_response(&state.sse_connection_manager, &connection_key, response);
             }
 
             // Parse sampling request from params
@@ -586,7 +594,7 @@ pub async fn mcp_gateway_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &client_id, response);
+                        return send_response(&state.sse_connection_manager, &connection_key, response);
                     }
                 },
                 None => {
@@ -597,7 +605,7 @@ pub async fn mcp_gateway_handler(
                         request.id.unwrap_or(serde_json::Value::Null),
                         error,
                     );
-                    return send_response(&state.sse_connection_manager, &client_id, response);
+                    return send_response(&state.sse_connection_manager, &connection_key, response);
                 }
             };
 
@@ -615,7 +623,7 @@ pub async fn mcp_gateway_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &client_id, response);
+                        return send_response(&state.sse_connection_manager, &connection_key, response);
                     }
                 };
 
@@ -637,7 +645,7 @@ pub async fn mcp_gateway_handler(
                         request.id.unwrap_or(serde_json::Value::Null),
                         error,
                     );
-                    return send_response(&state.sse_connection_manager, &client_id, response);
+                    return send_response(&state.sse_connection_manager, &connection_key, response);
                 }
             };
 
@@ -656,7 +664,7 @@ pub async fn mcp_gateway_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &client_id, response);
+                        return send_response(&state.sse_connection_manager, &connection_key, response);
                     }
                 };
 
@@ -666,7 +674,7 @@ pub async fn mcp_gateway_handler(
                 serde_json::to_value(sampling_resp).unwrap(),
             );
 
-            return send_response(&state.sse_connection_manager, &client_id, response);
+            return send_response(&state.sse_connection_manager, &connection_key, response);
         }
 
         _ => {
@@ -675,27 +683,119 @@ pub async fn mcp_gateway_handler(
     }
 
     // Handle request via gateway
-    match state
-        .mcp_gateway
-        .handle_request_with_skills(
-            &client_id,
-            allowed_servers,
-            client.mcp_deferred_loading,
-            roots,
-            client.mcp_permissions.clone(),
-            client.skills_permissions.clone(),
-            client.name.clone(),
-            client.marketplace_permission.clone(),
-            client.coding_agent_permission.clone(),
-            client.coding_agent_type,
-            request,
-        )
-        .await
-    {
-        Ok(response) => send_response(&state.sse_connection_manager, &client_id, response),
-        Err(err) => {
-            tracing::error!("Gateway error for client {}: {}", client_id, err);
-            ApiErrorResponse::internal_error(format!("Gateway error: {}", err)).into_response()
+    // For SSE clients, process asynchronously and return 202 immediately.
+    // This prevents the MCP SDK's request timeout from firing while the gateway
+    // processes slow operations (starting servers, broadcasting initialize,
+    // indexing catalogs for context management, etc.).
+    if state.sse_connection_manager.has_connection(&connection_key) {
+        let gateway = state.mcp_gateway.clone();
+        let sse_manager = state.sse_connection_manager.clone();
+        let client_id_owned = client_id.clone();
+        let connection_key_owned = connection_key.clone();
+        let session_id_owned = session_id.clone();
+        let request_id = request.id.clone();
+        let request_method = request.method.clone();
+        let is_initialize = request_method == "initialize";
+
+        tracing::info!(
+            "SSE async path: spawning task for client={}, connection_key={}, method={}, request_id={:?}",
+            client_id,
+            &connection_key[..8.min(connection_key.len())],
+            request_method,
+            request_id
+        );
+
+        let join_handle = tokio::spawn(async move {
+            // Overall timeout: must complete before the MCP SDK's client-side timeout (60s)
+            let gateway_timeout = tokio::time::Duration::from_secs(15);
+            let result = tokio::time::timeout(
+                gateway_timeout,
+                gateway.handle_request_with_skills(
+                    &client_id_owned,
+                    session_id_owned.as_deref(),
+                    allowed_servers,
+                    roots,
+                    client.mcp_permissions.clone(),
+                    client.skills_permissions.clone(),
+                    client.name.clone(),
+                    client.marketplace_permission.clone(),
+                    client.coding_agent_permission.clone(),
+                    client.coding_agent_type,
+                    request,
+                ),
+            )
+            .await;
+
+            let response = match result {
+                Ok(Ok(response)) => response,
+                Ok(Err(err)) => {
+                    tracing::error!(
+                        "Gateway error: client={}, method={}, error={}",
+                        client_id_owned, request_method, err
+                    );
+                    lr_mcp::protocol::JsonRpcResponse::error(
+                        request_id.unwrap_or(serde_json::Value::Null),
+                        lr_mcp::protocol::JsonRpcError::internal_error(format!(
+                            "Gateway error: {}", err
+                        )),
+                    )
+                }
+                Err(_) => {
+                    tracing::error!(
+                        "Gateway timeout ({}s): client={}, method={}",
+                        gateway_timeout.as_secs(), client_id_owned, request_method
+                    );
+                    lr_mcp::protocol::JsonRpcResponse::error(
+                        request_id.unwrap_or(serde_json::Value::Null),
+                        lr_mcp::protocol::JsonRpcError::internal_error(format!(
+                            "Gateway request timed out after {}s", gateway_timeout.as_secs()
+                        )),
+                    )
+                }
+            };
+
+            if !sse_manager.send_response(&connection_key_owned, response) {
+                tracing::error!(
+                    "Failed to send response via SSE: connection_key={}, method={}",
+                    connection_key_owned, request_method
+                );
+            }
+        });
+
+        // Register the task handle so it can be aborted if the client
+        // sends a new initialize (e.g., after SSE reconnection).
+        if is_initialize {
+            state
+                .sse_connection_manager
+                .register_gateway_task(&connection_key, join_handle.abort_handle());
+        }
+
+        (axum::http::StatusCode::ACCEPTED, "").into_response()
+    } else {
+        // No SSE connection — process synchronously and return response in body
+        match state
+            .mcp_gateway
+            .handle_request_with_skills(
+                &client_id,
+                session_id.as_deref(),
+                allowed_servers,
+                roots,
+                client.mcp_permissions.clone(),
+                client.skills_permissions.clone(),
+                client.name.clone(),
+                client.marketplace_permission.clone(),
+                client.coding_agent_permission.clone(),
+                client.coding_agent_type,
+                request,
+            )
+            .await
+        {
+            Ok(response) => send_response(&state.sse_connection_manager, &connection_key, response),
+            Err(err) => {
+                tracing::error!("Gateway error for client {}: {}", client_id, err);
+                ApiErrorResponse::internal_error(format!("Gateway error: {}", err))
+                    .into_response()
+            }
         }
     }
 }

@@ -20,6 +20,7 @@ pub struct ServerDependencies {
     pub client_manager: Arc<lr_clients::ClientManager>,
     pub token_store: Arc<lr_clients::TokenStore>,
     pub metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
+    pub health_cache: Option<Arc<lr_providers::health_cache::HealthCacheManager>>,
 }
 
 /// Server status
@@ -79,6 +80,7 @@ impl ServerManager {
             deps.client_manager,
             deps.token_store,
             deps.metrics_collector,
+            deps.health_cache,
         )
         .await?;
 

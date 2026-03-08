@@ -99,6 +99,21 @@ pub async fn chat_completions(
                         .collect::<Vec<_>>()
                         .join(", ");
 
+                    // Capture full request + candidate models for edit mode
+                    let auto_full_args = serde_json::json!({
+                        "candidate_models": auto_config.prioritized_models.iter()
+                            .map(|(p, m)| format!("{}/{}", p, m))
+                            .collect::<Vec<_>>(),
+                        "request": serde_json::to_value(&request)
+                            .map(|mut v| {
+                                if let Some(obj) = v.as_object_mut() {
+                                    obj.remove("stream");
+                                }
+                                v
+                            })
+                            .unwrap_or_default(),
+                    });
+
                     let response = state
                         .mcp_gateway
                         .firewall_manager
@@ -106,6 +121,7 @@ pub async fn chat_completions(
                             client.id.clone(),
                             client.name.clone(),
                             models_preview,
+                            Some(auto_full_args),
                         )
                         .await
                         .map_err(|e| {
@@ -122,13 +138,37 @@ pub async fn chat_completions(
                         | FirewallApprovalAction::Allow1Minute
                         | FirewallApprovalAction::Allow1Hour
                         | FirewallApprovalAction::AllowPermanent => {
-                            tracing::info!(
-                                "Auto-routing approved ({:?}): overriding '{}' with '{}'",
-                                response.action,
-                                request.model,
-                                auto_config.model_name
-                            );
-                            request.model = "localrouter/auto".to_string();
+                            // Apply user edits if present
+                            if let Some(ref edits) = response.edited_arguments {
+                                let req_edits = edits.get("request").unwrap_or(edits);
+                                apply_firewall_request_edits(&mut request, req_edits);
+
+                                // Check if user selected a specific model (bypass auto-routing)
+                                let selected_model = req_edits
+                                    .get("model")
+                                    .and_then(|v| v.as_str());
+                                if let Some(model) = selected_model {
+                                    if model != "localrouter/auto" {
+                                        tracing::info!(
+                                            "Auto-routing overridden by user: using model '{}'",
+                                            model
+                                        );
+                                        request.model = model.to_string();
+                                    } else {
+                                        request.model = "localrouter/auto".to_string();
+                                    }
+                                } else {
+                                    request.model = "localrouter/auto".to_string();
+                                }
+                            } else {
+                                tracing::info!(
+                                    "Auto-routing approved ({:?}): overriding '{}' with '{}'",
+                                    response.action,
+                                    request.model,
+                                    auto_config.model_name
+                                );
+                                request.model = "localrouter/auto".to_string();
+                            }
                         }
                         _ => {
                             return Err(ApiErrorResponse::forbidden("Auto-routing denied by user"));
@@ -157,56 +197,9 @@ pub async fn chat_completions(
             check_model_firewall_permission(&state, client_auth.as_ref().map(|e| &e.0), &request)
                 .await?;
 
-        // Apply edited model params from firewall edit mode
+        // Apply edited request fields from firewall edit mode
         if let Some(edits) = firewall_edits {
-            if let Some(model) = edits.get("model").and_then(|v| v.as_str()) {
-                request.model = model.to_string();
-            }
-            if let Some(v) = edits.get("temperature") {
-                request.temperature = if v.is_null() {
-                    None
-                } else {
-                    v.as_f64().map(|f| f as f32)
-                };
-            }
-            if let Some(v) = edits.get("max_tokens") {
-                request.max_tokens = if v.is_null() {
-                    None
-                } else {
-                    v.as_u64().and_then(|n| u32::try_from(n).ok())
-                };
-            }
-            if let Some(v) = edits.get("max_completion_tokens") {
-                request.max_completion_tokens = if v.is_null() {
-                    None
-                } else {
-                    v.as_u64().and_then(|n| u32::try_from(n).ok())
-                };
-            }
-            if let Some(v) = edits.get("top_p") {
-                request.top_p = if v.is_null() {
-                    None
-                } else {
-                    v.as_f64().map(|f| f as f32)
-                };
-            }
-            if let Some(v) = edits.get("frequency_penalty") {
-                request.frequency_penalty = if v.is_null() {
-                    None
-                } else {
-                    v.as_f64().map(|f| f as f32)
-                };
-            }
-            if let Some(v) = edits.get("presence_penalty") {
-                request.presence_penalty = if v.is_null() {
-                    None
-                } else {
-                    v.as_f64().map(|f| f as f32)
-                };
-            }
-            if let Some(v) = edits.get("seed") {
-                request.seed = if v.is_null() { None } else { v.as_i64() };
-            }
+            apply_firewall_request_edits(&mut request, &edits);
         }
     }
 
@@ -581,6 +574,76 @@ async fn validate_client_provider_access(
     Ok(())
 }
 
+/// Apply user-edited fields from the firewall approval popup to the request.
+///
+/// Supports model params (temperature, max_tokens, etc.) and messages.
+/// Used by both the model firewall and auto-router approval flows.
+fn apply_firewall_request_edits(
+    request: &mut ChatCompletionRequest,
+    edits: &serde_json::Value,
+) {
+    if let Some(model) = edits.get("model").and_then(|v| v.as_str()) {
+        request.model = model.to_string();
+    }
+    if let Some(v) = edits.get("temperature") {
+        request.temperature = if v.is_null() {
+            None
+        } else {
+            v.as_f64().map(|f| f as f32)
+        };
+    }
+    if let Some(v) = edits.get("max_tokens") {
+        request.max_tokens = if v.is_null() {
+            None
+        } else {
+            v.as_u64().and_then(|n| u32::try_from(n).ok())
+        };
+    }
+    if let Some(v) = edits.get("max_completion_tokens") {
+        request.max_completion_tokens = if v.is_null() {
+            None
+        } else {
+            v.as_u64().and_then(|n| u32::try_from(n).ok())
+        };
+    }
+    if let Some(v) = edits.get("top_p") {
+        request.top_p = if v.is_null() {
+            None
+        } else {
+            v.as_f64().map(|f| f as f32)
+        };
+    }
+    if let Some(v) = edits.get("frequency_penalty") {
+        request.frequency_penalty = if v.is_null() {
+            None
+        } else {
+            v.as_f64().map(|f| f as f32)
+        };
+    }
+    if let Some(v) = edits.get("presence_penalty") {
+        request.presence_penalty = if v.is_null() {
+            None
+        } else {
+            v.as_f64().map(|f| f as f32)
+        };
+    }
+    if let Some(v) = edits.get("seed") {
+        request.seed = if v.is_null() { None } else { v.as_i64() };
+    }
+    // Messages editing
+    if let Some(messages) = edits.get("messages") {
+        if let Ok(parsed) = serde_json::from_value::<Vec<ChatMessage>>(messages.clone()) {
+            request.messages = parsed;
+        }
+    }
+    // Stop sequences
+    if let Some(v) = edits.get("stop") {
+        if !v.is_null() {
+            request.stop = serde_json::from_value(v.clone()).ok();
+        }
+    }
+}
+
 /// Check model firewall permission for LLM access
 ///
 /// This enforces the model_permissions firewall for clients. When a model
@@ -688,17 +751,12 @@ async fn check_model_firewall_permission(
                 client.id
             );
 
-            // Build editable model params for the popup
-            let model_params = serde_json::json!({
-                "model": request.model,
-                "temperature": request.temperature,
-                "max_tokens": request.max_tokens,
-                "max_completion_tokens": request.max_completion_tokens,
-                "top_p": request.top_p,
-                "frequency_penalty": request.frequency_penalty,
-                "presence_penalty": request.presence_penalty,
-                "seed": request.seed,
-            });
+            // Capture the full request for the edit mode popup
+            let mut full_request = serde_json::to_value(&request)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(obj) = full_request.as_object_mut() {
+                obj.remove("stream"); // not user-editable
+            }
 
             // Request approval from the firewall manager
             let response = state
@@ -710,7 +768,7 @@ async fn check_model_firewall_permission(
                     model_id.clone(),
                     provider.clone(),
                     Some(120),
-                    Some(model_params),
+                    Some(full_request),
                 )
                 .await
                 .map_err(|e| {
