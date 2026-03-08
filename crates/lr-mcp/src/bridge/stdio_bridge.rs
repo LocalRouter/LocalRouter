@@ -417,6 +417,9 @@ mod tests {
                 guardrails_enabled: None,
                 guardrails: lr_config::ClientGuardrailsConfig::default(),
                 indexing_tools_enabled: None,
+                catalog_compression_enabled: None,
+                prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
+                json_repair: lr_config::ClientJsonRepairConfig::default(),
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -449,6 +452,9 @@ mod tests {
                 guardrails_enabled: None,
                 guardrails: lr_config::ClientGuardrailsConfig::default(),
                 indexing_tools_enabled: None,
+                catalog_compression_enabled: None,
+                prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
+                json_repair: lr_config::ClientJsonRepairConfig::default(),
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -481,6 +487,9 @@ mod tests {
                 guardrails_enabled: None,
                 guardrails: lr_config::ClientGuardrailsConfig::default(),
                 indexing_tools_enabled: None,
+                catalog_compression_enabled: None,
+                prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
+                json_repair: lr_config::ClientJsonRepairConfig::default(),
             },
         ];
         config

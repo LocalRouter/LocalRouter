@@ -73,6 +73,10 @@ fn create_test_config(
         sync_config: false,
         guardrails_enabled: None,
         guardrails: lr_config::ClientGuardrailsConfig::default(),
+        indexing_tools_enabled: None,
+        catalog_compression_enabled: None,
+        prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
+        json_repair: lr_config::ClientJsonRepairConfig::default(),
     };
 
     AppConfig {
@@ -514,6 +518,10 @@ async fn test_disabled_client_returns_unauthorized() {
         sync_config: false,
         guardrails_enabled: None,
         guardrails: lr_config::ClientGuardrailsConfig::default(),
+        indexing_tools_enabled: None,
+        catalog_compression_enabled: None,
+        prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
+        json_repair: lr_config::ClientJsonRepairConfig::default(),
     };
 
     let config = AppConfig {
@@ -566,6 +574,10 @@ async fn test_client_with_missing_strategy() {
         sync_config: false,
         guardrails_enabled: None,
         guardrails: lr_config::ClientGuardrailsConfig::default(),
+        indexing_tools_enabled: None,
+        catalog_compression_enabled: None,
+        prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
+        json_repair: lr_config::ClientJsonRepairConfig::default(),
     };
 
     let config = AppConfig {
@@ -1157,6 +1169,10 @@ fn create_free_tier_config(
         sync_config: false,
         guardrails_enabled: None,
         guardrails: lr_config::ClientGuardrailsConfig::default(),
+        indexing_tools_enabled: None,
+        catalog_compression_enabled: None,
+        prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
+        json_repair: lr_config::ClientJsonRepairConfig::default(),
     };
 
     AppConfig {
