@@ -77,7 +77,8 @@ pub async fn run_agentic_loop(
             "MCP via LLM: no MCP tools available for client {}, passing through",
             &client.id[..8.min(client.id.len())]
         );
-        // No MCP tools available - just call the router directly
+        // No MCP tools available - just call the router directly (non-streaming)
+        // Streaming passthrough is handled by the streaming orchestrator
         request.stream = false;
         let response = router
             .complete(&client.id, request)
