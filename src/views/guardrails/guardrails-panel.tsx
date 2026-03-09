@@ -61,7 +61,7 @@ export function GuardrailsPanel({
   return (
     <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0 rounded-lg border">
       {/* List Panel */}
-      <ResizablePanel defaultSize={35} minSize={25}>
+      <ResizablePanel defaultSize={21} minSize={15}>
         <div className="flex flex-col h-full">
           <div className="p-4 border-b">
             <div className="flex items-center gap-2">
@@ -118,7 +118,7 @@ export function GuardrailsPanel({
       <ResizableHandle withHandle />
 
       {/* Detail Panel */}
-      <ResizablePanel defaultSize={65}>
+      <ResizablePanel defaultSize={79}>
         {selectedModel ? (
           <ScrollArea className="h-full">
             <div className="p-6 space-y-6">

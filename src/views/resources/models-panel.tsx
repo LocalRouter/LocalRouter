@@ -183,7 +183,7 @@ export function ModelsPanel({
   return (
     <ResizablePanelGroup direction="horizontal" className="h-full rounded-lg border">
       {/* List Panel */}
-      <ResizablePanel defaultSize={35} minSize={25}>
+      <ResizablePanel defaultSize={21} minSize={15}>
         <div className="flex flex-col h-full">
           <div className="p-4 border-b space-y-2">
             <Input
@@ -281,7 +281,7 @@ export function ModelsPanel({
       <ResizableHandle withHandle />
 
       {/* Detail Panel */}
-      <ResizablePanel defaultSize={65}>
+      <ResizablePanel defaultSize={79}>
         {selectedModel ? (
           <ScrollArea className="h-full">
             <div className="p-6 space-y-6">

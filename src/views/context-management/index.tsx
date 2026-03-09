@@ -456,7 +456,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
           ) : (
             <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0 rounded-lg border">
               {/* Session List */}
-              <ResizablePanel defaultSize={35} minSize={25}>
+              <ResizablePanel defaultSize={21} minSize={15}>
                 <div className="flex flex-col h-full">
                   <div className="p-4 border-b">
                     <div className="flex items-center justify-between">
@@ -510,7 +510,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
               <ResizableHandle withHandle />
 
               {/* Session Detail */}
-              <ResizablePanel defaultSize={65}>
+              <ResizablePanel defaultSize={79}>
                 {selectedSession ? (
                     <div className="flex flex-col h-full">
                       <div className="flex-shrink-0 p-4 pb-0">

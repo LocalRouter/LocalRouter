@@ -337,7 +337,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
         <TabsContent value="agents" className="flex-1 min-h-0 mt-4">
           <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0 rounded-lg border">
             {/* List Panel */}
-            <ResizablePanel defaultSize={35} minSize={25}>
+            <ResizablePanel defaultSize={21} minSize={15}>
               <div className="flex flex-col h-full">
                 <div className="p-4 border-b">
                   <Input
@@ -399,7 +399,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
             <ResizableHandle withHandle />
 
             {/* Detail Panel */}
-            <ResizablePanel defaultSize={65}>
+            <ResizablePanel defaultSize={79}>
               {selected ? (
                 <ScrollArea className="h-full">
                   <div className="p-6 space-y-6">
@@ -643,7 +643,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
           ) : (
             <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0 rounded-lg border">
               {/* Session List Panel */}
-              <ResizablePanel defaultSize={35} minSize={25}>
+              <ResizablePanel defaultSize={21} minSize={15}>
                 <div className="flex flex-col h-full">
                   <div className="p-4 border-b">
                     <Input
@@ -714,7 +714,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
               <ResizableHandle withHandle />
 
               {/* Session Detail Panel */}
-              <ResizablePanel defaultSize={65}>
+              <ResizablePanel defaultSize={79}>
                 {selectedSessionId && sessionDetail ? (
                   <ScrollArea className="h-full">
                     <div className="p-6 space-y-4">
