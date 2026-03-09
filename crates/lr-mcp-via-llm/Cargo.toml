@@ -21,3 +21,4 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
+futures = { workspace = true }

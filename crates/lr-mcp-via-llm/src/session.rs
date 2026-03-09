@@ -7,6 +7,28 @@
 use std::time::Instant;
 
 use lr_providers::ChatMessage;
+use tokio::task::JoinHandle;
+
+/// Tracks a pending mixed tool execution where MCP tools run in the background
+/// while we wait for the client to return its tool results.
+pub struct PendingMixedExecution {
+    /// The full assistant message containing ALL tool calls (MCP + client)
+    pub full_assistant_message: ChatMessage,
+    /// Background handles for MCP tool executions: (tool_call_id, Result<content, error>)
+    pub mcp_handles: Vec<JoinHandle<(String, Result<String, String>)>>,
+    /// Tool call IDs that were sent to the client
+    pub client_tool_call_ids: Vec<String>,
+    /// Accumulated prompt tokens from iterations before the mixed call
+    pub accumulated_prompt_tokens: u64,
+    /// Accumulated completion tokens from iterations before the mixed call
+    pub accumulated_completion_tokens: u64,
+    /// MCP tools called in iterations before the mixed call
+    pub mcp_tools_called: Vec<String>,
+    /// Messages as they were before the mixed tool call (for history reconstruction)
+    pub messages_before_mixed: Vec<ChatMessage>,
+    /// When the mixed execution started
+    pub started_at: Instant,
+}
 
 /// Tracks the full conversation history for an MCP via LLM session,
 /// including messages the client never sees (injected tool calls/results).

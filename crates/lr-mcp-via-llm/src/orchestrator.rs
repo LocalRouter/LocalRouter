@@ -2,6 +2,9 @@
 //!
 //! Runs the core loop: call LLM → inspect for tool calls → execute MCP tools
 //! → re-call LLM → repeat until final response or limit reached.
+//!
+//! When mixed tool calls are detected (both MCP and client tools), MCP tools
+//! are executed in the background while client tools are returned immediately.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -11,26 +14,40 @@ use parking_lot::RwLock;
 use serde_json::{json, Value};
 
 use lr_config::{Client, McpViaLlmConfig};
+use lr_mcp::protocol::Root;
 use lr_mcp::McpGateway;
 use lr_providers::{
-    ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse, FunctionCall, ToolCall,
+    ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse, ToolCall,
 };
 use lr_router::Router;
 
 use crate::gateway_client::{GatewayClient, McpTool};
 use crate::manager::McpViaLlmError;
-use crate::session::McpViaLlmSession;
+use crate::session::{McpViaLlmSession, PendingMixedExecution};
+
+/// Result of the agentic loop
+pub enum OrchestratorResult {
+    /// Loop completed — return this response to the client
+    Complete(CompletionResponse),
+    /// Mixed tools detected — MCP tools running in background, return client tools to client
+    PendingMixed {
+        /// Response containing only client tool calls
+        client_response: CompletionResponse,
+        /// Background MCP execution state
+        pending: PendingMixedExecution,
+    },
+}
 
 /// Run the agentic loop for an MCP via LLM request
 pub async fn run_agentic_loop(
-    gateway: &McpGateway,
+    gateway: Arc<McpGateway>,
     router: &Router,
     client: &Client,
     session: Arc<RwLock<McpViaLlmSession>>,
     mut request: CompletionRequest,
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
-) -> Result<CompletionResponse, McpViaLlmError> {
+) -> Result<OrchestratorResult, McpViaLlmError> {
     let started_at = Instant::now();
     let timeout = std::time::Duration::from_secs(config.max_loop_timeout_seconds);
 
@@ -40,7 +57,7 @@ pub async fn run_agentic_loop(
     };
 
     // Set up gateway client for MCP operations
-    let gw_client = GatewayClient::new(gateway, client, gateway_session_key, allowed_servers);
+    let gw_client = GatewayClient::new(&gateway, client, gateway_session_key, allowed_servers);
 
     // Initialize gateway session if needed
     if !gateway_initialized {
@@ -59,10 +76,11 @@ pub async fn run_agentic_loop(
         );
         // No MCP tools available - just call the router directly
         request.stream = false;
-        return router
+        let response = router
             .complete(&client.id, request)
             .await
-            .map_err(McpViaLlmError::from);
+            .map_err(McpViaLlmError::from)?;
+        return Ok(OrchestratorResult::Complete(response));
     }
 
     tracing::info!(
@@ -90,7 +108,7 @@ pub async fn run_agentic_loop(
             &client.id[..8.min(client.id.len())]
         );
 
-        // Always non-streaming for Phase 1
+        // Always non-streaming for now
         let mut completion_request = request.clone();
         completion_request.stream = false;
 
@@ -118,20 +136,98 @@ pub async fn run_agentic_loop(
                     .iter()
                     .partition(|tc| mcp_tool_names.contains(&tc.function.name));
 
+                if !client_calls.is_empty() && !mcp_calls.is_empty() {
+                    // Mixed tools: spawn MCP in background, return client tools
+                    tracing::info!(
+                        "MCP via LLM: mixed tools detected — {} MCP, {} client (iteration {})",
+                        mcp_calls.len(),
+                        client_calls.len(),
+                        iteration + 1
+                    );
+
+                    // Capture the full assistant message and client tool call IDs
+                    // before we move `response`
+                    let full_assistant_message = choice.message.clone();
+                    let client_tool_call_ids: Vec<String> =
+                        client_calls.iter().map(|tc| tc.id.clone()).collect();
+                    let client_tools_owned: Vec<ToolCall> =
+                        client_calls.into_iter().cloned().collect();
+
+                    // Capture state needed for background MCP execution
+                    let client_id = client.id.clone();
+                    let roots = gw_client.roots().to_vec();
+                    let servers = gw_client.allowed_servers().to_vec();
+
+                    // Spawn background MCP tool executions
+                    let mut mcp_handles = Vec::new();
+                    for tool_call in &mcp_calls {
+                        let tool_name = tool_call.function.name.clone();
+                        let tool_call_id = tool_call.id.clone();
+                        let arguments: Value = serde_json::from_str(&tool_call.function.arguments)
+                            .unwrap_or(json!({}));
+
+                        let gw = gateway.clone();
+                        let cid = client_id.clone();
+                        let srv = servers.clone();
+                        let rts = roots.clone();
+
+                        mcp_tools_called.push(tool_name.clone());
+
+                        let handle = tokio::spawn(async move {
+                            let result = execute_mcp_tool_background(
+                                &gw, &cid, srv, rts, &tool_name, arguments,
+                            )
+                            .await;
+                            (tool_call_id, result)
+                        });
+                        mcp_handles.push(handle);
+                    }
+
+                    let pending = PendingMixedExecution {
+                        full_assistant_message,
+                        mcp_handles,
+                        client_tool_call_ids,
+                        accumulated_prompt_tokens: total_prompt_tokens,
+                        accumulated_completion_tokens: total_completion_tokens,
+                        mcp_tools_called: mcp_tools_called.clone(),
+                        messages_before_mixed: request.messages.clone(),
+                        started_at,
+                    };
+
+                    // Build response with only client tool calls
+                    let mut client_response = response;
+                    if let Some(choice) = client_response.choices.first_mut() {
+                        choice.message.tool_calls = Some(client_tools_owned);
+                    }
+
+                    let client_response = build_final_response(
+                        client_response,
+                        total_prompt_tokens,
+                        total_completion_tokens,
+                        &mcp_tools_called,
+                        iteration + 1,
+                    );
+
+                    return Ok(OrchestratorResult::PendingMixed {
+                        client_response,
+                        pending,
+                    });
+                }
+
                 if !client_calls.is_empty() {
-                    // Phase 1: return client tool calls to the client
+                    // Only client tools — return them directly
                     tracing::info!(
                         "MCP via LLM: {} client tool calls detected (iteration {}), returning to client",
                         client_calls.len(),
                         iteration + 1
                     );
-                    return Ok(build_final_response(
+                    return Ok(OrchestratorResult::Complete(build_final_response(
                         response,
                         total_prompt_tokens,
                         total_completion_tokens,
                         &mcp_tools_called,
                         iteration + 1,
-                    ));
+                    )));
                 }
 
                 // All MCP tools — execute them and loop
@@ -189,16 +285,181 @@ pub async fn run_agentic_loop(
             s.history.full_messages.push(choice.message.clone());
         }
 
-        return Ok(build_final_response(
+        return Ok(OrchestratorResult::Complete(build_final_response(
             response,
             total_prompt_tokens,
             total_completion_tokens,
             &mcp_tools_called,
             iteration + 1,
-        ));
+        )));
     }
 
     Err(McpViaLlmError::MaxIterations(config.max_loop_iterations))
+}
+
+/// Resume an agentic loop after mixed tool execution completes.
+///
+/// Called when the client returns tool results for client tools while
+/// MCP tool results are available from the background execution.
+///
+/// `incoming_request` is the client's new request (containing tool results).
+/// We use it as the base for model/temperature/etc. and replace the messages
+/// with our reconstructed history.
+pub async fn resume_after_mixed(
+    gateway: Arc<McpGateway>,
+    router: &Router,
+    client: &Client,
+    session: Arc<RwLock<McpViaLlmSession>>,
+    pending: PendingMixedExecution,
+    incoming_request: CompletionRequest,
+    client_tool_results: Vec<ChatMessage>,
+    config: &McpViaLlmConfig,
+    allowed_servers: Vec<String>,
+) -> Result<OrchestratorResult, McpViaLlmError> {
+    // Await all MCP background tasks
+    let mut mcp_results: Vec<(String, Result<String, String>)> = Vec::new();
+    for handle in pending.mcp_handles {
+        match handle.await {
+            Ok(result) => mcp_results.push(result),
+            Err(e) => {
+                tracing::error!("MCP via LLM: background task panicked: {}", e);
+                mcp_results.push(("unknown".to_string(), Err(format!("Task panicked: {}", e))));
+            }
+        }
+    }
+
+    tracing::info!(
+        "MCP via LLM: resuming after mixed execution — {} MCP results, {} client results",
+        mcp_results.len(),
+        client_tool_results.len()
+    );
+
+    // Reconstruct the full message history:
+    // 1. Messages before the mixed call
+    // 2. The full assistant message (with ALL tool calls)
+    // 3. All tool results (MCP + client) in original order
+    let mut messages = pending.messages_before_mixed;
+    messages.push(pending.full_assistant_message.clone());
+
+    // Add tool results in the order of the original tool_calls
+    if let Some(ref tool_calls) = pending.full_assistant_message.tool_calls {
+        for tc in tool_calls {
+            // Check if this is an MCP result
+            if let Some((_id, ref result)) = mcp_results.iter().find(|(id, _)| id == &tc.id) {
+                let content = match result {
+                    Ok(c) => c.clone(),
+                    Err(e) => format!("Error executing tool '{}': {}", tc.function.name, e),
+                };
+                messages.push(ChatMessage {
+                    role: "tool".to_string(),
+                    content: ChatMessageContent::Text(content),
+                    tool_calls: None,
+                    tool_call_id: Some(tc.id.clone()),
+                    name: None,
+                });
+            } else if let Some(client_result) = client_tool_results
+                .iter()
+                .find(|m| m.tool_call_id.as_ref() == Some(&tc.id))
+            {
+                messages.push(client_result.clone());
+            } else {
+                // Missing result — add error placeholder
+                messages.push(ChatMessage {
+                    role: "tool".to_string(),
+                    content: ChatMessageContent::Text(format!(
+                        "Error: no result received for tool call '{}'",
+                        tc.id
+                    )),
+                    tool_calls: None,
+                    tool_call_id: Some(tc.id.clone()),
+                    name: None,
+                });
+            }
+        }
+    }
+
+    // Store the reconstructed history
+    session.write().history.set_messages(messages.clone());
+
+    // Use the incoming request as base (preserves model, temperature, etc.)
+    // and replace messages with our reconstructed history
+    let mut request = incoming_request;
+    request.messages = messages;
+    // Tools will be re-injected by the orchestrator
+
+    // Continue the agentic loop with the reconstructed history
+    run_agentic_loop(
+        gateway,
+        router,
+        client,
+        session,
+        request,
+        config,
+        allowed_servers,
+    )
+    .await
+}
+
+/// Execute an MCP tool call in the background via the gateway directly.
+async fn execute_mcp_tool_background(
+    gateway: &McpGateway,
+    client_id: &str,
+    allowed_servers: Vec<String>,
+    roots: Vec<Root>,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<String, String> {
+    use lr_mcp::protocol::JsonRpcRequest;
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(1)),
+        method: "tools/call".to_string(),
+        params: Some(json!({
+            "name": tool_name,
+            "arguments": arguments
+        })),
+    };
+
+    let response = gateway
+        .handle_request(client_id, allowed_servers, roots, request)
+        .await
+        .map_err(|e| format!("tools/call '{}' failed: {}", tool_name, e))?;
+
+    if let Some(error) = response.error {
+        return Err(format!(
+            "tools/call '{}' error: {}",
+            tool_name, error.message
+        ));
+    }
+
+    let result = response.result.unwrap_or(json!({}));
+
+    // Extract text content from MCP tool result
+    if let Some(content) = result.get("content") {
+        if let Some(arr) = content.as_array() {
+            let texts: Vec<String> = arr
+                .iter()
+                .filter_map(|c| {
+                    if c.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        c.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if texts.len() == 1 {
+                return Ok(texts.into_iter().next().unwrap());
+            } else if !texts.is_empty() {
+                return Ok(texts.join("\n"));
+            }
+        }
+    }
+
+    Ok(content_to_string(&result))
 }
 
 /// Inject MCP tools into the request's tools array

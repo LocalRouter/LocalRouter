@@ -4,12 +4,10 @@
 
 use serde_json::{json, Value};
 
+use crate::manager::McpViaLlmError;
 use lr_config::Client;
 use lr_mcp::protocol::{JsonRpcRequest, Root};
 use lr_mcp::McpGateway;
-use lr_types::AppResult;
-
-use crate::manager::McpViaLlmError;
 
 /// Describes an MCP tool available via the gateway
 #[derive(Debug, Clone)]
@@ -33,6 +31,16 @@ pub struct GatewayClient<'a> {
 }
 
 impl<'a> GatewayClient<'a> {
+    /// Access the roots list (needed for spawning background tasks)
+    pub fn roots(&self) -> &[Root] {
+        &self.roots
+    }
+
+    /// Access the allowed servers list (needed for spawning background tasks)
+    pub fn allowed_servers(&self) -> &[String] {
+        &self.allowed_servers
+    }
+
     pub fn new(
         gateway: &'a McpGateway,
         client: &Client,

@@ -1560,7 +1560,7 @@ async fn handle_mcp_via_llm(
     let response = state
         .mcp_via_llm_manager
         .handle_request(
-            &state.mcp_gateway,
+            state.mcp_gateway.clone(),
             &state.router,
             &client,
             provider_request,
