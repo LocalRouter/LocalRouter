@@ -89,16 +89,20 @@ pub fn ensure_dir_exists(path: &PathBuf) -> AppResult<()> {
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that read/write the LOCALROUTER_ENV env var.
+    /// Env vars are process-global, so parallel tests that mutate them race.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_config_dir() {
-        // Clear env var to test default behavior
+        let _lock = ENV_LOCK.lock().unwrap();
         env::remove_var("LOCALROUTER_ENV");
 
         let dir = config_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
 
-        // In debug builds, uses .localrouter-dev; in release, uses .localrouter
         #[cfg(debug_assertions)]
         assert!(dir.to_string_lossy().ends_with(".localrouter-dev"));
 
@@ -108,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_config_dir_with_env_override() {
-        // Set the LOCALROUTER_ENV to test the override
+        let _lock = ENV_LOCK.lock().unwrap();
         env::set_var("LOCALROUTER_ENV", "test");
 
         let dir = config_dir().unwrap();
@@ -118,13 +122,12 @@ mod tests {
             dir.display()
         );
 
-        // Clean up
         env::remove_var("LOCALROUTER_ENV");
     }
 
     #[test]
     fn test_config_dir_env_override_custom_suffix() {
-        // Test with a custom suffix
+        let _lock = ENV_LOCK.lock().unwrap();
         env::set_var("LOCALROUTER_ENV", "e2e-testing");
 
         let dir = config_dir().unwrap();
@@ -134,24 +137,29 @@ mod tests {
             dir.display()
         );
 
-        // Clean up
         env::remove_var("LOCALROUTER_ENV");
     }
 
     #[test]
     fn test_config_file() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        env::remove_var("LOCALROUTER_ENV");
         let file = config_file().unwrap();
         assert!(file.to_string_lossy().ends_with("settings.yaml"));
     }
 
     #[test]
     fn test_api_keys_file() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        env::remove_var("LOCALROUTER_ENV");
         let file = api_keys_file().unwrap();
         assert!(file.to_string_lossy().ends_with("api_keys.json"));
     }
 
     #[test]
     fn test_logs_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        env::remove_var("LOCALROUTER_ENV");
         let dir = logs_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
 
@@ -166,6 +174,8 @@ mod tests {
 
     #[test]
     fn test_cache_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        env::remove_var("LOCALROUTER_ENV");
         let dir = cache_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
 
