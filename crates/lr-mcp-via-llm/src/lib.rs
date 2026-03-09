@@ -7,7 +7,8 @@
 
 mod gateway_client;
 mod manager;
-mod orchestrator;
+pub(crate) mod orchestrator;
+mod orchestrator_stream;
 mod session;
 
 pub use manager::{McpViaLlmError, McpViaLlmManager};

@@ -15,6 +15,7 @@ use lr_providers::{ChatMessage, CompletionRequest};
 use lr_router::Router;
 
 use crate::orchestrator::{self, OrchestratorResult};
+use crate::orchestrator_stream;
 use crate::session::{McpViaLlmSession, PendingMixedExecution};
 
 /// Manages MCP via LLM sessions and orchestrates agentic tool execution
@@ -186,6 +187,41 @@ impl McpViaLlmManager {
                 Ok(client_response)
             }
         }
+    }
+
+    /// Handle a streaming chat completion request in MCP via LLM mode.
+    ///
+    /// Returns a stream of `CompletionChunk`s that the caller wraps in SSE.
+    /// Multiple LLM iterations are streamed through a single connection.
+    pub async fn handle_streaming_request(
+        &self,
+        gateway: Arc<McpGateway>,
+        router: Arc<Router>,
+        client: &Client,
+        request: CompletionRequest,
+        allowed_servers: Vec<String>,
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = lr_types::AppResult<lr_providers::CompletionChunk>>
+                    + Send,
+            >,
+        >,
+        McpViaLlmError,
+    > {
+        let config = self.config();
+        let session = self.get_or_create_session(&client.id);
+
+        orchestrator_stream::run_agentic_loop_streaming(
+            gateway,
+            router,
+            client,
+            session,
+            request,
+            &config,
+            allowed_servers,
+        )
+        .await
     }
 
     /// Remove expired sessions (can be called periodically)

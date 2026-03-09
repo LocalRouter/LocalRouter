@@ -401,7 +401,7 @@ pub async fn resume_after_mixed(
 }
 
 /// Execute an MCP tool call in the background via the gateway directly.
-async fn execute_mcp_tool_background(
+pub async fn execute_mcp_tool_background(
     gateway: &McpGateway,
     client_id: &str,
     allowed_servers: Vec<String>,

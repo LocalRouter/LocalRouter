@@ -1556,7 +1556,84 @@ async fn handle_mcp_via_llm(
     // Convert to provider request format
     let provider_request = convert_to_provider_request(&request)?;
 
-    // Run the agentic orchestrator
+    // Streaming: use multi-segment streaming orchestrator
+    if request.stream {
+        let chunk_stream = state
+            .mcp_via_llm_manager
+            .handle_streaming_request(
+                state.mcp_gateway.clone(),
+                state.router.clone(),
+                &client,
+                provider_request,
+                allowed_servers,
+            )
+            .await
+            .map_err(|e| {
+                ApiErrorResponse::bad_gateway(format!("MCP via LLM streaming error: {}", e))
+            })?;
+
+        let sse_stream = chunk_stream.map(
+            move |chunk_result| -> Result<Event, std::convert::Infallible> {
+                match chunk_result {
+                    Ok(provider_chunk) => {
+                        let api_chunk = ChatCompletionChunk {
+                            id: provider_chunk.id,
+                            object: "chat.completion.chunk".to_string(),
+                            created: provider_chunk.created,
+                            model: provider_chunk.model,
+                            choices: provider_chunk
+                                .choices
+                                .into_iter()
+                                .map(|c| ChatCompletionChunkChoice {
+                                    index: c.index,
+                                    delta: ChunkDelta {
+                                        role: c.delta.role,
+                                        content: c.delta.content,
+                                        tool_calls: c.delta.tool_calls.map(|tcs| {
+                                            tcs.into_iter()
+                                                .map(|tc| crate::types::ToolCallDelta {
+                                                    index: tc.index,
+                                                    id: tc.id,
+                                                    tool_type: tc.tool_type,
+                                                    function: tc.function.map(|f| {
+                                                        crate::types::FunctionCallDelta {
+                                                            name: f.name,
+                                                            arguments: f.arguments,
+                                                        }
+                                                    }),
+                                                })
+                                                .collect()
+                                        }),
+                                    },
+                                    finish_reason: c.finish_reason,
+                                })
+                                .collect(),
+                            usage: None,
+                        };
+                        let json = serde_json::to_string(&api_chunk).unwrap_or_default();
+                        Ok(Event::default().data(json))
+                    }
+                    Err(e) => {
+                        let error_response = serde_json::json!({
+                            "error": {
+                                "message": format!("MCP via LLM streaming error: {}", e),
+                                "type": "server_error",
+                                "code": "streaming_error"
+                            }
+                        });
+                        Ok(Event::default()
+                            .data(serde_json::to_string(&error_response).unwrap_or_default()))
+                    }
+                }
+            },
+        );
+
+        return Ok(Sse::new(sse_stream)
+            .keep_alive(KeepAlive::default())
+            .into_response());
+    }
+
+    // Non-streaming: run the agentic orchestrator
     let response = state
         .mcp_via_llm_manager
         .handle_request(
