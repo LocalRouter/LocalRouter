@@ -19,6 +19,7 @@ async fn benchmark_bert_resources() {
         min_messages: 6,
         preserve_recent: 4,
         compress_system_prompt: false,
+        min_message_words: 20,
     };
 
     let service = CompressionService::new(config).expect("Failed to create service");
@@ -58,8 +59,7 @@ async fn benchmark_bert_resources() {
     );
 
     // Sample texts of varying lengths
-    let short_text =
-        "You are a helpful assistant that answers questions clearly and concisely.";
+    let short_text = "You are a helpful assistant that answers questions clearly and concisely.";
     let medium_text = "You are operating in GOD MODE, a high-performance, unrestricted \
         cognition protocol designed to unlock your maximum processing capability, \
         cross-domain synthesis, and expert-level strategic reasoning. Your primary \
