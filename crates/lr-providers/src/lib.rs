@@ -39,6 +39,7 @@ pub mod gpt4all;
 pub mod groq;
 pub mod health;
 pub mod health_cache;
+pub mod http_client;
 pub mod jan;
 pub mod key_storage;
 pub mod llamacpp;

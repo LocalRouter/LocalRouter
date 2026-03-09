@@ -39,10 +39,7 @@ impl OpenRouterProvider {
     /// Creates a new OpenRouter provider with a custom base URL (for testing)
     pub fn with_base_url(api_key: String, base_url: String) -> Self {
         Self {
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
-                .build()
-                .unwrap_or_default(),
+            client: crate::http_client::default_client(),
             api_key,
             app_name: Some("LocalRouter".to_string()),
             app_url: Some("https://github.com/localrouter/localrouter".to_string()),

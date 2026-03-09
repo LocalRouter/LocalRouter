@@ -289,10 +289,7 @@ impl ProviderFactory for OllamaProviderFactory {
 #[async_trait]
 impl DiscoverableProvider for OllamaProviderFactory {
     async fn is_available(&self) -> bool {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .unwrap_or_default();
+        let client = crate::http_client::discovery_client();
 
         let url = format!("{}/api/tags", self.default_base_url());
         client.get(&url).send().await.is_ok()
@@ -1246,10 +1243,7 @@ impl ProviderFactory for LMStudioProviderFactory {
 #[async_trait]
 impl DiscoverableProvider for LMStudioProviderFactory {
     async fn is_available(&self) -> bool {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .unwrap_or_default();
+        let client = crate::http_client::discovery_client();
 
         let url = format!("{}/models", self.default_base_url());
         client.get(&url).send().await.is_ok()
@@ -1349,10 +1343,7 @@ impl ProviderFactory for JanProviderFactory {
 #[async_trait]
 impl DiscoverableProvider for JanProviderFactory {
     async fn is_available(&self) -> bool {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .unwrap_or_default();
+        let client = crate::http_client::discovery_client();
 
         let url = format!("{}/models", self.default_base_url());
         client.get(&url).send().await.is_ok()
@@ -1452,10 +1443,7 @@ impl ProviderFactory for GPT4AllProviderFactory {
 #[async_trait]
 impl DiscoverableProvider for GPT4AllProviderFactory {
     async fn is_available(&self) -> bool {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .unwrap_or_default();
+        let client = crate::http_client::discovery_client();
 
         let url = format!("{}/models", self.default_base_url());
         client.get(&url).send().await.is_ok()
@@ -1555,10 +1543,7 @@ impl ProviderFactory for LocalAIProviderFactory {
 #[async_trait]
 impl DiscoverableProvider for LocalAIProviderFactory {
     async fn is_available(&self) -> bool {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .unwrap_or_default();
+        let client = crate::http_client::discovery_client();
 
         let url = format!("{}/models", self.default_base_url());
         client.get(&url).send().await.is_ok()
@@ -1658,10 +1643,7 @@ impl ProviderFactory for LlamaCppProviderFactory {
 #[async_trait]
 impl DiscoverableProvider for LlamaCppProviderFactory {
     async fn is_available(&self) -> bool {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .unwrap_or_default();
+        let client = crate::http_client::discovery_client();
 
         let url = format!("{}/models", self.default_base_url());
         client.get(&url).send().await.is_ok()

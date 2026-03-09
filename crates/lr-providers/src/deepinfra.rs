@@ -31,10 +31,7 @@ pub struct DeepInfraProvider {
 impl DeepInfraProvider {
     /// Create a new DeepInfra provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .map_err(|e| AppError::Provider(format!("Failed to create HTTP client: {}", e)))?;
+        let client = crate::http_client::extended_client()?;
 
         Ok(Self { client, api_key })
     }
