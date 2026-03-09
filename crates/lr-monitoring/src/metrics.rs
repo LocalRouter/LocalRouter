@@ -14,6 +14,17 @@ use std::sync::Arc;
 use super::mcp_metrics::McpMetricsCollector;
 use super::storage::{MetricRow, MetricsDatabase};
 
+/// Aggregated feature statistics from the metrics database
+#[derive(Debug, Clone, Default)]
+pub struct FeatureStatsTotals {
+    pub routellm_strong: u64,
+    pub routellm_weak: u64,
+    pub json_repairs: u64,
+    pub compression_tokens_saved: u64,
+    pub compression_cost_saved_micros: u64,
+    pub context_mgmt_tokens_saved: u64,
+}
+
 /// Request metrics for recording
 #[derive(Debug, Clone)]
 pub struct RequestMetrics<'a> {
@@ -455,6 +466,69 @@ impl MetricsCollector {
     /// Get MCP metrics collector
     pub fn mcp(&self) -> &McpMetricsCollector {
         &self.mcp_metrics
+    }
+
+    /// Record a feature event (RouteLLM classification, JSON repair, compression, context mgmt).
+    ///
+    /// Uses the existing metrics table with feature-specific metric types.
+    /// - `feature_type`: e.g. "feature_routellm_strong", "feature_json_repair"
+    /// - `tokens_value`: tokens saved (stored as input_tokens), 0 if not applicable
+    /// - `cost_value`: cost saved in USD (stored as cost_usd), 0.0 if not applicable
+    pub fn record_feature_event(&self, feature_type: &str, tokens_value: u64, cost_value: f64) {
+        let timestamp = Utc::now()
+            .duration_trunc(chrono::Duration::minutes(1))
+            .unwrap();
+
+        let _ = self.db.atomic_record_success(
+            feature_type,
+            timestamp,
+            0, // latency not relevant for feature events
+            tokens_value,
+            0, // output_tokens not used
+            cost_value,
+        );
+
+        if let Some(ref callback) = *self.on_metrics_recorded.read() {
+            callback();
+        }
+    }
+
+    /// Get aggregated feature stats from the metrics database (last 90 days).
+    ///
+    /// Queries persisted feature metric types and returns totals.
+    pub fn get_feature_totals(&self) -> FeatureStatsTotals {
+        let now = Utc::now();
+        let start = now - chrono::Duration::days(90);
+
+        let (strong_count, _, _) = self
+            .db
+            .get_aggregated_usage("feature_routellm_strong", start, now)
+            .unwrap_or_default();
+        let (weak_count, _, _) = self
+            .db
+            .get_aggregated_usage("feature_routellm_weak", start, now)
+            .unwrap_or_default();
+        let (repair_count, _, _) = self
+            .db
+            .get_aggregated_usage("feature_json_repair", start, now)
+            .unwrap_or_default();
+        let (_, compression_tokens, compression_cost) = self
+            .db
+            .get_aggregated_usage("feature_compression", start, now)
+            .unwrap_or_default();
+        let (_, context_tokens, _) = self
+            .db
+            .get_aggregated_usage("feature_context_mgmt", start, now)
+            .unwrap_or_default();
+
+        FeatureStatsTotals {
+            routellm_strong: strong_count,
+            routellm_weak: weak_count,
+            json_repairs: repair_count,
+            compression_tokens_saved: compression_tokens,
+            compression_cost_saved_micros: (compression_cost * 1_000_000.0) as u64,
+            context_mgmt_tokens_saved: context_tokens,
+        }
     }
 
     /// Get database reference for aggregation task

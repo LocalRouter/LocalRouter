@@ -216,7 +216,7 @@ pub async fn chat_completions(
             .safety_engine
             .read()
             .as_ref()
-            .map_or(false, |e| e.has_models())
+            .is_some_and(|e| e.has_models())
     {
         let state_ref = state.clone();
         let client_ctx = client_auth.as_ref().map(|e| e.0.clone());
@@ -279,10 +279,7 @@ pub async fn chat_completions(
         // Track tokens saved by compression
         if compressed.original_tokens > compressed.compressed_tokens {
             let saved = (compressed.original_tokens - compressed.compressed_tokens) as u64;
-            state
-                .feature_stats
-                .compression_tokens_saved
-                .fetch_add(saved, std::sync::atomic::Ordering::Relaxed);
+            state.metrics_collector.record_feature_event("feature_compression", saved, 0.0);
             compression_tokens_saved = saved;
         }
         request.messages = compressed
@@ -323,10 +320,13 @@ pub async fn chat_completions(
         let guardrails_active = guardrail_handle.is_some();
         let compression_active = compression_tokens_saved > 0;
         let routellm_active = provider_request.pre_computed_routing.is_some();
-        let routellm_tier = provider_request
-            .pre_computed_routing
-            .as_ref()
-            .map(|r| if r.is_strong { "strong" } else { "weak" });
+        let routellm_tier = provider_request.pre_computed_routing.as_ref().map(|r| {
+            if r.is_strong {
+                "strong"
+            } else {
+                "weak"
+            }
+        });
         let client_mode = client_auth
             .as_ref()
             .and_then(|ext| {
@@ -465,7 +465,7 @@ fn spawn_routellm_classification(
     let service = state.router.get_routellm_service()?.clone();
     let threshold = routellm_config.threshold;
     let request_clone = request.clone();
-    let feature_stats = state.feature_stats.clone();
+    let metrics_collector = state.metrics_collector.clone();
 
     Some(tokio::spawn(async move {
         let prompt = request_clone
@@ -486,15 +486,11 @@ fn spawn_routellm_classification(
                     threshold,
                     if is_strong { "strong" } else { "weak" }
                 );
-                // Track strong/weak classification for dashboard
+                // Track strong/weak classification for dashboard (persisted to metrics DB)
                 if is_strong {
-                    feature_stats
-                        .routellm_strong
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    metrics_collector.record_feature_event("feature_routellm_strong", 0, 0.0);
                 } else {
-                    feature_stats
-                        .routellm_weak
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    metrics_collector.record_feature_event("feature_routellm_weak", 0, 0.0);
                 }
                 Some(PreComputedRouting {
                     is_strong,
@@ -985,7 +981,7 @@ async fn check_model_firewall_permission(
 
             // Capture the full request for the edit mode popup
             let mut full_request =
-                serde_json::to_value(&request).unwrap_or_else(|_| serde_json::json!({}));
+                serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({}));
             if let Some(obj) = full_request.as_object_mut() {
                 obj.remove("stream"); // not user-editable
             }
@@ -1149,7 +1145,13 @@ async fn run_prompt_compression(
         .collect();
 
     let result = engine
-        .compress_messages(&messages, rate, preserve_recent, compress_system, min_message_words)
+        .compress_messages(
+            &messages,
+            rate,
+            preserve_recent,
+            compress_system,
+            min_message_words,
+        )
         .await?;
 
     Ok(Some(result))
@@ -1876,11 +1878,7 @@ async fn handle_mcp_via_llm(
             if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
                 let cost_saved =
                     (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-                let micros = (cost_saved * 1_000_000.0) as u64;
-                state_clone
-                    .feature_stats
-                    .compression_cost_saved_micros
-                    .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+                state_clone.metrics_collector.record_feature_event("feature_compression", 0, cost_saved);
             }
 
             let cost = {
@@ -2422,11 +2420,7 @@ async fn build_non_streaming_response(
     // Track cost saved by compression (using input token price)
     if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
         let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-        let micros = (cost_saved * 1_000_000.0) as u64;
-        state
-            .feature_stats
-            .compression_cost_saved_micros
-            .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+        state.metrics_collector.record_feature_event("feature_compression", 0, cost_saved);
     }
 
     // For chat messages, calculate incremental token count (last message only)
@@ -2936,11 +2930,7 @@ async fn handle_streaming(
         // Track cost saved by compression (using input token price)
         if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
             let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-            let micros = (cost_saved * 1_000_000.0) as u64;
-            state_clone
-                .feature_stats
-                .compression_cost_saved_micros
-                .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+            state_clone.metrics_collector.record_feature_event("feature_compression", 0, cost_saved);
         }
 
         let cost = {
@@ -3465,11 +3455,7 @@ async fn handle_streaming_parallel(
             if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
                 let cost_saved =
                     (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-                let micros = (cost_saved * 1_000_000.0) as u64;
-                state_clone
-                    .feature_stats
-                    .compression_cost_saved_micros
-                    .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+                state_clone.metrics_collector.record_feature_event("feature_compression", 0, cost_saved);
             }
 
             let cost = {
@@ -3615,11 +3601,8 @@ fn maybe_repair_json_content(
             "JSON repair applied {} fix(es) to response",
             result.repairs.len()
         );
-        // Track JSON repairs for dashboard
-        state
-            .feature_stats
-            .json_repairs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Track JSON repairs for dashboard (persisted to metrics DB)
+        state.metrics_collector.record_feature_event("feature_json_repair", 0, 0.0);
     }
     result.repaired
 }

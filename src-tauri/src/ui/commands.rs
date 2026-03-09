@@ -180,7 +180,7 @@ pub async fn get_aggregate_stats(
 
 /// Get feature-level statistics (RouteLLM, JSON repair, compression, context mgmt)
 ///
-/// Returns in-memory counters accumulated since server start.
+/// Returns statistics from the persistent metrics database (last 90 days).
 #[tauri::command]
 pub async fn get_feature_stats(
     server_manager: State<'_, Arc<lr_server::ServerManager>>,
@@ -189,17 +189,16 @@ pub async fn get_feature_stats(
         .get_state()
         .ok_or_else(|| "Server is not running".to_string())?;
 
-    let mut snapshot = app_state.feature_stats.snapshot();
+    let totals = app_state.metrics_collector.get_feature_totals();
 
-    // Include context management bytes saved from the MCP gateway (convert bytes → approx tokens)
-    let ctx_bytes = app_state
-        .mcp_gateway
-        .context_mgmt_bytes_saved
-        .load(std::sync::atomic::Ordering::Relaxed);
-    // Rough estimate: ~4 chars per token
-    snapshot.context_mgmt_tokens_saved = ctx_bytes / 4;
-
-    Ok(snapshot)
+    Ok(lr_server::state::FeatureStatsSnapshot {
+        routellm_strong: totals.routellm_strong,
+        routellm_weak: totals.routellm_weak,
+        json_repairs: totals.json_repairs,
+        compression_tokens_saved: totals.compression_tokens_saved,
+        compression_cost_saved_micros: totals.compression_cost_saved_micros,
+        context_mgmt_tokens_saved: totals.context_mgmt_tokens_saved,
+    })
 }
 
 // ============================================================================
@@ -1785,6 +1784,7 @@ pub async fn get_context_management_config(
 pub async fn update_context_management_config(
     enabled: Option<bool>,
     indexing_tools: Option<bool>,
+    catalog_compression: Option<bool>,
     catalog_threshold_bytes: Option<usize>,
     response_threshold_bytes: Option<usize>,
     config_manager: State<'_, ConfigManager>,
@@ -1797,6 +1797,9 @@ pub async fn update_context_management_config(
             }
             if let Some(v) = indexing_tools {
                 cfg.context_management.indexing_tools = v;
+            }
+            if let Some(v) = catalog_compression {
+                cfg.context_management.catalog_compression = v;
             }
             if let Some(v) = catalog_threshold_bytes {
                 cfg.context_management.catalog_threshold_bytes = v;
@@ -2464,6 +2467,8 @@ pub enum DebugFirewallType {
     Marketplace,
     /// Free-tier fallback approval
     FreeTierFallback,
+    /// Coding agent session approval
+    CodingAgent,
 }
 
 /// Trigger a fake firewall approval popup immediately.
@@ -2523,6 +2528,13 @@ pub async fn debug_trigger_firewall_popup(
                 "anthropic/claude-3-5-sonnet, openai/gpt-4o".to_string(),
                 false,
                 true,
+            ),
+            DebugFirewallType::CodingAgent => (
+                "coding_agent_start".to_string(),
+                "coding-agents".to_string(),
+                r#"{"task": "Refactor the authentication module", "working_directory": "/home/user/project"}"#.to_string(),
+                false,
+                false,
             ),
         };
 
@@ -2590,6 +2602,13 @@ pub async fn debug_trigger_firewall_popup(
                 false,
                 true,
             ),
+            DebugFirewallType::CodingAgent => (
+                "coding_agent_start".to_string(),
+                "coding-agents".to_string(),
+                r#"{"task": "Fix failing tests in utils module", "working_directory": "/tmp/other-project"}"#.to_string(),
+                false,
+                false,
+            ),
         };
         sessions.push(DebugSession {
             tool_name: alt_tool,
@@ -2642,7 +2661,7 @@ pub async fn debug_trigger_firewall_popup(
         .title("Approval Required")
         .inner_size(400.0, 320.0)
         .center()
-        .visible(true)
+        .visible(false)
         .resizable(false)
         .decorations(true)
         .always_on_top(true)
@@ -3194,17 +3213,36 @@ pub async fn update_compression_config(
 #[tauri::command]
 pub async fn get_compression_status(
     state: State<'_, Arc<lr_server::state::AppState>>,
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<serde_json::Value, String> {
     let service = state.compression_service.read().clone();
     let status = if let Some(svc) = service {
         svc.get_status().await
     } else {
+        // Service not running — still check filesystem for downloaded model
+        let config = config_manager.get();
+        let model_size = &config.prompt_compression.model_size;
+        let repo = lr_compression::repo_id_for_model(model_size).to_string();
+
+        let config_dir = lr_utils::paths::config_dir().map_err(|e| e.to_string())?;
+        let compression_dir = config_dir.join("compression").join(model_size);
+        let model_path = compression_dir.join("model");
+        let tokenizer_path = compression_dir.join("tokenizer");
+        let downloaded = lr_compression::is_downloaded(&model_path, &tokenizer_path);
+
+        let model_size_bytes = if downloaded {
+            std::fs::metadata(model_path.join("model.safetensors"))
+                .ok()
+                .map(|m| m.len())
+        } else {
+            None
+        };
+
         lr_compression::CompressionStatus {
-            model_downloaded: false,
+            model_downloaded: downloaded,
             model_loaded: false,
-            model_size_bytes: None,
-            model_repo: "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
-                .to_string(),
+            model_size_bytes,
+            model_repo: repo,
         }
     };
     serde_json::to_value(&status).map_err(|e| e.to_string())
@@ -3269,7 +3307,7 @@ pub async fn test_compression(
         1.0
     };
 
-    serde_json::to_value(&serde_json::json!({
+    serde_json::to_value(serde_json::json!({
         "compressed_text": compressed_text,
         "original_tokens": original_tokens,
         "compressed_tokens": compressed_tokens,

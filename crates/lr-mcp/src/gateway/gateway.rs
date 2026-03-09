@@ -1,6 +1,5 @@
 use dashmap::DashMap;
 use serde_json::{json, Value};
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -22,6 +21,7 @@ use super::types::*;
 use super::virtual_server::VirtualMcpServer;
 
 /// MCP Gateway - Unified endpoint for multiple MCP servers
+#[allow(clippy::type_complexity)]
 pub struct McpGateway {
     /// Active sessions (session_key -> session)
     /// For SSE connections, session_key is a per-connection UUID.
@@ -56,8 +56,8 @@ pub struct McpGateway {
     /// Virtual MCP servers (skills, marketplace, coding agents)
     pub(crate) virtual_servers: parking_lot::RwLock<Vec<Arc<dyn VirtualMcpServer>>>,
 
-    /// Bytes saved by context management response compression (atomic counter)
-    pub context_mgmt_bytes_saved: AtomicU64,
+    /// Callback to record context management bytes saved (wired to metrics DB)
+    pub(crate) on_context_saved: parking_lot::RwLock<Option<Arc<dyn Fn(u64) + Send + Sync>>>,
 }
 
 impl McpGateway {
@@ -107,8 +107,13 @@ impl McpGateway {
             elicitation_manager,
             firewall_manager,
             virtual_servers: parking_lot::RwLock::new(Vec::new()),
-            context_mgmt_bytes_saved: AtomicU64::new(0),
+            on_context_saved: parking_lot::RwLock::new(None),
         }
+    }
+
+    /// Set callback to record context management bytes saved to the metrics database
+    pub fn set_on_context_saved<F: Fn(u64) + Send + Sync + 'static>(&self, callback: F) {
+        *self.on_context_saved.write() = Some(Arc::new(callback));
     }
 
     /// Register a virtual MCP server (skills, marketplace, coding agents, etc.)
@@ -333,13 +338,11 @@ impl McpGateway {
         // This prevents lock contention with any previous task that may still
         // be running on the old session (e.g., from a replaced SSE connection).
         // The old task continues on its orphaned Arc but won't block new tasks.
-        if method == "initialize" {
-            if self.sessions.remove(session_key).is_some() {
-                tracing::info!(
-                    "Gateway: removed stale session for session_key={} before re-initialize",
-                    session_key
-                );
-            }
+        if method == "initialize" && self.sessions.remove(session_key).is_some() {
+            tracing::info!(
+                "Gateway: removed stale session for session_key={} before re-initialize",
+                session_key
+            );
         }
 
         // Get or create session

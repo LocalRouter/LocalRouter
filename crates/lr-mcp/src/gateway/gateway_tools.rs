@@ -555,11 +555,45 @@ impl McpGateway {
         session: &GatewaySession,
     ) {
         let virtual_servers = self.virtual_servers.read();
+
+        // Collect deferred virtual-server slugs from the compression plan
+        let deferred_virtual: std::collections::HashSet<&str> = session
+            .catalog_compression
+            .as_ref()
+            .map(|plan| {
+                plan.deferred_items
+                    .iter()
+                    .filter(|d| d.item_type == DeferredItemType::Tools)
+                    .map(|d| d.server_slug.as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         for vs in virtual_servers.iter() {
             if let Some(state) = session.virtual_server_state.get(vs.id()) {
                 let virtual_tools = vs.list_tools(state.as_ref());
-                for tool in virtual_tools {
-                    tools.push(serde_json::to_value(&tool).unwrap_or_default());
+                let server_deferred = deferred_virtual.contains(vs.id());
+
+                if server_deferred {
+                    // Only defer tools that the virtual server explicitly allows
+                    let deferrable: std::collections::HashSet<String> =
+                        vs.deferrable_tools(state.as_ref()).into_iter().collect();
+                    let activated = session.activated_tools();
+
+                    for tool in virtual_tools {
+                        let is_deferrable = deferrable.contains(&tool.name);
+                        let is_activated =
+                            activated.map(|a| a.contains(&tool.name)).unwrap_or(false);
+
+                        // Include if: not deferrable, or activated via ctx_search
+                        if !is_deferrable || is_activated {
+                            tools.push(serde_json::to_value(&tool).unwrap_or_default());
+                        }
+                    }
+                } else {
+                    for tool in virtual_tools {
+                        tools.push(serde_json::to_value(&tool).unwrap_or_default());
+                    }
                 }
             }
         }
@@ -811,7 +845,7 @@ impl McpGateway {
         }
 
         // Build compressed response with preview
-        let preview_bytes = (threshold / 8).max(200).min(500);
+        let preview_bytes = (threshold / 8).clamp(200, 500);
         let preview = truncate_to_char_boundary(&full_text, preview_bytes);
         let compressed_text = format!(
             "[Response compressed — {} bytes indexed as {}]\n\n{}\n\nFull output indexed. \
@@ -830,8 +864,9 @@ impl McpGateway {
         }
 
         let saved = byte_size.saturating_sub(compressed_text.len()) as u64;
-        self.context_mgmt_bytes_saved
-            .fetch_add(saved, std::sync::atomic::Ordering::Relaxed);
+        if let Some(cb) = self.on_context_saved.read().as_ref() {
+            cb(saved);
+        }
 
         tracing::info!(
             "Compressed response for {} ({} bytes → {} bytes, source={})",

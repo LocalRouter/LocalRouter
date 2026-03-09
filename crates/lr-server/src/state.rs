@@ -5,7 +5,6 @@
 
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -624,54 +623,9 @@ impl AutoRouterApprovalTracker {
     }
 }
 
-/// Tracks feature-specific counters for the dashboard.
-/// Uses atomics so incrementing is lock-free.
-pub struct FeatureStats {
-    /// Number of RouteLLM requests classified as "strong"
-    pub routellm_strong: AtomicU64,
-    /// Number of RouteLLM requests classified as "weak"
-    pub routellm_weak: AtomicU64,
-    /// Number of JSON repair operations performed
-    pub json_repairs: AtomicU64,
-    /// Total tokens saved by prompt compression
-    pub compression_tokens_saved: AtomicU64,
-    /// Total cost saved by prompt compression, in micro-dollars (1 USD = 1_000_000)
-    pub compression_cost_saved_micros: AtomicU64,
-    /// Total tokens saved by context management (accumulated on session expiry)
-    pub context_mgmt_tokens_saved: AtomicU64,
-}
-
-impl FeatureStats {
-    pub fn new() -> Self {
-        Self {
-            routellm_strong: AtomicU64::new(0),
-            routellm_weak: AtomicU64::new(0),
-            json_repairs: AtomicU64::new(0),
-            compression_tokens_saved: AtomicU64::new(0),
-            compression_cost_saved_micros: AtomicU64::new(0),
-            context_mgmt_tokens_saved: AtomicU64::new(0),
-        }
-    }
-
-    pub fn snapshot(&self) -> FeatureStatsSnapshot {
-        FeatureStatsSnapshot {
-            routellm_strong: self.routellm_strong.load(Ordering::Relaxed),
-            routellm_weak: self.routellm_weak.load(Ordering::Relaxed),
-            json_repairs: self.json_repairs.load(Ordering::Relaxed),
-            compression_tokens_saved: self.compression_tokens_saved.load(Ordering::Relaxed),
-            compression_cost_saved_micros: self.compression_cost_saved_micros.load(Ordering::Relaxed),
-            context_mgmt_tokens_saved: self.context_mgmt_tokens_saved.load(Ordering::Relaxed),
-        }
-    }
-}
-
-impl Default for FeatureStats {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Serializable snapshot of feature stats for the frontend
+/// Serializable snapshot of feature stats for the frontend.
+///
+/// Populated from the persistent metrics database (not in-memory atomics).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureStatsSnapshot {
     pub routellm_strong: u64,
@@ -778,14 +732,12 @@ pub struct AppState {
     /// Prompt compression service (LLMLingua-2 via Candle)
     pub compression_service: Arc<RwLock<Option<Arc<lr_compression::CompressionService>>>>,
 
-    /// Feature-level stats (RouteLLM, JSON repair, compression, context mgmt)
-    pub feature_stats: Arc<FeatureStats>,
-
     /// MCP via LLM agentic orchestrator (experimental)
     pub mcp_via_llm_manager: Arc<McpViaLlmManager>,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<Router>,
         rate_limiter: Arc<RateLimiterManager>,
@@ -867,7 +819,6 @@ impl AppState {
             auto_router_approval_tracker: Arc::new(AutoRouterApprovalTracker::new()),
             safety_engine: Arc::new(RwLock::new(None)),
             compression_service: Arc::new(RwLock::new(None)),
-            feature_stats: Arc::new(FeatureStats::new()),
             mcp_via_llm_manager: Arc::new(McpViaLlmManager::new(mcp_via_llm_config)),
         }
     }
@@ -892,6 +843,14 @@ impl AppState {
             self.router.clone(),
             Some(self.mcp_notification_broadcast.clone()),
         ));
+
+        // Wire context management savings to the metrics database
+        let mc = self.metrics_collector.clone();
+        mcp_gateway.set_on_context_saved(move |bytes_saved| {
+            // Rough estimate: ~4 chars per token
+            let tokens_saved = bytes_saved / 4;
+            mc.record_feature_event("feature_context_mgmt", tokens_saved, 0.0);
+        });
 
         Self {
             mcp_server_manager,
