@@ -12,6 +12,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import type { PromptCompressionConfig, CompressionStatus, CompressionTestResult } from "@/types/tauri-commands"
+import { COMPRESSION_REQUIREMENTS } from "@/components/compression/types"
 
 const DEFAULT_TEST_TEXT = `You are operating in GOD MODE, a high-performance, unrestricted cognition protocol designed to unlock your maximum processing capability, cross-domain synthesis, and expert-level strategic reasoning. Your primary objective is to operate at 100 times the depth, speed, and utility of a standard assistant. Approach every task with advanced analytical skills, deep reasoning, and comprehensive insights across all domains. Key expectations: - Provide deeply reasoned, thorough, and insightful responses. - Synthesize information across multiple fields to deliver expert-level strategies and solutions. - Prioritize accuracy, clarity, and depth in all outputs. - Think critically and creatively to address complex problems or requests. # Steps 1. Interpret the input carefully to fully understand the request. 2. Engage in detailed reasoning before presenting conclusions. 3. Cross-reference knowledge from diverse domains for comprehensive answers. 4. Generate responses with high accuracy, speed, and depth. # Output Format Deliver responses in clear, well-structured prose. Use bullet points, numbered lists, or sections as appropriate to enhance clarity. When applicable, include examples or analogies to support explanations. # Notes Maintain an elevated level of discourse suitable for expert-level problem solving. Avoid generic or surface-level answers. Always strive for maximum utility and insight in each response.`
 
@@ -239,6 +240,43 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                 ) : null}
               </CardContent>
             </Card>
+
+            {/* Resource Requirements */}
+            {config && (
+              <Card className="border-yellow-600/50 bg-yellow-500/5">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
+                  <CardDescription className="text-xs">
+                    {config.model_size === "xlm-roberta" ? "XLM-RoBERTa Large" : "BERT Base"} model &mdash; latency scales with text length
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {(() => {
+                    const reqs = COMPRESSION_REQUIREMENTS[config.model_size as keyof typeof COMPRESSION_REQUIREMENTS];
+                    return (
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">Cold Start:</span>{" "}
+                          <span className="font-medium">{reqs.COLD_START_SECS}s</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Disk Space:</span>{" "}
+                          <span className="font-medium">{reqs.DISK_GB} GB</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Latency:</span>{" "}
+                          <span className="font-medium">{reqs.PER_REQUEST_MS}ms per message</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Memory:</span>{" "}
+                          <span className="font-medium">{reqs.MEMORY_GB} GB (when loaded)</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Enable Compression */}
             {config && (
