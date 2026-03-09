@@ -73,7 +73,8 @@ export function ClientDetail({
   const showCodingAgentsTab = clientMode !== "llm_only"
   const showGuardrailsTab = clientMode !== "mcp_only"
   const showTryItOutLlm = clientMode !== "mcp_only"
-  const showTryItOutMcp = clientMode !== "llm_only"
+  // MCP via LLM clients speak only OpenAI protocol — no direct MCP try-it-out
+  const showTryItOutMcp = clientMode !== "llm_only" && clientMode !== "mcp_via_llm"
 
   useEffect(() => {
     if (!initialClient) {

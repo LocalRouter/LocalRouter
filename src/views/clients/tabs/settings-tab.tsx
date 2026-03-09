@@ -151,6 +151,8 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
     if (mode === "both") return template.supportsLlm && template.supportsMcp
     if (mode === "llm_only") return template.supportsLlm
     if (mode === "mcp_only") return template.supportsMcp
+    // MCP via LLM only requires LLM support — MCP tools are server-side
+    if (mode === "mcp_via_llm") return template.supportsLlm
     return true
   }
 

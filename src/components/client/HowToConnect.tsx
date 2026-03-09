@@ -650,7 +650,8 @@ export function HowToConnect({
 
   const hasQuickSetup = template && template.setupType !== "generic"
   const showModelsTab = clientMode !== "mcp_only"
-  const showMcpTab = clientMode !== "llm_only"
+  // MCP via LLM clients speak only OpenAI protocol — no MCP connect info
+  const showMcpTab = clientMode !== "llm_only" && clientMode !== "mcp_via_llm"
 
   // Fetch server config, executable path, and home dir
   useEffect(() => {
