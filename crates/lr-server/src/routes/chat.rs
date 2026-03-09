@@ -16,7 +16,7 @@ use chrono::Utc;
 use futures::stream::StreamExt;
 use uuid::Uuid;
 
-use super::helpers::get_client_with_strategy;
+use super::helpers::{check_llm_access, get_client_with_strategy};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -205,8 +205,10 @@ pub async fn chat_completions(
     // Check rate limits first (reject early before spawning parallel work)
     check_rate_limits(&state, &auth, &request).await?;
 
-    // MCP via LLM: intercept and handle via agentic orchestrator
+    // Enforce client mode: block MCP-only clients from LLM endpoints
+    // Also intercept MCP-via-LLM clients for agentic orchestration
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        check_llm_access(client)?;
         if client.client_mode == lr_config::ClientMode::McpViaLlm {
             return handle_mcp_via_llm(state, auth, client_auth, request).await;
         }
@@ -1550,14 +1552,24 @@ async fn handle_mcp_via_llm(
     let (client, _strategy) = get_client_with_strategy(&state, &auth.api_key_id)
         .map_err(|_| ApiErrorResponse::internal_error("Client lookup failed"))?;
 
-    // Compute allowed MCP servers from config
-    let allowed_servers: Vec<String> = state
+    // Compute allowed MCP servers respecting client's mcp_permissions
+    let all_server_ids: Vec<String> = state
         .config_manager
         .get()
         .mcp_servers
         .iter()
         .map(|s| s.id.clone())
         .collect();
+
+    let allowed_servers: Vec<String> = if client.mcp_permissions.global.is_enabled() {
+        all_server_ids
+    } else {
+        all_server_ids
+            .iter()
+            .filter(|server_id| client.mcp_permissions.has_any_enabled_for_server(server_id))
+            .cloned()
+            .collect()
+    };
 
     // Convert to provider request format
     let provider_request = convert_to_provider_request(&request)?;
@@ -1578,7 +1590,8 @@ async fn handle_mcp_via_llm(
                 ApiErrorResponse::bad_gateway(format!("MCP via LLM streaming error: {}", e))
             })?;
 
-        let sse_stream = chunk_stream.map(
+        // Map provider chunks to SSE events, then append [DONE] sentinel
+        let data_stream = chunk_stream.map(
             move |chunk_result| -> Result<Event, std::convert::Infallible> {
                 match chunk_result {
                     Ok(provider_chunk) => {
@@ -1633,6 +1646,12 @@ async fn handle_mcp_via_llm(
                 }
             },
         );
+
+        // Append [DONE] sentinel after all data chunks (required by OpenAI streaming protocol)
+        let done_stream = futures::stream::once(async {
+            Ok::<Event, std::convert::Infallible>(Event::default().data("[DONE]"))
+        });
+        let sse_stream = data_stream.chain(done_stream);
 
         return Ok(Sse::new(sse_stream)
             .keep_alive(KeepAlive::default())

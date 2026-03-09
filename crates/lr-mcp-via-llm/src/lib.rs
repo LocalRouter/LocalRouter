@@ -5,10 +5,13 @@
 //! gateway, and loops until the LLM produces a final response. The client
 //! speaks only the OpenAI protocol and never needs MCP awareness.
 
-mod gateway_client;
+pub(crate) mod gateway_client;
 mod manager;
 pub(crate) mod orchestrator;
 mod orchestrator_stream;
-mod session;
+pub(crate) mod session;
+
+#[cfg(test)]
+mod tests;
 
 pub use manager::{McpViaLlmError, McpViaLlmManager};

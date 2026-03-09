@@ -5,11 +5,12 @@
 //! and SSE keepalive prevents timeout. Intermediate `finish_reason: "tool_calls"`
 //! events are suppressed when all tools are MCP-only.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
+use dashmap::DashMap;
 use futures::StreamExt;
 use parking_lot::RwLock;
 use serde_json::{json, Value};
@@ -23,9 +24,10 @@ use lr_providers::{
 use lr_router::Router;
 use lr_types::AppResult;
 
-use crate::gateway_client::{GatewayClient, McpTool};
+use crate::gateway_client::GatewayClient;
 use crate::manager::McpViaLlmError;
-use crate::session::McpViaLlmSession;
+use crate::orchestrator;
+use crate::session::{McpViaLlmSession, PendingMixedExecution};
 
 /// Run the agentic loop with multi-segment streaming.
 ///
@@ -40,6 +42,7 @@ pub async fn run_agentic_loop_streaming(
     mut request: CompletionRequest,
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
+    pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
 {
     let started_at = Instant::now();
@@ -62,7 +65,7 @@ pub async fn run_agentic_loop_streaming(
 
     // Fetch MCP tools
     let mcp_tools = gw_client.list_tools().await?;
-    let mcp_tool_names: HashSet<String> = mcp_tools.iter().map(|t| t.name.clone()).collect();
+    let mut mcp_tool_names: HashSet<String> = mcp_tools.iter().map(|t| t.name.clone()).collect();
 
     if mcp_tools.is_empty() {
         tracing::info!(
@@ -84,7 +87,80 @@ pub async fn run_agentic_loop_streaming(
     );
 
     // Merge MCP tools into request
-    inject_mcp_tools(&mut request, &mcp_tools);
+    orchestrator::inject_mcp_tools(&mut request, &mcp_tools);
+
+    // Synthetic tool mappings for resources and prompts
+    let mut resource_tools: HashMap<String, String> = HashMap::new();
+    let mut prompt_tools: HashMap<String, String> = HashMap::new();
+
+    // Expose MCP resources as synthetic tools
+    if config.expose_resources_as_tools {
+        match gw_client.list_resources().await {
+            Ok(resources) => {
+                if !resources.is_empty() {
+                    tracing::info!(
+                        "MCP via LLM streaming: exposing {} resources as tools",
+                        resources.len()
+                    );
+                    orchestrator::inject_resource_tools(
+                        &mut request,
+                        &resources,
+                        &mut resource_tools,
+                    );
+                    for name in resource_tools.keys() {
+                        mcp_tool_names.insert(name.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("MCP via LLM streaming: failed to list resources: {}", e);
+            }
+        }
+    }
+
+    // Inject MCP prompts
+    if config.inject_prompts {
+        match gw_client.list_prompts().await {
+            Ok(prompts) => {
+                if !prompts.is_empty() {
+                    // No-arg prompts: resolve and inject as system messages
+                    for prompt in prompts.iter().filter(|p| p.arguments.is_empty()) {
+                        match gw_client.get_prompt(&prompt.name, json!({})).await {
+                            Ok(messages) => {
+                                orchestrator::inject_prompt_messages(&mut request, &messages);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "MCP via LLM streaming: failed to get prompt '{}': {}",
+                                    prompt.name,
+                                    e
+                                );
+                            }
+                        }
+                    }
+
+                    // Parameterized prompts: expose as synthetic tools
+                    let param_prompts: Vec<_> = prompts
+                        .into_iter()
+                        .filter(|p| !p.arguments.is_empty())
+                        .collect();
+                    if !param_prompts.is_empty() {
+                        orchestrator::inject_prompt_tools(
+                            &mut request,
+                            &param_prompts,
+                            &mut prompt_tools,
+                        );
+                        for name in prompt_tools.keys() {
+                            mcp_tool_names.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("MCP via LLM streaming: failed to list prompts: {}", e);
+            }
+        }
+    }
 
     // Capture state needed for the spawned task
     let client_id = client.id.clone();
@@ -103,12 +179,15 @@ pub async fn run_agentic_loop_streaming(
             request,
             &client_id,
             &mcp_tool_names,
+            &resource_tools,
+            &prompt_tools,
             roots,
             servers,
             tx.clone(),
             started_at,
             timeout,
             max_iterations,
+            pending_executions,
         )
         .await;
 
@@ -135,18 +214,24 @@ async fn streaming_loop(
     mut request: CompletionRequest,
     client_id: &str,
     mcp_tool_names: &HashSet<String>,
+    resource_tools: &HashMap<String, String>,
+    prompt_tools: &HashMap<String, String>,
     roots: Vec<lr_mcp::protocol::Root>,
     servers: Vec<String>,
     tx: tokio::sync::mpsc::Sender<AppResult<CompletionChunk>>,
     started_at: Instant,
     timeout: std::time::Duration,
     max_iterations: u32,
+    pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
 ) -> Result<(), McpViaLlmError> {
     for iteration in 0..max_iterations {
         // Check timeout
         if started_at.elapsed() > timeout {
             return Err(McpViaLlmError::Timeout(timeout.as_secs()));
         }
+
+        // Keep session alive during long-running loops
+        session.write().touch();
 
         tracing::info!(
             "MCP via LLM streaming: iteration {} for client {}",
@@ -181,7 +266,7 @@ async fn streaming_loop(
                             accumulated_content.push_str(content);
                         }
                         if let Some(ref role) = choice.delta.role {
-                            accumulated_role = role.clone();
+                            accumulated_role.clone_from(role);
                         }
                         // Accumulate tool call deltas
                         if let Some(ref tool_call_deltas) = choice.delta.tool_calls {
@@ -198,7 +283,6 @@ async fn streaming_loop(
 
                     if has_finish {
                         // Don't forward the finish chunk yet — we need to classify tools first
-                        // We'll send it (or suppress it) after the loop
                     } else {
                         // Forward non-finish chunks to the client
                         if tx.send(Ok(chunk)).await.is_err() {
@@ -242,8 +326,70 @@ async fn streaming_loop(
                     .iter()
                     .partition(|tc| mcp_tool_names.contains(&tc.function.name));
 
+                if !client_calls.is_empty() && !mcp_calls.is_empty() {
+                    // Mixed tools: spawn MCP in background, store pending, return client tools
+                    tracing::info!(
+                        "MCP via LLM streaming: mixed tools — {} MCP, {} client (iteration {})",
+                        mcp_calls.len(),
+                        client_calls.len(),
+                        iteration + 1
+                    );
+
+                    let full_assistant_message = accumulated_message;
+                    let client_tool_call_ids: Vec<String> =
+                        client_calls.iter().map(|tc| tc.id.clone()).collect();
+
+                    // Spawn background MCP tool executions
+                    let mut mcp_handles = Vec::new();
+                    for tool_call in &mcp_calls {
+                        let tool_name = tool_call.function.name.clone();
+                        let tool_call_id = tool_call.id.clone();
+                        let arguments: Value = serde_json::from_str(&tool_call.function.arguments)
+                            .unwrap_or(json!({}));
+
+                        let gw = gateway.clone();
+                        let cid = client_id.to_string();
+                        let srv = servers.clone();
+                        let rts = roots.clone();
+
+                        let handle = tokio::spawn(async move {
+                            let result = orchestrator::execute_mcp_tool_background(
+                                &gw, &cid, srv, rts, &tool_name, arguments,
+                            )
+                            .await;
+                            (tool_call_id, result)
+                        });
+                        mcp_handles.push(handle);
+                    }
+
+                    let pending = PendingMixedExecution {
+                        full_assistant_message,
+                        mcp_handles,
+                        client_tool_call_ids,
+                        accumulated_prompt_tokens: 0,
+                        accumulated_completion_tokens: 0,
+                        mcp_tools_called: mcp_calls
+                            .iter()
+                            .map(|tc| tc.function.name.clone())
+                            .collect(),
+                        messages_before_mixed: request.messages.clone(),
+                        started_at,
+                    };
+
+                    // Store pending execution for later resume
+                    pending_executions.insert(client_id.to_string(), pending);
+
+                    // Send finish chunk with client-only tools
+                    let finish_chunk = build_finish_chunk_with_tools(
+                        &client_calls,
+                        &finish_reason.unwrap_or_else(|| "tool_calls".to_string()),
+                    );
+                    let _ = tx.send(Ok(finish_chunk)).await;
+                    return Ok(());
+                }
+
                 if !client_calls.is_empty() {
-                    // Has client tools — send the finish chunk with client-only tools and stop
+                    // Only client tools — send the finish chunk with client-only tools and stop
                     tracing::info!(
                         "MCP via LLM streaming: {} client tool calls (iteration {}), finishing stream",
                         client_calls.len(),
@@ -278,18 +424,57 @@ async fn streaming_loop(
                         tool_call.id
                     );
 
-                    let result_content = match crate::orchestrator::execute_mcp_tool_background(
-                        &gateway,
-                        client_id,
-                        servers.clone(),
-                        roots.clone(),
-                        tool_name,
-                        arguments,
-                    )
-                    .await
-                    {
-                        Ok(content) => content,
-                        Err(e) => format!("Error executing tool '{}': {}", tool_name, e),
+                    let result_content = if let Some(uri) = resource_tools.get(tool_name.as_str()) {
+                        // Synthetic resource tool
+                        match orchestrator::execute_mcp_tool_background(
+                            &gateway,
+                            client_id,
+                            servers.clone(),
+                            roots.clone(),
+                            &format!("resources/read:{}", uri),
+                            json!({"uri": uri}),
+                        )
+                        .await
+                        {
+                            Ok(content) => content,
+                            Err(e) => {
+                                format!("Error reading resource '{}': {}", tool_name, e)
+                            }
+                        }
+                    } else if let Some(_prompt_name) = prompt_tools.get(tool_name.as_str()) {
+                        // Synthetic prompt tool — execute via gateway
+                        match orchestrator::execute_mcp_tool_background(
+                            &gateway,
+                            client_id,
+                            servers.clone(),
+                            roots.clone(),
+                            tool_name,
+                            arguments.clone(),
+                        )
+                        .await
+                        {
+                            Ok(content) => content,
+                            Err(e) => {
+                                format!("Error getting prompt '{}': {}", tool_name, e)
+                            }
+                        }
+                    } else {
+                        // Regular MCP tool
+                        match orchestrator::execute_mcp_tool_background(
+                            &gateway,
+                            client_id,
+                            servers.clone(),
+                            roots.clone(),
+                            tool_name,
+                            arguments,
+                        )
+                        .await
+                        {
+                            Ok(content) => content,
+                            Err(e) => {
+                                format!("Error executing tool '{}': {}", tool_name, e)
+                            }
+                        }
                     };
 
                     request.messages.push(ChatMessage {
@@ -397,15 +582,19 @@ fn accumulate_tool_call_deltas(
         let acc = &mut accumulators[idx];
 
         if let Some(ref id) = delta.id {
-            acc.id = id.clone();
+            acc.id.clone_from(id);
         }
         if let Some(ref tt) = delta.tool_type {
-            acc.tool_type = tt.clone();
+            acc.tool_type.clone_from(tt);
         }
         if let Some(ref func) = delta.function {
+            // Name: use assignment (sent once by providers, not split across deltas)
             if let Some(ref name) = func.name {
-                acc.name.push_str(name);
+                if acc.name.is_empty() {
+                    acc.name.clone_from(name);
+                }
             }
+            // Arguments: always append (streamed incrementally)
             if let Some(ref args) = func.arguments {
                 acc.arguments.push_str(args);
             }
@@ -447,41 +636,5 @@ fn build_finish_chunk_with_tools(tool_calls: &[&ToolCall], finish_reason: &str) 
             finish_reason: Some(finish_reason.to_string()),
         }],
         extensions: None,
-    }
-}
-
-/// Inject MCP tools into the request's tools array (duplicated from orchestrator
-/// to avoid making the non-streaming version public just for this)
-fn inject_mcp_tools(request: &mut CompletionRequest, mcp_tools: &[McpTool]) {
-    let provider_tools: Vec<lr_providers::Tool> = mcp_tools
-        .iter()
-        .map(|t| lr_providers::Tool {
-            tool_type: "function".to_string(),
-            function: lr_providers::FunctionDefinition {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                parameters: t.input_schema.clone(),
-            },
-        })
-        .collect();
-
-    let mcp_names: HashSet<&str> = mcp_tools.iter().map(|t| t.name.as_str()).collect();
-
-    match &mut request.tools {
-        Some(existing) => {
-            let before = existing.len();
-            existing.retain(|t| !mcp_names.contains(t.function.name.as_str()));
-            let shadowed = before - existing.len();
-            if shadowed > 0 {
-                tracing::warn!(
-                    "MCP via LLM streaming: shadowed {} client tools with MCP tools",
-                    shadowed
-                );
-            }
-            existing.extend(provider_tools);
-        }
-        None => {
-            request.tools = Some(provider_tools);
-        }
     }
 }

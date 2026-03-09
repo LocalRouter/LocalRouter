@@ -21,10 +21,10 @@ use crate::session::{McpViaLlmSession, PendingMixedExecution};
 /// Manages MCP via LLM sessions and orchestrates agentic tool execution
 pub struct McpViaLlmManager {
     /// Sessions indexed by client_id
-    sessions_by_client: DashMap<String, Vec<Arc<RwLock<McpViaLlmSession>>>>,
+    pub(crate) sessions_by_client: DashMap<String, Vec<Arc<RwLock<McpViaLlmSession>>>>,
     /// Pending mixed tool executions indexed by client_id
     /// (one pending execution per client at most)
-    pending_executions: DashMap<String, PendingMixedExecution>,
+    pub(crate) pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
     /// Configuration
     config: RwLock<McpViaLlmConfig>,
 }
@@ -33,7 +33,7 @@ impl McpViaLlmManager {
     pub fn new(config: McpViaLlmConfig) -> Self {
         Self {
             sessions_by_client: DashMap::new(),
-            pending_executions: DashMap::new(),
+            pending_executions: Arc::new(DashMap::new()),
             config: RwLock::new(config),
         }
     }
@@ -48,7 +48,7 @@ impl McpViaLlmManager {
 
     /// Get an existing session or create a new one for this client.
     /// Phase 1: one session per client (simplest matching strategy).
-    fn get_or_create_session(&self, client_id: &str) -> Arc<RwLock<McpViaLlmSession>> {
+    pub(crate) fn get_or_create_session(&self, client_id: &str) -> Arc<RwLock<McpViaLlmSession>> {
         let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
 
         let mut sessions = self
@@ -76,7 +76,7 @@ impl McpViaLlmManager {
 
     /// Check if the incoming request contains tool results that match a pending
     /// mixed execution for this client.
-    fn take_pending_if_matching(
+    pub(crate) fn take_pending_if_matching(
         &self,
         client_id: &str,
         request: &CompletionRequest,
@@ -182,6 +182,8 @@ impl McpViaLlmManager {
                     &client_id[..8.min(client_id.len())],
                     pending.mcp_handles.len()
                 );
+                // Insert replaces any existing entry; Drop impl on PendingMixedExecution
+                // aborts old background tasks automatically.
                 self.pending_executions
                     .insert(client_id.to_string(), pending);
                 Ok(client_response)
@@ -212,6 +214,48 @@ impl McpViaLlmManager {
         let config = self.config();
         let session = self.get_or_create_session(&client.id);
 
+        // Check if this is a resume from a pending mixed execution (streaming variant)
+        if let Some((pending, client_tool_results)) =
+            self.take_pending_if_matching(&client.id, &request)
+        {
+            tracing::info!(
+                "MCP via LLM streaming: resuming pending mixed execution for client {} ({} client tool results)",
+                &client.id[..8.min(client.id.len())],
+                client_tool_results.len()
+            );
+
+            // Resume: await MCP handles, reconstruct history, then stream
+            let result = orchestrator::resume_after_mixed(
+                gateway.clone(),
+                &router,
+                client,
+                session.clone(),
+                pending,
+                request,
+                client_tool_results,
+                &config,
+                allowed_servers.clone(),
+            )
+            .await?;
+
+            match result {
+                OrchestratorResult::Complete(response) => {
+                    // Wrap completed response as a single-chunk stream
+                    let chunk = response_to_chunk(&response);
+                    return Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })));
+                }
+                OrchestratorResult::PendingMixed {
+                    client_response,
+                    pending,
+                } => {
+                    // Another mixed result after resume — store and return client tools as stream
+                    self.pending_executions.insert(client.id.clone(), pending);
+                    let chunk = response_to_chunk(&client_response);
+                    return Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })));
+                }
+            }
+        }
+
         orchestrator_stream::run_agentic_loop_streaming(
             gateway,
             router,
@@ -220,6 +264,7 @@ impl McpViaLlmManager {
             request,
             &config,
             allowed_servers,
+            self.pending_executions.clone(),
         )
         .await
     }
@@ -246,9 +291,52 @@ impl McpViaLlmManager {
         });
 
         // Also clean up pending executions that have been waiting too long
+        // Drop impl on PendingMixedExecution will abort background tasks.
         let timeout = Duration::from_secs(self.config.read().max_loop_timeout_seconds);
         self.pending_executions
             .retain(|_, pending| pending.started_at.elapsed() < timeout);
+    }
+}
+
+/// Convert a CompletionResponse to a single CompletionChunk (for streaming resume)
+fn response_to_chunk(response: &lr_providers::CompletionResponse) -> lr_providers::CompletionChunk {
+    let choice = response.choices.first();
+    lr_providers::CompletionChunk {
+        id: response.id.clone(),
+        object: "chat.completion.chunk".to_string(),
+        created: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64,
+        model: response.model.clone(),
+        choices: vec![lr_providers::ChunkChoice {
+            index: 0,
+            delta: lr_providers::ChunkDelta {
+                role: Some("assistant".to_string()),
+                content: choice.and_then(|c| match &c.message.content {
+                    lr_providers::ChatMessageContent::Text(t) if !t.is_empty() => Some(t.clone()),
+                    _ => None,
+                }),
+                tool_calls: choice.and_then(|c| {
+                    c.message.tool_calls.as_ref().map(|tcs| {
+                        tcs.iter()
+                            .enumerate()
+                            .map(|(i, tc)| lr_providers::ToolCallDelta {
+                                index: i as u32,
+                                id: Some(tc.id.clone()),
+                                tool_type: Some(tc.tool_type.clone()),
+                                function: Some(lr_providers::FunctionCallDelta {
+                                    name: Some(tc.function.name.clone()),
+                                    arguments: Some(tc.function.arguments.clone()),
+                                }),
+                            })
+                            .collect()
+                    })
+                }),
+            },
+            finish_reason: choice.and_then(|c| c.finish_reason.clone()),
+        }],
+        extensions: None,
     }
 }
 

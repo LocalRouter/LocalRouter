@@ -179,6 +179,9 @@ pub async fn run_agentic_loop(
             return Err(McpViaLlmError::Timeout(config.max_loop_timeout_seconds));
         }
 
+        // Keep session alive during long-running loops
+        session.write().touch();
+
         tracing::info!(
             "MCP via LLM: iteration {} for client {}",
             iteration + 1,
@@ -435,15 +438,18 @@ pub async fn resume_after_mixed(
     router: &Router,
     client: &Client,
     session: Arc<RwLock<McpViaLlmSession>>,
-    pending: PendingMixedExecution,
+    mut pending: PendingMixedExecution,
     incoming_request: CompletionRequest,
     client_tool_results: Vec<ChatMessage>,
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
+    // Take handles out before awaiting (pending has Drop impl that aborts them)
+    let mcp_handles = std::mem::take(&mut pending.mcp_handles);
+
     // Await all MCP background tasks
     let mut mcp_results: Vec<(String, Result<String, String>)> = Vec::new();
-    for handle in pending.mcp_handles {
+    for handle in mcp_handles {
         match handle.await {
             Ok(result) => mcp_results.push(result),
             Err(e) => {
@@ -463,11 +469,21 @@ pub async fn resume_after_mixed(
     // 1. Messages before the mixed call
     // 2. The full assistant message (with ALL tool calls)
     // 3. All tool results (MCP + client) in original order
-    let mut messages = pending.messages_before_mixed;
-    messages.push(pending.full_assistant_message.clone());
+    let full_assistant_message = std::mem::replace(
+        &mut pending.full_assistant_message,
+        ChatMessage {
+            role: String::new(),
+            content: ChatMessageContent::Text(String::new()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    );
+    let mut messages = std::mem::take(&mut pending.messages_before_mixed);
+    messages.push(full_assistant_message.clone());
 
     // Add tool results in the order of the original tool_calls
-    if let Some(ref tool_calls) = pending.full_assistant_message.tool_calls {
+    if let Some(ref tool_calls) = full_assistant_message.tool_calls {
         for tc in tool_calls {
             // Check if this is an MCP result
             if let Some((_id, ref result)) = mcp_results.iter().find(|(id, _)| id == &tc.id) {
@@ -588,7 +604,7 @@ pub async fn execute_mcp_tool_background(
 }
 
 /// Inject MCP tools into the request's tools array
-fn inject_mcp_tools(request: &mut CompletionRequest, mcp_tools: &[McpTool]) {
+pub(crate) fn inject_mcp_tools(request: &mut CompletionRequest, mcp_tools: &[McpTool]) {
     let provider_tools: Vec<lr_providers::Tool> = mcp_tools
         .iter()
         .map(|t| lr_providers::Tool {
@@ -656,7 +672,7 @@ fn build_final_response(
 }
 
 /// Convert a serde_json Value to a string for tool result content
-fn content_to_string(value: &Value) -> String {
+pub(crate) fn content_to_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         other => other.to_string(),
@@ -665,7 +681,7 @@ fn content_to_string(value: &Value) -> String {
 
 /// Inject MCP resources as synthetic function tools.
 /// Each resource becomes a no-argument tool that reads the resource on demand.
-fn inject_resource_tools(
+pub(crate) fn inject_resource_tools(
     request: &mut CompletionRequest,
     resources: &[crate::gateway_client::McpResource],
     resource_tools: &mut HashMap<String, String>,
@@ -706,7 +722,7 @@ fn inject_resource_tools(
 }
 
 /// Inject parameterized MCP prompts as synthetic function tools.
-fn inject_prompt_tools(
+pub(crate) fn inject_prompt_tools(
     request: &mut CompletionRequest,
     prompts: &[crate::gateway_client::McpPrompt],
     prompt_tools: &mut HashMap<String, String>,
@@ -762,7 +778,7 @@ fn inject_prompt_tools(
 
 /// Inject no-argument prompt messages into the request as system messages.
 /// These are prepended to the conversation before user messages.
-fn inject_prompt_messages(request: &mut CompletionRequest, prompt_messages: &[Value]) {
+pub(crate) fn inject_prompt_messages(request: &mut CompletionRequest, prompt_messages: &[Value]) {
     // Find the first non-system message index to insert before it
     let insert_idx = request
         .messages
@@ -770,6 +786,7 @@ fn inject_prompt_messages(request: &mut CompletionRequest, prompt_messages: &[Va
         .position(|m| m.role != "system")
         .unwrap_or(request.messages.len());
 
+    let mut offset = 0;
     for msg in prompt_messages {
         let role = msg
             .get("role")
@@ -791,7 +808,7 @@ fn inject_prompt_messages(request: &mut CompletionRequest, prompt_messages: &[Va
 
         if !text.is_empty() {
             request.messages.insert(
-                insert_idx,
+                insert_idx + offset,
                 ChatMessage {
                     role,
                     content: ChatMessageContent::Text(text),
@@ -800,6 +817,7 @@ fn inject_prompt_messages(request: &mut CompletionRequest, prompt_messages: &[Va
                     name: None,
                 },
             );
+            offset += 1;
         }
     }
 }

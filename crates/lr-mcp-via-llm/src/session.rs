@@ -31,9 +31,17 @@ pub struct PendingMixedExecution {
     pub started_at: Instant,
 }
 
+impl Drop for PendingMixedExecution {
+    fn drop(&mut self) {
+        // Abort any still-running background MCP tasks when the pending execution is dropped
+        for handle in &self.mcp_handles {
+            handle.abort();
+        }
+    }
+}
+
 /// Tracks the full conversation history for an MCP via LLM session,
 /// including messages the client never sees (injected tool calls/results).
-#[allow(dead_code)]
 pub struct SessionHistory {
     /// Complete history including injected tool call/result messages
     pub full_messages: Vec<ChatMessage>,
@@ -53,7 +61,6 @@ impl SessionHistory {
 }
 
 /// A single MCP via LLM session tied to one client
-#[allow(dead_code)]
 pub struct McpViaLlmSession {
     pub session_id: String,
     pub client_id: String,
