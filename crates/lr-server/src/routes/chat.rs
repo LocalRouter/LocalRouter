@@ -99,19 +99,63 @@ pub async fn chat_completions(
                         .collect::<Vec<_>>()
                         .join(", ");
 
+                    // Check if this is an MCP via LLM client
+                    let is_mcp_via_llm =
+                        client.client_mode == lr_config::ClientMode::McpViaLlm;
+
+                    // Build the request portion, augmenting with MCP tools for MCP via LLM
+                    let mut request_json = serde_json::to_value(&request)
+                        .map(|mut v| {
+                            if let Some(obj) = v.as_object_mut() {
+                                obj.remove("stream");
+                            }
+                            v
+                        })
+                        .unwrap_or_default();
+
+                    if is_mcp_via_llm {
+                        // Pre-fetch MCP tools so the popup shows the augmented request
+                        let all_ids: Vec<String> = state
+                            .config_manager
+                            .get()
+                            .mcp_servers
+                            .iter()
+                            .map(|s| s.id.clone())
+                            .collect();
+                        let allowed = if client.mcp_permissions.global.is_enabled() {
+                            all_ids
+                        } else {
+                            all_ids
+                                .iter()
+                                .filter(|id| {
+                                    client
+                                        .mcp_permissions
+                                        .has_any_enabled_for_server(id)
+                                })
+                                .cloned()
+                                .collect()
+                        };
+                        if let Ok(tools) = state
+                            .mcp_via_llm_manager
+                            .list_tools_for_preview(
+                                state.mcp_gateway.clone(),
+                                &client,
+                                allowed,
+                            )
+                            .await
+                        {
+                            if let Some(obj) = request_json.as_object_mut() {
+                                obj.insert("tools".to_string(), tools);
+                            }
+                        }
+                    }
+
                     // Capture full request + candidate models for edit mode
                     let auto_full_args = serde_json::json!({
                         "candidate_models": auto_config.prioritized_models.iter()
                             .map(|(p, m)| format!("{}/{}", p, m))
                             .collect::<Vec<_>>(),
-                        "request": serde_json::to_value(&request)
-                            .map(|mut v| {
-                                if let Some(obj) = v.as_object_mut() {
-                                    obj.remove("stream");
-                                }
-                                v
-                            })
-                            .unwrap_or_default(),
+                        "request": request_json,
                     });
 
                     let response = state
@@ -122,6 +166,7 @@ pub async fn chat_completions(
                             client.name.clone(),
                             models_preview,
                             Some(auto_full_args),
+                            is_mcp_via_llm,
                         )
                         .await
                         .map_err(|e| {
@@ -1688,25 +1733,27 @@ async fn handle_mcp_via_llm(
     // Run model firewall with augmented request (MCP tools visible in popup)
     if request.model != "localrouter/auto" {
         // Pre-fetch MCP tool definitions so the firewall popup shows the full augmented request
-        let mcp_tools_json = match state
-            .mcp_via_llm_manager
-            .list_tools_for_preview(
-                state.mcp_gateway.clone(),
-                &client,
-                allowed_servers.clone(),
-            )
-            .await
-        {
-            Ok(tools) if tools.as_array().map_or(true, |a| a.is_empty()) => None,
-            Ok(tools) => Some(tools),
-            Err(e) => {
-                tracing::warn!(
-                    "MCP via LLM: failed to pre-fetch tools for firewall popup: {}",
-                    e
-                );
-                None
-            }
-        };
+        // Always wrap in Some so the is_mcp_via_llm flag is set even if pre-fetch fails
+        let mcp_tools_json = Some(
+            match state
+                .mcp_via_llm_manager
+                .list_tools_for_preview(
+                    state.mcp_gateway.clone(),
+                    &client,
+                    allowed_servers.clone(),
+                )
+                .await
+            {
+                Ok(tools) => tools,
+                Err(e) => {
+                    tracing::warn!(
+                        "MCP via LLM: failed to pre-fetch tools for firewall popup: {}",
+                        e
+                    );
+                    serde_json::json!([])
+                }
+            },
+        );
 
         let firewall_edits = check_model_firewall_permission(
             &state,

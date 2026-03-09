@@ -329,6 +329,7 @@ impl FirewallManager {
         client_name: String,
         models_preview: String,
         full_arguments: Option<serde_json::Value>,
+        is_mcp_via_llm: bool,
     ) -> AppResult<FirewallApprovalResponse> {
         self.request_approval_internal(
             client_id,
@@ -341,7 +342,7 @@ impl FirewallManager {
             false,                          // not guardrail
             false,                          // not free-tier fallback
             true,                           // auto-router request
-            false,                          // not MCP via LLM
+            is_mcp_via_llm,
             full_arguments,
             None,
         )
