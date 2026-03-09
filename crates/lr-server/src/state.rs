@@ -635,6 +635,8 @@ pub struct FeatureStats {
     pub json_repairs: AtomicU64,
     /// Total tokens saved by prompt compression
     pub compression_tokens_saved: AtomicU64,
+    /// Total cost saved by prompt compression, in micro-dollars (1 USD = 1_000_000)
+    pub compression_cost_saved_micros: AtomicU64,
     /// Total tokens saved by context management (accumulated on session expiry)
     pub context_mgmt_tokens_saved: AtomicU64,
 }
@@ -646,6 +648,7 @@ impl FeatureStats {
             routellm_weak: AtomicU64::new(0),
             json_repairs: AtomicU64::new(0),
             compression_tokens_saved: AtomicU64::new(0),
+            compression_cost_saved_micros: AtomicU64::new(0),
             context_mgmt_tokens_saved: AtomicU64::new(0),
         }
     }
@@ -656,6 +659,7 @@ impl FeatureStats {
             routellm_weak: self.routellm_weak.load(Ordering::Relaxed),
             json_repairs: self.json_repairs.load(Ordering::Relaxed),
             compression_tokens_saved: self.compression_tokens_saved.load(Ordering::Relaxed),
+            compression_cost_saved_micros: self.compression_cost_saved_micros.load(Ordering::Relaxed),
             context_mgmt_tokens_saved: self.context_mgmt_tokens_saved.load(Ordering::Relaxed),
         }
     }
@@ -674,6 +678,7 @@ pub struct FeatureStatsSnapshot {
     pub routellm_weak: u64,
     pub json_repairs: u64,
     pub compression_tokens_saved: u64,
+    pub compression_cost_saved_micros: u64,
     pub context_mgmt_tokens_saved: u64,
 }
 

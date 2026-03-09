@@ -260,6 +260,9 @@ pub async fn chat_completions(
         Ok(None)
     };
 
+    // Track compression tokens saved for cost calculation after pricing is available
+    let mut compression_tokens_saved: u64 = 0;
+
     // Apply compression: replace request messages if compression succeeded
     if let Ok(Some(compressed)) = &compression_result {
         tracing::info!(
@@ -282,6 +285,7 @@ pub async fn chat_completions(
                 .feature_stats
                 .compression_tokens_saved
                 .fetch_add(saved, std::sync::atomic::Ordering::Relaxed);
+            compression_tokens_saved = saved;
         }
         request.messages = compressed
             .compressed_messages
@@ -332,6 +336,7 @@ pub async fn chat_completions(
                 request,
                 provider_request,
                 guardrail_handle,
+                compression_tokens_saved,
             )
             .await
         } else {
@@ -342,6 +347,7 @@ pub async fn chat_completions(
                 request,
                 provider_request,
                 guardrail_handle,
+                compression_tokens_saved,
             )
             .await
         }
@@ -367,9 +373,9 @@ pub async fn chat_completions(
         }
 
         if request.stream {
-            handle_streaming(state, auth, client_auth, request, provider_request).await
+            handle_streaming(state, auth, client_auth, request, provider_request, compression_tokens_saved).await
         } else {
-            handle_non_streaming(state, auth, client_auth, request, provider_request).await
+            handle_non_streaming(state, auth, client_auth, request, provider_request, compression_tokens_saved).await
         }
     }
 }
@@ -1768,6 +1774,7 @@ async fn handle_non_streaming_parallel(
     request: ChatCompletionRequest,
     provider_request: ProviderCompletionRequest,
     guardrail_handle: GuardrailHandle,
+    compression_tokens_saved: u64,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
     let started_at = Instant::now();
@@ -1872,6 +1879,7 @@ async fn handle_non_streaming_parallel(
         generation_id,
         started_at,
         created_at,
+        compression_tokens_saved,
     )
     .await
 }
@@ -1968,6 +1976,7 @@ async fn handle_non_streaming(
     client_auth: Option<Extension<ClientAuthContext>>,
     request: ChatCompletionRequest,
     provider_request: ProviderCompletionRequest,
+    compression_tokens_saved: u64,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
     let started_at = Instant::now();
@@ -2043,6 +2052,7 @@ async fn handle_non_streaming(
         generation_id,
         started_at,
         created_at,
+        compression_tokens_saved,
     )
     .await
 }
@@ -2059,6 +2069,7 @@ async fn build_non_streaming_response(
     generation_id: String,
     started_at: Instant,
     created_at: chrono::DateTime<Utc>,
+    compression_tokens_saved: u64,
 ) -> ApiResult<Response> {
     let completed_at = Instant::now();
 
@@ -2068,6 +2079,16 @@ async fn build_non_streaming_response(
         None => None,
     }
     .unwrap_or_else(lr_providers::PricingInfo::free);
+
+    // Track cost saved by compression (using input token price)
+    if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
+        let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
+        let micros = (cost_saved * 1_000_000.0) as u64;
+        state
+            .feature_stats
+            .compression_cost_saved_micros
+            .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+    }
 
     // For chat messages, calculate incremental token count (last message only)
     // instead of cumulative (all conversation history)
@@ -2283,6 +2304,7 @@ async fn handle_streaming(
     _client_auth: Option<Extension<ClientAuthContext>>,
     request: ChatCompletionRequest,
     provider_request: ProviderCompletionRequest,
+    compression_tokens_saved: u64,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
     let created_at = Utc::now();
@@ -2572,6 +2594,16 @@ async fn handle_streaming(
         }
         .unwrap_or_else(lr_providers::PricingInfo::free);
 
+        // Track cost saved by compression (using input token price)
+        if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
+            let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
+            let micros = (cost_saved * 1_000_000.0) as u64;
+            state_clone
+                .feature_stats
+                .compression_cost_saved_micros
+                .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+        }
+
         let cost = {
             let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
             let output_cost = (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
@@ -2675,6 +2707,7 @@ async fn handle_streaming_parallel(
     request: ChatCompletionRequest,
     provider_request: ProviderCompletionRequest,
     guardrail_handle: GuardrailHandle,
+    compression_tokens_saved: u64,
 ) -> ApiResult<Response> {
     use tokio::sync::{mpsc, watch};
     use tokio_stream::wrappers::ReceiverStream;
@@ -3088,6 +3121,16 @@ async fn handle_streaming_parallel(
                 None => None,
             }
             .unwrap_or_else(lr_providers::PricingInfo::free);
+
+            // Track cost saved by compression (using input token price)
+            if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
+                let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
+                let micros = (cost_saved * 1_000_000.0) as u64;
+                state_clone
+                    .feature_stats
+                    .compression_cost_saved_micros
+                    .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+            }
 
             let cost = {
                 let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;

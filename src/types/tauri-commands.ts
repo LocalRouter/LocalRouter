@@ -753,6 +753,7 @@ export interface FeatureStatsSnapshot {
   routellm_weak: number
   json_repairs: number
   compression_tokens_saved: number
+  compression_cost_saved_micros: number
   context_mgmt_tokens_saved: number
 }
 

@@ -789,6 +789,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     routellm_weak: 1253,
     json_repairs: 34,
     compression_tokens_saved: 128400,
+    compression_cost_saved_micros: 385200,
     context_mgmt_tokens_saved: 256800,
   }),
   'get_global_metrics': () => generateMockGraphData("Total Requests", 300, 200),

@@ -31,6 +31,7 @@ interface FeatureStats {
   routellm_weak: number
   json_repairs: number
   compression_tokens_saved: number
+  compression_cost_saved_micros: number
   context_mgmt_tokens_saved: number
 }
 
@@ -152,6 +153,14 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
     return n.toLocaleString()
+  }
+
+  const formatCostSaved = (micros: number) => {
+    const dollars = micros / 1_000_000
+    if (dollars >= 1) return `$${dollars.toFixed(2)}`
+    if (dollars >= 0.01) return `$${dollars.toFixed(2)}`
+    if (dollars >= 0.001) return `$${dollars.toFixed(3)}`
+    return `$${dollars.toFixed(4)}`
   }
 
   // Set to "All" by default when scope changes
@@ -279,6 +288,9 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
         <StatsCard
           title="Compression Saved"
           value={loading ? "-" : formatTokens(featureStats?.compression_tokens_saved ?? 0)}
+          description={!loading && (featureStats?.compression_cost_saved_micros ?? 0) > 0
+            ? `${formatCostSaved(featureStats!.compression_cost_saved_micros)} saved`
+            : undefined}
           icon={<FileDown className="h-5 w-5" />}
           loading={loading}
         />
