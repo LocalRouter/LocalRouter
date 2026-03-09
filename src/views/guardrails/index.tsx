@@ -7,7 +7,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
-import { Badge } from "@/components/ui/Badge"
 import { type PickerSelection } from "@/components/guardrails/SafetyModelPicker"
 import { GuardrailsTab as GuardrailsTryItOut } from "@/views/try-it-out/guardrails-tab"
 import { GuardrailsPanel } from "./guardrails-panel"
@@ -179,7 +178,6 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
             <Shield className="h-6 w-6" />
             GuardRails
           </h1>
-          <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
         </div>
         <p className="text-sm text-muted-foreground">
           Configure safety models and test content moderation
