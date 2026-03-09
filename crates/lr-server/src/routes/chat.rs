@@ -279,7 +279,9 @@ pub async fn chat_completions(
         // Track tokens saved by compression
         if compressed.original_tokens > compressed.compressed_tokens {
             let saved = (compressed.original_tokens - compressed.compressed_tokens) as u64;
-            state.metrics_collector.record_feature_event("feature_compression", saved, 0.0);
+            state
+                .metrics_collector
+                .record_feature_event("feature_compression", saved, 0.0);
             compression_tokens_saved = saved;
         }
         request.messages = compressed
@@ -1878,7 +1880,11 @@ async fn handle_mcp_via_llm(
             if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
                 let cost_saved =
                     (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-                state_clone.metrics_collector.record_feature_event("feature_compression", 0, cost_saved);
+                state_clone.metrics_collector.record_feature_event(
+                    "feature_compression",
+                    0,
+                    cost_saved,
+                );
             }
 
             let cost = {
@@ -2420,7 +2426,9 @@ async fn build_non_streaming_response(
     // Track cost saved by compression (using input token price)
     if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
         let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-        state.metrics_collector.record_feature_event("feature_compression", 0, cost_saved);
+        state
+            .metrics_collector
+            .record_feature_event("feature_compression", 0, cost_saved);
     }
 
     // For chat messages, calculate incremental token count (last message only)
@@ -2930,7 +2938,11 @@ async fn handle_streaming(
         // Track cost saved by compression (using input token price)
         if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
             let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-            state_clone.metrics_collector.record_feature_event("feature_compression", 0, cost_saved);
+            state_clone.metrics_collector.record_feature_event(
+                "feature_compression",
+                0,
+                cost_saved,
+            );
         }
 
         let cost = {
@@ -3455,7 +3467,11 @@ async fn handle_streaming_parallel(
             if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
                 let cost_saved =
                     (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-                state_clone.metrics_collector.record_feature_event("feature_compression", 0, cost_saved);
+                state_clone.metrics_collector.record_feature_event(
+                    "feature_compression",
+                    0,
+                    cost_saved,
+                );
             }
 
             let cost = {
@@ -3602,7 +3618,9 @@ fn maybe_repair_json_content(
             result.repairs.len()
         );
         // Track JSON repairs for dashboard (persisted to metrics DB)
-        state.metrics_collector.record_feature_event("feature_json_repair", 0, 0.0);
+        state
+            .metrics_collector
+            .record_feature_event("feature_json_repair", 0, 0.0);
     }
     result.repaired
 }

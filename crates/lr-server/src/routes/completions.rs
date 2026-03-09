@@ -93,7 +93,7 @@ pub async fn completions(
             .safety_engine
             .read()
             .as_ref()
-            .map_or(false, |e| e.has_models());
+            .is_some_and(|e| e.has_models());
         tracing::info!(
             "Completion request: client={}, model={}, stream={}, guardrails={}",
             client_id_short,

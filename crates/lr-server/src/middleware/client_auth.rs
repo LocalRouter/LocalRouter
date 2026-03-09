@@ -36,15 +36,13 @@ fn extract_bearer_token(auth_header: &str) -> Option<String> {
     }
 
     auth_header.strip_prefix("Bearer ").and_then(|s| {
-        if s.trim().is_empty() {
-            None // Reject empty or whitespace-only bearer tokens
-        } else if s.len() > 256 {
-            None // Reject excessively long tokens
-        } else if !s
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        if s.trim().is_empty()
+            || s.len() > 256
+            || !s
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
         {
-            None // Reject tokens with invalid characters
+            None
         } else {
             Some(s.to_string())
         }
