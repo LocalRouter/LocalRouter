@@ -27,6 +27,33 @@ use crate::gateway_client::{GatewayClient, McpTool};
 use crate::manager::McpViaLlmError;
 use crate::session::{McpViaLlmSession, PendingMixedExecution};
 
+/// Bundled gateway permissions for background tool execution.
+/// Extracted from a `Client` so background tasks can call `handle_request_with_skills`.
+#[derive(Clone)]
+pub(crate) struct GatewayPermissions {
+    pub session_key: String,
+    pub mcp_permissions: lr_config::McpPermissions,
+    pub skills_permissions: lr_config::SkillsPermissions,
+    pub client_name: String,
+    pub marketplace_permission: lr_config::PermissionState,
+    pub coding_agent_permission: lr_config::PermissionState,
+    pub coding_agent_type: Option<lr_config::CodingAgentType>,
+}
+
+impl GatewayPermissions {
+    pub fn from_client_and_session(client: &Client, session_key: String) -> Self {
+        Self {
+            session_key,
+            mcp_permissions: client.mcp_permissions.clone(),
+            skills_permissions: client.skills_permissions.clone(),
+            client_name: client.name.clone(),
+            marketplace_permission: client.marketplace_permission.clone(),
+            coding_agent_permission: client.coding_agent_permission.clone(),
+            coding_agent_type: client.coding_agent_type,
+        }
+    }
+}
+
 /// Result of the agentic loop
 #[allow(clippy::large_enum_variant)]
 pub enum OrchestratorResult {
@@ -246,6 +273,8 @@ pub async fn run_agentic_loop(
                     let client_id = client.id.clone();
                     let roots = gw_client.roots().to_vec();
                     let servers = gw_client.allowed_servers().to_vec();
+                    let gw_session_key = session.read().gateway_session_key.clone();
+                    let perms = GatewayPermissions::from_client_and_session(client, gw_session_key);
 
                     // Spawn background MCP tool executions
                     let mut mcp_handles = Vec::new();
@@ -278,12 +307,13 @@ pub async fn run_agentic_loop(
                         let cid = client_id.clone();
                         let srv = servers.clone();
                         let rts = roots.clone();
+                        let p = perms.clone();
 
                         mcp_tools_called.push(tool_name.clone());
 
                         let handle = tokio::spawn(async move {
                             let result = execute_mcp_tool_background(
-                                &gw, &cid, srv, rts, &tool_name, arguments,
+                                &gw, &cid, srv, rts, &p, &tool_name, arguments,
                             )
                             .await;
                             (tool_call_id, result)
@@ -619,12 +649,16 @@ pub async fn resume_after_mixed(
 /// Per-tool timeout for background MCP tool executions (120 seconds)
 pub(crate) const TOOL_EXECUTION_TIMEOUT_SECS: u64 = 120;
 
-/// Execute an MCP tool call in the background via the gateway directly.
+/// Execute an MCP tool call in the background via the gateway.
+///
+/// Uses `handle_request_with_skills` so virtual servers (skills, coding agents,
+/// marketplace, context-mode) are properly dispatched and firewall popups work.
 pub async fn execute_mcp_tool_background(
     gateway: &McpGateway,
     client_id: &str,
     allowed_servers: Vec<String>,
     roots: Vec<Root>,
+    permissions: &GatewayPermissions,
     tool_name: &str,
     arguments: Value,
 ) -> Result<String, String> {
@@ -643,7 +677,19 @@ pub async fn execute_mcp_tool_background(
     let timeout = std::time::Duration::from_secs(TOOL_EXECUTION_TIMEOUT_SECS);
     let response = match tokio::time::timeout(
         timeout,
-        gateway.handle_request(client_id, allowed_servers, roots, request),
+        gateway.handle_request_with_skills(
+            client_id,
+            Some(&permissions.session_key),
+            allowed_servers,
+            roots,
+            permissions.mcp_permissions.clone(),
+            permissions.skills_permissions.clone(),
+            permissions.client_name.clone(),
+            permissions.marketplace_permission.clone(),
+            permissions.coding_agent_permission.clone(),
+            permissions.coding_agent_type,
+            request,
+        ),
     )
     .await
     {

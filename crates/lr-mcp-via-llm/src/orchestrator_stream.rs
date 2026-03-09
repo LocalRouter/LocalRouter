@@ -167,6 +167,8 @@ pub async fn run_agentic_loop_streaming(
     let client_id = client.id.clone();
     let roots = gw_client.roots().to_vec();
     let servers = gw_client.allowed_servers().to_vec();
+    let gw_session_key = session.read().gateway_session_key.clone();
+    let perms = orchestrator::GatewayPermissions::from_client_and_session(client, gw_session_key);
 
     // Channel for streaming chunks to the caller
     let (tx, rx) = tokio::sync::mpsc::channel::<AppResult<CompletionChunk>>(64);
@@ -184,6 +186,7 @@ pub async fn run_agentic_loop_streaming(
             &prompt_tools,
             roots,
             servers,
+            &perms,
             tx.clone(),
             started_at,
             timeout,
@@ -219,6 +222,7 @@ async fn streaming_loop(
     prompt_tools: &HashMap<String, String>,
     roots: Vec<lr_mcp::protocol::Root>,
     servers: Vec<String>,
+    permissions: &orchestrator::GatewayPermissions,
     tx: tokio::sync::mpsc::Sender<AppResult<CompletionChunk>>,
     started_at: Instant,
     timeout: std::time::Duration,
@@ -382,10 +386,11 @@ async fn streaming_loop(
                         let cid = client_id.to_string();
                         let srv = servers.clone();
                         let rts = roots.clone();
+                        let p = permissions.clone();
 
                         let handle = tokio::spawn(async move {
                             let result = orchestrator::execute_mcp_tool_background(
-                                &gw, &cid, srv, rts, &tool_name, arguments,
+                                &gw, &cid, srv, rts, &p, &tool_name, arguments,
                             )
                             .await;
                             (tool_call_id, result)
@@ -491,6 +496,7 @@ async fn streaming_loop(
                             client_id,
                             servers.clone(),
                             roots.clone(),
+                            permissions,
                             uri,
                         )
                         .await
@@ -507,6 +513,7 @@ async fn streaming_loop(
                             client_id,
                             servers.clone(),
                             roots.clone(),
+                            permissions,
                             prompt_name,
                             arguments.clone(),
                         )
@@ -524,6 +531,7 @@ async fn streaming_loop(
                             client_id,
                             servers.clone(),
                             roots.clone(),
+                            permissions,
                             tool_name,
                             arguments,
                         )
@@ -706,12 +714,13 @@ fn build_finish_chunk_with_tools(tool_calls: &[&ToolCall], finish_reason: &str) 
     }
 }
 
-/// Execute a resource read in the background via the gateway directly.
+/// Execute a resource read in the background via the gateway.
 async fn execute_resource_read_background(
     gateway: &lr_mcp::McpGateway,
     client_id: &str,
     allowed_servers: Vec<String>,
     roots: Vec<lr_mcp::protocol::Root>,
+    permissions: &orchestrator::GatewayPermissions,
     uri: &str,
 ) -> Result<String, String> {
     use lr_mcp::protocol::JsonRpcRequest;
@@ -726,7 +735,19 @@ async fn execute_resource_read_background(
     let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
     let response = match tokio::time::timeout(
         timeout,
-        gateway.handle_request(client_id, allowed_servers, roots, request),
+        gateway.handle_request_with_skills(
+            client_id,
+            Some(&permissions.session_key),
+            allowed_servers,
+            roots,
+            permissions.mcp_permissions.clone(),
+            permissions.skills_permissions.clone(),
+            permissions.client_name.clone(),
+            permissions.marketplace_permission.clone(),
+            permissions.coding_agent_permission.clone(),
+            permissions.coding_agent_type,
+            request,
+        ),
     )
     .await
     {
@@ -754,12 +775,13 @@ async fn execute_resource_read_background(
     Ok(orchestrator::content_to_string(&result))
 }
 
-/// Execute a prompt get in the background via the gateway directly.
+/// Execute a prompt get in the background via the gateway.
 async fn execute_prompt_get_background(
     gateway: &lr_mcp::McpGateway,
     client_id: &str,
     allowed_servers: Vec<String>,
     roots: Vec<lr_mcp::protocol::Root>,
+    permissions: &orchestrator::GatewayPermissions,
     prompt_name: &str,
     arguments: Value,
 ) -> Result<String, String> {
@@ -778,7 +800,19 @@ async fn execute_prompt_get_background(
     let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
     let response = match tokio::time::timeout(
         timeout,
-        gateway.handle_request(client_id, allowed_servers, roots, request),
+        gateway.handle_request_with_skills(
+            client_id,
+            Some(&permissions.session_key),
+            allowed_servers,
+            roots,
+            permissions.mcp_permissions.clone(),
+            permissions.skills_permissions.clone(),
+            permissions.client_name.clone(),
+            permissions.marketplace_permission.clone(),
+            permissions.coding_agent_permission.clone(),
+            permissions.coding_agent_type,
+            request,
+        ),
     )
     .await
     {
