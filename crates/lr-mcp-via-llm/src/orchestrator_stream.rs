@@ -34,6 +34,7 @@ use crate::session::{McpViaLlmSession, PendingMixedExecution};
 /// Returns a stream of `CompletionChunk`s that the caller wraps in SSE.
 /// Multiple LLM iterations are streamed through the same connection,
 /// with intermediate tool_calls finish reasons suppressed.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_agentic_loop_streaming(
     gateway: Arc<McpGateway>,
     router: Arc<Router>,
@@ -418,7 +419,11 @@ async fn streaming_loop(
                 tracing::info!(
                     "MCP via LLM streaming: LLM requested {} MCP tools: [{}] (iteration {})",
                     mcp_calls.len(),
-                    mcp_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
+                    mcp_calls
+                        .iter()
+                        .map(|tc| tc.function.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     iteration + 1
                 );
 

@@ -13,8 +13,8 @@ mod session_tests {
     #[test]
     fn session_creation_sets_gateway_key() {
         let session = McpViaLlmSession::new("sess-123".to_string(), "client-abc".to_string());
-        assert_eq!(session.session_id, "sess-123");
-        assert_eq!(session.client_id, "client-abc");
+        assert_eq!(session._session_id, "sess-123");
+        assert_eq!(session._client_id, "client-abc");
         assert_eq!(session.gateway_session_key, "mcp-via-llm-sess-123");
         assert!(!session.gateway_initialized);
         assert!(session.history.full_messages.is_empty());
@@ -469,7 +469,7 @@ mod tool_classification_tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let calls = vec![tc("1", "fs__read"), tc("2", "fs__write")];
+        let calls = [tc("1", "fs__read"), tc("2", "fs__write")];
         let (m, c): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 2);
         assert_eq!(c.len(), 0);
@@ -478,7 +478,7 @@ mod tool_classification_tests {
     #[test]
     fn all_client() {
         let mcp: HashSet<String> = ["fs__read"].iter().map(|s| s.to_string()).collect();
-        let calls = vec![tc("1", "my_tool"), tc("2", "other")];
+        let calls = [tc("1", "my_tool"), tc("2", "other")];
         let (m, c): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 0);
         assert_eq!(c.len(), 2);
@@ -490,7 +490,7 @@ mod tool_classification_tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let calls = vec![
+        let calls = [
             tc("1", "fs__read"),
             tc("2", "client_search"),
             tc("3", "mcp_resource__cfg"),
@@ -507,7 +507,7 @@ mod tool_classification_tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let calls = vec![tc("1", "mcp_resource__server__config")];
+        let calls = [tc("1", "mcp_resource__server__config")];
         let (m, _): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 1);
     }
@@ -518,7 +518,7 @@ mod tool_classification_tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let calls = vec![tc("1", "mcp_prompt__review")];
+        let calls = [tc("1", "mcp_prompt__review")];
         let (m, _): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 1);
     }
@@ -535,7 +535,7 @@ mod manager_tests {
         McpViaLlmConfig {
             session_ttl_seconds: 3600,
             max_concurrent_sessions: 100,
-            max_loop_iterations: 25,
+            max_loop_iterations: 4,
             max_loop_timeout_seconds: 300,
             expose_resources_as_tools: true,
             inject_prompts: true,
@@ -686,7 +686,7 @@ mod manager_tests {
     #[test]
     fn config_update() {
         let mgr = McpViaLlmManager::new(cfg());
-        assert_eq!(mgr.config().max_loop_iterations, 25);
+        assert_eq!(mgr.config().max_loop_iterations, 4);
 
         let mut new = cfg();
         new.max_loop_iterations = 50;
@@ -698,9 +698,9 @@ mod manager_tests {
     fn session_reuse_same_client() {
         let mgr = McpViaLlmManager::new(cfg());
         let s1 = mgr.get_or_create_session("c1");
-        let id1 = s1.read().session_id.clone();
+        let id1 = s1.read()._session_id.clone();
         let s2 = mgr.get_or_create_session("c1");
-        let id2 = s2.read().session_id.clone();
+        let id2 = s2.read()._session_id.clone();
         assert_eq!(id1, id2);
     }
 
@@ -709,7 +709,7 @@ mod manager_tests {
         let mgr = McpViaLlmManager::new(cfg());
         let s1 = mgr.get_or_create_session("c1");
         let s2 = mgr.get_or_create_session("c2");
-        assert_ne!(s1.read().session_id, s2.read().session_id);
+        assert_ne!(s1.read()._session_id, s2.read()._session_id);
     }
 }
 

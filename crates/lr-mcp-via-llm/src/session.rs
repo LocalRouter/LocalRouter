@@ -62,8 +62,8 @@ impl SessionHistory {
 
 /// A single MCP via LLM session tied to one client
 pub struct McpViaLlmSession {
-    pub session_id: String,
-    pub client_id: String,
+    pub _session_id: String,
+    pub _client_id: String,
     /// Key used to identify this session in the MCP gateway
     pub gateway_session_key: String,
     /// Whether the gateway session has been initialized
@@ -78,8 +78,8 @@ impl McpViaLlmSession {
     pub fn new(session_id: String, client_id: String) -> Self {
         let gateway_session_key = format!("mcp-via-llm-{}", session_id);
         Self {
-            session_id,
-            client_id,
+            _session_id: session_id,
+            _client_id: client_id,
             gateway_session_key,
             gateway_initialized: false,
             history: SessionHistory::new(),
