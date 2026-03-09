@@ -64,6 +64,15 @@ pub trait VirtualMcpServer: Send + Sync {
 
     /// Update existing session state when client config changes (called on each request).
     fn update_session_state(&self, state: &mut dyn VirtualSessionState, client: &lr_config::Client);
+
+    /// Tool names eligible for catalog compression deferral.
+    ///
+    /// By default returns an empty list, meaning **none** of this server's tools
+    /// can be deferred. Virtual servers that expose large catalogs may override
+    /// this to list tools that are safe to hide behind `ctx_search` activation.
+    fn deferrable_tools(&self, _state: &dyn VirtualSessionState) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Per-session state for a virtual server. Stored in a HashMap on GatewaySession,
@@ -92,6 +101,7 @@ pub enum VirtualToolCallResult {
         invalidate_cache: bool,
         send_list_changed: bool,
         /// Optional closure to mutate the virtual server's session state
+        #[allow(clippy::type_complexity)]
         state_update: Option<Box<dyn FnOnce(&mut dyn VirtualSessionState) + Send>>,
     },
     /// Tool not found (shouldn't happen if owns_tool is correct)

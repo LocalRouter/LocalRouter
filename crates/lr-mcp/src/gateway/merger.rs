@@ -276,11 +276,7 @@ fn build_unified_server_blocks(inst: &mut String, ctx: &InstructionsContext) {
         }
 
         if let Some(instructions) = &server.instructions {
-            if server.description.is_some() {
-                inst.push('\n');
-            } else {
-                inst.push('\n');
-            }
+            inst.push('\n');
             inst.push_str(instructions);
             if !instructions.ends_with('\n') {
                 inst.push('\n');
