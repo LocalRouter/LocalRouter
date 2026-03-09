@@ -387,9 +387,25 @@ pub async fn chat_completions(
         }
 
         if request.stream {
-            handle_streaming(state, auth, client_auth, request, provider_request, compression_tokens_saved).await
+            handle_streaming(
+                state,
+                auth,
+                client_auth,
+                request,
+                provider_request,
+                compression_tokens_saved,
+            )
+            .await
         } else {
-            handle_non_streaming(state, auth, client_auth, request, provider_request, compression_tokens_saved).await
+            handle_non_streaming(
+                state,
+                auth,
+                client_auth,
+                request,
+                provider_request,
+                compression_tokens_saved,
+            )
+            .await
         }
     }
 }
@@ -1791,11 +1807,8 @@ async fn handle_mcp_via_llm(
 
         // Record generation details after stream completes
         tokio::spawn(async move {
-            let _ = tokio::time::timeout(
-                tokio::time::Duration::from_secs(300),
-                completion_rx,
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(tokio::time::Duration::from_secs(300), completion_rx).await;
 
             let completed_at = Instant::now();
             let completion_content = content_accumulator.lock().clone();
@@ -1834,8 +1847,7 @@ async fn handle_mcp_via_llm(
 
             let cost = {
                 let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-                let output_cost =
-                    (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
+                let output_cost = (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
                 input_cost + output_cost
             };
 
@@ -3413,7 +3425,8 @@ async fn handle_streaming_parallel(
 
             // Track cost saved by compression (using input token price)
             if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
-                let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
+                let cost_saved =
+                    (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
                 let micros = (cost_saved * 1_000_000.0) as u64;
                 state_clone
                     .feature_stats
