@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::manager::McpViaLlmError;
 use lr_config::Client;
-use lr_mcp::protocol::{JsonRpcRequest, Root};
+use lr_mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
 use lr_mcp::McpGateway;
 
 /// Describes an MCP tool available via the gateway
@@ -60,6 +60,13 @@ pub struct GatewayClient<'a> {
     session_key: String,
     allowed_servers: Vec<String>,
     roots: Vec<Root>,
+    // Client permissions for virtual server access
+    mcp_permissions: lr_config::McpPermissions,
+    skills_permissions: lr_config::SkillsPermissions,
+    client_name: String,
+    marketplace_permission: lr_config::PermissionState,
+    coding_agent_permission: lr_config::PermissionState,
+    coding_agent_type: Option<lr_config::CodingAgentType>,
 }
 
 impl<'a> GatewayClient<'a> {
@@ -99,6 +106,12 @@ impl<'a> GatewayClient<'a> {
             session_key,
             allowed_servers,
             roots,
+            mcp_permissions: client.mcp_permissions.clone(),
+            skills_permissions: client.skills_permissions.clone(),
+            client_name: client.name.clone(),
+            marketplace_permission: client.marketplace_permission.clone(),
+            coding_agent_permission: client.coding_agent_permission.clone(),
+            coding_agent_type: client.coding_agent_type,
         }
     }
 
@@ -109,6 +122,28 @@ impl<'a> GatewayClient<'a> {
             method: method.to_string(),
             params,
         }
+    }
+
+    /// Send a request through the gateway with full virtual server permissions
+    async fn send_request(
+        &self,
+        request: JsonRpcRequest,
+    ) -> lr_types::AppResult<JsonRpcResponse> {
+        self.gateway
+            .handle_request_with_skills(
+                &self.client_id,
+                Some(&self.session_key),
+                self.allowed_servers.clone(),
+                self.roots.clone(),
+                self.mcp_permissions.clone(),
+                self.skills_permissions.clone(),
+                self.client_name.clone(),
+                self.marketplace_permission.clone(),
+                self.coding_agent_permission.clone(),
+                self.coding_agent_type,
+                request,
+            )
+            .await
     }
 
     /// Initialize the gateway session (creates server connections)
@@ -129,13 +164,7 @@ impl<'a> GatewayClient<'a> {
         );
 
         let response = self
-            .gateway
-            .handle_request(
-                &self.client_id,
-                self.allowed_servers.clone(),
-                self.roots.clone(),
-                request,
-            )
+            .send_request(request)
             .await
             .map_err(|e| McpViaLlmError::Gateway(format!("initialize failed: {}", e)))?;
 
@@ -149,15 +178,7 @@ impl<'a> GatewayClient<'a> {
         // Send initialized notification (required by MCP protocol)
         let notif_request = self.make_request("notifications/initialized", Some(json!({})));
         // Fire-and-forget: notifications don't return meaningful results
-        let _ = self
-            .gateway
-            .handle_request(
-                &self.client_id,
-                self.allowed_servers.clone(),
-                self.roots.clone(),
-                notif_request,
-            )
-            .await;
+        let _ = self.send_request(notif_request).await;
 
         Ok(())
     }
@@ -167,13 +188,7 @@ impl<'a> GatewayClient<'a> {
         let request = self.make_request("tools/list", Some(json!({})));
 
         let response = self
-            .gateway
-            .handle_request(
-                &self.client_id,
-                self.allowed_servers.clone(),
-                self.roots.clone(),
-                request,
-            )
+            .send_request(request)
             .await
             .map_err(|e| McpViaLlmError::Gateway(format!("tools/list failed: {}", e)))?;
 
@@ -226,13 +241,7 @@ impl<'a> GatewayClient<'a> {
         );
 
         let response = self
-            .gateway
-            .handle_request(
-                &self.client_id,
-                self.allowed_servers.clone(),
-                self.roots.clone(),
-                request,
-            )
+            .send_request(request)
             .await
             .map_err(|e| {
                 McpViaLlmError::ToolExecution(format!("tools/call '{}' failed: {}", tool_name, e))
@@ -272,7 +281,11 @@ impl<'a> GatewayClient<'a> {
             }
         }
 
-        // Fallback: return the raw result
+        // Fallback: return the raw result as JSON string
+        tracing::debug!(
+            "MCP via LLM: tool '{}' returned non-text content, using raw JSON",
+            tool_name
+        );
         Ok(result)
     }
 
@@ -281,13 +294,7 @@ impl<'a> GatewayClient<'a> {
         let request = self.make_request("resources/list", Some(json!({})));
 
         let response = self
-            .gateway
-            .handle_request(
-                &self.client_id,
-                self.allowed_servers.clone(),
-                self.roots.clone(),
-                request,
-            )
+            .send_request(request)
             .await
             .map_err(|e| McpViaLlmError::Gateway(format!("resources/list failed: {}", e)))?;
 
@@ -339,13 +346,7 @@ impl<'a> GatewayClient<'a> {
         );
 
         let response = self
-            .gateway
-            .handle_request(
-                &self.client_id,
-                self.allowed_servers.clone(),
-                self.roots.clone(),
-                request,
-            )
+            .send_request(request)
             .await
             .map_err(|e| {
                 McpViaLlmError::ToolExecution(format!("resources/read '{}' failed: {}", uri, e))
@@ -383,13 +384,7 @@ impl<'a> GatewayClient<'a> {
         let request = self.make_request("prompts/list", Some(json!({})));
 
         let response = self
-            .gateway
-            .handle_request(
-                &self.client_id,
-                self.allowed_servers.clone(),
-                self.roots.clone(),
-                request,
-            )
+            .send_request(request)
             .await
             .map_err(|e| McpViaLlmError::Gateway(format!("prompts/list failed: {}", e)))?;
 
@@ -461,13 +456,7 @@ impl<'a> GatewayClient<'a> {
         );
 
         let response = self
-            .gateway
-            .handle_request(
-                &self.client_id,
-                self.allowed_servers.clone(),
-                self.roots.clone(),
-                request,
-            )
+            .send_request(request)
             .await
             .map_err(|e| {
                 McpViaLlmError::ToolExecution(format!(
