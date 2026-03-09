@@ -324,7 +324,11 @@ pub async fn run_agentic_loop(
                 tracing::info!(
                     "MCP via LLM: LLM requested {} MCP tools: [{}] (iteration {})",
                     mcp_calls.len(),
-                    mcp_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
+                    mcp_calls
+                        .iter()
+                        .map(|tc| tc.function.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     iteration + 1
                 );
 

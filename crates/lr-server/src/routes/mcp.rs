@@ -16,7 +16,7 @@ use axum::{
 use std::convert::Infallible;
 use uuid::Uuid;
 
-use super::helpers::get_enabled_client_from_manager;
+use super::helpers::{check_mcp_access, get_enabled_client_from_manager};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::ApiErrorResponse;
 use crate::state::{AppState, SseConnectionManager, SseMessage};
@@ -154,6 +154,11 @@ pub async fn mcp_gateway_get_handler(
             Ok(client) => client,
             Err(e) => return e.into_response(),
         };
+
+        // Enforce client mode: block LLM-only and MCP-via-LLM clients from direct MCP access
+        if let Err(e) = check_mcp_access(&client) {
+            return e.into_response();
+        }
 
         // Get allowed servers based on mcp_permissions
         // An empty server list is valid — the gateway also serves marketplace,
@@ -515,6 +520,11 @@ pub async fn mcp_gateway_handler(
             Ok(client) => client,
             Err(e) => return e.into_response(),
         };
+
+        // Enforce client mode: block LLM-only and MCP-via-LLM clients from direct MCP access
+        if let Err(e) = check_mcp_access(&client) {
+            return e.into_response();
+        }
 
         // Get allowed servers based on mcp_permissions
         // An empty server list is valid — the gateway also serves marketplace,

@@ -72,23 +72,33 @@ impl CompressorModel {
     /// Compress text by keeping tokens with highest keep probability.
     ///
     /// `rate` is the fraction of tokens to keep (0.0-1.0). Lower = more compression.
-    /// Returns (compressed_text, original_token_count, compressed_token_count).
-    pub fn compress_text(&self, text: &str, rate: f32) -> Result<(String, usize, usize), String> {
+    /// Returns (compressed_text, original_token_count, compressed_token_count, kept_word_indices).
+    pub fn compress_text(
+        &self,
+        text: &str,
+        rate: f32,
+    ) -> Result<(String, usize, usize, Vec<usize>), String> {
         if text.trim().is_empty() {
-            return Ok((text.to_string(), 0, 0));
+            return Ok((text.to_string(), 0, 0, vec![]));
         }
 
         // Split into words for word-level compression (cleaner output)
         let words: Vec<&str> = text.split_whitespace().collect();
         if words.is_empty() {
-            return Ok((text.to_string(), 0, 0));
+            return Ok((text.to_string(), 0, 0, vec![]));
         }
 
         let original_word_count = words.len();
         let keep_count = (original_word_count as f32 * rate).ceil().max(1.0) as usize;
 
         if keep_count >= original_word_count {
-            return Ok((text.to_string(), original_word_count, original_word_count));
+            let all_indices: Vec<usize> = (0..original_word_count).collect();
+            return Ok((
+                text.to_string(),
+                original_word_count,
+                original_word_count,
+                all_indices,
+            ));
         }
 
         // Tokenize each word separately to map subwords → words
@@ -166,7 +176,11 @@ impl CompressorModel {
             }
             let mut sum_prob = 0.0;
             let mut count = 0;
-            for logits in logits_vec.iter().take(*end.min(&logits_vec.len())).skip(*start) {
+            for logits in logits_vec
+                .iter()
+                .take(*end.min(&logits_vec.len()))
+                .skip(*start)
+            {
                 let logit_keep = logits[1];
                 let logit_drop = logits[0];
                 // Softmax for 2 classes: P(keep) = exp(keep) / (exp(keep) + exp(drop))
@@ -205,7 +219,12 @@ impl CompressorModel {
             rate
         );
 
-        Ok((compressed_text, original_word_count, keep_indices.len()))
+        Ok((
+            compressed_text,
+            original_word_count,
+            keep_indices.len(),
+            keep_indices,
+        ))
     }
 }
 
@@ -213,7 +232,7 @@ impl CompressorModel {
 fn model_config(model_size: &str) -> Config {
     match model_size {
         "xlm-roberta" => Config {
-            vocab_size: 250002,
+            vocab_size: 250102,
             hidden_size: 1024,
             num_hidden_layers: 24,
             num_attention_heads: 16,

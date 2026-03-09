@@ -115,6 +115,31 @@ pub fn get_enabled_client_from_manager(state: &AppState, client_id: &str) -> Hel
     Ok(client)
 }
 
+/// Check that a client is allowed to access LLM endpoints.
+/// Returns 403 if client mode is `McpOnly`.
+pub fn check_llm_access(client: &Client) -> HelperResult<()> {
+    if client.client_mode == lr_config::ClientMode::McpOnly {
+        return Err(ApiErrorResponse::forbidden(
+            "Client is in MCP-only mode and cannot access LLM endpoints",
+        ));
+    }
+    Ok(())
+}
+
+/// Check that a client is allowed to access MCP endpoints directly.
+/// Returns 403 if client mode is `LlmOnly` or `McpViaLlm`.
+pub fn check_mcp_access(client: &Client) -> HelperResult<()> {
+    match client.client_mode {
+        lr_config::ClientMode::LlmOnly => Err(ApiErrorResponse::forbidden(
+            "Client is in LLM-only mode and cannot access MCP endpoints",
+        )),
+        lr_config::ClientMode::McpViaLlm => Err(ApiErrorResponse::forbidden(
+            "Client is in MCP-via-LLM mode. MCP tools are available through LLM chat completions, not direct MCP access",
+        )),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Tests would go here with mock state

@@ -104,7 +104,7 @@ impl CompressionService {
         &self,
         text: &str,
         rate: f32,
-    ) -> Result<(String, usize, usize), String> {
+    ) -> Result<(String, usize, usize, Vec<usize>), String> {
         // Lazy-load model if not loaded
         if self.model.read().await.is_none() {
             self.load().await?;
@@ -125,6 +125,7 @@ impl CompressionService {
         rate: f32,
         preserve_recent: u32,
         compress_system: bool,
+        min_message_words: u32,
     ) -> Result<CompressionResult, String> {
         let start = Instant::now();
         let original_count = messages.len();
@@ -166,12 +167,13 @@ impl CompressionService {
                 let word_count = msg.content.split_whitespace().count();
                 total_original += word_count;
 
-                if word_count < 5 {
+                if word_count < min_message_words as usize {
                     // Too short to compress meaningfully
                     total_compressed += word_count;
                     compressed_messages.push(msg.clone());
                 } else {
-                    let (compressed_text, _orig, comp) = model.compress_text(&msg.content, rate)?;
+                    let (compressed_text, _orig, comp, _kept) =
+                        model.compress_text(&msg.content, rate)?;
                     total_compressed += comp;
                     compressed_messages.push(CompressedMessage {
                         role: msg.role.clone(),

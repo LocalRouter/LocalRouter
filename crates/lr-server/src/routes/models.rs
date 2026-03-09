@@ -8,7 +8,7 @@ use axum::{
     Json,
 };
 
-use super::helpers::get_client_with_strategy;
+use super::helpers::{check_llm_access, get_client_with_strategy};
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
 use crate::types::{ModelData, ModelPricing, ModelsResponse};
@@ -39,7 +39,8 @@ pub async fn list_models<B>(
         .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
 
     // Get enabled client and strategy
-    let (_client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
+    let (client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
+    check_llm_access(&client)?;
 
     // If auto-routing is enabled, return ONLY the auto router model
     // This simplifies the client experience - they see one model to use
@@ -142,7 +143,8 @@ pub async fn get_model<B>(
         .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
 
     // Get enabled client and strategy
-    let (_client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
+    let (client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
+    check_llm_access(&client)?;
 
     // Special handling for auto router virtual model
     if let Some(auto_config) = &strategy.auto_config {
@@ -252,7 +254,8 @@ pub async fn get_model_pricing<B>(
         .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
 
     // Get enabled client and strategy
-    let (_client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
+    let (client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
+    check_llm_access(&client)?;
 
     // Check if strategy allows access to this model
     if !strategy.is_model_allowed(&provider, &model) {

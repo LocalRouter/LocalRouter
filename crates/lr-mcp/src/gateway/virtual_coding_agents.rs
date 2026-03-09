@@ -6,9 +6,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::gateway_tools::FirewallDecisionResult;
+use super::access_control::{self, AccessDecision, FirewallCheckResult};
 use super::virtual_server::*;
-use crate::protocol::{JsonRpcError, JsonRpcResponse, McpTool};
+use crate::protocol::McpTool;
 use lr_coding_agents::manager::CodingAgentManager;
 
 /// Virtual MCP server for AI coding agent orchestration.
@@ -79,34 +79,51 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
     fn check_permissions(
         &self,
         state: &dyn VirtualSessionState,
-        _tool_name: &str,
+        tool_name: &str,
         _arguments: Option<&Value>,
-        _session_approved: bool,
-        _session_denied: bool,
+        session_approved: bool,
+        session_denied: bool,
     ) -> VirtualFirewallResult {
         let state = state
             .as_any()
             .downcast_ref::<CodingAgentSessionState>()
             .expect("wrong state type for CodingAgentVirtualServer");
 
-        // Coding agents don't use firewall popups — just block if disabled
-        if !state.permission.is_enabled() {
-            VirtualFirewallResult::Handled(FirewallDecisionResult::Blocked(JsonRpcResponse::error(
-                serde_json::Value::Null,
-                JsonRpcError::custom(-32601, "Coding agent access denied".to_string(), None),
-            )))
-        } else if state.agent_type.is_none() {
-            VirtualFirewallResult::Handled(FirewallDecisionResult::Blocked(JsonRpcResponse::error(
-                serde_json::Value::Null,
-                JsonRpcError::custom(
-                    -32601,
-                    "No coding agent type selected for this client".to_string(),
-                    None,
-                ),
-            )))
-        } else {
-            VirtualFirewallResult::Handled(FirewallDecisionResult::Proceed)
+        let decision = access_control::check_coding_agent_access(&state.permission);
+
+        if state.agent_type.is_none() {
+            let result = match decision {
+                AccessDecision::Deny => FirewallCheckResult::Deny,
+                _ => FirewallCheckResult::Deny, // no agent selected
+            };
+            return VirtualFirewallResult::Standard(result);
         }
+
+        // Only session creation (coding_agent_start) requires approval popup.
+        // All other tools (say, status, respond, interrupt, list) proceed freely.
+        if tool_name != "coding_agent_start" {
+            let result = match decision {
+                AccessDecision::Deny => FirewallCheckResult::Deny,
+                _ => FirewallCheckResult::Allow,
+            };
+            return VirtualFirewallResult::Standard(result);
+        }
+
+        // coding_agent_start goes through normal permission flow
+        let result = match decision {
+            AccessDecision::Allow => FirewallCheckResult::Allow,
+            AccessDecision::Deny => FirewallCheckResult::Deny,
+            AccessDecision::Ask => {
+                if session_denied {
+                    FirewallCheckResult::Deny
+                } else if session_approved {
+                    FirewallCheckResult::Allow
+                } else {
+                    FirewallCheckResult::Ask
+                }
+            }
+        };
+        VirtualFirewallResult::Standard(result)
     }
 
     async fn handle_tool_call(

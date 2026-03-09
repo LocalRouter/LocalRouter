@@ -61,7 +61,7 @@ pub async fn download_model(
     let api = Api::new().map_err(|e| format!("Failed to initialize HuggingFace API: {}", e))?;
     let repo = api.model(repo_id.to_string());
 
-    // Download model.safetensors (~660 MB)
+    // Download model.safetensors (BERT ~709 MB, XLM-RoBERTa ~2.2 GB)
     info!("Downloading model.safetensors...");
     let model_downloaded = download_with_retry(&repo, "model.safetensors").await?;
     let dest = model_path.join("model.safetensors");
@@ -76,13 +76,21 @@ pub async fn download_model(
         );
     }
 
-    // Download tokenizer files
-    let tokenizer_files = [
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "vocab.txt",
-        "special_tokens_map.json",
-    ];
+    // Download tokenizer files (BERT has vocab.txt, XLM-RoBERTa embeds vocab in tokenizer.json)
+    let tokenizer_files: Vec<&str> = if model_size == "xlm-roberta" {
+        vec![
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+        ]
+    } else {
+        vec![
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "vocab.txt",
+            "special_tokens_map.json",
+        ]
+    };
     for (idx, file) in tokenizer_files.iter().enumerate() {
         debug!("Downloading {}", file);
         let downloaded = download_with_retry(&repo, file).await?;

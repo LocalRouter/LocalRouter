@@ -61,6 +61,11 @@ pub fn check_marketplace_access(perm: &PermissionState) -> AccessDecision {
     AccessDecision::from(perm)
 }
 
+/// Check access for coding agent.
+pub fn check_coding_agent_access(perm: &PermissionState) -> AccessDecision {
+    AccessDecision::from(perm)
+}
+
 /// Check access for a model.
 ///
 /// Resolution order: model -> provider -> global (handled by ModelPermissions::resolve_model)
