@@ -122,7 +122,8 @@ impl OllamaProvider {
 #[derive(Debug, Serialize, Deserialize)]
 struct OllamaChatRequest {
     model: String,
-    messages: Vec<ChatMessage>,
+    /// Messages in Ollama's native format (arguments as JSON objects, not strings)
+    messages: Vec<OllamaMessage>,
     #[serde(default)]
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,6 +187,8 @@ struct OllamaMessage {
     content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OllamaToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -206,6 +209,32 @@ struct OllamaFunctionCall {
 }
 
 impl OllamaMessage {
+    /// Convert from a standard ChatMessage to Ollama's format
+    /// (arguments as JSON objects instead of strings)
+    fn from_chat_message(msg: &ChatMessage) -> Self {
+        let tool_calls = msg.tool_calls.as_ref().map(|tcs| {
+            tcs.iter()
+                .map(|tc| OllamaToolCall {
+                    id: Some(tc.id.clone()),
+                    function: OllamaFunctionCall {
+                        name: tc.function.name.clone(),
+                        // Convert JSON string back to JSON object for Ollama
+                        arguments: serde_json::from_str(&tc.function.arguments)
+                            .unwrap_or_else(|_| serde_json::Value::String(tc.function.arguments.clone())),
+                        index: None,
+                    },
+                })
+                .collect()
+        });
+
+        OllamaMessage {
+            role: msg.role.clone(),
+            content: msg.content.as_text(),
+            tool_calls,
+            tool_call_id: msg.tool_call_id.clone(),
+        }
+    }
+
     /// Convert to the standard ChatMessage format
     fn into_chat_message(self) -> ChatMessage {
         use super::{ChatMessageContent, FunctionCall, ToolCall};
@@ -395,7 +424,7 @@ impl ModelProvider for OllamaProvider {
 
         let ollama_request = OllamaChatRequest {
             model: request.model.clone(),
-            messages: request.messages.clone(),
+            messages: request.messages.iter().map(OllamaMessage::from_chat_message).collect(),
             stream: false,
             options: Some(OllamaOptions {
                 temperature: request.temperature,
@@ -503,7 +532,7 @@ impl ModelProvider for OllamaProvider {
 
         let ollama_request = OllamaChatRequest {
             model: request.model.clone(),
-            messages: request.messages.clone(),
+            messages: request.messages.iter().map(OllamaMessage::from_chat_message).collect(),
             stream: true,
             options: Some(OllamaOptions {
                 temperature: request.temperature,
