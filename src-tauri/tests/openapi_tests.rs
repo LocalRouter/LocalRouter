@@ -38,7 +38,7 @@ fn test_openapi_spec_validity() {
     let servers = spec["servers"]
         .as_array()
         .expect("Servers should be an array");
-    assert!(servers.len() >= 1, "At least one server should be defined");
+    assert!(!servers.is_empty(), "At least one server should be defined");
 }
 
 #[test]

@@ -202,8 +202,10 @@ async fn test_cached_list_validity() {
 #[tokio::test]
 async fn test_gateway_cleanup_expired_sessions() {
     let manager = Arc::new(McpServerManager::new());
-    let mut config = GatewayConfig::default();
-    config.session_ttl_seconds = 1; // 1 second TTL
+    let config = GatewayConfig {
+        session_ttl_seconds: 1, // 1 second TTL
+        ..Default::default()
+    };
     let router = create_test_router();
     let gateway = Arc::new(McpGateway::new(manager, config, router));
 

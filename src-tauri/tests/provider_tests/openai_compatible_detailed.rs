@@ -329,7 +329,7 @@ async fn test_streaming_request_has_stream_true() {
     let mut stream = provider.stream_complete(request).await.unwrap();
 
     // Consume stream
-    while let Some(_) = stream.next().await {}
+    while stream.next().await.is_some() {}
 
     let req = captured_request.lock().unwrap();
     let req = req.as_ref().unwrap();

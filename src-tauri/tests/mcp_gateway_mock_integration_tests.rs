@@ -800,7 +800,7 @@ async fn test_gateway_handles_all_servers_failing() {
     // Should return error or empty result
     assert!(
         result.is_err()
-            || extract_result(&result.as_ref().unwrap())["tools"]
+            || extract_result(result.as_ref().unwrap())["tools"]
                 .as_array()
                 .unwrap()
                 .is_empty()
@@ -2003,7 +2003,7 @@ async fn test_all_servers_timeout() {
     // Should return error or empty result after timeout
     assert!(
         result.is_err()
-            || extract_result(&result.as_ref().unwrap())["tools"]
+            || extract_result(result.as_ref().unwrap())["tools"]
                 .as_array()
                 .map(|a| a.is_empty())
                 .unwrap_or(false)

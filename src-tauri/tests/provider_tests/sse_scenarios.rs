@@ -301,10 +301,9 @@ async fn test_sse_multiline_data() {
 
     let mut chunks = Vec::new();
     while let Some(result) = stream.next().await {
-        match result {
-            Ok(chunk) => chunks.push(chunk),
-            Err(_) => {} // Multiline parsing might fail, that's ok
-        }
+        if let Ok(chunk) = result {
+            chunks.push(chunk);
+        } // Multiline parsing might fail, that's ok
     }
 
     // Our current implementation doesn't support multiline data

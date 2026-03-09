@@ -174,7 +174,7 @@ fn test_message_with_both_content_and_tool_calls() {
 #[test]
 fn test_conversation_with_tool_calling_flow() {
     // Simulate a full conversation with tool calling
-    let messages = vec![
+    let messages = [
         // 1. User asks a question
         ChatMessage {
             role: "user".to_string(),

@@ -1,7 +1,7 @@
-///! Integration tests for RouteLLM configuration and routing logic
-///!
-///! These tests verify that RouteLLM configuration structs are properly defined
-///! and that the routing logic works as expected.
+//! Integration tests for RouteLLM configuration and routing logic
+//!
+//! These tests verify that RouteLLM configuration structs are properly defined
+//! and that the routing logic works as expected.
 use localrouter::config::{AutoModelConfig, RouteLLMConfig, RouteLLMGlobalSettings};
 
 #[cfg(test)]
@@ -130,7 +130,7 @@ mod routing_logic_tests {
 
         for (name, threshold) in profiles {
             assert!(
-                threshold >= 0.0 && threshold <= 1.0,
+                (0.0..=1.0).contains(&threshold),
                 "Profile {} has invalid threshold {}",
                 name,
                 threshold
@@ -236,7 +236,7 @@ mod win_rate_validation_tests {
 
         for win_rate in test_win_rates {
             assert!(
-                win_rate >= 0.0 && win_rate <= 1.0,
+                (0.0..=1.0).contains(&win_rate),
                 "Win rate {} should be in range [0, 1]",
                 win_rate
             );
@@ -250,7 +250,7 @@ mod win_rate_validation_tests {
 
         for rate in invalid_rates {
             assert!(
-                rate < 0.0 || rate > 1.0,
+                !(0.0..=1.0).contains(&rate),
                 "Rate {} should be detected as invalid",
                 rate
             );

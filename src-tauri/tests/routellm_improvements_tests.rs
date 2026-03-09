@@ -19,7 +19,7 @@ async fn test_disk_space_check() {
     let status = get_download_status(&model_path, &tokenizer_path);
 
     // Status should be valid
-    assert!(status.progress >= 0.0 && status.progress <= 1.0);
+    assert!((0.0..=1.0).contains(&status.progress));
 
     println!("✓ Disk space check completed without panic");
 }
@@ -157,7 +157,7 @@ async fn test_concurrent_timeout_updates() {
     // Final value should be one of the set values
     let final_timeout = service.get_idle_timeout().await;
     assert!(
-        final_timeout >= 300 && final_timeout <= 1200,
+        (300..=1200).contains(&final_timeout),
         "Final timeout should be in range: {}",
         final_timeout
     );

@@ -16,8 +16,10 @@ async fn test_model_caching_with_ollama() {
     let registry = ProviderRegistry::new();
 
     // Configure short cache TTL for testing
-    let mut cache_config = ModelCacheConfig::default();
-    cache_config.default_ttl_seconds = 5; // 5 second cache for testing
+    let cache_config = ModelCacheConfig {
+        default_ttl_seconds: 5, // 5 second cache for testing
+        ..Default::default()
+    };
     registry.update_cache_config(cache_config);
 
     // Register Ollama provider (no auth needed)
@@ -88,8 +90,10 @@ async fn test_catalog_fallback() {
     let registry = ProviderRegistry::new();
 
     // Configure cache to use catalog fallback
-    let mut cache_config = ModelCacheConfig::default();
-    cache_config.use_catalog_fallback = true;
+    let cache_config = ModelCacheConfig {
+        use_catalog_fallback: true,
+        ..Default::default()
+    };
     registry.update_cache_config(cache_config);
 
     // Register Anthropic provider

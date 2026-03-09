@@ -193,7 +193,7 @@ fn test_parallel_tool_calls() {
 #[test]
 fn test_parallel_tool_responses() {
     // Test that responses for multiple tool calls can be sent back
-    let responses = vec![
+    let responses = [
         ChatMessage {
             role: "tool".to_string(),
             content: ChatMessageContent::Text(

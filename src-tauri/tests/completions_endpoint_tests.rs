@@ -219,7 +219,7 @@ async fn test_streaming_completion_long_response() {
 
     // Simulate a longer streaming response with many chunks
     let mut stream_parts = vec![];
-    let words = vec![
+    let words = [
         "The", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
     ];
 

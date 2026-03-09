@@ -11,7 +11,7 @@ fn test_roots_merge_logic() {
     // This is a unit test for the merge logic
     // Full integration test would require HTTP server setup
 
-    let global_roots = vec![
+    let global_roots = [
         RootConfig {
             uri: "file:///global/projects".to_string(),
             name: Some("Projects".to_string()),
@@ -24,7 +24,7 @@ fn test_roots_merge_logic() {
         },
     ];
 
-    let client_roots = vec![RootConfig {
+    let client_roots = [RootConfig {
         uri: "file:///client/workspace".to_string(),
         name: Some("Workspace".to_string()),
         enabled: true,

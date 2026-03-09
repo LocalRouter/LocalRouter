@@ -204,7 +204,7 @@ impl OpenAICompatibleMockBuilder {
 
     /// Mock the /chat/completions endpoint (OpenAI format, streaming)
     pub async fn mock_streaming_completion(self) -> Self {
-        let chunks = vec![
+        let chunks = [
             "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"1\"},\"finish_reason\":null}]}\n\n",
             "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" 2\"},\"finish_reason\":null}]}\n\n",
             "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" 3\"},\"finish_reason\":\"stop\"}]}\n\n",
@@ -397,7 +397,7 @@ impl AnthropicMockBuilder {
 
     /// Mock the /v1/messages endpoint (Anthropic format, streaming)
     pub async fn mock_streaming_completion(self) -> Self {
-        let chunks = vec![
+        let chunks = [
             "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\"}}\n\n",
             "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
             "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"1\"},\"message_id\":\"msg_test\"}\n\n",

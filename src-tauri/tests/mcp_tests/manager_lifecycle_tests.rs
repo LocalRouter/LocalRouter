@@ -6,5 +6,4 @@
 #[tokio::test]
 async fn test_placeholder() {
     // TODO: Implement manager lifecycle tests
-    assert!(true);
 }

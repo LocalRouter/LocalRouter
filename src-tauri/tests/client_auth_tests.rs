@@ -106,7 +106,7 @@ fn test_token_store_generation() -> AppResult<()> {
     // Verify token format
     assert!(token.starts_with("lr-"));
     assert!(expires_in > 0);
-    assert!(expires_in >= 3599 && expires_in <= 3600); // Default 1 hour (allow 1 sec tolerance)
+    assert!((3599..=3600).contains(&expires_in)); // Default 1 hour (allow 1 sec tolerance)
 
     // Verify token can be verified
     let client_id = token_store.verify_token(&token);

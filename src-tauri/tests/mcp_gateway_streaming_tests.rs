@@ -1,6 +1,5 @@
 /// Tests for SSE streaming gateway functionality
 /// Tests the multiplexing of multiple MCP servers into a single client-facing SSE stream
-
 #[cfg(test)]
 mod tests {
 

@@ -292,7 +292,7 @@ async fn test_all_expected_endpoints_exist() {
             "POST" => client.post(&url).json(&serde_json::json!({})).send().await,
             _ => panic!("Unsupported method: {}", method),
         }
-        .expect(&format!("Failed to {} {}", method, path));
+        .unwrap_or_else(|_| panic!("Failed to {} {}", method, path));
 
         // Should not get 404 (endpoint exists)
         assert_ne!(
