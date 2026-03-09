@@ -105,23 +105,56 @@ impl CohereProvider {
     fn convert_to_cohere_request(&self, request: &CompletionRequest) -> AppResult<CohereRequest> {
         let mut system_message = None;
         let mut chat_history = Vec::new();
-        let mut user_message = String::new();
+        let mut last_user_message = String::new();
 
+        // Build chat_history from all messages, keeping the last user message separate
         for msg in &request.messages {
             match msg.role.as_str() {
                 "system" => system_message = Some(msg.content.as_text()),
-                "user" => user_message = msg.content.as_text(),
-                "assistant" => chat_history.push(CohereMessage {
-                    role: "CHATBOT".to_string(),
-                    content: msg.content.as_text(),
-                }),
-                _ => {}
+                "user" => {
+                    // If there's a previous user message, push it to history first
+                    if !last_user_message.is_empty() {
+                        chat_history.push(CohereMessage {
+                            role: "USER".to_string(),
+                            content: last_user_message,
+                        });
+                    }
+                    last_user_message = msg.content.as_text();
+                }
+                "assistant" => {
+                    // If there's an unhistoried user message before this assistant response, add it
+                    if !last_user_message.is_empty() {
+                        chat_history.push(CohereMessage {
+                            role: "USER".to_string(),
+                            content: last_user_message,
+                        });
+                        last_user_message = String::new();
+                    }
+                    chat_history.push(CohereMessage {
+                        role: "CHATBOT".to_string(),
+                        content: msg.content.as_text(),
+                    });
+                }
+                "tool" => {
+                    // Tool results - add as TOOL role
+                    chat_history.push(CohereMessage {
+                        role: "TOOL".to_string(),
+                        content: msg.content.as_text(),
+                    });
+                }
+                _ => {
+                    // Unknown roles - add as USER
+                    chat_history.push(CohereMessage {
+                        role: "USER".to_string(),
+                        content: msg.content.as_text(),
+                    });
+                }
             }
         }
 
         Ok(CohereRequest {
             model: request.model.clone(),
-            message: user_message,
+            message: last_user_message,
             preamble: system_message,
             chat_history: if chat_history.is_empty() {
                 None
@@ -130,6 +163,11 @@ impl CohereProvider {
             },
             temperature: request.temperature,
             max_tokens: request.max_tokens,
+            p: request.top_p,
+            k: request.top_k,
+            frequency_penalty: request.frequency_penalty,
+            presence_penalty: request.presence_penalty,
+            stop_sequences: request.stop.clone(),
             stream: request.stream,
         })
     }
@@ -147,6 +185,18 @@ struct CohereRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    /// Top-p sampling (Cohere calls it "p")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p: Option<f32>,
+    /// Top-k sampling (Cohere calls it "k")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop_sequences: Option<Vec<String>>,
     #[serde(default)]
     stream: bool,
 }

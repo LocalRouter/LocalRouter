@@ -15,7 +15,7 @@ use lr_types::{AppError, AppResult};
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
-    ProviderCreditsInfo, ProviderHealth, TokenUsage,
+    ProviderCreditsInfo, ProviderHealth, TokenUsage, Tool, ToolChoice,
 };
 
 const OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
@@ -255,7 +255,10 @@ impl ModelProvider for OpenRouterProvider {
             top_p: request.top_p,
             frequency_penalty: request.frequency_penalty,
             presence_penalty: request.presence_penalty,
-            stop: request.stop,
+            stop: request.stop.clone(),
+            tools: request.tools.clone(),
+            tool_choice: request.tool_choice.clone(),
+            response_format: request.response_format.clone(),
             stream: false,
         };
 
@@ -320,6 +323,9 @@ impl ModelProvider for OpenRouterProvider {
             frequency_penalty: request.frequency_penalty,
             presence_penalty: request.presence_penalty,
             stop: request.stop,
+            tools: request.tools,
+            tool_choice: request.tool_choice,
+            response_format: request.response_format,
             stream: true,
         };
 
@@ -347,45 +353,68 @@ impl ModelProvider for OpenRouterProvider {
             )));
         }
 
-        let stream = response.bytes_stream().map(|result| {
-            result
-                .map_err(|e| AppError::Provider(format!("Stream error: {}", e)))
-                .and_then(|bytes| {
-                    let text = String::from_utf8_lossy(&bytes);
+        use std::sync::{Arc, Mutex};
+        let line_buffer = Arc::new(Mutex::new(String::new()));
 
-                    // Parse SSE format (data: {...}\n\n)
-                    for line in text.lines() {
+        let stream = response.bytes_stream().flat_map(move |result| {
+            let line_buffer = line_buffer.clone();
+
+            let chunks: Vec<AppResult<CompletionChunk>> = match result {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let mut buffer = line_buffer.lock().unwrap();
+                    buffer.push_str(&text);
+
+                    let mut parsed_chunks = Vec::new();
+
+                    while let Some(newline_pos) = buffer.find('\n') {
+                        let line = buffer[..newline_pos].to_string();
+                        *buffer = buffer[newline_pos + 1..].to_string();
+
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+
                         if let Some(json_str) = line.strip_prefix("data: ") {
-                            if json_str == "[DONE]" {
+                            if json_str.trim() == "[DONE]" {
                                 continue;
                             }
 
-                            let chunk: OpenRouterChunk =
-                                serde_json::from_str(json_str).map_err(|e| {
-                                    AppError::Provider(format!("Failed to parse chunk: {}", e))
-                                })?;
-
-                            return Ok(CompletionChunk {
-                                id: chunk.id,
-                                object: "chat.completion.chunk".to_string(),
-                                created: chunk.created,
-                                model: chunk.model,
-                                choices: chunk
-                                    .choices
-                                    .into_iter()
-                                    .map(|choice| ChunkChoice {
-                                        index: choice.index,
-                                        delta: choice.delta,
-                                        finish_reason: choice.finish_reason,
-                                    })
-                                    .collect(),
-                                extensions: None,
-                            });
+                            match serde_json::from_str::<OpenRouterChunk>(json_str) {
+                                Ok(chunk) => {
+                                    parsed_chunks.push(Ok(CompletionChunk {
+                                        id: chunk.id,
+                                        object: "chat.completion.chunk".to_string(),
+                                        created: chunk.created,
+                                        model: chunk.model,
+                                        choices: chunk
+                                            .choices
+                                            .into_iter()
+                                            .map(|choice| ChunkChoice {
+                                                index: choice.index,
+                                                delta: choice.delta,
+                                                finish_reason: choice.finish_reason,
+                                            })
+                                            .collect(),
+                                        extensions: None,
+                                    }));
+                                }
+                                Err(e) => {
+                                    parsed_chunks.push(Err(AppError::Provider(format!(
+                                        "Failed to parse chunk: {}",
+                                        e
+                                    ))));
+                                }
+                            }
                         }
                     }
 
-                    Err(AppError::Provider("No data in stream chunk".to_string()))
-                })
+                    parsed_chunks
+                }
+                Err(e) => vec![Err(AppError::Provider(format!("Stream error: {}", e)))],
+            };
+
+            futures::stream::iter(chunks)
         });
 
         Ok(Box::pin(stream))
@@ -536,6 +565,12 @@ struct OpenRouterRequest {
     presence_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stop: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<super::ResponseFormat>,
     stream: bool,
 }
 

@@ -15,7 +15,7 @@ use tracing::debug;
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
-    ProviderHealth, PullProgress, TokenUsage,
+    ProviderHealth, PullProgress, TokenUsage, Tool, ToolCallDelta, ToolChoice,
 };
 use lr_types::{AppError, AppResult};
 
@@ -130,6 +130,10 @@ struct LMStudioChatRequest {
     presence_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stop: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<ToolChoice>,
     #[serde(default)]
     stream: bool,
 }
@@ -180,6 +184,8 @@ struct LMStudioDelta {
     role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ToolCallDelta>>,
 }
 
 // LM Studio model download API types
@@ -321,7 +327,9 @@ impl ModelProvider for LMStudioProvider {
             top_p: request.top_p,
             frequency_penalty: request.frequency_penalty,
             presence_penalty: request.presence_penalty,
-            stop: request.stop,
+            stop: request.stop.clone(),
+            tools: request.tools.clone(),
+            tool_choice: request.tool_choice.clone(),
             stream: false,
         };
 
@@ -528,6 +536,8 @@ impl ModelProvider for LMStudioProvider {
             frequency_penalty: request.frequency_penalty,
             presence_penalty: request.presence_penalty,
             stop: request.stop,
+            tools: request.tools,
+            tool_choice: request.tool_choice,
             stream: true,
         };
 
@@ -588,7 +598,7 @@ impl ModelProvider for LMStudioProvider {
                                                     delta: ChunkDelta {
                                                         role: choice.delta.role,
                                                         content: choice.delta.content,
-                                                        tool_calls: None,
+                                                        tool_calls: choice.delta.tool_calls,
                                                     },
                                                     finish_reason: choice.finish_reason,
                                                 })
