@@ -166,9 +166,9 @@ impl CompressorModel {
             }
             let mut sum_prob = 0.0;
             let mut count = 0;
-            for token_idx in *start..*end.min(&logits_vec.len()) {
-                let logit_keep = logits_vec[token_idx][1];
-                let logit_drop = logits_vec[token_idx][0];
+            for logits in logits_vec.iter().take(*end.min(&logits_vec.len())).skip(*start) {
+                let logit_keep = logits[1];
+                let logit_drop = logits[0];
                 // Softmax for 2 classes: P(keep) = exp(keep) / (exp(keep) + exp(drop))
                 let max_logit = logit_keep.max(logit_drop);
                 let p_keep = (logit_keep - max_logit).exp()
