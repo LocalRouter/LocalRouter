@@ -28,6 +28,7 @@ use crate::manager::McpViaLlmError;
 use crate::session::{McpViaLlmSession, PendingMixedExecution};
 
 /// Result of the agentic loop
+#[allow(clippy::large_enum_variant)]
 pub enum OrchestratorResult {
     /// Loop completed — return this response to the client
     Complete(CompletionResponse),
@@ -427,6 +428,7 @@ pub async fn run_agentic_loop(
 /// `incoming_request` is the client's new request (containing tool results).
 /// We use it as the base for model/temperature/etc. and replace the messages
 /// with our reconstructed history.
+#[allow(clippy::too_many_arguments)]
 pub async fn resume_after_mixed(
     gateway: Arc<McpGateway>,
     router: &Router,

@@ -224,6 +224,19 @@ impl McpViaLlmManager {
         .await
     }
 
+    /// Start a background task that periodically cleans up expired sessions.
+    /// Returns a handle that can be used to abort the task.
+    pub fn start_cleanup_task(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                manager.cleanup_expired_sessions();
+            }
+        })
+    }
+
     /// Remove expired sessions (can be called periodically)
     pub fn cleanup_expired_sessions(&self) {
         let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);

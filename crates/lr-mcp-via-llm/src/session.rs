@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 
 /// Tracks a pending mixed tool execution where MCP tools run in the background
 /// while we wait for the client to return its tool results.
+#[allow(dead_code)]
 pub struct PendingMixedExecution {
     /// The full assistant message containing ALL tool calls (MCP + client)
     pub full_assistant_message: ChatMessage,
@@ -48,11 +49,6 @@ impl SessionHistory {
     /// Replace the full message history
     pub fn set_messages(&mut self, messages: Vec<ChatMessage>) {
         self.full_messages = messages;
-    }
-
-    /// Append messages to the history
-    pub fn extend(&mut self, messages: impl IntoIterator<Item = ChatMessage>) {
-        self.full_messages.extend(messages);
     }
 }
 

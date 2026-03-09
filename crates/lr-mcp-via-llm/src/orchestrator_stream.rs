@@ -340,7 +340,7 @@ async fn streaming_loop(
                     content: None,
                     tool_calls: None,
                 },
-                finish_reason: finish_reason,
+                finish_reason,
             }],
             extensions: None,
         };
@@ -354,6 +354,7 @@ async fn streaming_loop(
 
 /// Accumulator for building a complete ToolCall from streaming deltas
 struct ToolCallAccumulator {
+    #[allow(dead_code)]
     index: u32,
     id: String,
     tool_type: String,
