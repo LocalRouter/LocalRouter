@@ -18,6 +18,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { CLIENT_TEMPLATES } from "@/components/client/ClientTemplates"
+import { ClientModeSelector } from "@/components/client/ClientModeSelector"
 import ServiceIcon from "@/components/ServiceIcon"
 import type { ClientMode, SetClientModeParams, SetClientTemplateParams } from "@/types/tauri-commands"
 
@@ -36,13 +37,6 @@ interface SettingsTabProps {
   onUpdate: () => void
   onDelete: () => void
 }
-
-const MODE_OPTIONS: { value: ClientMode; label: string; description: string; experimental?: boolean }[] = [
-  { value: "both", label: "Both", description: "Full access to LLM routing and MCP servers" },
-  { value: "llm_only", label: "LLM Only", description: "Only LLM routing (hides MCP/Skills tabs)" },
-  { value: "mcp_only", label: "MCP Only", description: "Only MCP proxy (hides Models tab)" },
-  { value: "mcp_via_llm", label: "MCP via LLM", description: "MCP tools injected into LLM requests and executed server-side", experimental: true },
-]
 
 export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabProps) {
   const [name, setName] = useState(client.name)
@@ -145,17 +139,6 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
     }
   }
 
-  // Check if a mode is allowed by the template (or allow all if no template)
-  const isModeAllowed = (mode: ClientMode): boolean => {
-    if (!template) return true
-    if (mode === "both") return template.supportsLlm && template.supportsMcp
-    if (mode === "llm_only") return template.supportsLlm
-    if (mode === "mcp_only") return template.supportsMcp
-    // MCP via LLM only requires LLM support — MCP tools are server-side
-    if (mode === "mcp_via_llm") return template.supportsLlm
-    return true
-  }
-
   const handleRotateConfirm = async () => {
     try {
       setRotating(true)
@@ -256,44 +239,8 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
             Controls which features are available to this client
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid gap-2">
-            {MODE_OPTIONS.map((option) => {
-              const allowed = isModeAllowed(option.value)
-              return (
-                <label
-                  key={option.value}
-                  className={`flex items-start gap-3 p-3 rounded-lg border transition-colors
-                    ${!allowed ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
-                    ${clientMode === option.value ? "border-primary bg-accent" : allowed ? "border-muted hover:border-primary/50" : "border-muted"}`}
-                >
-                  <input
-                    type="radio"
-                    name="client-mode"
-                    value={option.value}
-                    checked={clientMode === option.value}
-                    disabled={!allowed}
-                    onChange={() => handleModeChange(option.value)}
-                    className="mt-1"
-                  />
-                  <div>
-                    <p className="text-sm font-medium">
-                      {option.label}
-                      {option.experimental && (
-                        <span className="ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
-                          Experimental
-                        </span>
-                      )}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {option.description}
-                      {!allowed && template && " (not supported by " + template.name + ")"}
-                    </p>
-                  </div>
-                </label>
-              )
-            })}
-          </div>
+        <CardContent>
+          <ClientModeSelector mode={clientMode} onModeChange={handleModeChange} template={template} />
         </CardContent>
       </Card>
 
