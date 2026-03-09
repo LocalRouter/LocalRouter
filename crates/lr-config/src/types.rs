@@ -1871,8 +1871,8 @@ pub struct JsonRepairConfig {
     #[serde(default = "default_true")]
     pub schema_coercion: bool,
 
-    /// Remove fields not present in the schema (default: true)
-    #[serde(default = "default_true")]
+    /// Remove fields not present in the schema (default: false)
+    #[serde(default)]
     pub strip_extra_fields: bool,
 
     /// Add default values for missing required fields (default: true)
@@ -1890,7 +1890,7 @@ impl Default for JsonRepairConfig {
             enabled: true,
             syntax_repair: true,
             schema_coercion: true,
-            strip_extra_fields: true,
+            strip_extra_fields: false,
             add_defaults: true,
             normalize_enums: true,
         }

@@ -102,7 +102,6 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
             <Wrench className="h-6 w-6" />
             JSON Repair
           </h1>
-          <Badge variant="outline" className="bg-blue-500/10 text-blue-900 dark:text-blue-400">AUTOMATIC</Badge>
         </div>
         <p className="text-sm text-muted-foreground">
           Automatically fix malformed JSON responses from LLMs before they reach your application
@@ -389,23 +388,23 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                     </div>
                     <div className="flex items-center justify-between">
                       <div>
-                        <span className="text-sm font-medium">Strip extra fields</span>
-                        <p className="text-xs text-muted-foreground mt-0.5">Remove fields not in schema when <code className="text-xs bg-muted px-0.5 rounded">additionalProperties: false</code></p>
-                      </div>
-                      <Switch
-                        checked={config.strip_extra_fields}
-                        onCheckedChange={(strip_extra_fields) => updateConfig({ strip_extra_fields })}
-                        disabled={saving || !config.enabled}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div>
                         <span className="text-sm font-medium">Add default values</span>
                         <p className="text-xs text-muted-foreground mt-0.5">Insert <code className="text-xs bg-muted px-0.5 rounded">default</code> values for missing required fields defined in schema</p>
                       </div>
                       <Switch
                         checked={config.add_defaults}
                         onCheckedChange={(add_defaults) => updateConfig({ add_defaults })}
+                        disabled={saving || !config.enabled}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-sm font-medium">Strip extra fields</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">Remove fields not in schema when <code className="text-xs bg-muted px-0.5 rounded">additionalProperties: false</code></p>
+                      </div>
+                      <Switch
+                        checked={config.strip_extra_fields}
+                        onCheckedChange={(strip_extra_fields) => updateConfig({ strip_extra_fields })}
                         disabled={saving || !config.enabled}
                       />
                     </div>
