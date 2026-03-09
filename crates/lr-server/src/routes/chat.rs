@@ -123,7 +123,7 @@ pub async fn chat_completions(
                             .map(|s| s.id.clone())
                             .collect();
                         let allowed = if client.mcp_permissions.global.is_enabled() {
-                            all_ids
+                            all_ids.clone()
                         } else {
                             all_ids
                                 .iter()
@@ -135,7 +135,13 @@ pub async fn chat_completions(
                                 .cloned()
                                 .collect()
                         };
-                        if let Ok(tools) = state
+                        tracing::info!(
+                            "Auto-router firewall: MCP via LLM client {}, {} configured servers, {} allowed",
+                            &client.id[..8.min(client.id.len())],
+                            all_ids.len(),
+                            allowed.len(),
+                        );
+                        match state
                             .mcp_via_llm_manager
                             .list_tools_for_preview(
                                 state.mcp_gateway.clone(),
@@ -144,10 +150,29 @@ pub async fn chat_completions(
                             )
                             .await
                         {
-                            if let Some(obj) = request_json.as_object_mut() {
-                                obj.insert("tools".to_string(), tools);
+                            Ok(tools) => {
+                                let count = tools.as_array().map_or(0, |a| a.len());
+                                tracing::info!(
+                                    "Auto-router firewall: pre-fetched {} MCP tools for popup",
+                                    count,
+                                );
+                                if let Some(obj) = request_json.as_object_mut() {
+                                    obj.insert("tools".to_string(), tools);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Auto-router firewall: failed to pre-fetch MCP tools: {}",
+                                    e,
+                                );
                             }
                         }
+                    } else {
+                        tracing::debug!(
+                            "Auto-router firewall: client {} is not MCP via LLM (mode: {:?})",
+                            &client.id[..8.min(client.id.len())],
+                            client.client_mode,
+                        );
                     }
 
                     // Capture full request + candidate models for edit mode
