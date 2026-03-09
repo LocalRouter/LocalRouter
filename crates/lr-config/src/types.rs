@@ -1931,6 +1931,14 @@ pub struct McpViaLlmConfig {
     /// Maximum total timeout for the agentic loop in seconds (default: 300)
     #[serde(default = "default_mcp_via_llm_max_timeout")]
     pub max_loop_timeout_seconds: u64,
+
+    /// Expose MCP resources as synthetic function tools (default: true)
+    #[serde(default = "default_true")]
+    pub expose_resources_as_tools: bool,
+
+    /// Inject MCP prompts into conversations (default: true)
+    #[serde(default = "default_true")]
+    pub inject_prompts: bool,
 }
 
 fn default_mcp_via_llm_session_ttl() -> u64 {
@@ -1953,6 +1961,8 @@ impl Default for McpViaLlmConfig {
             max_concurrent_sessions: default_mcp_via_llm_max_sessions(),
             max_loop_iterations: default_mcp_via_llm_max_iterations(),
             max_loop_timeout_seconds: default_mcp_via_llm_max_timeout(),
+            expose_resources_as_tools: true,
+            inject_prompts: true,
         }
     }
 }

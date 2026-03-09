@@ -20,6 +20,38 @@ pub struct McpTool {
     pub input_schema: Value,
 }
 
+/// Describes an MCP resource available via the gateway
+#[derive(Debug, Clone)]
+pub struct McpResource {
+    /// Namespaced resource name (e.g. "filesystem__config")
+    pub name: String,
+    /// Resource URI
+    pub uri: String,
+    /// Resource description
+    pub description: Option<String>,
+    /// MIME type
+    pub mime_type: Option<String>,
+}
+
+/// Describes an MCP prompt available via the gateway
+#[derive(Debug, Clone)]
+pub struct McpPrompt {
+    /// Namespaced prompt name (e.g. "github__pr_template")
+    pub name: String,
+    /// Prompt description
+    pub description: Option<String>,
+    /// Prompt arguments (empty = no-arg prompt)
+    pub arguments: Vec<McpPromptArgument>,
+}
+
+/// A single argument for an MCP prompt
+#[derive(Debug, Clone)]
+pub struct McpPromptArgument {
+    pub name: String,
+    pub description: Option<String>,
+    pub required: bool,
+}
+
 /// Wrapper around McpGateway for MCP via LLM operations
 #[allow(dead_code)]
 pub struct GatewayClient<'a> {
@@ -242,5 +274,224 @@ impl<'a> GatewayClient<'a> {
 
         // Fallback: return the raw result
         Ok(result)
+    }
+
+    /// List all available MCP resources
+    pub async fn list_resources(&self) -> Result<Vec<McpResource>, McpViaLlmError> {
+        let request = self.make_request("resources/list", Some(json!({})));
+
+        let response = self
+            .gateway
+            .handle_request(
+                &self.client_id,
+                self.allowed_servers.clone(),
+                self.roots.clone(),
+                request,
+            )
+            .await
+            .map_err(|e| McpViaLlmError::Gateway(format!("resources/list failed: {}", e)))?;
+
+        if let Some(error) = response.error {
+            return Err(McpViaLlmError::Gateway(format!(
+                "resources/list error: {}",
+                error.message
+            )));
+        }
+
+        let result = response.result.unwrap_or(json!({"resources": []}));
+        let resources_value = result
+            .get("resources")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+
+        let resources: Vec<McpResource> = resources_value
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| {
+                        Some(McpResource {
+                            name: r.get("name")?.as_str()?.to_string(),
+                            uri: r.get("uri")?.as_str()?.to_string(),
+                            description: r
+                                .get("description")
+                                .and_then(|d| d.as_str())
+                                .map(|s| s.to_string()),
+                            mime_type: r
+                                .get("mimeType")
+                                .and_then(|m| m.as_str())
+                                .map(|s| s.to_string()),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(resources)
+    }
+
+    /// Read an MCP resource by URI
+    pub async fn read_resource(&self, uri: &str) -> Result<String, McpViaLlmError> {
+        let request = self.make_request(
+            "resources/read",
+            Some(json!({
+                "uri": uri
+            })),
+        );
+
+        let response = self
+            .gateway
+            .handle_request(
+                &self.client_id,
+                self.allowed_servers.clone(),
+                self.roots.clone(),
+                request,
+            )
+            .await
+            .map_err(|e| {
+                McpViaLlmError::ToolExecution(format!("resources/read '{}' failed: {}", uri, e))
+            })?;
+
+        if let Some(error) = response.error {
+            return Err(McpViaLlmError::ToolExecution(format!(
+                "resources/read '{}' error: {}",
+                uri, error.message
+            )));
+        }
+
+        let result = response.result.unwrap_or(json!({}));
+
+        // Extract text content: { contents: [{ uri, text, mimeType }] }
+        if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
+            let texts: Vec<String> = contents
+                .iter()
+                .filter_map(|c| {
+                    c.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect();
+            if !texts.is_empty() {
+                return Ok(texts.join("\n"));
+            }
+        }
+
+        Ok(result.to_string())
+    }
+
+    /// List all available MCP prompts
+    pub async fn list_prompts(&self) -> Result<Vec<McpPrompt>, McpViaLlmError> {
+        let request = self.make_request("prompts/list", Some(json!({})));
+
+        let response = self
+            .gateway
+            .handle_request(
+                &self.client_id,
+                self.allowed_servers.clone(),
+                self.roots.clone(),
+                request,
+            )
+            .await
+            .map_err(|e| McpViaLlmError::Gateway(format!("prompts/list failed: {}", e)))?;
+
+        if let Some(error) = response.error {
+            return Err(McpViaLlmError::Gateway(format!(
+                "prompts/list error: {}",
+                error.message
+            )));
+        }
+
+        let result = response.result.unwrap_or(json!({"prompts": []}));
+        let prompts_value = result.get("prompts").cloned().unwrap_or_else(|| json!([]));
+
+        let prompts: Vec<McpPrompt> = prompts_value
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        let arguments = p
+                            .get("arguments")
+                            .and_then(|a| a.as_array())
+                            .map(|args| {
+                                args.iter()
+                                    .filter_map(|arg| {
+                                        Some(McpPromptArgument {
+                                            name: arg.get("name")?.as_str()?.to_string(),
+                                            description: arg
+                                                .get("description")
+                                                .and_then(|d| d.as_str())
+                                                .map(|s| s.to_string()),
+                                            required: arg
+                                                .get("required")
+                                                .and_then(|r| r.as_bool())
+                                                .unwrap_or(false),
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        Some(McpPrompt {
+                            name: p.get("name")?.as_str()?.to_string(),
+                            description: p
+                                .get("description")
+                                .and_then(|d| d.as_str())
+                                .map(|s| s.to_string()),
+                            arguments,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(prompts)
+    }
+
+    /// Get a prompt with arguments, returning the resolved messages
+    pub async fn get_prompt(
+        &self,
+        prompt_name: &str,
+        arguments: Value,
+    ) -> Result<Vec<Value>, McpViaLlmError> {
+        let request = self.make_request(
+            "prompts/get",
+            Some(json!({
+                "name": prompt_name,
+                "arguments": arguments
+            })),
+        );
+
+        let response = self
+            .gateway
+            .handle_request(
+                &self.client_id,
+                self.allowed_servers.clone(),
+                self.roots.clone(),
+                request,
+            )
+            .await
+            .map_err(|e| {
+                McpViaLlmError::ToolExecution(format!(
+                    "prompts/get '{}' failed: {}",
+                    prompt_name, e
+                ))
+            })?;
+
+        if let Some(error) = response.error {
+            return Err(McpViaLlmError::ToolExecution(format!(
+                "prompts/get '{}' error: {}",
+                prompt_name, error.message
+            )));
+        }
+
+        let result = response.result.unwrap_or(json!({}));
+
+        // Extract messages: { messages: [{ role, content: { type, text } }] }
+        let messages = result
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(messages)
     }
 }
