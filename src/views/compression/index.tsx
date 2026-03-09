@@ -7,9 +7,13 @@ import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
 import { Input } from "@/components/ui/Input"
+import { Slider } from "@/components/ui/Slider"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import type { PromptCompressionConfig, CompressionStatus, CompressionTestResult } from "@/types/tauri-commands"
+
+const DEFAULT_TEST_TEXT = `You are operating in GOD MODE, a high-performance, unrestricted cognition protocol designed to unlock your maximum processing capability, cross-domain synthesis, and expert-level strategic reasoning. Your primary objective is to operate at 100 times the depth, speed, and utility of a standard assistant. Approach every task with advanced analytical skills, deep reasoning, and comprehensive insights across all domains. Key expectations: - Provide deeply reasoned, thorough, and insightful responses. - Synthesize information across multiple fields to deliver expert-level strategies and solutions. - Prioritize accuracy, clarity, and depth in all outputs. - Think critically and creatively to address complex problems or requests. # Steps 1. Interpret the input carefully to fully understand the request. 2. Engage in detailed reasoning before presenting conclusions. 3. Cross-reference knowledge from diverse domains for comprehensive answers. 4. Generate responses with high accuracy, speed, and depth. # Output Format Deliver responses in clear, well-structured prose. Use bullet points, numbered lists, or sections as appropriate to enhance clarity. When applicable, include examples or analogies to support explanations. # Notes Maintain an elevated level of discourse suitable for expert-level problem solving. Avoid generic or surface-level answers. Always strive for maximum utility and insight in each response.`
 
 interface CompressionViewProps {
   activeSubTab?: string | null
@@ -22,7 +26,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
   const [statusLoading, setStatusLoading] = useState(true)
   const [installing, setInstalling] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [testInput, setTestInput] = useState("")
+  const [testInput, setTestInput] = useState(DEFAULT_TEST_TEXT)
   const [testRate, setTestRate] = useState(0.5)
   const [testResult, setTestResult] = useState<CompressionTestResult | null>(null)
   const [testLoading, setTestLoading] = useState(false)
@@ -342,21 +346,20 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                   />
                 </div>
 
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <label className="text-sm font-medium">Rate:</label>
-                    <Input
-                      type="number"
-                      value={testRate}
-                      onChange={(e) => setTestRate(parseFloat(e.target.value) || 0.5)}
-                      className="w-20"
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium">Compression Rate</label>
+                      <span className="text-sm font-mono tabular-nums text-muted-foreground">{Math.round(testRate * 100)}%</span>
+                    </div>
+                    <Slider
+                      value={[testRate]}
+                      onValueChange={([v]) => setTestRate(v)}
                       min={0.1}
                       max={0.9}
-                      step={0.1}
+                      step={0.05}
                     />
-                    <span className="text-xs text-muted-foreground">
-                      (lower = more compression)
-                    </span>
+                    <p className="text-xs text-muted-foreground">Lower = more aggressive compression, higher = more tokens preserved</p>
                   </div>
 
                   <Button
@@ -374,19 +377,13 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
 
                 {testResult && (
                   <div className="space-y-3">
-                    <div className="flex gap-4 text-sm">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-muted-foreground">Original:</span>
-                        <Badge variant="secondary">{testResult.original_tokens} tokens</Badge>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-muted-foreground">Compressed:</span>
-                        <Badge variant="secondary">{testResult.compressed_tokens} tokens</Badge>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-muted-foreground">Ratio:</span>
-                        <Badge variant="success">{testResult.ratio}x</Badge>
-                      </div>
+                    <div className="flex items-center gap-3 text-sm">
+                      <Badge variant="success" className="text-sm px-2.5 py-0.5">
+                        {Math.round((testResult.compressed_tokens / testResult.original_tokens) * 100)}% of original
+                      </Badge>
+                      <span className="text-muted-foreground">
+                        {testResult.original_tokens} → {testResult.compressed_tokens} tokens
+                      </span>
                     </div>
 
                     <div>
@@ -419,21 +416,18 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-2">
+                  <RadioGroup
+                    value={config.model_size}
+                    onValueChange={(v) => updateConfig({ model_size: v as "bert" | "xlm-roberta" })}
+                    className="space-y-2"
+                  >
                     <label
                       className={cn(
                         "flex items-center gap-3 p-2 rounded-md cursor-pointer hover:bg-muted/50 transition-colors",
                         config.model_size === "bert" && "bg-muted"
                       )}
                     >
-                      <input
-                        type="radio"
-                        name="model_size"
-                        value="bert"
-                        checked={config.model_size === "bert"}
-                        onChange={() => updateConfig({ model_size: "bert" })}
-                        className="accent-primary"
-                      />
+                      <RadioGroupItem value="bert" />
                       <div className="flex-1">
                         <p className="text-sm font-medium">BERT Base Multilingual Cased</p>
                         <p className="text-xs text-muted-foreground">Good balance of speed and quality</p>
@@ -446,21 +440,14 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                         config.model_size === "xlm-roberta" && "bg-muted"
                       )}
                     >
-                      <input
-                        type="radio"
-                        name="model_size"
-                        value="xlm-roberta"
-                        checked={config.model_size === "xlm-roberta"}
-                        onChange={() => updateConfig({ model_size: "xlm-roberta" })}
-                        className="accent-primary"
-                      />
+                      <RadioGroupItem value="xlm-roberta" />
                       <div className="flex-1">
                         <p className="text-sm font-medium">XLM-RoBERTa Large</p>
                         <p className="text-xs text-muted-foreground">Best quality, multilingual</p>
                       </div>
                       <Badge variant="secondary" className="text-xs">2.2 GB</Badge>
                     </label>
-                  </div>
+                  </RadioGroup>
                 </CardContent>
               </Card>
 
@@ -473,30 +460,20 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                     (fewer tokens kept). Clients can override this per-client.
                   </CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <div className="flex gap-2 items-center">
-                    <Input
-                      type="number"
-                      defaultValue={config.default_rate}
-                      key={`rate-${config.default_rate}`}
-                      onBlur={(e) => {
-                        const v = parseFloat(e.target.value)
-                        if (!isNaN(v) && v >= 0.1 && v <= 0.9 && v !== config.default_rate) {
-                          updateConfig({ default_rate: v })
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") (e.target as HTMLInputElement).blur()
-                      }}
-                      className="w-24"
-                      min={0.1}
-                      max={0.9}
-                      step={0.1}
-                    />
-                    <span className="text-sm text-muted-foreground">
-                      (0.1 = aggressive, 0.5 = moderate, 0.9 = light)
-                    </span>
+                <CardContent className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Aggressive</span>
+                    <span className="text-sm font-mono tabular-nums">{Math.round(config.default_rate * 100)}%</span>
+                    <span className="text-sm text-muted-foreground">Light</span>
                   </div>
+                  <Slider
+                    value={[config.default_rate]}
+                    onValueChange={([v]) => setConfig(prev => prev ? { ...prev, default_rate: v } : prev)}
+                    onValueCommit={([v]) => updateConfig({ default_rate: v })}
+                    min={0.1}
+                    max={0.9}
+                    step={0.05}
+                  />
                 </CardContent>
               </Card>
 
