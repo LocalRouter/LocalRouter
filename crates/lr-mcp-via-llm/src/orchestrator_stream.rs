@@ -327,7 +327,11 @@ async fn streaming_loop(
 
         let fr = finish_reason.as_deref().unwrap_or("stop");
 
-        if fr == "tool_calls" || fr == "tool_use" {
+        // Check for tool calls: some providers (e.g., Ollama) send tool_calls in
+        // earlier chunks but set finish_reason to "stop" on the final done chunk.
+        // So also check accumulated_tool_calls as a fallback.
+        let has_accumulated_tools = tool_calls.is_some();
+        if fr == "tool_calls" || fr == "tool_use" || has_accumulated_tools {
             if let Some(ref tcs) = tool_calls {
                 // Classify: MCP vs client tools
                 let (mcp_calls, client_calls): (Vec<&ToolCall>, Vec<&ToolCall>) = tcs

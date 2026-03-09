@@ -554,9 +554,11 @@ impl ModelProvider for OllamaProvider {
         let model = request.model.clone();
         let stream = response.bytes_stream();
 
-        // Track if this is the first chunk (for role field)
+        // Track state across chunks
         use std::sync::{Arc, Mutex};
         let is_first_chunk = Arc::new(Mutex::new(true));
+        // Track if any chunk in this stream contained tool calls
+        let seen_tool_calls = Arc::new(Mutex::new(false));
 
         // Buffer for incomplete lines across byte chunks
         let line_buffer = Arc::new(Mutex::new(String::new()));
@@ -564,6 +566,7 @@ impl ModelProvider for OllamaProvider {
         let converted_stream = stream.flat_map(move |result| {
             let model = model.clone();
             let is_first_chunk = is_first_chunk.clone();
+            let seen_tool_calls = seen_tool_calls.clone();
             let line_buffer = line_buffer.clone();
 
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
@@ -601,6 +604,11 @@ impl ModelProvider for OllamaProvider {
                                     *first = false;
                                 }
 
+                                // Track tool calls across chunks
+                                if has_tool_calls {
+                                    *seen_tool_calls.lock().unwrap() = true;
+                                }
+
                                 // Convert tool calls to streaming delta format
                                 let tool_call_deltas = message.tool_calls.map(|tcs| {
                                     tcs.into_iter()
@@ -618,7 +626,10 @@ impl ModelProvider for OllamaProvider {
                                 });
 
                                 let finish_reason = if ollama_chunk.done {
-                                    if has_tool_calls {
+                                    // Check both current chunk and any previous chunks
+                                    if has_tool_calls
+                                        || *seen_tool_calls.lock().unwrap()
+                                    {
                                         Some("tool_calls".to_string())
                                     } else {
                                         Some("stop".to_string())
