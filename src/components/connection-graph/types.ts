@@ -131,6 +131,17 @@ export interface HealthCacheState {
   aggregate_status: 'red' | 'yellow' | 'green'
 }
 
+// Strategy info for graph filtering
+export interface GraphStrategy {
+  id: string
+  allowed_models: { mode: 'all' | 'selected'; models: string[] }
+  auto_config?: {
+    prioritized_models: [string, string][]
+    available_models: [string, string][]
+    routellm_config?: { enabled: boolean; weak_models: [string, string][] } | null
+  } | null
+}
+
 // Hook return type
 export interface UseGraphDataResult {
   clients: Client[]
@@ -138,6 +149,7 @@ export interface UseGraphDataResult {
   mcpServers: McpServer[]
   skills: Skill[]
   codingAgents: CodingAgent[]
+  strategies: GraphStrategy[]
   healthState: HealthCacheState | null
   activeConnections: string[]
   loading: boolean

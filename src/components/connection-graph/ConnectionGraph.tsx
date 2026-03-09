@@ -40,7 +40,7 @@ interface ConnectionGraphProps {
 }
 
 export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProps) {
-  const { clients, providers, mcpServers, skills, codingAgents, healthState, activeConnections, loading, error } = useGraphData()
+  const { clients, providers, mcpServers, skills, codingAgents, strategies, healthState, activeConnections, loading, error } = useGraphData()
 
   // Build the graph from data
   const { graphNodes, graphEdges, graphBounds } = useMemo(() => {
@@ -51,10 +51,11 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
       skills,
       codingAgents,
       healthState,
-      activeConnections
+      activeConnections,
+      strategies,
     )
     return { graphNodes: nodes as Node<GraphNodeData>[], graphEdges: edges as Edge[], graphBounds: bounds }
-  }, [clients, providers, mcpServers, skills, codingAgents, healthState, activeConnections])
+  }, [clients, providers, mcpServers, skills, codingAgents, strategies, healthState, activeConnections])
 
   // React Flow state
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNodeData>([])

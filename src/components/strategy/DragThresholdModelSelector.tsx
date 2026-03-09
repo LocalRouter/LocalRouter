@@ -144,7 +144,6 @@ function SortableRow({
     const dx = e.clientX - start.x
     const dy = e.clientY - start.y
     if (Math.abs(dx) < 8 && Math.abs(dy) < 8) {
-      e.stopPropagation()
       onToggle()
     }
   }, [disabled, onToggle])

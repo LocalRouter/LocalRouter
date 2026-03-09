@@ -13,6 +13,13 @@ export type {
   CompressionTestResult,
 } from '@/types/tauri-commands';
 
+// Compression rate presets (shared across global and client views)
+export const COMPRESSION_PRESETS = [
+  { name: "Aggressive", value: 0.5 },
+  { name: "Balanced", value: 0.75 },
+  { name: "Light", value: 0.9 },
+]
+
 // Resource requirement constants per model (benchmarked on Apple Silicon, release build)
 export const COMPRESSION_REQUIREMENTS = {
   bert: {

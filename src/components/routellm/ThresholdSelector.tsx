@@ -11,15 +11,15 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/label";
-import { Slider } from "@/components/ui/Slider";
+import { PresetSlider } from "@/components/ui/PresetSlider";
 import { ThresholdProfile } from './types';
 import type { RouteLLMTestResult } from '@/types/tauri-commands';
 
 // Threshold presets with their values and descriptions (ordered left-to-right: quality → cost)
 const THRESHOLD_PRESETS = [
-  { name: "Quality", value: 0.1, description: "Use weak model rarely — prioritize quality" },
-  { name: "Balanced", value: 0.3, description: "Use weak model for simple requests (recommended)" },
-  { name: "Cost Savings", value: 0.5, description: "Use weak model often — maximize savings" },
+  { name: "Quality", value: 0.1 },
+  { name: "Balanced", value: 0.3 },
+  { name: "Cost Savings", value: 0.5 },
 ] as const;
 
 const getProfile = (threshold: number): ThresholdProfile => {
@@ -120,54 +120,18 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* Header with label */}
-      <div className="flex items-center justify-between">
-        <Label className="text-sm font-medium">Model selection threshold</Label>
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-xs text-muted-foreground">{value.toFixed(2)}</span>
-          <Badge variant="outline" className="text-xs">
-            {profile.name}
-          </Badge>
-        </div>
-      </div>
-
-      {/* Slider with labels */}
-      <div className="space-y-2">
-        <Slider
-          min={0}
-          max={1}
-          step={0.01}
-          value={[value]}
-          onValueChange={([v]) => onChange(v)}
-          disabled={disabled}
-        />
-        {!compact && (
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>Use strong model more</span>
-            <span>Use weak model more</span>
-          </div>
-        )}
-      </div>
-
-      {/* Preset buttons */}
-      <div className="flex gap-2">
-        {THRESHOLD_PRESETS.map((preset) => {
-          const isActive = Math.abs(preset.value - value) < 0.05;
-          return (
-            <Button
-              key={preset.name}
-              type="button"
-              variant={isActive ? "default" : "outline"}
-              size="sm"
-              className="flex-1"
-              onClick={() => onChange(preset.value)}
-              disabled={disabled}
-            >
-              {preset.name}
-            </Button>
-          );
-        })}
-      </div>
+      <PresetSlider
+        label="Model selection threshold"
+        value={value}
+        onChange={onChange}
+        presets={[...THRESHOLD_PRESETS]}
+        min={0}
+        max={1}
+        step={0.01}
+        minLabel={compact ? undefined : "Use strong model more"}
+        maxLabel={compact ? undefined : "Use weak model more"}
+        disabled={disabled}
+      />
 
       {/* Try it out section */}
       {showTryItOut && (

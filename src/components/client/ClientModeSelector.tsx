@@ -71,26 +71,26 @@ const MODE_OPTIONS: {
   {
     value: "both",
     label: "Both",
-    description: "Full access to LLM routing and MCP servers",
+    description: "Use LLM Model routing and MCP servers",
     Icon: BothIcon,
   },
   {
     value: "mcp_via_llm",
     label: "Both via LLM",
-    description: "MCP tools injected into LLM requests and executed server-side",
+    description: "MCP servers injected into LLM requests (tool call requests intercepted and handled)",
     Icon: BothViaLlmIcon,
     experimental: true,
   },
   {
     value: "llm_only",
     label: "LLM Only",
-    description: "Only LLM routing (hides MCP/Skills tabs)",
+    description: "Only LLM Model routing",
     Icon: LlmOnlyIcon,
   },
   {
     value: "mcp_only",
     label: "MCP Only",
-    description: "Only MCP proxy (hides Models tab)",
+    description: "Only MCP proxy",
     Icon: McpOnlyIcon,
   },
 ]

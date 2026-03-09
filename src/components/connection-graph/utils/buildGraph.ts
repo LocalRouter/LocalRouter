@@ -6,6 +6,7 @@ import type {
   McpServer,
   Skill,
   CodingAgent,
+  GraphStrategy,
   HealthCacheState,
   GraphNode,
   GraphEdge,
@@ -229,6 +230,32 @@ function getPermissionEdgeStyle(
   }
 }
 
+// Get the set of provider instance names a client's strategy actually routes to.
+// Returns null if the strategy doesn't restrict providers (show all).
+function getStrategyProviders(client: Client, strategies: GraphStrategy[]): Set<string> | null {
+  const strategy = strategies.find(s => s.id === client.strategy_id)
+  if (!strategy) return null
+
+  const auto = strategy.auto_config
+  if (!auto) return null
+
+  // Collect all provider instance names from auto_config model tuples
+  const providers = new Set<string>()
+  for (const [providerId] of auto.prioritized_models ?? []) {
+    providers.add(providerId)
+  }
+  for (const [providerId] of auto.available_models ?? []) {
+    providers.add(providerId)
+  }
+  if (auto.routellm_config?.enabled) {
+    for (const [providerId] of auto.routellm_config.weak_models ?? []) {
+      providers.add(providerId)
+    }
+  }
+
+  return providers.size > 0 ? providers : null
+}
+
 // Build edges from data
 function buildEdges(
   clients: Client[],
@@ -236,6 +263,7 @@ function buildEdges(
   mcpServers: McpServer[],
   skills: Skill[],
   codingAgents: CodingAgent[],
+  strategies: GraphStrategy[],
   activeConnections: string[]
 ): GraphEdge[] {
   const edges: GraphEdge[] = []
@@ -253,14 +281,23 @@ function buildEdges(
   enabledClients.forEach((client) => {
     const isConnected = activeConnections.includes(client.id)
 
-    // Create edges to providers based on model_permissions
-    // If global is not 'off', client has access to all providers
-    // Otherwise, check specific provider permissions (both 'allow' and 'ask' are enabled)
-    const clientProviders = client.model_permissions.global !== 'off'
-      ? Array.from(providerNames)
-      : Object.entries(client.model_permissions.providers ?? {})
-          .filter(([name, state]) => state !== 'off' && providerNames.has(name))
-          .map(([name]) => name)
+    // Determine which providers this client connects to:
+    // 1. If model_permissions.global is 'off', use explicit provider permissions
+    // 2. Otherwise, narrow by strategy's auto_config model list (if configured)
+    // 3. Fall back to all enabled providers
+    let clientProviders: string[]
+    if (client.model_permissions.global === 'off') {
+      clientProviders = Object.entries(client.model_permissions.providers ?? {})
+        .filter(([name, state]) => state !== 'off' && providerNames.has(name))
+        .map(([name]) => name)
+    } else {
+      const strategyProviders = getStrategyProviders(client, strategies)
+      if (strategyProviders) {
+        clientProviders = Array.from(strategyProviders).filter(p => providerNames.has(p))
+      } else {
+        clientProviders = Array.from(providerNames)
+      }
+    }
 
     clientProviders.forEach((providerId) => {
       edges.push({
@@ -423,10 +460,11 @@ export function buildGraph(
   skills: Skill[],
   codingAgents: CodingAgent[],
   healthState: HealthCacheState | null,
-  activeConnections: string[]
+  activeConnections: string[],
+  strategies: GraphStrategy[] = [],
 ): { nodes: GraphNode[]; edges: GraphEdge[]; bounds: { width: number; height: number } } {
   // Build edges first to determine which targets are connected to clients
-  const edges = buildEdges(clients, providers, mcpServers, skills, codingAgents, activeConnections)
+  const edges = buildEdges(clients, providers, mcpServers, skills, codingAgents, strategies, activeConnections)
   const connectedTargetIds = new Set(edges.map(e => e.target))
   const nodes = buildNodes(clients, providers, mcpServers, skills, codingAgents, healthState, activeConnections, connectedTargetIds)
   const layoutedNodes = applyDagreLayout(nodes, edges)

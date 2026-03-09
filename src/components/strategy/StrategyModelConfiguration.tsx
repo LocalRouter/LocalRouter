@@ -28,6 +28,7 @@ import {Button} from "@/components/ui/Button"
 import {Progress} from "@/components/ui/progress"
 import {Label} from "@/components/ui/label"
 import {cn} from "@/lib/utils"
+import {SamplePopupButton} from "@/components/shared/SamplePopupButton"
 import {AllowedModelsSelection, AllowedModelsSelector} from "./AllowedModelsSelector"
 import {UnifiedModelsSelector} from "./UnifiedModelsSelector"
 import type { ModelPermissions } from "@/components/permissions"
@@ -209,6 +210,36 @@ export function StrategyModelConfiguration({
         parameter_count?: string | null
     }
 
+    const loadPricingData = async () => {
+        try {
+            const [detailedModels, ftStatuses] = await Promise.all([
+                invoke<DetailedModelInfo[]>("list_all_models_detailed"),
+                invoke<ProviderFreeTierStatus[]>("get_free_tier_status"),
+            ])
+            const pricingMap: Record<string, ModelPricingInfo> = {}
+            const paramMap: Record<string, string> = {}
+            for (const m of detailedModels) {
+                pricingMap[`${m.provider_instance}/${m.model_id}`] = {
+                    input: m.input_price_per_million,
+                    output: m.output_price_per_million,
+                }
+                if (m.parameter_count) {
+                    paramMap[`${m.provider_instance}/${m.model_id}`] = m.parameter_count
+                }
+            }
+            setModelPricing(pricingMap)
+            setModelParamCounts(paramMap)
+
+            const ftMap: Record<string, FreeTierKind> = {}
+            for (const s of ftStatuses) {
+                ftMap[s.provider_instance] = s.free_tier
+            }
+            setFreeTierKinds(ftMap)
+        } catch (pricingError) {
+            console.error("Failed to load pricing/free tier data:", pricingError)
+        }
+    }
+
     const loadData = async () => {
         setLoading(true)
         try {
@@ -216,43 +247,14 @@ export function StrategyModelConfiguration({
             setStrategy(strategyData)
             // Set routing mode based on loaded strategy
             setRoutingMode(strategyData.auto_config != null && strategyData.auto_config.permission !== 'off' ? 'auto' : 'allowed')
-
-            // Load pricing and free tier data in the background
-            try {
-                const [detailedModels, ftStatuses] = await Promise.all([
-                    invoke<DetailedModelInfo[]>("list_all_models_detailed"),
-                    invoke<ProviderFreeTierStatus[]>("get_free_tier_status"),
-                ])
-                const pricingMap: Record<string, ModelPricingInfo> = {}
-                for (const m of detailedModels) {
-                    pricingMap[`${m.provider_instance}/${m.model_id}`] = {
-                        input: m.input_price_per_million,
-                        output: m.output_price_per_million,
-                    }
-                }
-                setModelPricing(pricingMap)
-
-                const paramMap: Record<string, string> = {}
-                for (const m of detailedModels) {
-                    if (m.parameter_count) {
-                        paramMap[`${m.provider_instance}/${m.model_id}`] = m.parameter_count
-                    }
-                }
-                setModelParamCounts(paramMap)
-
-                const ftMap: Record<string, FreeTierKind> = {}
-                for (const s of ftStatuses) {
-                    ftMap[s.provider_instance] = s.free_tier
-                }
-                setFreeTierKinds(ftMap)
-            } catch (pricingError) {
-                console.error("Failed to load pricing/free tier data:", pricingError)
-            }
         } catch (error) {
             console.error("Failed to load strategy:", error)
         } finally {
             setLoading(false)
         }
+
+        // Load pricing and free tier data in the background (non-blocking)
+        loadPricingData()
     }
 
     // Update strategy on backend with debouncing to prevent race conditions
@@ -511,6 +513,15 @@ export function StrategyModelConfiguration({
                             ? "Clients can choose from the models you select below."
                             : "Clients see only the auto router model. LocalRouter selects the best model automatically."}
                     </p>
+                    <div className="border-t pt-3 mt-3 flex items-center justify-between">
+                        <div>
+                            <span className="text-sm font-medium">Approval Popup Preview</span>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                                Preview the popup shown when a model is set to &ldquo;Ask&rdquo; in the permissions below
+                            </p>
+                        </div>
+                        <SamplePopupButton popupType="llm_model" />
+                    </div>
                 </CardContent>
             </Card>
 

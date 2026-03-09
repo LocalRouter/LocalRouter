@@ -116,6 +116,20 @@ export interface ClientInfo {
 }
 
 /**
+ * Effective (inheritance-resolved) configuration for a client.
+ * Rust: src-tauri/src/ui/commands_clients.rs - ClientEffectiveConfig struct
+ */
+export interface ClientEffectiveConfig {
+  strategy_name: string
+  context_management_effective: boolean
+  context_management_source: 'client' | 'global'
+  indexing_tools_effective: boolean
+  indexing_tools_source: 'client' | 'global'
+  catalog_compression_effective: boolean
+  catalog_compression_source: 'client' | 'global'
+}
+
+/**
  * App capabilities: installation status and supported modes.
  * Rust: src-tauri/src/ui/commands_clients.rs - AppCapabilities struct
  */
@@ -598,6 +612,7 @@ export interface ContextModeInfo {
 export interface ContextManagementConfig {
   enabled: boolean
   indexing_tools: boolean
+  catalog_compression: boolean
   catalog_threshold_bytes: number
   response_threshold_bytes: number
 }
@@ -606,6 +621,7 @@ export interface ContextManagementConfig {
 export interface UpdateContextManagementConfigParams {
   enabled?: boolean
   indexingTools?: boolean
+  catalogCompression?: boolean
   catalogThresholdBytes?: number
   responseThresholdBytes?: number
 }
@@ -1392,6 +1408,11 @@ export interface GetClientParams {
 /** Params for get_client_value */
 export interface GetClientValueParams {
   id: string
+}
+
+/** Params for get_client_effective_config */
+export interface GetClientEffectiveConfigParams {
+  clientId: string
 }
 
 /** Params for set_client_mode */
@@ -2561,6 +2582,7 @@ export interface PromptCompressionConfig {
   compress_system_prompt: boolean
   min_messages: number
   preserve_recent: number
+  min_message_words: number
 }
 
 /** Per-client prompt compression configuration */
@@ -2586,6 +2608,7 @@ export interface CompressionTestResult {
   original_tokens: number
   compressed_tokens: number
   ratio: number
+  kept_indices: number[]
 }
 
 /** Params for test_compression */
