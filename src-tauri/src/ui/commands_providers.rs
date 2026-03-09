@@ -883,7 +883,7 @@ pub async fn list_provider_models(
     instance_name: String,
 ) -> Result<Vec<lr_providers::ModelInfo>, String> {
     registry
-        .list_provider_models(&instance_name)
+        .list_provider_models_cached(&instance_name)
         .await
         .map_err(|e| e.to_string())
 }

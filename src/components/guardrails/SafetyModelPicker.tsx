@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
 import { Cloud, Download, CircleAlert, Loader2 } from "lucide-react"
+import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
 import {
@@ -49,8 +49,8 @@ interface ProviderModelEntry {
 export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPickerProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderInstanceInfo[]>([])
-  const [providerModels, setProviderModels] = useState<Map<string, Set<string>>>(new Map())
-  const [loading, setLoading] = useState(true)
+  const { models: incrementalModels, isFullyLoaded } = useIncrementalModels()
+  const loading = !isFullyLoaded && incrementalModels.length === 0
 
   useEffect(() => {
     invoke<ProviderInstanceInfo[]>("list_provider_instances")
@@ -58,44 +58,17 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
       .catch(() => {})
   }, [])
 
-  // Build available model lists from all providers in parallel
-  useEffect(() => {
-    const enabledProviders = providers.filter(p => p.enabled)
-
-    const fetchModels = async () => {
-      const modelsMap = new Map<string, Set<string>>()
-      await Promise.all(
-        enabledProviders.map(async (provider) => {
-          try {
-            const models = await invoke<{ id: string }[]>("list_provider_models", {
-              instanceName: provider.instance_name,
-            })
-            modelsMap.set(provider.instance_name, new Set(models.map(m => m.id)))
-          } catch {
-            modelsMap.set(provider.instance_name, new Set())
-          }
-        })
-      )
-      setProviderModels(modelsMap)
-      setLoading(false)
-    }
-
-    fetchModels()
-
-    // Listen for incremental model updates
-    const unsub = listen<{ provider: string; models: { id: string }[] }>(
-      "models-provider-loaded",
-      (event) => {
-        setProviderModels(prev => {
-          const next = new Map(prev)
-          next.set(event.payload.provider, new Set(event.payload.models.map(m => m.id)))
-          return next
-        })
+  // Derive per-provider model sets from the incremental cache
+  const providerModels = useMemo(() => {
+    const modelsMap = new Map<string, Set<string>>()
+    for (const model of incrementalModels) {
+      if (!modelsMap.has(model.provider)) {
+        modelsMap.set(model.provider, new Set())
       }
-    )
-
-    return () => { unsub.then(fn => fn()) }
-  }, [providers])
+      modelsMap.get(model.provider)!.add(model.id)
+    }
+    return modelsMap
+  }, [incrementalModels])
 
   // Build entries from providers × model families × available models
   const providerEntries = useMemo(() => {

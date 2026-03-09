@@ -47,6 +47,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import ProviderForm, { ProviderType } from "@/components/ProviderForm"
+import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import ProviderIcon from "@/components/ProviderIcon"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { cn } from "@/lib/utils"
@@ -92,15 +93,6 @@ export interface HealthCheckEvent {
   error_message?: string
 }
 
-interface ModelInfo {
-  id: string
-  name: string
-  provider: string
-  parameter_count?: number
-  context_window: number
-  supports_streaming: boolean
-  capabilities: string[]
-}
 
 interface DetailedModel {
   model_id: string
@@ -138,7 +130,11 @@ export function ProvidersPanel({
   const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState("")
-  const [models, setModels] = useState<ModelInfo[]>([])
+  const { models: allIncrementalModels } = useIncrementalModels()
+  // Derive per-provider models from the incremental cache
+  const models = selectedId
+    ? allIncrementalModels.filter(m => m.provider === selectedId)
+    : []
 
   // Dialog states
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
@@ -296,16 +292,6 @@ export function ProvidersPanel({
     }
   }, [setUsageValues, loadFreeTierStatus])
 
-  const loadModels = useCallback(async (instanceName: string) => {
-    try {
-      const modelList = await invoke<ModelInfo[]>("list_provider_models", { instanceName })
-      setModels(modelList)
-    } catch (error) {
-      console.error("Failed to load models:", error)
-      setModels([])
-    }
-  }, [])
-
   const loadDetailedModels = useCallback(async (instanceName: string) => {
     setDetailedModelsLoading(true)
     try {
@@ -318,15 +304,6 @@ export function ProvidersPanel({
       setDetailedModelsLoading(false)
     }
   }, [])
-
-  // Load models when a provider is selected
-  useEffect(() => {
-    if (selectedId) {
-      loadModels(selectedId)
-    } else {
-      setModels([])
-    }
-  }, [selectedId, loadModels])
 
   const handleToggle = async (provider: Provider) => {
     try {
