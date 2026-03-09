@@ -252,8 +252,27 @@ pub async fn run_agentic_loop(
                     for tool_call in &mcp_calls {
                         let tool_name = tool_call.function.name.clone();
                         let tool_call_id = tool_call.id.clone();
-                        let arguments: Value = serde_json::from_str(&tool_call.function.arguments)
-                            .unwrap_or(json!({}));
+                        let arguments: Value = match serde_json::from_str(&tool_call.function.arguments) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "MCP via LLM: malformed arguments for tool '{}': {}",
+                                    tool_name, e
+                                );
+                                // Return parse error as tool result so LLM can retry
+                                let err_msg = format!(
+                                    "Error: invalid JSON arguments for tool '{}': {}. Raw: {}",
+                                    tool_name, e, tool_call.function.arguments
+                                );
+                                let tc_id = tool_call_id.clone();
+                                let handle = tokio::spawn(async move {
+                                    (tc_id, Err(err_msg))
+                                });
+                                mcp_handles.push(handle);
+                                mcp_tools_called.push(tool_name.clone());
+                                continue;
+                            }
+                        };
 
                         let gw = gateway.clone();
                         let cid = client_id.clone();
@@ -337,8 +356,29 @@ pub async fn run_agentic_loop(
 
                 for tool_call in &mcp_calls {
                     let tool_name = &tool_call.function.name;
-                    let arguments: Value =
-                        serde_json::from_str(&tool_call.function.arguments).unwrap_or(json!({}));
+                    let arguments: Value = match serde_json::from_str(&tool_call.function.arguments) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(
+                                "MCP via LLM: malformed arguments for tool '{}': {}",
+                                tool_name, e
+                            );
+                            // Add parse error as tool result so LLM can retry
+                            let error_content = format!(
+                                "Error: invalid JSON arguments: {}. Raw: {}",
+                                e, tool_call.function.arguments
+                            );
+                            request.messages.push(ChatMessage {
+                                role: "tool".to_string(),
+                                content: ChatMessageContent::Text(error_content),
+                                tool_calls: None,
+                                tool_call_id: Some(tool_call.id.clone()),
+                                name: None,
+                            });
+                            mcp_tools_called.push(tool_name.clone());
+                            continue;
+                        }
+                    };
 
                     let tool_start = Instant::now();
                     tracing::debug!(
@@ -534,12 +574,17 @@ pub async fn resume_after_mixed(
             {
                 messages.push(client_result.clone());
             } else {
-                // Missing result — add error placeholder
+                // Missing result — add error placeholder and log warning
+                tracing::warn!(
+                    "MCP via LLM: no result received for tool call '{}' (tool: '{}') during resume",
+                    tc.id,
+                    tc.function.name
+                );
                 messages.push(ChatMessage {
                     role: "tool".to_string(),
                     content: ChatMessageContent::Text(format!(
-                        "Error: no result received for tool call '{}'",
-                        tc.id
+                        "Error: no result received for tool call '{}' (tool: '{}')",
+                        tc.id, tc.function.name
                     )),
                     tool_calls: None,
                     tool_call_id: Some(tc.id.clone()),
@@ -571,6 +616,9 @@ pub async fn resume_after_mixed(
     .await
 }
 
+/// Per-tool timeout for background MCP tool executions (120 seconds)
+pub(crate) const TOOL_EXECUTION_TIMEOUT_SECS: u64 = 120;
+
 /// Execute an MCP tool call in the background via the gateway directly.
 pub async fn execute_mcp_tool_background(
     gateway: &McpGateway,
@@ -592,10 +640,21 @@ pub async fn execute_mcp_tool_background(
         })),
     };
 
-    let response = gateway
-        .handle_request(client_id, allowed_servers, roots, request)
-        .await
-        .map_err(|e| format!("tools/call '{}' failed: {}", tool_name, e))?;
+    let timeout = std::time::Duration::from_secs(TOOL_EXECUTION_TIMEOUT_SECS);
+    let response = match tokio::time::timeout(
+        timeout,
+        gateway.handle_request(client_id, allowed_servers, roots, request),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(|e| format!("tools/call '{}' failed: {}", tool_name, e))?,
+        Err(_) => {
+            return Err(format!(
+                "tools/call '{}' timed out after {}s",
+                tool_name, TOOL_EXECUTION_TIMEOUT_SECS
+            ));
+        }
+    };
 
     if let Some(error) = response.error {
         return Err(format!(

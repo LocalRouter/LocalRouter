@@ -354,8 +354,25 @@ async fn streaming_loop(
                     for tool_call in &mcp_calls {
                         let tool_name = tool_call.function.name.clone();
                         let tool_call_id = tool_call.id.clone();
-                        let arguments: Value = serde_json::from_str(&tool_call.function.arguments)
-                            .unwrap_or(json!({}));
+                        let arguments: Value = match serde_json::from_str(&tool_call.function.arguments) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "MCP via LLM streaming: malformed arguments for tool '{}': {}",
+                                    tool_name, e
+                                );
+                                let err_msg = format!(
+                                    "Error: invalid JSON arguments for tool '{}': {}. Raw: {}",
+                                    tool_name, e, tool_call.function.arguments
+                                );
+                                let tc_id = tool_call_id.clone();
+                                let handle = tokio::spawn(async move {
+                                    (tc_id, Err(err_msg))
+                                });
+                                mcp_handles.push(handle);
+                                continue;
+                            }
+                        };
 
                         let gw = gateway.clone();
                         let cid = client_id.to_string();
@@ -372,6 +389,9 @@ async fn streaming_loop(
                         mcp_handles.push(handle);
                     }
 
+                    // Note: streaming doesn't provide per-iteration token counts,
+                    // so accumulated tokens will be incomplete for the streaming path.
+                    // The resumed loop (non-streaming) will track tokens from that point.
                     let pending = PendingMixedExecution {
                         full_assistant_message,
                         mcp_handles,
@@ -431,8 +451,27 @@ async fn streaming_loop(
 
                 for tool_call in &mcp_calls {
                     let tool_name = &tool_call.function.name;
-                    let arguments: Value =
-                        serde_json::from_str(&tool_call.function.arguments).unwrap_or(json!({}));
+                    let arguments: Value = match serde_json::from_str(&tool_call.function.arguments) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(
+                                "MCP via LLM streaming: malformed arguments for tool '{}': {}",
+                                tool_name, e
+                            );
+                            let error_content = format!(
+                                "Error: invalid JSON arguments: {}. Raw: {}",
+                                e, tool_call.function.arguments
+                            );
+                            request.messages.push(ChatMessage {
+                                role: "tool".to_string(),
+                                content: ChatMessageContent::Text(error_content),
+                                tool_calls: None,
+                                tool_call_id: Some(tool_call.id.clone()),
+                                name: None,
+                            });
+                            continue;
+                        }
+                    };
 
                     let tool_start = std::time::Instant::now();
                     tracing::debug!(
@@ -442,14 +481,13 @@ async fn streaming_loop(
                     );
 
                     let result_content = if let Some(uri) = resource_tools.get(tool_name.as_str()) {
-                        // Synthetic resource tool
-                        match orchestrator::execute_mcp_tool_background(
+                        // Synthetic resource tool — read the resource directly
+                        match execute_resource_read_background(
                             &gateway,
                             client_id,
                             servers.clone(),
                             roots.clone(),
-                            &format!("resources/read:{}", uri),
-                            json!({"uri": uri}),
+                            uri,
                         )
                         .await
                         {
@@ -458,14 +496,14 @@ async fn streaming_loop(
                                 format!("Error reading resource '{}': {}", tool_name, e)
                             }
                         }
-                    } else if let Some(_prompt_name) = prompt_tools.get(tool_name.as_str()) {
-                        // Synthetic prompt tool — execute via gateway
-                        match orchestrator::execute_mcp_tool_background(
+                    } else if let Some(prompt_name) = prompt_tools.get(tool_name.as_str()) {
+                        // Synthetic prompt tool — get the prompt via gateway
+                        match execute_prompt_get_background(
                             &gateway,
                             client_id,
                             servers.clone(),
                             roots.clone(),
-                            tool_name,
+                            prompt_name,
                             arguments.clone(),
                         )
                         .await
@@ -662,4 +700,121 @@ fn build_finish_chunk_with_tools(tool_calls: &[&ToolCall], finish_reason: &str) 
         }],
         extensions: None,
     }
+}
+
+/// Execute a resource read in the background via the gateway directly.
+async fn execute_resource_read_background(
+    gateway: &lr_mcp::McpGateway,
+    client_id: &str,
+    allowed_servers: Vec<String>,
+    roots: Vec<lr_mcp::protocol::Root>,
+    uri: &str,
+) -> Result<String, String> {
+    use lr_mcp::protocol::JsonRpcRequest;
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(1)),
+        method: "resources/read".to_string(),
+        params: Some(json!({ "uri": uri })),
+    };
+
+    let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
+    let response = match tokio::time::timeout(
+        timeout,
+        gateway.handle_request(client_id, allowed_servers, roots, request),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(|e| format!("resources/read '{}' failed: {}", uri, e))?,
+        Err(_) => return Err(format!("resources/read '{}' timed out", uri)),
+    };
+
+    if let Some(error) = response.error {
+        return Err(format!("resources/read '{}' error: {}", uri, error.message));
+    }
+
+    let result = response.result.unwrap_or(json!({}));
+
+    // Extract text content: { contents: [{ uri, text, mimeType }] }
+    if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
+        let texts: Vec<String> = contents
+            .iter()
+            .filter_map(|c| c.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+            .collect();
+        if !texts.is_empty() {
+            return Ok(texts.join("\n"));
+        }
+    }
+
+    Ok(orchestrator::content_to_string(&result))
+}
+
+/// Execute a prompt get in the background via the gateway directly.
+async fn execute_prompt_get_background(
+    gateway: &lr_mcp::McpGateway,
+    client_id: &str,
+    allowed_servers: Vec<String>,
+    roots: Vec<lr_mcp::protocol::Root>,
+    prompt_name: &str,
+    arguments: Value,
+) -> Result<String, String> {
+    use lr_mcp::protocol::JsonRpcRequest;
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(1)),
+        method: "prompts/get".to_string(),
+        params: Some(json!({
+            "name": prompt_name,
+            "arguments": arguments
+        })),
+    };
+
+    let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
+    let response = match tokio::time::timeout(
+        timeout,
+        gateway.handle_request(client_id, allowed_servers, roots, request),
+    )
+    .await
+    {
+        Ok(result) => {
+            result.map_err(|e| format!("prompts/get '{}' failed: {}", prompt_name, e))?
+        }
+        Err(_) => return Err(format!("prompts/get '{}' timed out", prompt_name)),
+    };
+
+    if let Some(error) = response.error {
+        return Err(format!(
+            "prompts/get '{}' error: {}",
+            prompt_name, error.message
+        ));
+    }
+
+    let result = response.result.unwrap_or(json!({}));
+
+    // Extract messages and format as text
+    if let Some(messages) = result.get("messages").and_then(|m| m.as_array()) {
+        let texts: Vec<String> = messages
+            .iter()
+            .filter_map(|m| {
+                let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("system");
+                let text = m.get("content").and_then(|c| {
+                    c.as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| c.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                })?;
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(format!("[{}]: {}", role, text))
+                }
+            })
+            .collect();
+        if !texts.is_empty() {
+            return Ok(texts.join("\n\n"));
+        }
+    }
+
+    Ok(orchestrator::content_to_string(&result))
 }
