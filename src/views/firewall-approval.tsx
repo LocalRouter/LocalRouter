@@ -86,6 +86,8 @@ export function FirewallApproval() {
   const [kvPairs, setKvPairs] = useState<{ key: string; value: string }[]>([])
   // Model params for model/auto-router editor
   const [modelParams, setModelParams] = useState<Record<string, string>>({})
+  // MCP via LLM tools (preserved through edit mode, read-only)
+  const [mcpTools, setMcpTools] = useState<unknown[] | null>(null)
   // Available models for dropdown (filtered by client permissions)
   const [allowedModels, setAllowedModels] = useState<ModelInfo[]>([])
   // Candidate models for auto-router
@@ -262,6 +264,11 @@ export function FirewallApproval() {
             }))
           )
 
+          // Capture MCP via LLM tools (preserved through edit, not editable via params)
+          if (Array.isArray(reqObj.tools)) {
+            setMcpTools(reqObj.tools as unknown[])
+          }
+
           // For auto-router: extract candidate models
           if (details.is_auto_router_request && Array.isArray(obj.candidate_models)) {
             setCandidateModels(obj.candidate_models as string[])
@@ -318,6 +325,7 @@ export function FirewallApproval() {
     setEditedJson("")
     setKvPairs([])
     setModelParams({})
+    setMcpTools(null)
     setAllowedModels([])
     setCandidateModels([])
     setEditedMessages([])
@@ -394,6 +402,10 @@ export function FirewallApproval() {
       }
       return { role: m.role, content }
     })
+    // MCP via LLM tools (read-only, preserved from original request)
+    if (mcpTools && mcpTools.length > 0) {
+      obj.tools = mcpTools
+    }
     return obj
   }
 
@@ -709,6 +721,10 @@ export function FirewallApproval() {
             content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
           }))
         )
+      }
+      // Preserve tools from raw JSON edits
+      if (Array.isArray(obj.tools)) {
+        setMcpTools(obj.tools as unknown[])
       }
       setJsonValid(true)
     } catch {
