@@ -224,7 +224,14 @@ async fn streaming_loop(
     max_iterations: u32,
     pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
 ) -> Result<(), McpViaLlmError> {
-    for iteration in 0..max_iterations {
+    let mut iteration: u32 = 0;
+    loop {
+        // Check max iterations
+        let max_iter = max_iterations.max(1);
+        if iteration >= max_iter {
+            return Err(McpViaLlmError::MaxIterations(max_iter));
+        }
+
         // Check timeout
         if started_at.elapsed() > timeout {
             return Err(McpViaLlmError::Timeout(timeout.as_secs()));
@@ -329,9 +336,11 @@ async fn streaming_loop(
                 if !client_calls.is_empty() && !mcp_calls.is_empty() {
                     // Mixed tools: spawn MCP in background, store pending, return client tools
                     tracing::info!(
-                        "MCP via LLM streaming: mixed tools — {} MCP, {} client (iteration {})",
+                        "MCP via LLM streaming: mixed tools — {} MCP [{}], {} client [{}] (iteration {})",
                         mcp_calls.len(),
+                        mcp_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
                         client_calls.len(),
+                        client_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
                         iteration + 1
                     );
 
@@ -391,8 +400,9 @@ async fn streaming_loop(
                 if !client_calls.is_empty() {
                     // Only client tools — send the finish chunk with client-only tools and stop
                     tracing::info!(
-                        "MCP via LLM streaming: {} client tool calls (iteration {}), finishing stream",
+                        "MCP via LLM streaming: {} client tool calls [{}] (iteration {}), finishing stream",
                         client_calls.len(),
+                        client_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
                         iteration + 1
                     );
 
@@ -406,8 +416,9 @@ async fn streaming_loop(
 
                 // All MCP tools — suppress the finish, execute tools, continue loop
                 tracing::info!(
-                    "MCP via LLM streaming: executing {} MCP tools (iteration {})",
+                    "MCP via LLM streaming: LLM requested {} MCP tools: [{}] (iteration {})",
                     mcp_calls.len(),
+                    mcp_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
                     iteration + 1
                 );
 
@@ -418,7 +429,8 @@ async fn streaming_loop(
                     let arguments: Value =
                         serde_json::from_str(&tool_call.function.arguments).unwrap_or(json!({}));
 
-                    tracing::info!(
+                    let tool_start = std::time::Instant::now();
+                    tracing::debug!(
                         "MCP via LLM streaming: executing tool '{}' (call_id: {})",
                         tool_name,
                         tool_call.id
@@ -477,6 +489,15 @@ async fn streaming_loop(
                         }
                     };
 
+                    let tool_duration_ms = tool_start.elapsed().as_millis();
+                    let is_error = result_content.starts_with("Error ");
+                    tracing::info!(
+                        "MCP via LLM streaming: tool '{}' completed in {}ms{}",
+                        tool_name,
+                        tool_duration_ms,
+                        if is_error { " (error)" } else { "" }
+                    );
+
                     request.messages.push(ChatMessage {
                         role: "tool".to_string(),
                         content: ChatMessageContent::Text(result_content),
@@ -492,6 +513,7 @@ async fn streaming_loop(
                     .history
                     .set_messages(request.messages.clone());
 
+                iteration += 1;
                 continue; // Next iteration
             }
         }
@@ -533,8 +555,6 @@ async fn streaming_loop(
 
         return Ok(());
     }
-
-    Err(McpViaLlmError::MaxIterations(max_iterations))
 }
 
 /// Accumulator for building a complete ToolCall from streaming deltas

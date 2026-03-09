@@ -15,7 +15,7 @@ use futures::stream::StreamExt;
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::get_enabled_client_from_manager;
+use super::helpers::{check_llm_access, get_enabled_client, get_enabled_client_from_manager};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -61,6 +61,12 @@ pub async fn completions(
     // Record client activity for connection graph
     state.record_client_activity(&auth.api_key_id);
 
+    // Enforce client mode: block MCP-only clients from LLM endpoints
+    if auth.api_key_id != "internal-test" {
+        let client = get_enabled_client(&state, &auth.api_key_id)?;
+        check_llm_access(&client)?;
+    }
+
     // Validate request
     validate_request(&request)?;
 
@@ -79,6 +85,23 @@ pub async fn completions(
 
     // Check rate limits (in parallel with guardrails scan)
     check_rate_limits(&state, &auth, &request).await?;
+
+    // Log request summary
+    {
+        let client_id_short = &auth.api_key_id[..8.min(auth.api_key_id.len())];
+        let guardrails_active = state
+            .safety_engine
+            .read()
+            .as_ref()
+            .map_or(false, |e| e.has_models());
+        tracing::info!(
+            "Completion request: client={}, model={}, stream={}, guardrails={}",
+            client_id_short,
+            request.model,
+            request.stream,
+            guardrails_active,
+        );
+    }
 
     // Convert prompt to chat messages format
     let messages = convert_prompt_to_messages(&request.prompt)?;

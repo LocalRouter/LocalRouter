@@ -10,7 +10,7 @@ use axum::{
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{get_enabled_client, get_enabled_client_from_manager};
+use super::helpers::{check_llm_access, get_enabled_client, get_enabled_client_from_manager};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
@@ -49,9 +49,10 @@ pub async fn embeddings(
     // Record client activity for connection graph
     state.record_client_activity(&auth.api_key_id);
 
-    // Validate client is enabled (skip for internal test token)
+    // Validate client is enabled and mode allows LLM access
     if auth.api_key_id != "internal-test" {
-        let _client = get_enabled_client(&state, &auth.api_key_id)?;
+        let client = get_enabled_client(&state, &auth.api_key_id)?;
+        check_llm_access(&client)?;
     }
 
     // Validate request
@@ -62,6 +63,21 @@ pub async fn embeddings(
 
     // Check rate limits
     check_rate_limits(&state, &auth, &request).await?;
+
+    // Log request summary
+    {
+        let client_id_short = &auth.api_key_id[..8.min(auth.api_key_id.len())];
+        let input_count = match &request.input {
+            EmbeddingInput::Single(_) => 1,
+            EmbeddingInput::Multiple(v) => v.len(),
+        };
+        tracing::info!(
+            "Embedding request: client={}, model={}, inputs={}",
+            client_id_short,
+            request.model,
+            input_count,
+        );
+    }
 
     // Generate a unique ID for this request
     let request_id = format!("emb-{}", Uuid::new_v4());

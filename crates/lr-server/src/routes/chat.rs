@@ -317,6 +317,42 @@ pub async fn chat_completions(
         provider_request.pre_computed_routing = Some(routing);
     }
 
+    // Log request summary with all active features
+    {
+        let client_id_short = &auth.api_key_id[..8.min(auth.api_key_id.len())];
+        let guardrails_active = guardrail_handle.is_some();
+        let compression_active = compression_tokens_saved > 0;
+        let routellm_active = provider_request.pre_computed_routing.is_some();
+        let routellm_tier = provider_request
+            .pre_computed_routing
+            .as_ref()
+            .map(|r| if r.is_strong { "strong" } else { "weak" });
+        let client_mode = client_auth
+            .as_ref()
+            .and_then(|ext| {
+                state
+                    .client_manager
+                    .get_client(&ext.0.client_id)
+                    .map(|c| c.client_mode.clone())
+            })
+            .unwrap_or_default();
+        let is_mcp_via_llm = client_mode == lr_config::ClientMode::McpViaLlm;
+
+        tracing::info!(
+            "LLM request: client={}, model={}, stream={}, mode={:?}, guardrails={}, compression={}{}, routellm={}{}, mcp_via_llm={}",
+            client_id_short,
+            request.model,
+            request.stream,
+            client_mode,
+            guardrails_active,
+            compression_active,
+            if compression_active { format!(" (saved {} tokens)", compression_tokens_saved) } else { String::new() },
+            routellm_active,
+            routellm_tier.map(|t| format!(" ({})", t)).unwrap_or_default(),
+            is_mcp_via_llm,
+        );
+    }
+
     // MCP via LLM: intercept after compression + RouteLLM are applied
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
         if client.client_mode == lr_config::ClientMode::McpViaLlm {
@@ -1049,7 +1085,7 @@ async fn run_prompt_compression(
     }
 
     // Resolve per-client settings (client overrides > global defaults)
-    let (enabled, min_messages, preserve_recent, rate, compress_system) =
+    let (enabled, min_messages, preserve_recent, rate, compress_system, min_message_words) =
         if let Some(client_ctx) = client_context {
             if let Some(client) = state.client_manager.get_client(&client_ctx.client_id) {
                 let pc = &client.prompt_compression;
@@ -1062,6 +1098,7 @@ async fn run_prompt_compression(
                     pc.rate.unwrap_or(config.prompt_compression.default_rate),
                     pc.compress_system_prompt
                         .unwrap_or(config.prompt_compression.compress_system_prompt),
+                    config.prompt_compression.min_message_words,
                 )
             } else {
                 return Ok(None); // Unknown client
@@ -1074,6 +1111,7 @@ async fn run_prompt_compression(
                 config.prompt_compression.preserve_recent,
                 config.prompt_compression.default_rate,
                 config.prompt_compression.compress_system_prompt,
+                config.prompt_compression.min_message_words,
             )
         };
 
@@ -1111,7 +1149,7 @@ async fn run_prompt_compression(
         .collect();
 
     let result = engine
-        .compress_messages(&messages, rate, preserve_recent, compress_system)
+        .compress_messages(&messages, rate, preserve_recent, compress_system, min_message_words)
         .await?;
 
     Ok(Some(result))

@@ -173,7 +173,14 @@ pub async fn run_agentic_loop(
     let mut total_completion_tokens: u64 = 0;
     let mut mcp_tools_called: Vec<String> = Vec::new();
 
-    for iteration in 0..config.max_loop_iterations {
+    let mut iteration: u32 = 0;
+    loop {
+        // Check max iterations
+        let max_iter = config.max_loop_iterations.max(1);
+        if iteration >= max_iter {
+            return Err(McpViaLlmError::MaxIterations(max_iter));
+        }
+
         // Check timeout
         if started_at.elapsed() > timeout {
             return Err(McpViaLlmError::Timeout(config.max_loop_timeout_seconds));
@@ -219,9 +226,11 @@ pub async fn run_agentic_loop(
                 if !client_calls.is_empty() && !mcp_calls.is_empty() {
                     // Mixed tools: spawn MCP in background, return client tools
                     tracing::info!(
-                        "MCP via LLM: mixed tools detected — {} MCP, {} client (iteration {})",
+                        "MCP via LLM: mixed tools detected — {} MCP [{}], {} client [{}] (iteration {})",
                         mcp_calls.len(),
+                        mcp_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
                         client_calls.len(),
+                        client_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
                         iteration + 1
                     );
 
@@ -297,8 +306,9 @@ pub async fn run_agentic_loop(
                 if !client_calls.is_empty() {
                     // Only client tools — return them directly
                     tracing::info!(
-                        "MCP via LLM: {} client tool calls detected (iteration {}), returning to client",
+                        "MCP via LLM: {} client tool calls [{}] (iteration {}), returning to client",
                         client_calls.len(),
+                        client_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
                         iteration + 1
                     );
                     return Ok(OrchestratorResult::Complete(build_final_response(
@@ -311,6 +321,13 @@ pub async fn run_agentic_loop(
                 }
 
                 // All MCP tools — execute them and loop
+                tracing::info!(
+                    "MCP via LLM: LLM requested {} MCP tools: [{}] (iteration {})",
+                    mcp_calls.len(),
+                    mcp_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
+                    iteration + 1
+                );
+
                 // Add the assistant message with tool calls to the conversation
                 request.messages.push(choice.message.clone());
 
@@ -319,7 +336,8 @@ pub async fn run_agentic_loop(
                     let arguments: Value =
                         serde_json::from_str(&tool_call.function.arguments).unwrap_or(json!({}));
 
-                    tracing::info!(
+                    let tool_start = Instant::now();
+                    tracing::debug!(
                         "MCP via LLM: executing tool '{}' (call_id: {})",
                         tool_name,
                         tool_call.id
@@ -378,6 +396,15 @@ pub async fn run_agentic_loop(
                         }
                     };
 
+                    let tool_duration_ms = tool_start.elapsed().as_millis();
+                    let is_error = result_content.starts_with("Error ");
+                    tracing::info!(
+                        "MCP via LLM: tool '{}' completed in {}ms{}",
+                        tool_name,
+                        tool_duration_ms,
+                        if is_error { " (error)" } else { "" }
+                    );
+
                     // Add tool result message
                     request.messages.push(ChatMessage {
                         role: "tool".to_string(),
@@ -394,6 +421,7 @@ pub async fn run_agentic_loop(
                     .history
                     .set_messages(request.messages.clone());
 
+                iteration += 1;
                 continue; // Next iteration
             }
         }
@@ -420,8 +448,6 @@ pub async fn run_agentic_loop(
             iteration + 1,
         )));
     }
-
-    Err(McpViaLlmError::MaxIterations(config.max_loop_iterations))
 }
 
 /// Resume an agentic loop after mixed tool execution completes.
