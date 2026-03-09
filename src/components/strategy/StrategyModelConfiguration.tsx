@@ -18,7 +18,7 @@ import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
 import {listen} from "@tauri-apps/api/event"
 import {toast} from "sonner"
-import {Bot, Brain, Download, ExternalLink, Loader2, MessageSquareWarning} from "lucide-react"
+import {Bot, Brain, Download, ExternalLink, Info, Loader2, MessageSquareWarning} from "lucide-react"
 import {useIncrementalModels} from "@/hooks/useIncrementalModels"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/Select"
@@ -215,7 +215,7 @@ export function StrategyModelConfiguration({
             const strategyData = await invoke<StrategyConfig>("get_strategy", {strategyId})
             setStrategy(strategyData)
             // Set routing mode based on loaded strategy
-            setRoutingMode(strategyData.auto_config?.permission !== 'off' ? 'auto' : 'allowed')
+            setRoutingMode(strategyData.auto_config != null && strategyData.auto_config.permission !== 'off' ? 'auto' : 'allowed')
 
             // Load pricing and free tier data in the background
             try {
@@ -536,6 +536,14 @@ export function StrategyModelConfiguration({
                                     )}
                                 </CardHeader>
                                 <CardContent>
+                                    {strategy.allowed_models.selected_all && (
+                                        <div className="flex items-start gap-2 p-3 mb-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                                            <Info className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                                            <p className="text-xs text-blue-900 dark:text-blue-300">
+                                                All models are currently allowed, including any future models added to providers. Uncheck &ldquo;All Providers &amp; Models&rdquo; below to select specific models.
+                                            </p>
+                                        </div>
+                                    )}
                                     {clientContext ? (
                                         <UnifiedModelsSelector
                                             models={models}

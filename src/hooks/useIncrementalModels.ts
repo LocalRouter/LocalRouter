@@ -83,9 +83,8 @@ export function useIncrementalModels(
 
     return () => {
       mountedRef.current = false
-      unsubscribers.forEach(async (unsub) => {
-        const fn = await unsub
-        fn()
+      unsubscribers.forEach((unsub) => {
+        unsub.then((fn) => fn()).catch(() => {})
       })
     }
   }, [])

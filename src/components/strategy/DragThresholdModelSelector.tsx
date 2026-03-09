@@ -8,7 +8,7 @@
  * - Models above the threshold are prioritized in order
  */
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef, useCallback } from "react"
 import {
   DndContext,
   DragOverlay,
@@ -126,24 +126,44 @@ function SortableRow({
     isDragging,
   } = useSortable({ id, disabled })
 
+  // Track pointer position to distinguish clicks from drags
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null)
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    pointerStartRef.current = { x: e.clientX, y: e.clientY }
+    // Call dnd-kit's onPointerDown if present
+    listeners?.onPointerDown?.(e as any)
+  }, [listeners])
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (disabled) return
+    const start = pointerStartRef.current
+    pointerStartRef.current = null
+    if (!start) return
+    // Only toggle if pointer didn't move more than the drag threshold
+    const dx = e.clientX - start.x
+    const dy = e.clientY - start.y
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) {
+      e.stopPropagation()
+      onToggle()
+    }
+  }, [disabled, onToggle])
+
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
   }
+
+  // Spread dnd-kit listeners but override onPointerDown with our wrapper
+  const mergedListeners = { ...listeners, onPointerDown: handlePointerDown }
 
   return (
     <div
       ref={setNodeRef}
       style={style}
       {...attributes}
-      {...listeners}
-      onClick={(e) => {
-        // Only toggle if not dragging (click without movement)
-        if (!isDragging) {
-          e.stopPropagation()
-          onToggle()
-        }
-      }}
+      {...mergedListeners}
+      onPointerUp={handlePointerUp}
       className={cn(
         "flex items-center gap-3 px-3 py-2 border-b border-border/50 transition-colors",
         "cursor-grab active:cursor-grabbing touch-none select-none",
