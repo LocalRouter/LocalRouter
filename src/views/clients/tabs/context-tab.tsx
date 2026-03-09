@@ -2,6 +2,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Info, AlertTriangle } from "lucide-react"
+import { TriStateButton } from "@/components/ui/TriStateButton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 
 interface Client {
@@ -78,21 +79,13 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
                 EXPERIMENTAL
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              <select
-                className="text-xs border rounded px-2 py-1 bg-background"
-                value={contextManagement === null ? "inherit" : contextManagement ? "on" : "off"}
-                onChange={(e) => {
-                  const v = e.target.value
-                  handleContextManagementChange(v === "inherit" ? null : v === "on")
-                }}
-                disabled={saving}
-              >
-                <option value="inherit">Inherit global</option>
-                <option value="on">Enabled</option>
-                <option value="off">Disabled</option>
-              </select>
-            </div>
+            <TriStateButton
+              value={contextManagement}
+              onChange={handleContextManagementChange}
+              disabled={saving}
+              onLabel="On"
+              offLabel="Off"
+            />
           </div>
           <CardDescription>
             Enables catalog compression: deferred loading of tools, prompts, and resources combined with{" "}
@@ -142,21 +135,13 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">Indexing Tools</CardTitle>
-            <div className="flex items-center gap-2">
-              <select
-                className="text-xs border rounded px-2 py-1 bg-background"
-                value={indexingTools === null ? "inherit" : indexingTools ? "on" : "off"}
-                onChange={(e) => {
-                  const v = e.target.value
-                  handleIndexingToolsChange(v === "inherit" ? null : v === "on")
-                }}
-                disabled={saving}
-              >
-                <option value="inherit">Inherit global</option>
-                <option value="on">Enabled</option>
-                <option value="off">Disabled</option>
-              </select>
-            </div>
+            <TriStateButton
+              value={indexingTools}
+              onChange={handleIndexingToolsChange}
+              disabled={saving}
+              onLabel="On"
+              offLabel="Off"
+            />
           </div>
           <CardDescription>
             Enables the{" "}

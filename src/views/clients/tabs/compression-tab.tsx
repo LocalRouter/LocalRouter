@@ -5,9 +5,11 @@ import { Minimize2, Info } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { Switch } from "@/components/ui/Toggle"
-import { Slider } from "@/components/ui/Slider"
 import { Input } from "@/components/ui/Input"
 import { Label } from "@/components/ui/label"
+import { PresetSlider } from "@/components/ui/PresetSlider"
+import { TriStateButton } from "@/components/ui/TriStateButton"
+import { COMPRESSION_PRESETS } from "@/components/compression/types"
 import type {
   ClientPromptCompressionConfig,
   PromptCompressionConfig,
@@ -82,7 +84,7 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
     )
   }
 
-  const effectiveRate = config.rate ?? globalConfig?.default_rate ?? 0.5
+  const effectiveRate = config.rate ?? globalConfig?.default_rate ?? 0.8
   const effectiveMinMessages = config.min_messages ?? globalConfig?.min_messages ?? 6
   const effectivePreserveRecent = config.preserve_recent ?? globalConfig?.preserve_recent ?? 4
   const effectiveCompressSystem = config.compress_system_prompt ?? globalConfig?.compress_system_prompt ?? false
@@ -117,25 +119,17 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">Enable Compression</CardTitle>
-            <select
-              className="text-xs border rounded px-2 py-1 bg-background"
-              value={config.enabled === null ? "inherit" : config.enabled ? "on" : "off"}
-              onChange={(e) => {
-                const v = e.target.value
-                saveConfig({
-                  ...config,
-                  enabled: v === "inherit" ? null : v === "on",
-                })
-              }}
-            >
-              <option value="inherit">Inherit global ({globalConfig?.enabled ? "enabled" : "disabled"})</option>
-              <option value="on">Enabled</option>
-              <option value="off">Disabled</option>
-            </select>
+            <TriStateButton
+              value={config.enabled}
+              onChange={(v) => saveConfig({ ...config, enabled: v })}
+              defaultLabel={`Default (${globalConfig?.enabled ? "on" : "off"})`}
+              onLabel="On"
+              offLabel="Off"
+            />
           </div>
           <CardDescription>
             Override the global compression setting for this client.
-            When set to "Inherit global", the{" "}
+            When set to "Default", the{" "}
             {onViewChange ? (
               <button
                 className="text-blue-500 hover:underline"
@@ -172,32 +166,28 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
         <CardContent className="space-y-6">
           {/* Compression Rate */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm">Compression Rate</Label>
-              <div className="flex items-center gap-2">
-                {config.rate !== null && (
-                  <button
-                    className="text-xs text-muted-foreground hover:text-foreground"
-                    onClick={() => saveConfig({ ...config, rate: null })}
-                  >
-                    Reset to global
-                  </button>
-                )}
-                <span className="text-xs text-muted-foreground tabular-nums w-12 text-right">
-                  {config.rate !== null ? `${Math.round(config.rate * 100)}%` : `${Math.round(effectiveRate * 100)}% (global)`}
-                </span>
+            {config.rate !== null && (
+              <div className="flex justify-end">
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => saveConfig({ ...config, rate: null })}
+                >
+                  Reset to global
+                </button>
               </div>
-            </div>
-            <Slider
-              value={[effectiveRate]}
+            )}
+            <PresetSlider
+              label={config.rate !== null ? "Compression Rate" : `Compression Rate (global: ${Math.round(effectiveRate * 100)}%)`}
+              value={effectiveRate}
+              onChange={(v) => saveConfig({ ...config, rate: v })}
+              presets={COMPRESSION_PRESETS}
               min={0.1}
-              max={0.9}
-              step={0.05}
-              onValueChange={([v]) => saveConfig({ ...config, rate: v })}
+              max={1}
+              step={0.01}
+              minLabel="More compression"
+              maxLabel="More tokens preserved"
+              formatValue={(v) => `${Math.round(v * 100)}%`}
             />
-            <p className="text-xs text-muted-foreground">
-              Lower values = more compression. 0.5 means ~50% of tokens kept.
-            </p>
           </div>
 
           {/* Min Messages */}
