@@ -233,6 +233,12 @@ impl McpViaLlmManager {
                 );
                 // Insert replaces any existing entry; Drop impl on PendingMixedExecution
                 // aborts old background tasks automatically.
+                if self.pending_executions.contains_key(client_id) {
+                    tracing::warn!(
+                        "MCP via LLM: replacing existing pending execution for client {} — previous background tasks will be aborted",
+                        &client_id[..8.min(client_id.len())]
+                    );
+                }
                 self.pending_executions
                     .insert(client_id.to_string(), pending);
                 Ok(client_response)
@@ -342,8 +348,18 @@ impl McpViaLlmManager {
         // Also clean up pending executions that have been waiting too long
         // Drop impl on PendingMixedExecution will abort background tasks.
         let timeout = Duration::from_secs(self.config.read().max_loop_timeout_seconds);
-        self.pending_executions
-            .retain(|_, pending| pending.started_at.elapsed() < timeout);
+        self.pending_executions.retain(|client_id, pending| {
+            let expired = pending.started_at.elapsed() >= timeout;
+            if expired {
+                tracing::warn!(
+                    "MCP via LLM: cleaning up timed-out pending execution for client {} ({} background tasks aborted, waited {:.1}s)",
+                    &client_id[..8.min(client_id.len())],
+                    pending.mcp_handles.len(),
+                    pending.started_at.elapsed().as_secs_f64()
+                );
+            }
+            !expired
+        });
     }
 }
 
