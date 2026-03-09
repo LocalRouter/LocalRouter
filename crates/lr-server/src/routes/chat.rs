@@ -206,12 +206,8 @@ pub async fn chat_completions(
     check_rate_limits(&state, &auth, &request).await?;
 
     // Enforce client mode: block MCP-only clients from LLM endpoints
-    // Also intercept MCP-via-LLM clients for agentic orchestration
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
         check_llm_access(client)?;
-        if client.client_mode == lr_config::ClientMode::McpViaLlm {
-            return handle_mcp_via_llm(state, auth, client_auth, request).await;
-        }
     }
 
     // Start guardrail scan in parallel (only if safety engine is available)
@@ -319,6 +315,22 @@ pub async fn chat_completions(
     // Inject pre-computed RouteLLM routing into provider request
     if let Some(routing) = routellm_result {
         provider_request.pre_computed_routing = Some(routing);
+    }
+
+    // MCP via LLM: intercept after compression + RouteLLM are applied
+    if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        if client.client_mode == lr_config::ClientMode::McpViaLlm {
+            return handle_mcp_via_llm(
+                state,
+                auth,
+                client_auth,
+                request,
+                provider_request,
+                guardrail_handle,
+                compression_tokens_saved,
+            )
+            .await;
+        }
     }
 
     // Determine if we can run guardrails in parallel with the LLM request.
@@ -1538,12 +1550,35 @@ fn convert_to_provider_request(
 /// MCP tools are transparently injected into the LLM request, tool calls are
 /// executed server-side, and the conversation loops until the LLM produces a
 /// final response. The client speaks only the OpenAI protocol.
+///
+/// Called after compression and RouteLLM are already applied to the request/provider_request.
+/// Guardrails are awaited sequentially here since MCP tool execution has side effects.
 async fn handle_mcp_via_llm(
     state: AppState,
     auth: AuthContext,
-    _client_auth: Option<Extension<ClientAuthContext>>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     request: ChatCompletionRequest,
+    provider_request: ProviderCompletionRequest,
+    guardrail_handle: GuardrailHandle,
+    _compression_tokens_saved: u64,
 ) -> ApiResult<Response> {
+    // Await guardrails sequentially (MCP via LLM executes tools = side effects)
+    if let Some(handle) = guardrail_handle {
+        let guardrail_result = handle.await.map_err(|e| {
+            ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
+        })??;
+        if let Some(check_result) = guardrail_result {
+            handle_guardrail_approval(
+                &state,
+                client_auth.as_ref().map(|e| &e.0),
+                &request,
+                check_result,
+                "request",
+            )
+            .await?;
+        }
+    }
+
     let generation_id = format!("gen-{}", Uuid::new_v4());
     let started_at = Instant::now();
     let created_at = Utc::now();
@@ -1571,11 +1606,10 @@ async fn handle_mcp_via_llm(
             .collect()
     };
 
-    // Convert to provider request format
-    let provider_request = convert_to_provider_request(&request)?;
-
     // Streaming: use multi-segment streaming orchestrator
     if request.stream {
+        let model = provider_request.model.clone();
+
         let chunk_stream = state
             .mcp_via_llm_manager
             .handle_streaming_request(
@@ -1590,49 +1624,157 @@ async fn handle_mcp_via_llm(
                 ApiErrorResponse::bad_gateway(format!("MCP via LLM streaming error: {}", e))
             })?;
 
+        let created_timestamp = created_at.timestamp();
+        let gen_id = generation_id.clone();
+
+        // Track content and completion for generation tracking
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+        let content_accumulator = Arc::new(Mutex::new(String::new()));
+        let finish_reason = Arc::new(Mutex::new(String::from("stop")));
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<()>();
+        let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
+
+        // Set up streaming JSON repair if enabled and response_format is JSON
+        let streaming_repairer = {
+            let is_json_format = matches!(
+                &request.response_format,
+                Some(crate::types::ResponseFormat::JsonObject { .. })
+                    | Some(crate::types::ResponseFormat::JsonSchema { .. })
+            );
+            if is_json_format {
+                let config = state.config_manager.get();
+                let client_cfg = state.client_manager.get_client(&auth.api_key_id);
+                let enabled = client_cfg
+                    .as_ref()
+                    .and_then(|c| c.json_repair.enabled)
+                    .unwrap_or(config.json_repair.enabled);
+                let syntax_repair = client_cfg
+                    .as_ref()
+                    .and_then(|c| c.json_repair.syntax_repair)
+                    .unwrap_or(config.json_repair.syntax_repair);
+                if enabled && syntax_repair {
+                    Some(Arc::new(Mutex::new(
+                        lr_json_repair::StreamingJsonRepairer::new(
+                            None,
+                            lr_json_repair::RepairOptions::default(),
+                        ),
+                    )))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        let streaming_repairer_map = streaming_repairer.clone();
+
+        let content_accumulator_map = content_accumulator.clone();
+        let finish_reason_map = finish_reason.clone();
+        let completion_tx_map = completion_tx.clone();
+
+        // Clones for generation tracking after stream completes
+        let state_clone = state.clone();
+        let auth_clone = auth.clone();
+        let gen_id_clone = generation_id.clone();
+        let model_clone = model.clone();
+        let created_at_clone = created_at;
+        let request_user = request.user.clone();
+        let request_messages = request.messages.clone();
+        let compression_tokens_saved = _compression_tokens_saved;
+
         // Map provider chunks to SSE events, then append [DONE] sentinel
         let data_stream = chunk_stream.map(
             move |chunk_result| -> Result<Event, std::convert::Infallible> {
                 match chunk_result {
                     Ok(provider_chunk) => {
+                        // Track content for token estimation
+                        let is_done = if let Some(choice) = provider_chunk.choices.first() {
+                            if let Some(content) = &choice.delta.content {
+                                content_accumulator_map.lock().push_str(content);
+                            }
+                            if let Some(reason) = &choice.finish_reason {
+                                *finish_reason_map.lock() = reason.clone();
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        if is_done {
+                            if let Some(tx) = completion_tx_map.lock().take() {
+                                let _ = tx.send(());
+                            }
+                        }
+
                         let api_chunk = ChatCompletionChunk {
-                            id: provider_chunk.id,
+                            id: gen_id.clone(),
                             object: "chat.completion.chunk".to_string(),
-                            created: provider_chunk.created,
-                            model: provider_chunk.model,
-                            choices: provider_chunk
-                                .choices
-                                .into_iter()
-                                .map(|c| ChatCompletionChunkChoice {
-                                    index: c.index,
-                                    delta: ChunkDelta {
-                                        role: c.delta.role,
-                                        content: c.delta.content,
-                                        tool_calls: c.delta.tool_calls.map(|tcs| {
-                                            tcs.into_iter()
-                                                .map(|tc| crate::types::ToolCallDelta {
-                                                    index: tc.index,
-                                                    id: tc.id,
-                                                    tool_type: tc.tool_type,
-                                                    function: tc.function.map(|f| {
-                                                        crate::types::FunctionCallDelta {
-                                                            name: f.name,
-                                                            arguments: f.arguments,
-                                                        }
-                                                    }),
-                                                })
-                                                .collect()
-                                        }),
-                                    },
-                                    finish_reason: c.finish_reason,
-                                })
-                                .collect(),
+                            created: created_timestamp,
+                            model: provider_chunk.model.clone(),
+                            choices: {
+                                let mut choices: Vec<ChatCompletionChunkChoice> = provider_chunk
+                                    .choices
+                                    .into_iter()
+                                    .map(|c| ChatCompletionChunkChoice {
+                                        index: c.index,
+                                        delta: ChunkDelta {
+                                            role: c.delta.role,
+                                            content: c.delta.content,
+                                            tool_calls: c.delta.tool_calls.map(|tcs| {
+                                                tcs.into_iter()
+                                                    .map(|tc| crate::types::ToolCallDelta {
+                                                        index: tc.index,
+                                                        id: tc.id,
+                                                        tool_type: tc.tool_type,
+                                                        function: tc.function.map(|f| {
+                                                            crate::types::FunctionCallDelta {
+                                                                name: f.name,
+                                                                arguments: f.arguments,
+                                                            }
+                                                        }),
+                                                    })
+                                                    .collect()
+                                            }),
+                                        },
+                                        finish_reason: c.finish_reason,
+                                    })
+                                    .collect();
+
+                                // Apply streaming JSON repair
+                                if let Some(ref repairer) = streaming_repairer_map {
+                                    for choice in &mut choices {
+                                        if let Some(text) = choice.delta.content.take() {
+                                            let repaired = repairer.lock().push_content(&text);
+                                            if !repaired.is_empty() {
+                                                choice.delta.content = Some(repaired);
+                                            }
+                                        }
+                                        if choice.finish_reason.is_some() {
+                                            let flushed = repairer.lock().finish();
+                                            if !flushed.is_empty() {
+                                                let existing =
+                                                    choice.delta.content.take().unwrap_or_default();
+                                                choice.delta.content =
+                                                    Some(format!("{}{}", existing, flushed));
+                                            }
+                                        }
+                                    }
+                                }
+
+                                choices
+                            },
                             usage: None,
                         };
                         let json = serde_json::to_string(&api_chunk).unwrap_or_default();
                         Ok(Event::default().data(json))
                     }
                     Err(e) => {
+                        if let Some(tx) = completion_tx_map.lock().take() {
+                            let _ = tx.send(());
+                        }
                         let error_response = serde_json::json!({
                             "error": {
                                 "message": format!("MCP via LLM streaming error: {}", e),
@@ -1646,6 +1788,134 @@ async fn handle_mcp_via_llm(
                 }
             },
         );
+
+        // Record generation details after stream completes
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                tokio::time::Duration::from_secs(300),
+                completion_rx,
+            )
+            .await;
+
+            let completed_at = Instant::now();
+            let completion_content = content_accumulator.lock().clone();
+            let finish_reason_final = finish_reason.lock().clone();
+
+            let last_user_message_tokens = if let Some(last_msg) = request_messages.last() {
+                estimate_token_count(std::slice::from_ref(last_msg))
+            } else {
+                0
+            };
+            let prompt_tokens = last_user_message_tokens as u32;
+            let completion_tokens = (completion_content.len() / 4).max(1) as u32;
+            let total_tokens = prompt_tokens + completion_tokens;
+
+            let provider = if let Some((p, _)) = model_clone.split_once('/') {
+                p.to_string()
+            } else {
+                "router".to_string()
+            };
+
+            let pricing = match state_clone.provider_registry.get_provider(&provider) {
+                Some(p) => p.get_pricing(&model_clone).await.ok(),
+                None => None,
+            }
+            .unwrap_or_else(lr_providers::PricingInfo::free);
+
+            if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
+                let cost_saved =
+                    (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
+                let micros = (cost_saved * 1_000_000.0) as u64;
+                state_clone
+                    .feature_stats
+                    .compression_cost_saved_micros
+                    .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            let cost = {
+                let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
+                let output_cost =
+                    (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
+                input_cost + output_cost
+            };
+
+            let strategy_id = state_clone
+                .client_manager
+                .get_client(&auth_clone.api_key_id)
+                .map(|c| c.strategy_id.clone())
+                .unwrap_or_else(|| "default".to_string());
+
+            let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
+            state_clone
+                .metrics_collector
+                .record_success(&lr_monitoring::metrics::RequestMetrics {
+                    api_key_name: &auth_clone.api_key_id,
+                    provider: &provider,
+                    model: &model_clone,
+                    strategy_id: &strategy_id,
+                    input_tokens: prompt_tokens as u64,
+                    output_tokens: completion_tokens as u64,
+                    cost_usd: cost,
+                    latency_ms,
+                });
+
+            if let Some(ref tray_graph) = *state_clone.tray_graph_manager.read() {
+                tray_graph.record_tokens((prompt_tokens + completion_tokens) as u64);
+            }
+
+            if let Err(e) = state_clone.access_logger.log_success(
+                &auth_clone.api_key_id,
+                &provider,
+                &model_clone,
+                prompt_tokens as u64,
+                completion_tokens as u64,
+                cost,
+                latency_ms,
+                &gen_id_clone,
+            ) {
+                tracing::warn!("Failed to write access log: {}", e);
+            }
+
+            state_clone.emit_event(
+                "metrics-updated",
+                &serde_json::json!({
+                    "timestamp": created_at_clone.to_rfc3339(),
+                })
+                .to_string(),
+            );
+
+            let generation_details = GenerationDetails {
+                id: gen_id_clone,
+                model: model_clone,
+                provider: provider.clone(),
+                created_at: created_at_clone,
+                finish_reason: finish_reason_final,
+                tokens: TokenUsage {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    prompt_tokens_details: None,
+                    completion_tokens_details: None,
+                },
+                cost: Some(crate::types::CostDetails {
+                    prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
+                    completion_cost: (completion_tokens as f64 / 1000.0)
+                        * pricing.output_cost_per_1k,
+                    total_cost: cost,
+                    currency: "USD".to_string(),
+                }),
+                started_at,
+                completed_at,
+                provider_health: None,
+                api_key_id: auth_clone.api_key_id,
+                user: request_user,
+                stream: true,
+            };
+
+            state_clone
+                .generation_tracker
+                .record(generation_details.id.clone(), generation_details);
+        });
 
         // Append [DONE] sentinel after all data chunks (required by OpenAI streaming protocol)
         let done_stream = futures::stream::once(async {
