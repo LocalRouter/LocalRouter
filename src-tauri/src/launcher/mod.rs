@@ -19,6 +19,24 @@ pub struct ConfigSyncContext {
     pub client_id: String,
     /// Model IDs available to this client (e.g. "anthropic/claude-sonnet-4-20250514")
     pub models: Vec<String>,
+    /// Current client mode — controls which parts of config to sync
+    pub client_mode: lr_config::ClientMode,
+}
+
+impl ConfigSyncContext {
+    /// Whether LLM config should be written (all modes except mcp_only)
+    pub fn should_sync_llm(&self) -> bool {
+        !matches!(self.client_mode, lr_config::ClientMode::McpOnly)
+    }
+
+    /// Whether MCP config should be written (both and mcp_only only;
+    /// mcp_via_llm handles MCP server-side so the external app shouldn't connect directly)
+    pub fn should_sync_mcp(&self) -> bool {
+        matches!(
+            self.client_mode,
+            lr_config::ClientMode::Both | lr_config::ClientMode::McpOnly
+        )
+    }
 }
 
 /// Trait for all app integrations

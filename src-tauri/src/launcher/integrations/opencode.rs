@@ -99,75 +99,97 @@ impl AppIntegration for OpenCodeIntegration {
         client_secret: &str,
         _client_id: &str,
     ) -> Result<LaunchResult, String> {
-        let path = config_path();
-        let mut config = read_config(&path);
-
-        // LLM provider entry
-        let provider_entry = serde_json::json!({
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "LocalRouter",
-            "options": {
-                "baseURL": format!("{}/v1", base_url),
-                "apiKey": client_secret
-            }
-        });
-
-        if let Some(obj) = config.as_object_mut() {
-            let provider = obj
-                .entry("provider")
-                .or_insert_with(|| serde_json::json!({}));
-            if let Some(prov_obj) = provider.as_object_mut() {
-                prov_obj.insert("localrouter".to_string(), provider_entry);
-            }
-
-            // OpenCode uses "mcp" key (not "mcpServers")
-            let mcp = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
-            if let Some(mcp_obj) = mcp.as_object_mut() {
-                mcp_obj.insert(
-                    "localrouter".to_string(),
-                    mcp_entry(base_url, client_secret),
-                );
-            }
-        }
-
-        write_config(&path, &config)
+        self.write_config(base_url, client_secret, true, true, None)
     }
 
     fn sync_config(&self, ctx: &ConfigSyncContext) -> Result<LaunchResult, String> {
-        let path = config_path();
-        let mut config = read_config(&path);
+        self.write_config(
+            &ctx.base_url,
+            &ctx.client_secret,
+            ctx.should_sync_llm(),
+            ctx.should_sync_mcp(),
+            Some(&ctx.models),
+        )
+    }
+}
 
-        // Build models map: { "model-id": { "name": "model-id" } }
-        let mut models_map = serde_json::Map::new();
-        for model_id in &ctx.models {
-            models_map.insert(model_id.clone(), serde_json::json!({ "name": model_id }));
+impl OpenCodeIntegration {
+    fn write_config(
+        &self,
+        base_url: &str,
+        client_secret: &str,
+        sync_llm: bool,
+        sync_mcp: bool,
+        models: Option<&Vec<String>>,
+    ) -> Result<LaunchResult, String> {
+        let path = config_path();
+
+        // Nothing to write or clean up
+        if !sync_llm && !sync_mcp && !path.exists() {
+            return Ok(LaunchResult {
+                success: true,
+                message: "No config to sync for current client mode".to_string(),
+                modified_files: vec![],
+                backup_files: vec![],
+                terminal_command: None,
+            });
         }
 
-        // LLM provider entry with models
-        let provider_entry = serde_json::json!({
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "LocalRouter",
-            "options": {
-                "baseURL": format!("{}/v1", ctx.base_url),
-                "apiKey": ctx.client_secret
-            },
-            "models": models_map
-        });
+        let mut config = read_config(&path);
 
         if let Some(obj) = config.as_object_mut() {
-            let provider = obj
-                .entry("provider")
-                .or_insert_with(|| serde_json::json!({}));
-            if let Some(prov_obj) = provider.as_object_mut() {
-                prov_obj.insert("localrouter".to_string(), provider_entry);
+            // LLM provider entry
+            if sync_llm {
+                let mut provider_entry = serde_json::json!({
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "LocalRouter",
+                    "options": {
+                        "baseURL": format!("{}/v1", base_url),
+                        "apiKey": client_secret
+                    }
+                });
+
+                // Add models map if provided (from sync_config)
+                if let Some(model_list) = models {
+                    let mut models_map = serde_json::Map::new();
+                    for model_id in model_list {
+                        models_map
+                            .insert(model_id.clone(), serde_json::json!({ "name": model_id }));
+                    }
+                    provider_entry["models"] = serde_json::Value::Object(models_map);
+                }
+
+                let provider = obj
+                    .entry("provider")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(prov_obj) = provider.as_object_mut() {
+                    prov_obj.insert("localrouter".to_string(), provider_entry);
+                }
+            } else {
+                // Remove stale LLM entry
+                if let Some(provider) = obj.get_mut("provider") {
+                    if let Some(prov_obj) = provider.as_object_mut() {
+                        prov_obj.remove("localrouter");
+                    }
+                }
             }
 
-            let mcp = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
-            if let Some(mcp_obj) = mcp.as_object_mut() {
-                mcp_obj.insert(
-                    "localrouter".to_string(),
-                    mcp_entry(&ctx.base_url, &ctx.client_secret),
-                );
+            // OpenCode uses "mcp" key (not "mcpServers")
+            if sync_mcp {
+                let mcp = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
+                if let Some(mcp_obj) = mcp.as_object_mut() {
+                    mcp_obj.insert(
+                        "localrouter".to_string(),
+                        mcp_entry(base_url, client_secret),
+                    );
+                }
+            } else {
+                // Remove stale MCP entry
+                if let Some(mcp) = obj.get_mut("mcp") {
+                    if let Some(mcp_obj) = mcp.as_object_mut() {
+                        mcp_obj.remove("localrouter");
+                    }
+                }
             }
         }
 

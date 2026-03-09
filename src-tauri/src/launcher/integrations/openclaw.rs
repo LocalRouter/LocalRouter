@@ -5,7 +5,7 @@
 //! - **MCP**: `mcp.servers.localrouter` in the same file.
 
 use crate::launcher::backup;
-use crate::launcher::AppIntegration;
+use crate::launcher::{AppIntegration, ConfigSyncContext};
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 use std::path::PathBuf;
 
@@ -47,7 +47,39 @@ impl AppIntegration for OpenClawIntegration {
         client_secret: &str,
         _client_id: &str,
     ) -> Result<LaunchResult, String> {
+        self.write_config(base_url, client_secret, true, true)
+    }
+
+    fn sync_config(&self, ctx: &ConfigSyncContext) -> Result<LaunchResult, String> {
+        self.write_config(
+            &ctx.base_url,
+            &ctx.client_secret,
+            ctx.should_sync_llm(),
+            ctx.should_sync_mcp(),
+        )
+    }
+}
+
+impl OpenClawIntegration {
+    fn write_config(
+        &self,
+        base_url: &str,
+        client_secret: &str,
+        sync_llm: bool,
+        sync_mcp: bool,
+    ) -> Result<LaunchResult, String> {
         let path = config_path();
+
+        // Nothing to write or clean up
+        if !sync_llm && !sync_mcp && !path.exists() {
+            return Ok(LaunchResult {
+                success: true,
+                message: "No config to sync for current client mode".to_string(),
+                modified_files: vec![],
+                backup_files: vec![],
+                terminal_command: None,
+            });
+        }
 
         let mut config: serde_json::Value = if path.exists() {
             let data = std::fs::read_to_string(&path)
@@ -58,43 +90,87 @@ impl AppIntegration for OpenClawIntegration {
         };
 
         let obj = config.as_object_mut().ok_or("Invalid config format")?;
+        let mut parts = vec![];
+        let mut changed = false;
 
-        let models_section = obj.entry("models").or_insert_with(|| serde_json::json!({}));
-        let providers = models_section
-            .as_object_mut()
-            .ok_or("Invalid models section")?
-            .entry("providers")
-            .or_insert_with(|| serde_json::json!({}));
+        // 1. LLM provider entry under models.providers
+        if sync_llm {
+            let models_section = obj.entry("models").or_insert_with(|| serde_json::json!({}));
+            let providers = models_section
+                .as_object_mut()
+                .ok_or("Invalid models section")?
+                .entry("providers")
+                .or_insert_with(|| serde_json::json!({}));
 
-        // Audit: "openai-responses" is the correct api type for OpenAI-compatible endpoints.
-        // See: https://docs.openclaw.ai/concepts/model-providers
-        let provider_entry = serde_json::json!({
-            "baseUrl": base_url,
-            "apiKey": client_secret,
-            "api": "openai-responses"
-        });
+            let provider_entry = serde_json::json!({
+                "baseUrl": base_url,
+                "apiKey": client_secret,
+                "api": "openai-responses"
+            });
 
-        if let Some(prov_obj) = providers.as_object_mut() {
-            prov_obj.insert("localrouter".to_string(), provider_entry);
+            if let Some(prov_obj) = providers.as_object_mut() {
+                prov_obj.insert("localrouter".to_string(), provider_entry);
+                changed = true;
+            }
+            parts.push("LLM provider");
+        } else {
+            // Remove stale LLM entry
+            if let Some(models) = obj.get_mut("models") {
+                if let Some(providers) = models.as_object_mut().and_then(|m| m.get_mut("providers"))
+                {
+                    if let Some(prov_obj) = providers.as_object_mut() {
+                        if prov_obj.remove("localrouter").is_some() {
+                            changed = true;
+                            parts.push("removed LLM provider");
+                        }
+                    }
+                }
+            }
         }
 
-        // 2. Add MCP server entry under mcp.servers
-        let mcp_section = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
-        let mcp_servers = mcp_section
-            .as_object_mut()
-            .ok_or("Invalid mcp section")?
-            .entry("servers")
-            .or_insert_with(|| serde_json::json!({}));
+        // 2. MCP server entry under mcp.servers
+        if sync_mcp {
+            let mcp_section = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
+            let mcp_servers = mcp_section
+                .as_object_mut()
+                .ok_or("Invalid mcp section")?
+                .entry("servers")
+                .or_insert_with(|| serde_json::json!({}));
 
-        let mcp_entry = serde_json::json!({
-            "url": base_url,
-            "headers": {
-                "Authorization": format!("Bearer {}", client_secret)
+            let mcp_entry = serde_json::json!({
+                "url": base_url,
+                "headers": {
+                    "Authorization": format!("Bearer {}", client_secret)
+                }
+            });
+
+            if let Some(servers_obj) = mcp_servers.as_object_mut() {
+                servers_obj.insert("localrouter".to_string(), mcp_entry);
+                changed = true;
             }
-        });
+            parts.push("MCP server");
+        } else {
+            // Remove stale MCP entry
+            if let Some(mcp) = obj.get_mut("mcp") {
+                if let Some(servers) = mcp.as_object_mut().and_then(|m| m.get_mut("servers")) {
+                    if let Some(servers_obj) = servers.as_object_mut() {
+                        if servers_obj.remove("localrouter").is_some() {
+                            changed = true;
+                            parts.push("removed MCP server");
+                        }
+                    }
+                }
+            }
+        }
 
-        if let Some(servers_obj) = mcp_servers.as_object_mut() {
-            servers_obj.insert("localrouter".to_string(), mcp_entry);
+        if !changed {
+            return Ok(LaunchResult {
+                success: true,
+                message: "No config changes needed".to_string(),
+                modified_files: vec![],
+                backup_files: vec![],
+                terminal_command: None,
+            });
         }
 
         let data = serde_json::to_string_pretty(&config)
@@ -109,7 +185,8 @@ impl AppIntegration for OpenClawIntegration {
         Ok(LaunchResult {
             success: true,
             message: format!(
-                "Configured OpenClaw: LLM provider and MCP server at {}",
+                "Configured OpenClaw: {} at {}",
+                parts.join(" and "),
                 path.display()
             ),
             modified_files: vec![path.to_string_lossy().to_string()],

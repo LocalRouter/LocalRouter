@@ -7,7 +7,7 @@
 //! See: <https://developers.openai.com/codex/config-reference/>
 
 use crate::launcher::backup;
-use crate::launcher::AppIntegration;
+use crate::launcher::{AppIntegration, ConfigSyncContext};
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 
 pub struct CodexIntegration;
@@ -137,5 +137,38 @@ impl AppIntegration for CodexIntegration {
         insert_mcp_entry(&mut config, base_url, client_secret);
 
         write_config(&path, &config)
+    }
+
+    fn sync_config(&self, ctx: &ConfigSyncContext) -> Result<LaunchResult, String> {
+        // Codex permanent config only writes MCP entries.
+        // In mcp_via_llm/llm_only modes, remove stale MCP entry (LLM uses env vars).
+        if !ctx.should_sync_mcp() {
+            let path = config_path();
+            if path.exists() {
+                let mut config = read_config(&path);
+                let removed = if let toml::Value::Table(ref mut table) = config {
+                    table
+                        .get_mut("mcp_servers")
+                        .and_then(|s| s.as_table_mut())
+                        .and_then(|servers| servers.remove("localrouter"))
+                        .is_some()
+                } else {
+                    false
+                };
+
+                if removed {
+                    return write_config(&path, &config);
+                }
+            }
+            return Ok(LaunchResult {
+                success: true,
+                message: "No config to sync for current client mode (LLM uses env vars)"
+                    .to_string(),
+                modified_files: vec![],
+                backup_files: vec![],
+                terminal_command: None,
+            });
+        }
+        self.configure_permanent(&ctx.base_url, &ctx.client_secret, &ctx.client_id)
     }
 }

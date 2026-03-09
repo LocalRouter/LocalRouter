@@ -175,7 +175,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             .title("Approval Required")
                             .inner_size(400.0, 320.0)
                             .center()
-                            .visible(true)
+                            .visible(false)
                             .resizable(false)
                             .decorations(true)
                             .always_on_top(true)

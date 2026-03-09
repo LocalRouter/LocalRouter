@@ -5,7 +5,7 @@
 //! - **Permanent Config**: Write MCP server entry to `~/.claude.json`.
 
 use crate::launcher::backup;
-use crate::launcher::AppIntegration;
+use crate::launcher::{AppIntegration, ConfigSyncContext};
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 
 pub struct ClaudeCodeIntegration;
@@ -141,5 +141,51 @@ impl AppIntegration for ClaudeCodeIntegration {
             backup_files,
             terminal_command: None,
         })
+    }
+
+    fn sync_config(&self, ctx: &ConfigSyncContext) -> Result<LaunchResult, String> {
+        // Claude Code permanent config only writes MCP entries.
+        // In mcp_via_llm/llm_only modes, remove stale MCP entry (LLM uses env vars).
+        if !ctx.should_sync_mcp() {
+            let path = mcp_config_path();
+            if path.exists() {
+                let data = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+                let mut config: serde_json::Value =
+                    serde_json::from_str(&data).unwrap_or(serde_json::json!({}));
+
+                let removed = config
+                    .as_object_mut()
+                    .and_then(|obj| obj.get_mut("mcpServers"))
+                    .and_then(|s| s.as_object_mut())
+                    .and_then(|servers| servers.remove("localrouter"))
+                    .is_some();
+
+                if removed {
+                    let out = serde_json::to_string_pretty(&config)
+                        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+                    let backup_path = backup::write_with_backup(&path, out.as_bytes())?;
+                    return Ok(LaunchResult {
+                        success: true,
+                        message: format!("Removed MCP entry from {}", path.display()),
+                        modified_files: vec![path.to_string_lossy().to_string()],
+                        backup_files: backup_path
+                            .iter()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .collect(),
+                        terminal_command: None,
+                    });
+                }
+            }
+            return Ok(LaunchResult {
+                success: true,
+                message: "No config to sync for current client mode (LLM uses env vars)"
+                    .to_string(),
+                modified_files: vec![],
+                backup_files: vec![],
+                terminal_command: None,
+            });
+        }
+        self.configure_permanent(&ctx.base_url, &ctx.client_secret, &ctx.client_id)
     }
 }

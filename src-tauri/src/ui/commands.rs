@@ -3298,7 +3298,7 @@ pub async fn test_compression(
     let config = config_manager.get();
     let svc = ensure_compression_service(&state, &config).await?;
 
-    let (compressed_text, original_tokens, compressed_tokens) =
+    let (compressed_text, original_tokens, compressed_tokens, kept_indices) =
         svc.compress_text(&text, rate).await?;
 
     let ratio = if compressed_tokens > 0 {
@@ -3312,6 +3312,7 @@ pub async fn test_compression(
         "original_tokens": original_tokens,
         "compressed_tokens": compressed_tokens,
         "ratio": ratio,
+        "kept_indices": kept_indices,
     }))
     .map_err(|e| e.to_string())
 }
