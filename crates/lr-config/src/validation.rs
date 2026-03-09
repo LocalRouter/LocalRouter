@@ -421,36 +421,42 @@ mod tests {
             api_key_ref: None,
             free_tier: None,
         };
-        let mut config = AppConfig::default();
-        config.providers = vec![provider.clone(), provider];
+        let config = AppConfig {
+            providers: vec![provider.clone(), provider],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
     #[test]
     fn test_validate_empty_provider_name() {
-        let mut config = AppConfig::default();
-        config.providers = vec![ProviderConfig {
-            name: "".to_string(),
-            provider_type: ProviderType::Ollama,
-            enabled: true,
-            provider_config: None,
-            api_key_ref: None,
-            free_tier: None,
-        }];
+        let config = AppConfig {
+            providers: vec![ProviderConfig {
+                name: "".to_string(),
+                provider_type: ProviderType::Ollama,
+                enabled: true,
+                provider_config: None,
+                api_key_ref: None,
+                free_tier: None,
+            }],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
     #[test]
     fn test_validate_whitespace_provider_name() {
-        let mut config = AppConfig::default();
-        config.providers = vec![ProviderConfig {
-            name: "   ".to_string(),
-            provider_type: ProviderType::Ollama,
-            enabled: true,
-            provider_config: None,
-            api_key_ref: None,
-            free_tier: None,
-        }];
+        let config = AppConfig {
+            providers: vec![ProviderConfig {
+                name: "   ".to_string(),
+                provider_type: ProviderType::Ollama,
+                enabled: true,
+                provider_config: None,
+                api_key_ref: None,
+                free_tier: None,
+            }],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
@@ -472,8 +478,10 @@ mod tests {
         let s1 = make_strategy("Strategy A");
         let mut s2 = make_strategy("Strategy B");
         s2.id = s1.id.clone(); // same ID
-        let mut config = AppConfig::default();
-        config.strategies = vec![s1, s2];
+        let config = AppConfig {
+            strategies: vec![s1, s2],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
@@ -481,8 +489,10 @@ mod tests {
     fn test_validate_empty_strategy_name() {
         let mut s = make_strategy("");
         s.name = "".to_string();
-        let mut config = AppConfig::default();
-        config.strategies = vec![s];
+        let config = AppConfig {
+            strategies: vec![s],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
@@ -490,8 +500,10 @@ mod tests {
     fn test_validate_whitespace_strategy_name() {
         let mut s = make_strategy("  ");
         s.name = "  ".to_string();
-        let mut config = AppConfig::default();
-        config.strategies = vec![s];
+        let config = AppConfig {
+            strategies: vec![s],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
@@ -504,8 +516,10 @@ mod tests {
             time_window: RateLimitTimeWindow::Minute,
             enabled: true,
         }];
-        let mut config = AppConfig::default();
-        config.strategies = vec![s];
+        let config = AppConfig {
+            strategies: vec![s],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
@@ -518,8 +532,10 @@ mod tests {
             time_window: RateLimitTimeWindow::Minute,
             enabled: true,
         }];
-        let mut config = AppConfig::default();
-        config.strategies = vec![s];
+        let config = AppConfig {
+            strategies: vec![s],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
@@ -532,8 +548,10 @@ mod tests {
             time_window: RateLimitTimeWindow::Minute,
             enabled: true,
         }];
-        let mut config = AppConfig::default();
-        config.strategies = vec![s];
+        let config = AppConfig {
+            strategies: vec![s],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
@@ -546,8 +564,10 @@ mod tests {
             time_window: RateLimitTimeWindow::Minute,
             enabled: true,
         }];
-        let mut config = AppConfig::default();
-        config.strategies = vec![s];
+        let config = AppConfig {
+            strategies: vec![s],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
@@ -560,57 +580,65 @@ mod tests {
             time_window: RateLimitTimeWindow::Minute,
             enabled: true,
         }];
-        let mut config = AppConfig::default();
-        config.strategies = vec![s];
+        let config = AppConfig {
+            strategies: vec![s],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_ok());
     }
 
     #[test]
     fn test_validate_provider_config_not_object() {
-        let mut config = AppConfig::default();
-        config.providers = vec![ProviderConfig {
-            name: "Test".to_string(),
-            provider_type: ProviderType::Ollama,
-            enabled: true,
-            provider_config: Some(serde_json::json!("not an object")),
-            api_key_ref: None,
-            free_tier: None,
-        }];
+        let config = AppConfig {
+            providers: vec![ProviderConfig {
+                name: "Test".to_string(),
+                provider_type: ProviderType::Ollama,
+                enabled: true,
+                provider_config: Some(serde_json::json!("not an object")),
+                api_key_ref: None,
+                free_tier: None,
+            }],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
     #[test]
     fn test_validate_client_strategy_ref() {
-        let mut config = AppConfig::default();
         let mut client =
             crate::Client::new_with_strategy("Test".to_string(), "nonexistent".to_string());
         client.strategy_id = "nonexistent".to_string();
-        config.clients = vec![client];
+        let config = AppConfig {
+            clients: vec![client],
+            ..Default::default()
+        };
         assert!(validate_config(&config).is_err());
     }
 
     #[test]
     fn test_validate_empty_name_before_duplicate_check() {
         // BUG 8: Two empty-name providers should both report "empty name", not "duplicate"
-        let mut config = AppConfig::default();
-        config.providers = vec![
-            ProviderConfig {
-                name: "".to_string(),
-                provider_type: ProviderType::Ollama,
-                enabled: true,
-                provider_config: None,
-                api_key_ref: None,
-                free_tier: None,
-            },
-            ProviderConfig {
-                name: "".to_string(),
-                provider_type: ProviderType::Ollama,
-                enabled: true,
-                provider_config: None,
-                api_key_ref: None,
-                free_tier: None,
-            },
-        ];
+        let config = AppConfig {
+            providers: vec![
+                ProviderConfig {
+                    name: "".to_string(),
+                    provider_type: ProviderType::Ollama,
+                    enabled: true,
+                    provider_config: None,
+                    api_key_ref: None,
+                    free_tier: None,
+                },
+                ProviderConfig {
+                    name: "".to_string(),
+                    provider_type: ProviderType::Ollama,
+                    enabled: true,
+                    provider_config: None,
+                    api_key_ref: None,
+                    free_tier: None,
+                },
+            ],
+            ..Default::default()
+        };
         let err = validate_config(&config).unwrap_err();
         let msg = err.to_string();
         // The first empty name should be caught as "empty", not "duplicate"
