@@ -16,7 +16,7 @@ use tracing::{debug, error};
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
-    ProviderHealth, PullProgress, TokenUsage,
+    ProviderHealth, PullProgress, TokenUsage, Tool,
 };
 use lr_types::{AppError, AppResult};
 
@@ -127,6 +127,8 @@ struct OllamaChatRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<OllamaOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<Tool>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -138,12 +140,22 @@ struct OllamaOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stop: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OllamaChatResponse {
-    message: ChatMessage,
+    message: OllamaMessage,
     #[serde(default)]
     done: bool,
     #[serde(default)]
@@ -160,9 +172,72 @@ struct OllamaFinalData {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OllamaStreamResponse {
-    message: ChatMessage,
+    message: OllamaMessage,
     #[serde(default)]
     done: bool,
+}
+
+/// Ollama-specific message format.
+/// Ollama sends tool call arguments as a JSON object, not a JSON string like OpenAI.
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaMessage {
+    role: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OllamaToolCall>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaToolCall {
+    #[serde(default)]
+    id: Option<String>,
+    function: OllamaFunctionCall,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaFunctionCall {
+    name: String,
+    /// Ollama sends arguments as a JSON object, not a string
+    arguments: serde_json::Value,
+    /// Ollama sometimes includes an index field
+    #[serde(default)]
+    index: Option<u32>,
+}
+
+impl OllamaMessage {
+    /// Convert to the standard ChatMessage format
+    fn into_chat_message(self) -> ChatMessage {
+        use super::{ChatMessageContent, FunctionCall, ToolCall};
+
+        let tool_calls = self.tool_calls.map(|tcs| {
+            tcs.into_iter()
+                .map(|tc| ToolCall {
+                    id: tc
+                        .id
+                        .unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4().simple())),
+                    tool_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: tc.function.name,
+                        // Convert JSON value to string (OpenAI format)
+                        arguments: if tc.function.arguments.is_string() {
+                            tc.function.arguments.as_str().unwrap().to_string()
+                        } else {
+                            tc.function.arguments.to_string()
+                        },
+                    },
+                })
+                .collect()
+        });
+
+        ChatMessage {
+            role: self.role,
+            content: ChatMessageContent::Text(self.content),
+            name: None,
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
 }
 
 // Types for /api/tags endpoint
@@ -326,8 +401,14 @@ impl ModelProvider for OllamaProvider {
                 temperature: request.temperature,
                 num_predict: request.max_tokens,
                 top_p: request.top_p,
+                top_k: request.top_k,
+                seed: request.seed,
+                frequency_penalty: request.frequency_penalty,
+                presence_penalty: request.presence_penalty,
+                repeat_penalty: request.repetition_penalty,
                 stop: request.stop.clone(),
             }),
+            tools: request.tools.clone(),
         };
 
         let response = self
@@ -372,6 +453,20 @@ impl ModelProvider for OllamaProvider {
                 (0, 0)
             };
 
+        // Convert Ollama message to standard ChatMessage
+        let message = ollama_response.message.into_chat_message();
+
+        // Determine finish_reason based on whether tool calls are present
+        let finish_reason = if message
+            .tool_calls
+            .as_ref()
+            .is_some_and(|tc| !tc.is_empty())
+        {
+            Some("tool_calls".to_string())
+        } else {
+            Some("stop".to_string())
+        };
+
         Ok(CompletionResponse {
             id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
             object: "chat.completion".to_string(),
@@ -380,8 +475,8 @@ impl ModelProvider for OllamaProvider {
             provider: self.name().to_string(),
             choices: vec![CompletionChoice {
                 index: 0,
-                message: ollama_response.message,
-                finish_reason: Some("stop".to_string()),
+                message,
+                finish_reason,
                 logprobs: None, // Ollama does not support logprobs
             }],
             usage: TokenUsage {
@@ -414,8 +509,14 @@ impl ModelProvider for OllamaProvider {
                 temperature: request.temperature,
                 num_predict: request.max_tokens,
                 top_p: request.top_p,
+                top_k: request.top_k,
+                seed: request.seed,
+                frequency_penalty: request.frequency_penalty,
+                presence_penalty: request.presence_penalty,
+                repeat_penalty: request.repetition_penalty,
                 stop: request.stop.clone(),
             }),
+            tools: request.tools.clone(),
         };
 
         debug!("Ollama streaming request body: {:?}", ollama_request);
@@ -486,14 +587,45 @@ impl ModelProvider for OllamaProvider {
 
                         match serde_json::from_str::<OllamaStreamResponse>(&line) {
                             Ok(ollama_chunk) => {
-                                // Ollama sends incremental/delta content directly, not cumulative
-                                let delta_content = ollama_chunk.message.content.as_text();
+                                let message = ollama_chunk.message.into_chat_message();
+                                let delta_content = message.content.as_text();
                                 let mut first = is_first_chunk.lock().unwrap();
                                 let is_first = *first;
 
-                                if !delta_content.is_empty() {
+                                let has_tool_calls = message
+                                    .tool_calls
+                                    .as_ref()
+                                    .is_some_and(|tc| !tc.is_empty());
+
+                                if !delta_content.is_empty() || has_tool_calls {
                                     *first = false;
                                 }
+
+                                // Convert tool calls to streaming delta format
+                                let tool_call_deltas = message.tool_calls.map(|tcs| {
+                                    tcs.into_iter()
+                                        .enumerate()
+                                        .map(|(i, tc)| super::ToolCallDelta {
+                                            index: i as u32,
+                                            id: Some(tc.id),
+                                            tool_type: Some(tc.tool_type),
+                                            function: Some(super::FunctionCallDelta {
+                                                name: Some(tc.function.name),
+                                                arguments: Some(tc.function.arguments),
+                                            }),
+                                        })
+                                        .collect()
+                                });
+
+                                let finish_reason = if ollama_chunk.done {
+                                    if has_tool_calls {
+                                        Some("tool_calls".to_string())
+                                    } else {
+                                        Some("stop".to_string())
+                                    }
+                                } else {
+                                    None
+                                };
 
                                 let chunk = CompletionChunk {
                                     id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
@@ -503,7 +635,7 @@ impl ModelProvider for OllamaProvider {
                                     choices: vec![ChunkChoice {
                                         index: 0,
                                         delta: ChunkDelta {
-                                            role: if is_first && !delta_content.is_empty() {
+                                            role: if is_first {
                                                 Some("assistant".to_string())
                                             } else {
                                                 None
@@ -513,13 +645,9 @@ impl ModelProvider for OllamaProvider {
                                             } else {
                                                 None
                                             },
-                                            tool_calls: None,
+                                            tool_calls: tool_call_deltas,
                                         },
-                                        finish_reason: if ollama_chunk.done {
-                                            Some("stop".to_string())
-                                        } else {
-                                            None
-                                        },
+                                        finish_reason,
                                     }],
                                     extensions: None,
                                 };
