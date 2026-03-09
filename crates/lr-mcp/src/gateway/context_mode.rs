@@ -496,8 +496,8 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             }
         }
 
-        // Fallback: return a static ctx_search definition before transport is initialized
-        vec![build_fallback_ctx_search_tool(state.indexing_tools_enabled)]
+        // Fallback: return static tool definitions before transport is initialized
+        build_fallback_tools(state.indexing_tools_enabled)
     }
 
     fn check_permissions(
@@ -757,6 +757,119 @@ pub fn build_fallback_ctx_search_tool(indexing_tools_enabled: bool) -> McpTool {
             }
         }),
     }
+}
+
+/// Build fallback tool definitions for all context-mode tools before transport is initialized.
+/// Returns all tools (filtered by `indexing_tools_enabled`) with hardcoded schemas that match
+/// the actual context-mode MCP server definitions.
+fn build_fallback_tools(indexing_tools_enabled: bool) -> Vec<McpTool> {
+    let mut tools = vec![build_fallback_ctx_search_tool(indexing_tools_enabled)];
+
+    if indexing_tools_enabled {
+        tools.push(McpTool {
+            name: CTX_EXECUTE.to_string(),
+            description: Some("Execute code in a sandboxed environment. Supports shell and Python. Output is indexed for later search.".to_string()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["shell", "python"],
+                        "description": "Language to execute"
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Code to execute"
+                    }
+                },
+                "required": ["language", "code"]
+            }),
+        });
+
+        tools.push(McpTool {
+            name: CTX_EXECUTE_FILE.to_string(),
+            description: Some("Execute a script file in a sandboxed environment. Output is indexed for later search.".to_string()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the script file"
+                    },
+                    "language": {
+                        "type": "string",
+                        "enum": ["shell", "python"],
+                        "description": "Language of the script"
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Optional inline code to append to the file"
+                    }
+                },
+                "required": ["path"]
+            }),
+        });
+
+        tools.push(McpTool {
+            name: CTX_BATCH_EXECUTE.to_string(),
+            description: Some("Execute multiple commands and search queries in a single call. Results are indexed for later search.".to_string()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "commands": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Shell commands to execute"
+                    },
+                    "queries": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Search queries to run after commands"
+                    }
+                }
+            }),
+        });
+
+        tools.push(McpTool {
+            name: CTX_INDEX.to_string(),
+            description: Some("Index content for later retrieval via ctx_search.".to_string()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "Content to index"
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Source label for filtering"
+                    }
+                },
+                "required": ["content"]
+            }),
+        });
+
+        tools.push(McpTool {
+            name: CTX_FETCH_AND_INDEX.to_string(),
+            description: Some("Fetch a URL and index its content for later search.".to_string()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL to fetch"
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Source label for filtering"
+                    }
+                },
+                "required": ["url"]
+            }),
+        });
+    }
+
+    tools
 }
 
 #[cfg(test)]
