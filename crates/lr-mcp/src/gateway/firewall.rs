@@ -119,6 +119,9 @@ pub struct FirewallApprovalSession {
     /// Whether this is an auto-router approval request
     pub is_auto_router_request: bool,
 
+    /// Whether this is an MCP via LLM request (tools are server-injected)
+    pub is_mcp_via_llm_request: bool,
+
     /// Guardrail-specific details (matches, severity, etc.)
     pub guardrail_details: Option<GuardrailApprovalDetails>,
 }
@@ -155,6 +158,9 @@ pub struct PendingApprovalInfo {
     /// Whether this is an auto-router approval request
     #[serde(default)]
     pub is_auto_router_request: bool,
+    /// Whether this is an MCP via LLM request (tools are server-injected)
+    #[serde(default)]
+    pub is_mcp_via_llm_request: bool,
     /// Guardrail-specific details
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guardrail_details: Option<GuardrailApprovalDetails>,
@@ -221,6 +227,7 @@ impl FirewallManager {
             false, // not guardrail
             false, // not free-tier fallback
             false, // not auto-router
+            false, // not MCP via LLM
             full_arguments,
             None,
         )
@@ -239,6 +246,7 @@ impl FirewallManager {
         provider_name: String,
         timeout_secs: Option<u64>,
         full_arguments: Option<serde_json::Value>,
+        is_mcp_via_llm: bool,
     ) -> AppResult<FirewallApprovalResponse> {
         self.request_approval_internal(
             client_id,
@@ -251,6 +259,7 @@ impl FirewallManager {
             false, // not guardrail
             false, // not free-tier fallback
             false, // not auto-router
+            is_mcp_via_llm,
             full_arguments,
             None,
         )
@@ -281,6 +290,7 @@ impl FirewallManager {
             true,  // guardrail request
             false, // not free-tier fallback
             false, // not auto-router
+            false, // not MCP via LLM
             None,
             Some(guardrail_details),
         )
@@ -305,6 +315,7 @@ impl FirewallManager {
             false,                            // not guardrail
             true,                             // free-tier fallback
             false,                            // not auto-router
+            false,                            // not MCP via LLM
             None,
             None,
         )
@@ -330,6 +341,7 @@ impl FirewallManager {
             false,                          // not guardrail
             false,                          // not free-tier fallback
             true,                           // auto-router request
+            false,                          // not MCP via LLM
             full_arguments,
             None,
         )
@@ -350,6 +362,7 @@ impl FirewallManager {
         is_guardrail_request: bool,
         is_free_tier_fallback: bool,
         is_auto_router_request: bool,
+        is_mcp_via_llm_request: bool,
         full_arguments: Option<serde_json::Value>,
         guardrail_details: Option<GuardrailApprovalDetails>,
     ) -> AppResult<FirewallApprovalResponse> {
@@ -386,6 +399,7 @@ impl FirewallManager {
             is_guardrail_request,
             is_free_tier_fallback,
             is_auto_router_request,
+            is_mcp_via_llm_request,
             guardrail_details,
         };
 
@@ -414,6 +428,7 @@ impl FirewallManager {
                     "is_guardrail_request": is_guardrail_request,
                     "is_free_tier_fallback": is_free_tier_fallback,
                     "is_auto_router_request": is_auto_router_request,
+                    "is_mcp_via_llm_request": is_mcp_via_llm_request,
                 })),
             };
 
@@ -538,6 +553,7 @@ impl FirewallManager {
                     is_guardrail_request: session.is_guardrail_request,
                     is_free_tier_fallback: session.is_free_tier_fallback,
                     is_auto_router_request: session.is_auto_router_request,
+                    is_mcp_via_llm_request: session.is_mcp_via_llm_request,
                     guardrail_details: session.guardrail_details.clone(),
                 }
             })
@@ -643,6 +659,7 @@ mod tests {
             is_guardrail_request: false,
             is_free_tier_fallback: false,
             is_auto_router_request: false,
+            is_mcp_via_llm_request: false,
             guardrail_details: None,
         };
         assert!(session.is_expired());
@@ -665,6 +682,7 @@ mod tests {
             is_guardrail_request: false,
             is_free_tier_fallback: false,
             is_auto_router_request: false,
+            is_mcp_via_llm_request: false,
             guardrail_details: None,
         };
         assert!(!session.is_expired());

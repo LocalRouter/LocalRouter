@@ -191,14 +191,28 @@ pub async fn chat_completions(
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
 
     // Check model firewall permission (if using client auth and not auto-routing)
+    // Skip for MCP via LLM clients — firewall runs later with augmented request (tools injected)
     if request.model != "localrouter/auto" {
-        let firewall_edits =
-            check_model_firewall_permission(&state, client_auth.as_ref().map(|e| &e.0), &request)
-                .await?;
+        let is_mcp_via_llm_client = client_auth
+            .as_ref()
+            .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
+            .map_or(false, |c| {
+                c.client_mode == lr_config::ClientMode::McpViaLlm
+            });
 
-        // Apply edited request fields from firewall edit mode
-        if let Some(edits) = firewall_edits {
-            apply_firewall_request_edits(&mut request, &edits);
+        if !is_mcp_via_llm_client {
+            let firewall_edits = check_model_firewall_permission(
+                &state,
+                client_auth.as_ref().map(|e| &e.0),
+                &request,
+                None,
+            )
+            .await?;
+
+            // Apply edited request fields from firewall edit mode
+            if let Some(edits) = firewall_edits {
+                apply_firewall_request_edits(&mut request, &edits);
+            }
         }
     }
 
@@ -882,6 +896,7 @@ async fn check_model_firewall_permission(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
+    mcp_via_llm_tools: Option<serde_json::Value>,
 ) -> ApiResult<Option<serde_json::Value>> {
     use lr_mcp::gateway::access_control;
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
@@ -982,10 +997,15 @@ async fn check_model_firewall_permission(
             );
 
             // Capture the full request for the edit mode popup
+            let is_mcp_via_llm = mcp_via_llm_tools.is_some();
             let mut full_request =
                 serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({}));
             if let Some(obj) = full_request.as_object_mut() {
                 obj.remove("stream"); // not user-editable
+                // Merge MCP via LLM tools into the request so the popup shows the augmented request
+                if let Some(tools) = mcp_via_llm_tools {
+                    obj.insert("tools".to_string(), tools);
+                }
             }
 
             // Request approval from the firewall manager
@@ -999,6 +1019,7 @@ async fn check_model_firewall_permission(
                     provider.clone(),
                     Some(120),
                     Some(full_request),
+                    is_mcp_via_llm,
                 )
                 .await
                 .map_err(|e| {
@@ -1615,7 +1636,7 @@ async fn handle_mcp_via_llm(
     state: AppState,
     auth: AuthContext,
     client_auth: Option<Extension<ClientAuthContext>>,
-    request: ChatCompletionRequest,
+    mut request: ChatCompletionRequest,
     provider_request: ProviderCompletionRequest,
     guardrail_handle: GuardrailHandle,
     _compression_tokens_saved: u64,
@@ -1663,6 +1684,42 @@ async fn handle_mcp_via_llm(
             .cloned()
             .collect()
     };
+
+    // Run model firewall with augmented request (MCP tools visible in popup)
+    if request.model != "localrouter/auto" {
+        // Pre-fetch MCP tool definitions so the firewall popup shows the full augmented request
+        let mcp_tools_json = match state
+            .mcp_via_llm_manager
+            .list_tools_for_preview(
+                state.mcp_gateway.clone(),
+                &client,
+                allowed_servers.clone(),
+            )
+            .await
+        {
+            Ok(tools) if tools.as_array().map_or(true, |a| a.is_empty()) => None,
+            Ok(tools) => Some(tools),
+            Err(e) => {
+                tracing::warn!(
+                    "MCP via LLM: failed to pre-fetch tools for firewall popup: {}",
+                    e
+                );
+                None
+            }
+        };
+
+        let firewall_edits = check_model_firewall_permission(
+            &state,
+            client_auth.as_ref().map(|e| &e.0),
+            &request,
+            mcp_tools_json,
+        )
+        .await?;
+
+        if let Some(edits) = firewall_edits {
+            apply_firewall_request_edits(&mut request, &edits);
+        }
+    }
 
     // Streaming: use multi-segment streaming orchestrator
     if request.stream {

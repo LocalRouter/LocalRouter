@@ -25,6 +25,7 @@ interface ApprovalDetails {
   is_guardrail_request?: boolean
   is_free_tier_fallback?: boolean
   is_auto_router_request?: boolean
+  is_mcp_via_llm_request?: boolean
   guardrail_details?: {
     verdicts: SafetyVerdict[]
     actions_required: CategoryActionRequired[]
@@ -762,6 +763,11 @@ export function FirewallApproval() {
   if (!editMode) {
     return (
       <div className="flex flex-col h-screen bg-background overflow-hidden">
+        {details.is_mcp_via_llm_request && (
+          <div className="text-[11px] text-blue-400 bg-blue-500/10 px-4 py-1.5 flex-shrink-0 border-b border-blue-500/20">
+            MCP via LLM — request includes server-injected tools
+          </div>
+        )}
         <FirewallApprovalCard
           className="flex flex-col flex-1 p-4 overflow-hidden"
           clientName={details.client_name}
@@ -788,6 +794,11 @@ export function FirewallApproval() {
   // Edit mode: custom layout with editors
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden">
+      {details.is_mcp_via_llm_request && (
+        <div className="text-[11px] text-blue-400 bg-blue-500/10 px-4 py-1.5 flex-shrink-0 border-b border-blue-500/20">
+          MCP via LLM — request includes server-injected tools
+        </div>
+      )}
       <div className="flex flex-col flex-1 p-4 overflow-hidden">
         {/* Header */}
         <FirewallApprovalHeader requestType={requestType} />

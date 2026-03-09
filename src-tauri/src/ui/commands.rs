@@ -2637,6 +2637,7 @@ pub async fn debug_trigger_firewall_popup(
             response_sender: None,
             created_at: std::time::Instant::now(),
             is_auto_router_request: false,
+            is_mcp_via_llm_request: false,
             timeout_seconds: timeout_secs,
             is_model_request: debug_session.is_model_request,
             is_guardrail_request: false,

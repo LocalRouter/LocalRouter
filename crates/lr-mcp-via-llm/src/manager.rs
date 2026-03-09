@@ -109,6 +109,55 @@ impl McpViaLlmManager {
         }
     }
 
+    /// Pre-fetch MCP tool definitions for preview purposes (e.g., firewall popup).
+    ///
+    /// Initializes the gateway session if needed and returns tool definitions
+    /// as a JSON array in OpenAI function tool format.
+    pub async fn list_tools_for_preview(
+        &self,
+        gateway: Arc<McpGateway>,
+        client: &Client,
+        allowed_servers: Vec<String>,
+    ) -> Result<serde_json::Value, McpViaLlmError> {
+        let session = self.get_or_create_session(&client.id);
+
+        let (gateway_session_key, gateway_initialized) = {
+            let s = session.read();
+            (s.gateway_session_key.clone(), s.gateway_initialized)
+        };
+
+        let gw_client = crate::gateway_client::GatewayClient::new(
+            &gateway,
+            client,
+            gateway_session_key,
+            allowed_servers,
+        );
+
+        if !gateway_initialized {
+            gw_client.initialize().await?;
+            session.write().gateway_initialized = true;
+        }
+
+        let mcp_tools = gw_client.list_tools().await?;
+
+        // Convert to OpenAI function tool format
+        let tools_json: Vec<serde_json::Value> = mcp_tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    }
+                })
+            })
+            .collect();
+
+        Ok(serde_json::Value::Array(tools_json))
+    }
+
     /// Handle a chat completion request in MCP via LLM mode.
     ///
     /// Returns a `CompletionResponse` from lr-providers that the caller
