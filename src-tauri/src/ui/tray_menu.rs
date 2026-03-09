@@ -49,9 +49,7 @@ fn format_rate_limit(limit: &lr_config::StrategyRateLimit) -> String {
     let value_str = match limit.limit_type {
         lr_config::RateLimitType::Cost => format!("${:.2}", limit.value),
         _ => {
-            if limit.value >= 1000.0 {
-                format!("{:.0}", limit.value)
-            } else if limit.value == limit.value.floor() {
+            if limit.value >= 1000.0 || limit.value == limit.value.floor() {
                 format!("{:.0}", limit.value)
             } else {
                 format!("{:.1}", limit.value)
@@ -254,7 +252,8 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                         // Catalog Compression toggle (per-client override)
                         {
                             let is_inherited = client.catalog_compression_enabled.is_none();
-                            let effective = client.is_catalog_compression_enabled();
+                            let effective =
+                                client.is_catalog_compression_enabled(&global_ctx_config);
                             let label = if effective {
                                 if is_inherited {
                                     "✓  Catalog Compression (default)".to_string()
@@ -1151,11 +1150,12 @@ pub(crate) async fn handle_toggle_catalog_compression<R: Runtime>(
 
     config_manager
         .update(|cfg| {
+            let global_ctx = cfg.context_management.clone();
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
                 client.catalog_compression_enabled = match client.catalog_compression_enabled {
                     None => {
-                        // Inherited (default is true) → override to false
-                        Some(!client.is_catalog_compression_enabled())
+                        // Inherited → override to opposite of effective value
+                        Some(!client.is_catalog_compression_enabled(&global_ctx))
                     }
                     Some(_) => {
                         // Overridden → clear back to inherited

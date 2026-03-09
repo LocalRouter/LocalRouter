@@ -5,7 +5,7 @@
 //! - **Permanent Config**: Write MCP extension to `~/.config/goose/config.yaml`.
 
 use crate::launcher::backup;
-use crate::launcher::AppIntegration;
+use crate::launcher::{AppIntegration, ConfigSyncContext};
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 
 pub struct GooseIntegration;
@@ -136,5 +136,55 @@ impl AppIntegration for GooseIntegration {
             backup_files,
             terminal_command: None,
         })
+    }
+
+    fn sync_config(&self, ctx: &ConfigSyncContext) -> Result<LaunchResult, String> {
+        // Goose permanent config only writes MCP extension entries.
+        // In mcp_via_llm/llm_only modes, remove stale MCP entry (LLM uses env vars).
+        if !ctx.should_sync_mcp() {
+            let path = config_path();
+            if path.exists() {
+                let data = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+                let mut config: serde_yaml::Value = serde_yaml::from_str(&data)
+                    .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+
+                let removed = if let serde_yaml::Value::Mapping(ref mut map) = config {
+                    map.get_mut(serde_yaml::Value::String("extensions".to_string()))
+                        .and_then(|ext| ext.as_mapping_mut())
+                        .and_then(|ext_map| {
+                            ext_map.remove(serde_yaml::Value::String("localrouter".to_string()))
+                        })
+                        .is_some()
+                } else {
+                    false
+                };
+
+                if removed {
+                    let out = serde_yaml::to_string(&config)
+                        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+                    let backup_path = backup::write_with_backup(&path, out.as_bytes())?;
+                    return Ok(LaunchResult {
+                        success: true,
+                        message: format!("Removed MCP extension from {}", path.display()),
+                        modified_files: vec![path.to_string_lossy().to_string()],
+                        backup_files: backup_path
+                            .iter()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .collect(),
+                        terminal_command: None,
+                    });
+                }
+            }
+            return Ok(LaunchResult {
+                success: true,
+                message: "No config to sync for current client mode (LLM uses env vars)"
+                    .to_string(),
+                modified_files: vec![],
+                backup_files: vec![],
+                terminal_command: None,
+            });
+        }
+        self.configure_permanent(&ctx.base_url, &ctx.client_secret, &ctx.client_id)
     }
 }

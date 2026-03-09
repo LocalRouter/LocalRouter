@@ -465,6 +465,66 @@ pub async fn get_client_value(
         .ok_or_else(|| format!("Client secret not found in keychain: {}", id))
 }
 
+/// Effective configuration for a client (with inheritance resolved)
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientEffectiveConfig {
+    pub strategy_name: String,
+    /// Effective context management (resolved from client override or global)
+    pub context_management_effective: bool,
+    /// "client" if overridden, "global" if inherited
+    pub context_management_source: String,
+    pub indexing_tools_effective: bool,
+    pub indexing_tools_source: String,
+    pub catalog_compression_effective: bool,
+    pub catalog_compression_source: String,
+}
+
+/// Get the effective (inheritance-resolved) configuration for a client.
+#[tauri::command]
+pub async fn get_client_effective_config(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<ClientEffectiveConfig, String> {
+    let config = config_manager.get();
+
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    let strategy_name = config
+        .strategies
+        .iter()
+        .find(|s| s.id == client.strategy_id)
+        .map(|s| s.name.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let ctx = &config.context_management;
+
+    Ok(ClientEffectiveConfig {
+        strategy_name,
+        context_management_effective: client.is_context_management_enabled(ctx),
+        context_management_source: if client.context_management_enabled.is_some() {
+            "client".to_string()
+        } else {
+            "global".to_string()
+        },
+        indexing_tools_effective: client.is_indexing_tools_enabled(ctx),
+        indexing_tools_source: if client.indexing_tools_enabled.is_some() {
+            "client".to_string()
+        } else {
+            "global".to_string()
+        },
+        catalog_compression_effective: client.is_catalog_compression_enabled(ctx),
+        catalog_compression_source: if client.catalog_compression_enabled.is_some() {
+            "client".to_string()
+        } else {
+            "global".to_string()
+        },
+    })
+}
+
 // ============================================================================
 // Strategy Management Commands
 // ============================================================================
@@ -677,6 +737,7 @@ pub async fn get_clients_using_strategy(
 // ============================================================================
 
 /// Submit a response to a pending firewall approval request
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn submit_firewall_approval(
     app: tauri::AppHandle,
@@ -2054,12 +2115,14 @@ pub async fn set_client_marketplace_permission(
 // Client Template & Mode Commands
 // ============================================================================
 
-/// Set the client mode (both, llm_only, mcp_only)
+/// Set the client mode (both, llm_only, mcp_only, mcp_via_llm)
 #[tauri::command]
 pub async fn set_client_mode(
     client_id: String,
     mode: ClientMode,
     config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Setting client {} mode to: {:?}", client_id, mode);
@@ -2082,6 +2145,22 @@ pub async fn set_client_mode(
 
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    // Resync external config to match the new mode
+    if let Err(e) = sync_client_config_inner(
+        &client_id,
+        config_manager.inner(),
+        client_manager.inner(),
+        provider_registry.inner(),
+    )
+    .await
+    {
+        tracing::warn!(
+            "Failed to resync config after mode change for {}: {}",
+            client_id,
+            e
+        );
     }
 
     Ok(())
@@ -2429,6 +2508,7 @@ pub async fn sync_client_config_inner(
         client_secret,
         client_id: client_id.to_string(),
         models,
+        client_mode: client.client_mode.clone(),
     };
 
     integration.sync_config(&ctx).map(Some)

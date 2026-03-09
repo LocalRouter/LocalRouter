@@ -1180,12 +1180,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         "Started periodic health check task (interval: {}s)",
                         interval_secs
                     );
+                } else if !health_check_config.periodic_enabled {
+                    info!("Periodic health checks disabled by user setting");
                 } else {
-                    if !health_check_config.periodic_enabled {
-                        info!("Periodic health checks disabled by user setting");
-                    } else {
-                        info!("Health check mode is on-failure, skipping periodic task");
-                    }
+                    info!("Health check mode is on-failure, skipping periodic task");
                 }
 
                 // Spawn recovery task: re-checks unhealthy providers on a faster cadence
@@ -1580,6 +1578,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::toggle_client_context_management,
             ui::commands::toggle_client_indexing_tools,
             ui::commands::get_client_value,
+            ui::commands::get_client_effective_config,
             // Strategy management commands
             ui::commands::list_strategies,
             ui::commands::get_strategy,

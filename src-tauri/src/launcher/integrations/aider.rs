@@ -5,7 +5,7 @@
 //! - **Permanent Config**: Write LLM settings to `~/.aider.conf.yml`.
 
 use crate::launcher::backup;
-use crate::launcher::AppIntegration;
+use crate::launcher::{AppIntegration, ConfigSyncContext};
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 
 pub struct AiderIntegration;
@@ -102,5 +102,54 @@ impl AppIntegration for AiderIntegration {
             backup_files,
             terminal_command: None,
         })
+    }
+
+    fn sync_config(&self, ctx: &ConfigSyncContext) -> Result<LaunchResult, String> {
+        // Aider only writes LLM config (no MCP support).
+        // In mcp_only mode, remove stale LLM entries.
+        if !ctx.should_sync_llm() {
+            let path = config_path();
+            if path.exists() {
+                let data = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+                let mut config: serde_yaml::Value = serde_yaml::from_str(&data)
+                    .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+
+                let mut removed = false;
+                if let serde_yaml::Value::Mapping(ref mut map) = config {
+                    removed |= map
+                        .remove(serde_yaml::Value::String("openai-api-base".to_string()))
+                        .is_some();
+                    removed |= map
+                        .remove(serde_yaml::Value::String("openai-api-key".to_string()))
+                        .is_some();
+                }
+
+                if removed {
+                    let out = serde_yaml::to_string(&config)
+                        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+                    let backup_path = backup::write_with_backup(&path, out.as_bytes())?;
+                    return Ok(LaunchResult {
+                        success: true,
+                        message: format!("Removed LLM config from {}", path.display()),
+                        modified_files: vec![path.to_string_lossy().to_string()],
+                        backup_files: backup_path
+                            .iter()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .collect(),
+                        terminal_command: None,
+                    });
+                }
+            }
+            return Ok(LaunchResult {
+                success: true,
+                message: "No config to sync for current client mode (Aider has no MCP support)"
+                    .to_string(),
+                modified_files: vec![],
+                backup_files: vec![],
+                terminal_command: None,
+            });
+        }
+        self.configure_permanent(&ctx.base_url, &ctx.client_secret, &ctx.client_id)
     }
 }
