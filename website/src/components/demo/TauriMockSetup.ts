@@ -209,6 +209,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
+  'get_client_effective_config': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const strategy = client ? mockData.strategies.find(s => s.id === client.strategy_id) : null
+    return {
+      strategy_name: strategy?.name || 'Unknown',
+      context_management_effective: client?.context_management_enabled ?? false,
+      context_management_source: client?.context_management_enabled !== null && client?.context_management_enabled !== undefined ? 'client' : 'global',
+      indexing_tools_effective: client?.indexing_tools_enabled ?? false,
+      indexing_tools_source: client?.indexing_tools_enabled !== null && client?.indexing_tools_enabled !== undefined ? 'client' : 'global',
+      catalog_compression_effective: client?.catalog_compression_enabled ?? false,
+      catalog_compression_source: client?.catalog_compression_enabled !== null && client?.catalog_compression_enabled !== undefined ? 'client' : 'global',
+    }
+  },
   'delete_client': (args) => {
     const idx = mockData.clients.findIndex(c => c.client_id === args?.clientId || c.id === args?.id)
     if (idx !== -1) {
@@ -934,6 +947,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_context_management_config': () => ({
     enabled: true,
     indexing_tools: true,
+    catalog_compression: true,
     catalog_threshold_bytes: 50000,
     response_threshold_bytes: 10000,
   }),
@@ -1651,10 +1665,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_compression_config': () => ({
     enabled: false,
     model_size: 'bert',
-    default_rate: 0.5,
+    default_rate: 0.8,
     compress_system_prompt: false,
     min_messages: 6,
     preserve_recent: 4,
+    min_message_words: 5,
   }),
   'update_compression_config': () => {
     toast.success('Compression configuration saved (demo)')
@@ -1676,12 +1691,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const rate = args?.rate || 0.5
     const words = text.split(/\s+/).filter(Boolean)
     const keepCount = Math.max(1, Math.round(words.length * rate))
-    const compressed = words.slice(0, keepCount).join(' ')
+    const keptIndices = Array.from({ length: keepCount }, (_, i) => i)
+    const compressed = keptIndices.map(i => words[i]).join(' ')
     return {
       compressed_text: compressed,
       original_tokens: words.length,
       compressed_tokens: keepCount,
       ratio: words.length / Math.max(1, keepCount),
+      kept_indices: keptIndices,
     }
   },
   'get_client_compression_config': () => ({

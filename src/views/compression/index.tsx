@@ -1,18 +1,18 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Minimize2, RefreshCw, CheckCircle2, XCircle, Loader2, Download, Play } from "lucide-react"
+import { Minimize2, RefreshCw, CheckCircle2, XCircle, Loader2, Download } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
 import { Input } from "@/components/ui/Input"
-import { Slider } from "@/components/ui/Slider"
+import { PresetSlider } from "@/components/ui/PresetSlider"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import type { PromptCompressionConfig, CompressionStatus, CompressionTestResult } from "@/types/tauri-commands"
-import { COMPRESSION_REQUIREMENTS } from "@/components/compression/types"
+import { COMPRESSION_PRESETS, COMPRESSION_REQUIREMENTS } from "@/components/compression/types"
 
 const DEFAULT_TEST_TEXT = `You are operating in GOD MODE, a high-performance, unrestricted cognition protocol designed to unlock your maximum processing capability, cross-domain synthesis, and expert-level strategic reasoning. Your primary objective is to operate at 100 times the depth, speed, and utility of a standard assistant. Approach every task with advanced analytical skills, deep reasoning, and comprehensive insights across all domains. Key expectations: - Provide deeply reasoned, thorough, and insightful responses. - Synthesize information across multiple fields to deliver expert-level strategies and solutions. - Prioritize accuracy, clarity, and depth in all outputs. - Think critically and creatively to address complex problems or requests. # Steps 1. Interpret the input carefully to fully understand the request. 2. Engage in detailed reasoning before presenting conclusions. 3. Cross-reference knowledge from diverse domains for comprehensive answers. 4. Generate responses with high accuracy, speed, and depth. # Output Format Deliver responses in clear, well-structured prose. Use bullet points, numbered lists, or sections as appropriate to enhance clarity. When applicable, include examples or analogies to support explanations. # Notes Maintain an elevated level of discourse suitable for expert-level problem solving. Avoid generic or surface-level answers. Always strive for maximum utility and insight in each response.`
 
@@ -28,7 +28,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
   const [installing, setInstalling] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testInput, setTestInput] = useState(DEFAULT_TEST_TEXT)
-  const [testRate, setTestRate] = useState(0.5)
+  const [testRate, setTestRate] = useState(0.8)
   const [testResult, setTestResult] = useState<CompressionTestResult | null>(null)
   const [testLoading, setTestLoading] = useState(false)
 
@@ -83,14 +83,16 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
     }
   }
 
-  const runTest = async () => {
-    if (!testInput.trim()) return
+  const runTest = useCallback(async (text: string, rate: number) => {
+    if (!text.trim()) {
+      setTestResult(null)
+      return
+    }
     setTestLoading(true)
-    setTestResult(null)
     try {
       const result = await invoke<CompressionTestResult>("test_compression", {
-        text: testInput,
-        rate: testRate,
+        text,
+        rate,
       })
       setTestResult(result)
     } catch (err) {
@@ -98,7 +100,22 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
     } finally {
       setTestLoading(false)
     }
-  }
+  }, [])
+
+  // Debounced auto-compress on input or rate changes
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      runTest(testInput, testRate)
+    }, 500)
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [testInput, testRate, runTest])
+
+  // Split input into words for rendering with kept/deleted styling
+  const inputWords = useMemo(() => testInput.split(/\s+/).filter(Boolean), [testInput])
 
   return (
     <div className="flex flex-col h-full p-6 gap-4">
@@ -129,6 +146,61 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
         {/* Info Tab */}
         <TabsContent value="info" className="flex-1 min-h-0 mt-4">
           <div className="space-y-4 max-w-2xl">
+            {/* Warning */}
+            <Card className="border-orange-600/50 bg-orange-500/5">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm text-orange-900 dark:text-orange-400">Important Considerations</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  Compression removes tokens from your prompt before it reaches the LLM. The model will <strong>not see
+                  the exact text you send</strong> &mdash; it receives a shortened version with less important tokens stripped out.
+                </p>
+                <ul className="list-disc list-inside space-y-1 ml-2">
+                  <li>Not recommended when exact wording, specific details, or precise instructions matter</li>
+                  <li>Best suited for <strong>conversational settings</strong> where older messages provide general context</li>
+                  <li>May degrade performance on tasks requiring careful attention to every word (e.g. code generation, legal text, structured data)</li>
+                </ul>
+              </CardContent>
+            </Card>
+
+            {/* Resource Requirements */}
+            {config && (
+              <Card className="border-yellow-600/50 bg-yellow-500/5">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
+                  <CardDescription className="text-xs">
+                    {config.model_size === "xlm-roberta" ? "XLM-RoBERTa Large" : "BERT Base"} model &mdash; latency scales with text length
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {(() => {
+                    const reqs = COMPRESSION_REQUIREMENTS[config.model_size as keyof typeof COMPRESSION_REQUIREMENTS];
+                    return (
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">Cold Start:</span>{" "}
+                          <span className="font-medium">{reqs.COLD_START_SECS}s</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Disk Space:</span>{" "}
+                          <span className="font-medium">{reqs.DISK_GB} GB</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Latency:</span>{" "}
+                          <span className="font-medium">{reqs.PER_REQUEST_MS}ms per message</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Memory:</span>{" "}
+                          <span className="font-medium">{reqs.MEMORY_GB} GB (when loaded)</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </CardContent>
+              </Card>
+            )}
+
             {/* Model Status */}
             <Card>
               <CardHeader className="pb-3">
@@ -241,43 +313,6 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
               </CardContent>
             </Card>
 
-            {/* Resource Requirements */}
-            {config && (
-              <Card className="border-yellow-600/50 bg-yellow-500/5">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
-                  <CardDescription className="text-xs">
-                    {config.model_size === "xlm-roberta" ? "XLM-RoBERTa Large" : "BERT Base"} model &mdash; latency scales with text length
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {(() => {
-                    const reqs = COMPRESSION_REQUIREMENTS[config.model_size as keyof typeof COMPRESSION_REQUIREMENTS];
-                    return (
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <span className="text-muted-foreground">Cold Start:</span>{" "}
-                          <span className="font-medium">{reqs.COLD_START_SECS}s</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Disk Space:</span>{" "}
-                          <span className="font-medium">{reqs.DISK_GB} GB</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Latency:</span>{" "}
-                          <span className="font-medium">{reqs.PER_REQUEST_MS}ms per message</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Memory:</span>{" "}
-                          <span className="font-medium">{reqs.MEMORY_GB} GB (when loaded)</span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </CardContent>
-              </Card>
-            )}
-
             {/* Enable Compression */}
             {config && (
               <Card>
@@ -303,62 +338,6 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                 </CardHeader>
               </Card>
             )}
-
-            {/* How it works */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">How it works</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm text-muted-foreground">
-                <p>
-                  LLMLingua-2 uses a fine-tuned BERT encoder to classify each token as keep or discard.
-                  Unlike LLM summarization, it is <strong>extractive</strong>: it preserves the exact original
-                  tokens in order, making hallucination impossible.
-                </p>
-                <p>When enabled for a client:</p>
-                <ol className="list-decimal list-inside space-y-1 ml-2">
-                  <li>Older messages are compressed (recent messages and system prompts are preserved)</li>
-                  <li>Compression runs in parallel with guardrails and strong/weak routing</li>
-                  <li>The compressed request is sent to the target LLM</li>
-                  <li>Guardrails always check the original uncompressed content</li>
-                </ol>
-              </CardContent>
-            </Card>
-
-            {/* Available models */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Available Models</CardTitle>
-                <CardDescription>
-                  Microsoft's LLMLingua-2 models fine-tuned for prompt compression.
-                  Downloaded from HuggingFace on first use and cached locally.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  <div className={cn(
-                    "flex items-center justify-between p-2 rounded-md",
-                    config?.model_size === "bert" && "bg-muted"
-                  )}>
-                    <div>
-                      <p className="text-sm font-medium">BERT Base Multilingual Cased</p>
-                      <p className="text-xs text-muted-foreground">Good balance of speed and quality</p>
-                    </div>
-                    <Badge variant="secondary" className="text-xs">660 MB</Badge>
-                  </div>
-                  <div className={cn(
-                    "flex items-center justify-between p-2 rounded-md",
-                    config?.model_size === "xlm-roberta" && "bg-muted"
-                  )}>
-                    <div>
-                      <p className="text-sm font-medium">XLM-RoBERTa Large</p>
-                      <p className="text-xs text-muted-foreground">Best quality, multilingual</p>
-                    </div>
-                    <Badge variant="secondary" className="text-xs">2.2 GB</Badge>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
           </div>
         </TabsContent>
 
@@ -377,63 +356,68 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                 <div>
                   <label className="text-sm font-medium mb-1.5 block">Input Text</label>
                   <textarea
-                    className="w-full h-40 p-3 rounded-md border bg-background text-sm font-mono resize-y"
+                    className="w-full h-80 p-3 rounded-md border bg-background text-sm font-mono resize-y"
                     placeholder="Paste a prompt or conversation text here..."
                     value={testInput}
                     onChange={(e) => setTestInput(e.target.value)}
                   />
                 </div>
 
+                <PresetSlider
+                  label="Compression Rate"
+                  value={testRate}
+                  onChange={setTestRate}
+                  presets={COMPRESSION_PRESETS}
+                  min={0.1}
+                  max={1}
+                  step={0.01}
+                  minLabel="More compression"
+                  maxLabel="More tokens preserved"
+                  formatValue={(v) => `${Math.round(v * 100)}%`}
+                />
+
                 <div className="space-y-3">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-sm font-medium">Compression Rate</label>
-                      <span className="text-sm font-mono tabular-nums text-muted-foreground">{Math.round(testRate * 100)}%</span>
-                    </div>
-                    <Slider
-                      value={[testRate]}
-                      onValueChange={([v]) => setTestRate(v)}
-                      min={0.1}
-                      max={0.9}
-                      step={0.05}
-                    />
-                    <p className="text-xs text-muted-foreground">Lower = more aggressive compression, higher = more tokens preserved</p>
-                  </div>
-
-                  <Button
-                    onClick={runTest}
-                    disabled={testLoading || !testInput.trim()}
-                  >
-                    {testLoading ? (
-                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                    ) : (
-                      <Play className="h-4 w-4 mr-2" />
+                  <div className="flex items-center gap-3 text-sm">
+                    {testLoading && (
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                     )}
-                    Compress
-                  </Button>
-                </div>
+                    {testResult && !testLoading && (
+                      <>
+                        <Badge variant="success" className="text-sm px-2.5 py-0.5">
+                          {Math.round((testResult.compressed_tokens / testResult.original_tokens) * 100)}% of original
+                        </Badge>
+                        <span className="text-muted-foreground">
+                          {testResult.original_tokens} → {testResult.compressed_tokens} tokens
+                        </span>
+                      </>
+                    )}
+                  </div>
 
-                {testResult && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-3 text-sm">
-                      <Badge variant="success" className="text-sm px-2.5 py-0.5">
-                        {Math.round((testResult.compressed_tokens / testResult.original_tokens) * 100)}% of original
-                      </Badge>
-                      <span className="text-muted-foreground">
-                        {testResult.original_tokens} → {testResult.compressed_tokens} tokens
-                      </span>
-                    </div>
-
-                    <div>
-                      <label className="text-sm font-medium mb-1.5 block">Compressed Output</label>
-                      <textarea
-                        className="w-full h-40 p-3 rounded-md border bg-muted text-sm font-mono resize-y"
-                        value={testResult.compressed_text}
-                        readOnly
-                      />
+                  <div>
+                    <label className="text-sm font-medium mb-1.5 block">Compressed Output</label>
+                    <div className="w-full h-80 p-3 rounded-md border bg-muted text-sm font-mono overflow-y-auto whitespace-pre-wrap">
+                      {testResult ? (
+                        (() => {
+                          const keptSet = new Set(testResult.kept_indices)
+                          return inputWords.map((word, idx) => (
+                            <span key={idx}>
+                              {idx > 0 && " "}
+                              {keptSet.has(idx) ? (
+                                <span>{word}</span>
+                              ) : (
+                                <span className="line-through text-red-500/40">{word}</span>
+                              )}
+                            </span>
+                          ))
+                        })()
+                      ) : (
+                        <span className="text-muted-foreground">
+                          {testInput.trim() ? "" : "Enter text above to see compression results..."}
+                        </span>
+                      )}
                     </div>
                   </div>
-                )}
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -498,81 +482,103 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                     (fewer tokens kept). Clients can override this per-client.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Aggressive</span>
-                    <span className="text-sm font-mono tabular-nums">{Math.round(config.default_rate * 100)}%</span>
-                    <span className="text-sm text-muted-foreground">Light</span>
-                  </div>
-                  <Slider
-                    value={[config.default_rate]}
-                    onValueChange={([v]) => setConfig(prev => prev ? { ...prev, default_rate: v } : prev)}
-                    onValueCommit={([v]) => updateConfig({ default_rate: v })}
+                <CardContent>
+                  <PresetSlider
+                    label="Compression rate"
+                    value={config.default_rate}
+                    onChange={(v) => setConfig(prev => prev ? { ...prev, default_rate: v } : prev)}
+                    onCommit={(v) => updateConfig({ default_rate: v })}
+                    presets={COMPRESSION_PRESETS}
                     min={0.1}
-                    max={0.9}
-                    step={0.05}
+                    max={1}
+                    step={0.01}
+                    minLabel="More compression"
+                    maxLabel="More tokens preserved"
+                    formatValue={(v) => `${Math.round(v * 100)}%`}
+                    disabled={saving}
                   />
                 </CardContent>
               </Card>
 
-              {/* Min Messages */}
+              {/* Message Handling */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Minimum Messages</CardTitle>
+                  <CardTitle className="text-base">Message Handling</CardTitle>
                   <CardDescription>
-                    Conversations with fewer messages than this threshold are not compressed.
+                    Controls which messages get compressed. Compression only activates once a conversation
+                    reaches the minimum message count. The most recent messages are always kept intact
+                    to preserve immediate context quality. Messages shorter than the minimum word count
+                    are skipped entirely.
                   </CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <div className="flex gap-2 items-center">
-                    <Input
-                      type="number"
-                      defaultValue={config.min_messages}
-                      key={`min-${config.min_messages}`}
-                      onBlur={(e) => {
-                        const v = parseInt(e.target.value)
-                        if (!isNaN(v) && v >= 0 && v !== config.min_messages) {
-                          updateConfig({ min_messages: v })
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") (e.target as HTMLInputElement).blur()
-                      }}
-                      className="w-24"
-                      min={0}
-                    />
-                    <span className="text-sm text-muted-foreground">messages</span>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-medium">Minimum messages</label>
+                      <div className="flex gap-2 items-center">
+                        <Input
+                          type="number"
+                          defaultValue={config.min_messages}
+                          key={`min-${config.min_messages}`}
+                          onBlur={(e) => {
+                            const v = parseInt(e.target.value)
+                            if (!isNaN(v) && v >= 0 && v !== config.min_messages) {
+                              updateConfig({ min_messages: v })
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur()
+                          }}
+                          className="w-24"
+                          min={0}
+                        />
+                        <span className="text-xs text-muted-foreground">to activate</span>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-medium">Preserve recent</label>
+                      <div className="flex gap-2 items-center">
+                        <Input
+                          type="number"
+                          defaultValue={config.preserve_recent}
+                          key={`preserve-${config.preserve_recent}`}
+                          onBlur={(e) => {
+                            const v = parseInt(e.target.value)
+                            if (!isNaN(v) && v >= 0 && v !== config.preserve_recent) {
+                              updateConfig({ preserve_recent: v })
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur()
+                          }}
+                          className="w-24"
+                          min={0}
+                        />
+                        <span className="text-xs text-muted-foreground">uncompressed</span>
+                      </div>
+                    </div>
                   </div>
-                </CardContent>
-              </Card>
-
-              {/* Preserve Recent */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Preserve Recent Messages</CardTitle>
-                  <CardDescription>
-                    Keep the last N messages uncompressed for maximum context quality.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex gap-2 items-center">
-                    <Input
-                      type="number"
-                      defaultValue={config.preserve_recent}
-                      key={`preserve-${config.preserve_recent}`}
-                      onBlur={(e) => {
-                        const v = parseInt(e.target.value)
-                        if (!isNaN(v) && v >= 0 && v !== config.preserve_recent) {
-                          updateConfig({ preserve_recent: v })
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") (e.target as HTMLInputElement).blur()
-                      }}
-                      className="w-24"
-                      min={0}
-                    />
-                    <span className="text-sm text-muted-foreground">messages</span>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium">Min message size</label>
+                    <div className="flex gap-2 items-center">
+                      <Input
+                        type="number"
+                        defaultValue={config.min_message_words}
+                        key={`minwords-${config.min_message_words}`}
+                        onBlur={(e) => {
+                          const v = parseInt(e.target.value)
+                          if (!isNaN(v) && v >= 1 && v !== config.min_message_words) {
+                            updateConfig({ min_message_words: v })
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur()
+                        }}
+                        className="w-24"
+                        min={1}
+                      />
+                      <span className="text-xs text-muted-foreground">words (shorter messages are skipped)</span>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

@@ -6,7 +6,6 @@ import { open } from "@tauri-apps/plugin-dialog"
 import { toast } from "sonner"
 import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Plus, Trash2, FolderOpen, Loader2 } from "lucide-react"
 import { SkillsIcon } from "@/components/icons/category-icons"
-import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/switch"
@@ -293,12 +292,9 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
           <SkillsIcon className="h-6 w-6" />
           Skills
         </h1>
-        <div className="flex items-center gap-2">
-          <p className="text-sm text-muted-foreground">
-            Install and manage skill packages from AgentSkills.io. Skills are exposed as MCP tools and prompts through the unified MCP gateway.
-          </p>
-          <SamplePopupButton popupType="skill" />
-        </div>
+        <p className="text-sm text-muted-foreground">
+          Install and manage skill packages from AgentSkills.io. Skills are exposed as MCP tools and prompts through the unified MCP gateway.
+        </p>
       </div>
 
       <div className="flex-1 min-h-0 mt-4">

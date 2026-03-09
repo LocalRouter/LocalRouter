@@ -8,7 +8,6 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { McpIcon } from "@/components/icons/category-icons"
-import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { McpServersPanel, McpHealthStatus, McpHealthCheckEvent } from "../resources/mcp-servers-panel"
 
 interface McpServersViewProps {
@@ -114,12 +113,9 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><McpIcon className="h-6 w-6" />MCP</h1>
-        <div className="flex items-center gap-2">
-          <p className="text-sm text-muted-foreground">
-            Connect to external MCP servers and aggregate their tools, prompts, and resources into the unified MCP gateway that clients connect to.
-          </p>
-          <SamplePopupButton popupType="mcp_tool" />
-        </div>
+        <p className="text-sm text-muted-foreground">
+          Connect to external MCP servers and aggregate their tools, prompts, and resources into the unified MCP gateway that clients connect to.
+        </p>
       </div>
 
       <McpServersPanel

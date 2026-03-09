@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ProvidersIcon } from "@/components/icons/category-icons"
-import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
 import { ModelsPanel } from "./models-panel"
 
@@ -117,12 +116,9 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ProvidersIcon className="h-6 w-6" />LLM Providers</h1>
-        <div className="flex items-center gap-2">
-          <p className="text-sm text-muted-foreground">
-            Manage LLM providers
-          </p>
-          <SamplePopupButton popupType="llm_model" />
-        </div>
+        <p className="text-sm text-muted-foreground">
+          Manage LLM providers
+        </p>
       </div>
 
       <Tabs

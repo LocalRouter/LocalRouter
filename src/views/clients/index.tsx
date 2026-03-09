@@ -32,6 +32,8 @@ interface Client {
   coding_agent_type: CodingAgentType | null
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
+  sync_config: boolean
+  guardrails_active: boolean
   created_at: string
   last_used: string | null
 }

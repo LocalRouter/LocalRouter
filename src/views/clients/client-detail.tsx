@@ -4,11 +4,13 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { ClientInfoTab } from "./tabs/info-tab"
 import { ClientConfigTab } from "./tabs/config-tab"
 import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientSkillsTab } from "./tabs/skills-tab"
 import { ClientCodingAgentsTab } from "./tabs/coding-agents-tab"
+import { ClientMarketplaceTab } from "./tabs/marketplace-tab"
 import { ClientContextTab } from "./tabs/context-tab"
 import { ClientGuardrailsTab } from "./tabs/guardrails-tab"
 import { ClientCompressionTab } from "./tabs/compression-tab"
@@ -35,6 +37,8 @@ interface Client {
   marketplace_permission: PermissionState
   client_mode?: ClientMode
   template_id?: string | null
+  sync_config: boolean
+  guardrails_active: boolean
   created_at: string
   last_used: string | null
 }
@@ -58,12 +62,8 @@ export function ClientDetail({
 }: ClientDetailProps) {
   const [client, setClient] = useState<Client | null>(initialClient || null)
   const [loading, setLoading] = useState(!initialClient)
-  const [activeTab, setActiveTab] = useState(initialTab || "connect")
+  const [activeTab, setActiveTab] = useState(initialTab || "info")
 
-  const [tryItOutSubTab, setTryItOutSubTab] = useState(() => {
-    const mode = initialClient?.client_mode || "both"
-    return mode === "mcp_only" ? "mcp" : "llm"
-  })
   const [mcpInnerPath, setMcpInnerPath] = useState<string | null>(null)
 
   const clientMode = client?.client_mode || "both"
@@ -105,22 +105,19 @@ export function ClientDetail({
     }
   }, [initialTab])
 
-  // If active tab becomes hidden due to mode change, fall back to "connect"
+  // If active tab becomes hidden due to mode change, fall back to "info"
   useEffect(() => {
-    if (activeTab === "models" && !showModelsTab) setActiveTab("connect")
-    if (activeTab === "mcp" && !showMcpTab) setActiveTab("connect")
-    if (activeTab === "skills" && !showSkillsTab) setActiveTab("connect")
-    if (activeTab === "coding-agents" && !showCodingAgentsTab) setActiveTab("connect")
-    if (activeTab === "context" && !showMcpTab) setActiveTab("connect")
-    if (activeTab === "guardrails" && !showGuardrailsTab) setActiveTab("connect")
-    if (activeTab === "compression" && !showModelsTab) setActiveTab("connect")
-  }, [clientMode, activeTab, showModelsTab, showMcpTab, showSkillsTab, showCodingAgentsTab, showGuardrailsTab])
-
-  // If try-it-out sub-tab becomes hidden due to mode change, switch to the available one
-  useEffect(() => {
-    if (tryItOutSubTab === "llm" && !showTryItOutLlm) setTryItOutSubTab("mcp")
-    if (tryItOutSubTab === "mcp" && !showTryItOutMcp) setTryItOutSubTab("llm")
-  }, [clientMode, tryItOutSubTab, showTryItOutLlm, showTryItOutMcp])
+    if (activeTab === "models" && !showModelsTab) setActiveTab("info")
+    if (activeTab === "mcp" && !showMcpTab) setActiveTab("info")
+    if (activeTab === "skills" && !showSkillsTab) setActiveTab("info")
+    if (activeTab === "coding-agents" && !showCodingAgentsTab) setActiveTab("info")
+    if (activeTab === "marketplace" && !showMcpTab) setActiveTab("info")
+    if (activeTab === "context" && !showMcpTab) setActiveTab("info")
+    if (activeTab === "guardrails" && !showGuardrailsTab) setActiveTab("info")
+    if (activeTab === "compression" && !showModelsTab) setActiveTab("info")
+    if (activeTab === "try-llm" && !showTryItOutLlm) setActiveTab("info")
+    if (activeTab === "try-mcp" && !showTryItOutMcp) setActiveTab("info")
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showSkillsTab, showCodingAgentsTab, showGuardrailsTab, showTryItOutLlm, showTryItOutMcp])
 
   const loadClient = async () => {
     try {
@@ -165,11 +162,21 @@ export function ClientDetail({
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="bg-transparent h-auto gap-2 p-0 items-end">
+          <TabsList className="bg-transparent h-auto gap-2 p-0 items-end flex-wrap">
             <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
+              <TabsTrigger value="info">Info</TabsTrigger>
               <TabsTrigger value="connect">Connect</TabsTrigger>
-              <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
             </div>
+
+            {(showTryItOutLlm || showTryItOutMcp) && (
+              <div>
+                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">Try It Out</div>
+                <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
+                  {showTryItOutLlm && <TabsTrigger value="try-llm">LLM</TabsTrigger>}
+                  {showTryItOutMcp && <TabsTrigger value="try-mcp">MCP</TabsTrigger>}
+                </div>
+              </div>
+            )}
 
             {showModelsTab && (
               <div>
@@ -189,6 +196,7 @@ export function ClientDetail({
                   <TabsTrigger value="mcp">Servers</TabsTrigger>
                   <TabsTrigger value="skills">Skills</TabsTrigger>
                   <TabsTrigger value="coding-agents">Coding Agents</TabsTrigger>
+                  <TabsTrigger value="marketplace">Marketplace</TabsTrigger>
                   <TabsTrigger value="context">Context</TabsTrigger>
                 </div>
               </div>
@@ -199,42 +207,35 @@ export function ClientDetail({
             </div>
           </TabsList>
 
+          <TabsContent value="info">
+            <ClientInfoTab client={client} />
+          </TabsContent>
+
           <TabsContent value="connect">
             <ClientConfigTab client={client} onUpdate={loadClient} />
           </TabsContent>
 
-          <TabsContent value="try-it-out">
-            <Tabs value={tryItOutSubTab} onValueChange={setTryItOutSubTab} className="space-y-4">
-              {showTryItOutLlm && showTryItOutMcp && (
-                <TabsList className="w-fit">
-                  <TabsTrigger value="llm">LLM Provider</TabsTrigger>
-                  <TabsTrigger value="mcp">MCP</TabsTrigger>
-                </TabsList>
-              )}
+          {showTryItOutLlm && (
+            <TabsContent value="try-llm">
+              <LlmTab
+                initialMode="client"
+                initialClientId={client.client_id}
+                hideModeSwitcher
+              />
+            </TabsContent>
+          )}
 
-              {showTryItOutLlm && (
-                <TabsContent value="llm">
-                  <LlmTab
-                    initialMode="client"
-                    initialClientId={client.client_id}
-                    hideModeSwitcher
-                  />
-                </TabsContent>
-              )}
-
-              {showTryItOutMcp && (
-                <TabsContent value="mcp">
-                  <McpTab
-                    initialMode="client"
-                    initialClientId={client.client_id}
-                    hideModeSwitcher
-                    innerPath={mcpInnerPath}
-                    onPathChange={setMcpInnerPath}
-                  />
-                </TabsContent>
-              )}
-            </Tabs>
-          </TabsContent>
+          {showTryItOutMcp && (
+            <TabsContent value="try-mcp">
+              <McpTab
+                initialMode="client"
+                initialClientId={client.client_id}
+                hideModeSwitcher
+                innerPath={mcpInnerPath}
+                onPathChange={setMcpInnerPath}
+              />
+            </TabsContent>
+          )}
 
           {showModelsTab && (
             <TabsContent value="models">
@@ -262,6 +263,12 @@ export function ClientDetail({
           {showCodingAgentsTab && (
             <TabsContent value="coding-agents">
               <ClientCodingAgentsTab client={client} onUpdate={loadClient} />
+            </TabsContent>
+          )}
+
+          {showMcpTab && (
+            <TabsContent value="marketplace">
+              <ClientMarketplaceTab client={client} onUpdate={loadClient} />
             </TabsContent>
           )}
 

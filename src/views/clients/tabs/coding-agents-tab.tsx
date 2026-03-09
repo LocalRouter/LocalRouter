@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { PermissionStateButton } from "@/components/permissions"
+import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import {
   Select,
   SelectContent,
@@ -152,6 +153,17 @@ export function ClientCodingAgentsTab({ client, onUpdate }: CodingAgentsTabProps
               No coding agents installed. Install a supported coding agent to enable this feature.
             </p>
           )}
+
+          <div className="border-t pt-3 flex items-center justify-between">
+            <div>
+              <span className="text-sm font-medium">Approval Popup Preview</span>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Preview the popup shown when a client starts a coding agent session.
+                Only session creation requires approval &mdash; subsequent interactions proceed freely.
+              </p>
+            </div>
+            <SamplePopupButton popupType="coding_agent" />
+          </div>
 
           {client.coding_agent_type && !loading && (
             <div className="text-xs text-muted-foreground">

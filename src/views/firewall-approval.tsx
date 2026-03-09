@@ -144,23 +144,23 @@ export function FirewallApproval() {
           }
         }
 
-        // Resize window based on content type
+        // Resize window based on content type, then show
+        const win = getCurrentWebviewWindow()
         if (result.tool_name.includes("marketplace__install")) {
-          const win = getCurrentWebviewWindow()
           await win.setSize(new LogicalSize(440, 380))
           await win.center()
         } else if (result.is_free_tier_fallback) {
-          const win = getCurrentWebviewWindow()
           await win.setSize(new LogicalSize(400, 280))
           await win.center()
         } else if (result.is_guardrail_request) {
-          const win = getCurrentWebviewWindow()
           const verdictCount = result.guardrail_details?.verdicts?.length || 0
           const hasFlaggedText = !!result.guardrail_details?.flagged_text
           const height = Math.min(580, 320 + verdictCount * 60 + (hasFlaggedText ? 80 : 0))
           await win.setSize(new LogicalSize(440, height))
           await win.center()
         }
+        await win.show()
+        await win.setFocus()
       } catch (err) {
         console.error("Failed to load approval details:", err)
         setError(typeof err === "string" ? err : "Failed to load approval details")
