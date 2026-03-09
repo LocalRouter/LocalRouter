@@ -205,6 +205,13 @@ pub async fn chat_completions(
     // Check rate limits first (reject early before spawning parallel work)
     check_rate_limits(&state, &auth, &request).await?;
 
+    // MCP via LLM: intercept and handle via agentic orchestrator
+    if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        if client.client_mode == lr_config::ClientMode::McpViaLlm {
+            return handle_mcp_via_llm(state, auth, client_auth, request).await;
+        }
+    }
+
     // Start guardrail scan in parallel (only if safety engine is available)
     let guardrail_handle = if client_auth.is_some()
         && state
@@ -1417,11 +1424,25 @@ fn convert_to_provider_request(
                 None => ProviderMessageContent::Text(String::new()),
             };
 
+            // Convert tool_calls from server types to provider types
+            let tool_calls = msg.tool_calls.as_ref().map(|tcs| {
+                tcs.iter()
+                    .map(|tc| lr_providers::ToolCall {
+                        id: tc.id.clone(),
+                        tool_type: tc.tool_type.clone(),
+                        function: lr_providers::FunctionCall {
+                            name: tc.function.name.clone(),
+                            arguments: tc.function.arguments.clone(),
+                        },
+                    })
+                    .collect()
+            });
+
             Ok(ProviderChatMessage {
                 role: msg.role.clone(),
                 content,
-                tool_calls: None,   // Input messages don't have tool_calls initially
-                tool_call_id: None, // Only for tool role messages
+                tool_calls,
+                tool_call_id: msg.tool_call_id.clone(),
                 name: msg.name.clone(),
             })
         })
@@ -1502,6 +1523,159 @@ fn convert_to_provider_request(
         top_logprobs: request.top_logprobs,
         pre_computed_routing: None,
     })
+}
+
+/// Handle MCP via LLM mode: intercept the request and run the agentic orchestrator.
+///
+/// MCP tools are transparently injected into the LLM request, tool calls are
+/// executed server-side, and the conversation loops until the LLM produces a
+/// final response. The client speaks only the OpenAI protocol.
+async fn handle_mcp_via_llm(
+    state: AppState,
+    auth: AuthContext,
+    _client_auth: Option<Extension<ClientAuthContext>>,
+    request: ChatCompletionRequest,
+) -> ApiResult<Response> {
+    let generation_id = format!("gen-{}", Uuid::new_v4());
+    let started_at = Instant::now();
+    let created_at = Utc::now();
+
+    // Get the client
+    let (client, _strategy) = get_client_with_strategy(&state, &auth.api_key_id)
+        .map_err(|_| ApiErrorResponse::internal_error("Client lookup failed"))?;
+
+    // Compute allowed MCP servers from config
+    let allowed_servers: Vec<String> = state
+        .config_manager
+        .get()
+        .mcp_servers
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+
+    // Convert to provider request format
+    let provider_request = convert_to_provider_request(&request)?;
+
+    // Run the agentic orchestrator
+    let response = state
+        .mcp_via_llm_manager
+        .handle_request(
+            &state.mcp_gateway,
+            &state.router,
+            &client,
+            provider_request,
+            allowed_servers,
+        )
+        .await
+        .map_err(|e| ApiErrorResponse::bad_gateway(format!("MCP via LLM error: {}", e)))?;
+
+    let completed_at = Instant::now();
+
+    // Convert provider response to server response
+    let api_response = ChatCompletionResponse {
+        id: generation_id.clone(),
+        object: "chat.completion".to_string(),
+        created: created_at.timestamp(),
+        model: response.model.clone(),
+        choices: response
+            .choices
+            .iter()
+            .map(|choice| {
+                let tool_calls = choice.message.tool_calls.as_ref().map(|provider_tools| {
+                    provider_tools
+                        .iter()
+                        .map(|tool_call| crate::types::ToolCall {
+                            id: tool_call.id.clone(),
+                            tool_type: tool_call.tool_type.clone(),
+                            function: crate::types::FunctionCall {
+                                name: tool_call.function.name.clone(),
+                                arguments: tool_call.function.arguments.clone(),
+                            },
+                        })
+                        .collect()
+                });
+
+                let content = match &choice.message.content {
+                    lr_providers::ChatMessageContent::Text(t) if t.is_empty() => None,
+                    lr_providers::ChatMessageContent::Text(t) => {
+                        Some(MessageContent::Text(t.clone()))
+                    }
+                    lr_providers::ChatMessageContent::Parts(parts) => {
+                        let server_parts: Vec<crate::types::ContentPart> = parts
+                            .iter()
+                            .map(|part| match part {
+                                lr_providers::ContentPart::Text { text } => {
+                                    crate::types::ContentPart::Text { text: text.clone() }
+                                }
+                                lr_providers::ContentPart::ImageUrl { image_url } => {
+                                    crate::types::ContentPart::ImageUrl {
+                                        image_url: crate::types::ImageUrl {
+                                            url: image_url.url.clone(),
+                                            detail: image_url.detail.clone(),
+                                        },
+                                    }
+                                }
+                            })
+                            .collect();
+                        Some(MessageContent::Parts(server_parts))
+                    }
+                };
+
+                ChatCompletionChoice {
+                    index: choice.index,
+                    message: ChatMessage {
+                        role: choice.message.role.clone(),
+                        content,
+                        name: choice.message.name.clone(),
+                        tool_calls,
+                        tool_call_id: choice.message.tool_call_id.clone(),
+                    },
+                    finish_reason: choice.finish_reason.clone(),
+                    logprobs: None,
+                }
+            })
+            .collect(),
+        usage: TokenUsage {
+            prompt_tokens: response.usage.prompt_tokens,
+            completion_tokens: response.usage.completion_tokens,
+            total_tokens: response.usage.total_tokens,
+            prompt_tokens_details: response.usage.prompt_tokens_details.clone(),
+            completion_tokens_details: response.usage.completion_tokens_details.clone(),
+        },
+        extensions: response.extensions.clone(),
+    };
+
+    // Track generation details
+    let generation_details = GenerationDetails {
+        id: generation_id,
+        model: response.model.clone(),
+        provider: response.provider.clone(),
+        created_at,
+        finish_reason: api_response
+            .choices
+            .first()
+            .and_then(|c| c.finish_reason.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        tokens: api_response.usage.clone(),
+        cost: None,
+        started_at,
+        completed_at,
+        provider_health: None,
+        api_key_id: auth.api_key_id,
+        user: request.user,
+        stream: false,
+    };
+
+    state
+        .generation_tracker
+        .record(generation_details.id.clone(), generation_details);
+
+    // Record tokens for tray graph
+    if let Some(recorder) = state.tray_graph_manager.read().as_ref() {
+        recorder.record_tokens(response.usage.total_tokens as u64);
+    }
+
+    Ok(Json(api_response).into_response())
 }
 
 /// Type alias for a spawned guardrail scan task

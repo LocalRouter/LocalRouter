@@ -83,7 +83,7 @@ export interface ModelPermissions {
  * Client mode determines which features are exposed.
  * Rust: crates/lr-config/src/types.rs - ClientMode enum
  */
-export type ClientMode = 'both' | 'llm_only' | 'mcp_only'
+export type ClientMode = 'both' | 'llm_only' | 'mcp_only' | 'mcp_via_llm'
 
 /**
  * Client information returned from list_clients and create_client.

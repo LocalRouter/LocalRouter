@@ -48,6 +48,7 @@ lr-oauth = { workspace = true }
 reqwest = { workspace = true }
 lr-guardrails = { workspace = true }
 lr-compression = { workspace = true }
+lr-mcp-via-llm = { workspace = true }
 
 [features]
 default = []

@@ -20,6 +20,7 @@ members = [
     "crates/lr-coding-agents",
     "crates/lr-compression",
     "crates/lr-json-repair",
+    "crates/lr-mcp-via-llm",
 ]
 resolver = "2"
 
@@ -51,6 +52,7 @@ lr-guardrails = { path = "crates/lr-guardrails", features = ["tauri-support"] }
 lr-coding-agents = { path = "crates/lr-coding-agents" }
 lr-compression = { path = "crates/lr-compression" }
 lr-json-repair = { path = "crates/lr-json-repair" }
+lr-mcp-via-llm = { path = "crates/lr-mcp-via-llm" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }

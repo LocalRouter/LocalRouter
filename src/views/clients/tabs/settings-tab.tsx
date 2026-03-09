@@ -37,10 +37,11 @@ interface SettingsTabProps {
   onDelete: () => void
 }
 
-const MODE_OPTIONS: { value: ClientMode; label: string; description: string }[] = [
+const MODE_OPTIONS: { value: ClientMode; label: string; description: string; experimental?: boolean }[] = [
   { value: "both", label: "Both", description: "Full access to LLM routing and MCP servers" },
   { value: "llm_only", label: "LLM Only", description: "Only LLM routing (hides MCP/Skills tabs)" },
   { value: "mcp_only", label: "MCP Only", description: "Only MCP proxy (hides Models tab)" },
+  { value: "mcp_via_llm", label: "MCP via LLM", description: "MCP tools injected into LLM requests and executed server-side", experimental: true },
 ]
 
 export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabProps) {
@@ -274,7 +275,14 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
                     className="mt-1"
                   />
                   <div>
-                    <p className="text-sm font-medium">{option.label}</p>
+                    <p className="text-sm font-medium">
+                      {option.label}
+                      {option.experimental && (
+                        <span className="ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+                          Experimental
+                        </span>
+                      )}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {option.description}
                       {!allowed && template && " (not supported by " + template.name + ")"}

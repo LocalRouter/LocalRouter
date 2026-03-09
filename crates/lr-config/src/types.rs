@@ -430,6 +430,10 @@ pub struct AppConfig {
     /// JSON repair configuration (automatic JSON healing)
     #[serde(default)]
     pub json_repair: JsonRepairConfig,
+
+    /// MCP via LLM configuration (experimental agentic orchestrator)
+    #[serde(default)]
+    pub mcp_via_llm: McpViaLlmConfig,
 }
 
 /// Pricing override for a specific model
@@ -1909,6 +1913,50 @@ pub struct ClientJsonRepairConfig {
     pub schema_coercion: Option<bool>,
 }
 
+/// MCP via LLM configuration (experimental agentic orchestrator)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpViaLlmConfig {
+    /// Session TTL in seconds (default: 3600 = 60 minutes since last activity)
+    #[serde(default = "default_mcp_via_llm_session_ttl")]
+    pub session_ttl_seconds: u64,
+
+    /// Maximum concurrent sessions (default: 100)
+    #[serde(default = "default_mcp_via_llm_max_sessions")]
+    pub max_concurrent_sessions: usize,
+
+    /// Maximum agentic loop iterations per request (default: 25)
+    #[serde(default = "default_mcp_via_llm_max_iterations")]
+    pub max_loop_iterations: u32,
+
+    /// Maximum total timeout for the agentic loop in seconds (default: 300)
+    #[serde(default = "default_mcp_via_llm_max_timeout")]
+    pub max_loop_timeout_seconds: u64,
+}
+
+fn default_mcp_via_llm_session_ttl() -> u64 {
+    3600
+}
+fn default_mcp_via_llm_max_sessions() -> usize {
+    100
+}
+fn default_mcp_via_llm_max_iterations() -> u32 {
+    25
+}
+fn default_mcp_via_llm_max_timeout() -> u64 {
+    300
+}
+
+impl Default for McpViaLlmConfig {
+    fn default() -> Self {
+        Self {
+            session_ttl_seconds: default_mcp_via_llm_session_ttl(),
+            max_concurrent_sessions: default_mcp_via_llm_max_sessions(),
+            max_loop_iterations: default_mcp_via_llm_max_iterations(),
+            max_loop_timeout_seconds: default_mcp_via_llm_max_timeout(),
+        }
+    }
+}
+
 /// Deserializer for SkillsAccess (migration shim)
 pub(crate) fn deserialize_skills_access<'de, D>(deserializer: D) -> Result<SkillsAccess, D::Error>
 where
@@ -1971,6 +2019,8 @@ pub enum ClientMode {
     LlmOnly,
     /// Only MCP proxy (no LLM model access)
     McpOnly,
+    /// MCP tools injected into LLM requests, executed server-side (experimental)
+    McpViaLlm,
 }
 
 /// Unified client configuration (replaces ApiKeyConfig and OAuthClientConfig)
@@ -2809,6 +2859,7 @@ impl Default for AppConfig {
             context_management: ContextManagementConfig::default(),
             prompt_compression: PromptCompressionConfig::default(),
             json_repair: JsonRepairConfig::default(),
+            mcp_via_llm: McpViaLlmConfig::default(),
         }
     }
 }

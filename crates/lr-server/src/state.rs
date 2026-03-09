@@ -19,6 +19,7 @@ use lr_clients::{ClientManager, TokenStore};
 use lr_config::ConfigManager;
 use lr_mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use lr_mcp::{McpGateway, McpServerManager};
+use lr_mcp_via_llm::McpViaLlmManager;
 use lr_monitoring::logger::AccessLogger;
 use lr_monitoring::mcp_logger::McpAccessLogger;
 use lr_monitoring::metrics::MetricsCollector;
@@ -774,6 +775,9 @@ pub struct AppState {
 
     /// Feature-level stats (RouteLLM, JSON repair, compression, context mgmt)
     pub feature_stats: Arc<FeatureStats>,
+
+    /// MCP via LLM agentic orchestrator (experimental)
+    pub mcp_via_llm_manager: Arc<McpViaLlmManager>,
 }
 
 impl AppState {
@@ -826,6 +830,9 @@ impl AppState {
             router.clone(),
         ));
 
+        // Read config before moving config_manager into struct
+        let mcp_via_llm_config = config_manager.get().mcp_via_llm.clone();
+
         Self {
             router,
             client_manager,
@@ -856,6 +863,7 @@ impl AppState {
             safety_engine: Arc::new(RwLock::new(None)),
             compression_service: Arc::new(RwLock::new(None)),
             feature_stats: Arc::new(FeatureStats::new()),
+            mcp_via_llm_manager: Arc::new(McpViaLlmManager::new(mcp_via_llm_config)),
         }
     }
 
