@@ -42,7 +42,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
   const [testResult, setTestResult] = useState<CompressionTestResult | null>(null)
   const [testLoading, setTestLoading] = useState(false)
   const [preserveQuoted, setPreserveQuoted] = useState(true)
-  const [compressionNotice, setCompressionNotice] = useState(false)
+  const [compressionNotice, setCompressionNotice] = useState(true)
   const [activeExample, setActiveExample] = useState<"system" | "code">("system")
 
   const tab = activeSubTab || "info"
@@ -381,6 +381,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                     onClick={() => {
                       setActiveExample("system")
                       setTestInput(DEFAULT_TEST_TEXT)
+                      setTestResult(null)
                     }}
                   >
                     System Prompt
@@ -392,6 +393,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                     onClick={() => {
                       setActiveExample("code")
                       setTestInput(CODE_QUOTES_TEST_TEXT)
+                      setTestResult(null)
                     }}
                   >
                     Code & Quotes
@@ -466,23 +468,30 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                         (() => {
                           const keptSet = new Set(testResult.kept_indices)
                           const protectedSet = new Set(testResult.protected_indices)
-                          return inputWords.map((word, idx) => (
-                            <span key={idx}>
-                              {idx > 0 && " "}
-                              {keptSet.has(idx) ? (
-                                protectedSet.has(idx) ? (
-                                  <span
-                                    className="bg-purple-500/15 text-purple-900 dark:text-purple-300 rounded px-0.5"
-                                    title="Protected (quoted/code content)"
-                                  >{word}</span>
-                                ) : (
-                                  <span>{word}</span>
-                                )
-                              ) : (
-                                <span className="line-through text-red-500/40">{word}</span>
+                          return (
+                            <>
+                              {compressionNotice && (
+                                <span className="text-blue-600 dark:text-blue-400 font-semibold">[abridged] </span>
                               )}
-                            </span>
-                          ))
+                              {inputWords.map((word, idx) => (
+                                <span key={idx}>
+                                  {idx > 0 && " "}
+                                  {keptSet.has(idx) ? (
+                                    protectedSet.has(idx) ? (
+                                      <span
+                                        className="bg-purple-500/15 text-purple-900 dark:text-purple-300 rounded px-0.5"
+                                        title="Protected (quoted/code content)"
+                                      >{word}</span>
+                                    ) : (
+                                      <span>{word}</span>
+                                    )
+                                  ) : (
+                                    <span className="line-through text-red-500/40">{word}</span>
+                                  )}
+                                </span>
+                              ))}
+                            </>
+                          )
                         })()
                       ) : (
                         <span className="text-muted-foreground">

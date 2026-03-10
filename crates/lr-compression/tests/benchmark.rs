@@ -21,7 +21,7 @@ async fn benchmark_bert_resources() {
         compress_system_prompt: false,
         min_message_words: 20,
         preserve_quoted_text: true,
-        compression_notice: false,
+        compression_notice: true,
     };
 
     let service = CompressionService::new(config).expect("Failed to create service");

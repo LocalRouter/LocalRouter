@@ -3374,10 +3374,10 @@ pub async fn test_compression(
     let (compressed_text, original_tokens, compressed_tokens, kept_indices, protected_indices) =
         svc.compress_text(&text, rate, preserve_quoted).await?;
 
-    let compressed_text = if compression_notice {
-        format!("[abridged] {}", compressed_text)
+    let (compressed_text, compressed_tokens) = if compression_notice {
+        (format!("[abridged] {}", compressed_text), compressed_tokens + 1)
     } else {
-        compressed_text
+        (compressed_text, compressed_tokens)
     };
 
     let ratio = if compressed_tokens > 0 {

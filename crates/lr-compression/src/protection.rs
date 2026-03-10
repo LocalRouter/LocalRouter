@@ -163,15 +163,17 @@ pub fn detect_protected_words(words: &[&str]) -> Vec<bool> {
         let starts_backtick = word.starts_with('`') && !word.starts_with("```");
         let ends_backtick = word.ends_with('`') && !word.ends_with("```");
 
-        if starts_backtick && ends_backtick && word.len() > 1 {
+        if in_backtick {
+            // Already inside a backtick region — close if word ends with backtick
+            protected[i] = true;
+            if ends_backtick {
+                in_backtick = false;
+            }
+        } else if starts_backtick && ends_backtick && word.len() > 1 {
             // Self-contained inline code: `code`
             protected[i] = true;
-            // Don't change in_backtick state
-        } else if starts_backtick && !in_backtick {
+        } else if starts_backtick {
             in_backtick = true;
-            protected[i] = true;
-        } else if ends_backtick && in_backtick {
-            in_backtick = false;
             protected[i] = true;
         }
 
@@ -541,6 +543,16 @@ mod tests {
     }
 
     #[test]
+    fn test_backtick_inside_existing_backtick_region() {
+        // When already in a backtick region, a word like `b` should close the region
+        let words: Vec<&str> = "`a `b` c".split_whitespace().collect();
+        let mask = detect_protected_words(&words);
+        assert!(mask[0]);  // `a — opens backtick region
+        assert!(mask[1]);  // `b` — closes the region (ends with `)
+        assert!(!mask[2]); // c — NOT protected (region closed)
+    }
+
+    #[test]
     fn test_single_quote_used_as_quote() {
         // When single quotes appear at word boundaries (at least 2), treat as quotes
         let words: Vec<&str> = "he said 'hello world' today".split_whitespace().collect();
@@ -551,4 +563,5 @@ mod tests {
         assert!(mask[3]); // world'
         assert!(!mask[4]); // today
     }
+
 }

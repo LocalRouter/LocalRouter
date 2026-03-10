@@ -1823,8 +1823,8 @@ pub struct PromptCompressionConfig {
     #[serde(default = "default_true")]
     pub preserve_quoted_text: bool,
 
-    /// Prepend [abridged] to each compressed message (default: false)
-    #[serde(default)]
+    /// Prepend [abridged] to each compressed message (default: true)
+    #[serde(default = "default_true")]
     pub compression_notice: bool,
 }
 
@@ -1859,7 +1859,7 @@ impl Default for PromptCompressionConfig {
             preserve_recent: default_preserve_recent(),
             min_message_words: default_min_message_words(),
             preserve_quoted_text: true,
-            compression_notice: false,
+            compression_notice: true,
         }
     }
 }

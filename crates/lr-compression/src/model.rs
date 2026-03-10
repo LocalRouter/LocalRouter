@@ -96,12 +96,22 @@ impl CompressorModel {
 
         if keep_count >= original_word_count {
             let all_indices: Vec<usize> = (0..original_word_count).collect();
+            let protected_indices = protected_mask
+                .map(|mask| {
+                    mask.iter()
+                        .enumerate()
+                        .take(original_word_count)
+                        .filter(|(_, &p)| p)
+                        .map(|(i, _)| i)
+                        .collect()
+                })
+                .unwrap_or_default();
             return Ok((
                 text.to_string(),
                 original_word_count,
                 original_word_count,
-                all_indices.clone(),
                 all_indices,
+                protected_indices,
             ));
         }
 

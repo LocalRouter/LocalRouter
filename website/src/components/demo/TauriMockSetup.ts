@@ -1671,7 +1671,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     preserve_recent: 4,
     min_message_words: 5,
     preserve_quoted_text: true,
-    compression_notice: false,
+    compression_notice: true,
   }),
   'update_compression_config': () => {
     toast.success('Compression configuration saved (demo)')

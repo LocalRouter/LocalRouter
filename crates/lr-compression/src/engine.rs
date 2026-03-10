@@ -195,12 +195,12 @@ impl CompressionService {
                     };
                     let (compressed_text, _orig, comp, _kept, _protected) =
                         model.compress_text(&msg.content, rate, protected_mask.as_deref())?;
-                    total_compressed += comp;
-                    let content = if compression_notice {
-                        format!("[abridged] {}", compressed_text)
+                    let (content, notice_words) = if compression_notice {
+                        (format!("[abridged] {}", compressed_text), 1usize)
                     } else {
-                        compressed_text
+                        (compressed_text, 0)
                     };
+                    total_compressed += comp + notice_words;
                     compressed_messages.push(CompressedMessage {
                         role: msg.role.clone(),
                         content,
