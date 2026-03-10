@@ -356,7 +356,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         </div>
 
         {/* Main Navigation */}
-        <nav className="flex flex-1 flex-col gap-1 p-2">
+        <nav className="flex flex-1 flex-col gap-1 overflow-y-auto min-h-0 p-2">
           {/* Client section */}
           {clientNavItems.map(renderNavItem)}
 

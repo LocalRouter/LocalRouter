@@ -70,13 +70,13 @@ const MODE_OPTIONS: {
 }[] = [
   {
     value: "both",
-    label: "Both",
+    label: "LLM & MCP",
     description: "Use LLM Model routing and MCP servers",
     Icon: BothIcon,
   },
   {
     value: "mcp_via_llm",
-    label: "Both via LLM",
+    label: "LLM & MCP (MCP via LLM)",
     description: "MCP servers injected into LLM requests (tool call requests intercepted and handled)",
     Icon: BothViaLlmIcon,
     experimental: true,

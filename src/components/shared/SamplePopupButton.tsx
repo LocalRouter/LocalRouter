@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { FlaskConical } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 
-type FirewallPopupType = "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback" | "coding_agent"
+type FirewallPopupType = "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback" | "coding_agent" | "guardrail"
 
 interface SamplePopupButtonProps {
   popupType: FirewallPopupType

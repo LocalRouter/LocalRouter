@@ -2508,6 +2508,26 @@ export interface GetCodingAgentVersionParams {
 }
 
 /**
+ * Tool definition returned from get_coding_agent_tool_definitions / get_context_mode_tool_definitions.
+ * Rust: src-tauri/src/ui/commands_coding_agents.rs - ToolDefinition struct
+ */
+export interface ToolDefinition {
+  name: string
+  description: string | null
+  input_schema: Record<string, unknown>
+}
+
+/** Params for get_coding_agent_tool_definitions */
+export interface GetCodingAgentToolDefinitionsParams {
+  agentType: CodingAgentType
+}
+
+/** Params for get_context_mode_tool_definitions */
+export interface GetContextModeToolDefinitionsParams {
+  indexingToolsEnabled: boolean
+}
+
+/**
  * Detailed coding session info returned from get_coding_session_detail.
  * Rust: crates/lr-coding-agents/src/types.rs - SessionDetail struct
  */
@@ -2594,8 +2614,6 @@ export interface ClientPromptCompressionConfig {
   preserve_recent: number | null
   rate: number | null
   compress_system_prompt: boolean | null
-  preserve_quoted_text: boolean | null
-  compression_notice: boolean | null
 }
 
 /** Compression model status */
