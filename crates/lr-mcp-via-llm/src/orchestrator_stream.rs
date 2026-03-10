@@ -44,6 +44,7 @@ pub async fn run_agentic_loop_streaming(
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
     pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
+    guardrail_gate: Option<crate::manager::GuardrailGate>,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
 {
     let started_at = Instant::now();
@@ -192,6 +193,7 @@ pub async fn run_agentic_loop_streaming(
             timeout,
             max_iterations,
             pending_executions,
+            guardrail_gate,
         )
         .await;
 
@@ -228,6 +230,7 @@ async fn streaming_loop(
     timeout: std::time::Duration,
     max_iterations: u32,
     pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
+    mut guardrail_gate: Option<crate::manager::GuardrailGate>,
 ) -> Result<(), McpViaLlmError> {
     let mut iteration: u32 = 0;
     loop {
@@ -307,6 +310,16 @@ async fn streaming_loop(
                     return Ok(());
                 }
             }
+        }
+
+        // Await guardrail gate before processing the response (first iteration only).
+        // This allows guardrails to run in parallel with the LLM streaming call.
+        if let Some(gate) = guardrail_gate.take() {
+            gate.await
+                .map_err(|e| {
+                    McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e))
+                })?
+                .map_err(McpViaLlmError::GuardrailDenied)?;
         }
 
         // Reconstruct the full message from accumulated deltas

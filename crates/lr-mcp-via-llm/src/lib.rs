@@ -14,4 +14,4 @@ pub(crate) mod session;
 #[cfg(test)]
 mod tests;
 
-pub use manager::{McpViaLlmError, McpViaLlmManager};
+pub use manager::{GuardrailGate, McpViaLlmError, McpViaLlmManager};

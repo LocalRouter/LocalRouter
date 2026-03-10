@@ -75,6 +75,11 @@ pub enum OrchestratorResult {
 }
 
 /// Run the agentic loop for an MCP via LLM request
+///
+/// If `guardrail_gate` is provided, it will be awaited after the first LLM call
+/// returns but before executing any tools or returning a response. This allows
+/// guardrails to run in parallel with the LLM call for lower latency.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_agentic_loop(
     gateway: Arc<McpGateway>,
     router: &Router,
@@ -83,6 +88,7 @@ pub async fn run_agentic_loop(
     mut request: CompletionRequest,
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
+    mut guardrail_gate: Option<crate::manager::GuardrailGate>,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
     let started_at = Instant::now();
     let timeout = std::time::Duration::from_secs(config.max_loop_timeout_seconds);
@@ -237,6 +243,16 @@ pub async fn run_agentic_loop(
             .complete(&client.id, completion_request)
             .await
             .map_err(McpViaLlmError::from)?;
+
+        // Await guardrail gate before processing the response (first iteration only).
+        // This allows guardrails to run in parallel with the LLM call.
+        if let Some(gate) = guardrail_gate.take() {
+            gate.await
+                .map_err(|e| {
+                    McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e))
+                })?
+                .map_err(McpViaLlmError::GuardrailDenied)?;
+        }
 
         // Accumulate usage
         total_prompt_tokens += response.usage.prompt_tokens as u64;
@@ -640,6 +656,7 @@ pub async fn resume_after_mixed(
     // Tools will be re-injected by the orchestrator
 
     // Continue the agentic loop with the reconstructed history
+    // No guardrail gate needed — guardrails already completed in the original request.
     run_agentic_loop(
         gateway,
         router,
@@ -648,6 +665,7 @@ pub async fn resume_after_mixed(
         request,
         config,
         allowed_servers,
+        None,
     )
     .await
 }

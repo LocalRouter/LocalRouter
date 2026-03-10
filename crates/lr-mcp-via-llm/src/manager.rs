@@ -162,6 +162,9 @@ impl McpViaLlmManager {
     ///
     /// Returns a `CompletionResponse` from lr-providers that the caller
     /// (chat.rs) converts to an HTTP response.
+    ///
+    /// If `guardrail_gate` is provided, the orchestrator will await it after the
+    /// first LLM call returns but before executing any tools or returning a response.
     pub async fn handle_request(
         &self,
         gateway: Arc<McpGateway>,
@@ -169,6 +172,7 @@ impl McpViaLlmManager {
         client: &Client,
         request: CompletionRequest,
         allowed_servers: Vec<String>,
+        guardrail_gate: Option<GuardrailGate>,
     ) -> Result<lr_providers::CompletionResponse, McpViaLlmError> {
         let config = self.config();
         let session = self.get_or_create_session(&client.id);
@@ -208,6 +212,7 @@ impl McpViaLlmManager {
             request,
             &config,
             allowed_servers,
+            guardrail_gate,
         )
         .await?;
 
@@ -250,6 +255,9 @@ impl McpViaLlmManager {
     ///
     /// Returns a stream of `CompletionChunk`s that the caller wraps in SSE.
     /// Multiple LLM iterations are streamed through a single connection.
+    ///
+    /// If `guardrail_gate` is provided, the orchestrator will await it after the
+    /// first LLM stream completes but before executing any tools or sending the finish chunk.
     pub async fn handle_streaming_request(
         &self,
         gateway: Arc<McpGateway>,
@@ -257,6 +265,7 @@ impl McpViaLlmManager {
         client: &Client,
         request: CompletionRequest,
         allowed_servers: Vec<String>,
+        guardrail_gate: Option<GuardrailGate>,
     ) -> Result<
         std::pin::Pin<
             Box<
@@ -320,6 +329,7 @@ impl McpViaLlmManager {
             &config,
             allowed_servers,
             self.pending_executions.clone(),
+            guardrail_gate,
         )
         .await
     }
@@ -405,6 +415,10 @@ fn response_to_chunk(response: &lr_providers::CompletionResponse) -> lr_provider
     }
 }
 
+/// A gate that must resolve before the orchestrator may execute tools or return a response.
+/// Resolves to Ok(()) if guardrails passed, Err(message) if denied.
+pub type GuardrailGate = tokio::task::JoinHandle<Result<(), String>>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum McpViaLlmError {
     #[error("MCP gateway error: {0}")]
@@ -421,4 +435,7 @@ pub enum McpViaLlmError {
 
     #[error("Tool execution failed: {0}")]
     ToolExecution(String),
+
+    #[error("Guardrail denied: {0}")]
+    GuardrailDenied(String),
 }
