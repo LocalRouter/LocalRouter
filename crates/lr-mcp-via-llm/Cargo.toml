@@ -26,3 +26,6 @@ tokio-stream = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+lr-monitoring = { workspace = true }
