@@ -1191,10 +1191,8 @@ async fn run_prompt_compression(
                     pc.compress_system_prompt
                         .unwrap_or(config.prompt_compression.compress_system_prompt),
                     config.prompt_compression.min_message_words,
-                    pc.preserve_quoted_text
-                        .unwrap_or(config.prompt_compression.preserve_quoted_text),
-                    pc.compression_notice
-                        .unwrap_or(config.prompt_compression.compression_notice),
+                    config.prompt_compression.preserve_quoted_text,
+                    config.prompt_compression.compression_notice,
                 )
             } else {
                 return Ok(None); // Unknown client

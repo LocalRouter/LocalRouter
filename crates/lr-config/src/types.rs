@@ -1886,14 +1886,6 @@ pub struct ClientPromptCompressionConfig {
     /// Override global compress_system_prompt setting
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compress_system_prompt: Option<bool>,
-
-    /// Override global preserve_quoted_text setting
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preserve_quoted_text: Option<bool>,
-
-    /// Override global compression_notice setting
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression_notice: Option<bool>,
 }
 
 /// JSON repair configuration (automatic JSON healing for LLM responses)
