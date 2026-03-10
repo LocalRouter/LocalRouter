@@ -29,6 +29,7 @@ import {
   Terminal,
   Database,
   Minimize2,
+  Zap,
 } from 'lucide-react'
 
 // --- Section data ---
@@ -213,6 +214,25 @@ const sections: DocSection[] = [
     ],
   },
   {
+    id: 'mcp-via-llm',
+    title: 'MCP via LLM',
+    icon: <Zap className="h-4 w-4" />,
+    subsections: [
+      { id: 'mcp-via-llm-overview', title: 'Overview' },
+      { id: 'mcp-via-llm-how-it-works', title: 'How It Works', children: [
+        { id: 'mcp-via-llm-injection', title: 'Tool Injection' },
+        { id: 'mcp-via-llm-agentic-loop', title: 'Agentic Loop' },
+        { id: 'mcp-via-llm-mixed-tools', title: 'Mixed Tool Execution' },
+      ]},
+      { id: 'mcp-via-llm-sessions', title: 'Session Management' },
+      { id: 'mcp-via-llm-config', title: 'Configuration', children: [
+        { id: 'mcp-via-llm-config-options', title: 'Options' },
+        { id: 'mcp-via-llm-config-per-client', title: 'Per-Client Override' },
+      ]},
+      { id: 'mcp-via-llm-client-modes', title: 'Client Modes' },
+    ],
+  },
+  {
     id: 'firewall',
     title: 'Firewall',
     icon: <ShieldCheck className="h-4 w-4" />,
@@ -393,7 +413,7 @@ interface SidebarGroup {
 const sidebarGroups: SidebarGroup[] = [
   { label: 'Getting Started', sectionIds: ['introduction', 'getting-started'] },
   { label: 'Core Features', sectionIds: ['clients', 'providers', 'model-selection-routing', 'rate-limiting'] },
-  { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'skills', 'coding-agents', 'marketplace'] },
+  { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'mcp-via-llm', 'skills', 'coding-agents', 'marketplace'] },
   { label: 'Optimization', sectionIds: ['context-management', 'prompt-compression'] },
   { label: 'Security', sectionIds: ['firewall', 'guardrails', 'privacy-security'] },
   { label: 'Operations', sectionIds: ['monitoring', 'configuration'] },
@@ -403,6 +423,72 @@ const sidebarGroups: SidebarGroup[] = [
 const sectionMap = new Map(sections.map((s) => [s.id, s]))
 
 // --- Sidebar ---
+
+function SidebarNav({
+  activeSection,
+  activeSubsection,
+  onItemClick,
+}: {
+  activeSection: string
+  activeSubsection: string
+  onItemClick?: () => void
+}) {
+  return (
+    <nav className="p-4 space-y-4">
+      {sidebarGroups.map((group) => (
+        <div key={group.label}>
+          <div className="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            {group.label}
+          </div>
+          <div className="space-y-0.5">
+            {group.sectionIds.map((sectionId) => {
+              const section = sectionMap.get(sectionId)
+              if (!section) return null
+              const isActive = activeSection === sectionId
+              return (
+                <div key={sectionId}>
+                  <Link
+                    to={`/docs/${sectionId}`}
+                    onClick={onItemClick}
+                    className={`
+                      w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
+                      ${isActive
+                        ? 'bg-accent text-foreground font-medium'
+                        : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                      }
+                    `}
+                  >
+                    {section.icon}
+                    {section.title}
+                  </Link>
+                  {isActive && section.subsections.length > 0 && (
+                    <div className="ml-5 mt-0.5 mb-1 space-y-0.5 border-l border-border pl-3">
+                      {section.subsections.map((sub) => (
+                        <a
+                          key={sub.id}
+                          href={`#${sub.id}`}
+                          onClick={onItemClick}
+                          data-subsection-id={sub.id}
+                          className={`block py-1 text-xs transition-colors truncate ${
+                            activeSubsection === sub.id
+                              ? 'text-foreground font-medium'
+                              : 'text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          {sub.title}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </nav>
+  )
+}
 
 function Sidebar({
   activeSection,
@@ -427,74 +513,29 @@ function Sidebar({
         />
       )}
 
+      {/* Mobile sidebar — fixed overlay */}
       <aside
-        ref={sidebarRef}
         className={`
           fixed top-16 bottom-0 z-50 w-72 border-r bg-background overflow-y-auto
-          transition-transform duration-200
-          lg:sticky lg:top-16 lg:z-0 lg:translate-x-0 lg:h-[calc(100vh-4rem)]
+          transition-transform duration-200 lg:hidden
           ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}
         `}
       >
-        <div className="flex items-center justify-between p-4 border-b lg:hidden">
+        <div className="flex items-center justify-between p-4 border-b">
           <span className="font-semibold">Documentation</span>
           <button onClick={onMobileClose} className="p-1 rounded hover:bg-accent">
             <X className="h-5 w-5" />
           </button>
         </div>
-        <nav className="p-4 space-y-4">
-          {sidebarGroups.map((group) => (
-            <div key={group.label}>
-              <div className="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-                {group.label}
-              </div>
-              <div className="space-y-0.5">
-                {group.sectionIds.map((sectionId) => {
-                  const section = sectionMap.get(sectionId)
-                  if (!section) return null
-                  const isActive = activeSection === sectionId
-                  return (
-                    <div key={sectionId}>
-                      <Link
-                        to={`/docs/${sectionId}`}
-                        onClick={onMobileClose}
-                        className={`
-                          w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
-                          ${isActive
-                            ? 'bg-accent text-foreground font-medium'
-                            : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-                          }
-                        `}
-                      >
-                        {section.icon}
-                        {section.title}
-                      </Link>
-                      {isActive && section.subsections.length > 0 && (
-                        <div className="ml-5 mt-0.5 mb-1 space-y-0.5 border-l border-border pl-3">
-                          {section.subsections.map((sub) => (
-                            <a
-                              key={sub.id}
-                              href={`#${sub.id}`}
-                              onClick={onMobileClose}
-                              data-subsection-id={sub.id}
-                              className={`block py-1 text-xs transition-colors truncate ${
-                                activeSubsection === sub.id
-                                  ? 'text-foreground font-medium'
-                                  : 'text-muted-foreground hover:text-foreground'
-                              }`}
-                            >
-                              {sub.title}
-                            </a>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-        </nav>
+        <SidebarNav activeSection={activeSection} activeSubsection={activeSubsection} onItemClick={onMobileClose} />
+      </aside>
+
+      {/* Desktop sidebar */}
+      <aside
+        ref={sidebarRef}
+        className="hidden lg:block w-72 shrink-0 border-r bg-background overflow-y-auto"
+      >
+        <SidebarNav activeSection={activeSection} activeSubsection={activeSubsection} />
       </aside>
     </>
   )
@@ -516,20 +557,15 @@ const mdComponents = {
     <li className="leading-relaxed" {...props}>{children}</li>
   ),
   code: ({ children, className, ...props }: React.HTMLAttributes<HTMLElement>) => {
-    const isBlock = className?.includes('language-')
-    if (isBlock) {
-      return (
-        <code className="block bg-muted rounded-lg p-4 text-xs font-mono overflow-x-auto mb-3 whitespace-pre" {...props}>
-          {children}
-        </code>
-      )
+    if (className?.includes('language-')) {
+      return <code className="text-xs font-mono whitespace-pre" {...props}>{children}</code>
     }
     return (
       <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>
     )
   },
   pre: ({ children, ...props }: React.HTMLAttributes<HTMLPreElement>) => (
-    <pre className="mb-3" {...props}>{children}</pre>
+    <pre className="mb-3 bg-muted rounded-lg p-4 text-xs font-mono overflow-x-auto whitespace-pre [&>code]:bg-transparent [&>code]:p-0 [&>code]:rounded-none" {...props}>{children}</pre>
   ),
   strong: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
     <strong className="text-foreground font-medium" {...props}>{children}</strong>
@@ -722,7 +758,7 @@ export default function Docs() {
   if (!currentSection) return null
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)]">
+    <div className="flex flex-1 min-h-0">
       <Sidebar
         activeSection={currentSectionId}
         activeSubsection={activeSubsection}
@@ -741,7 +777,7 @@ export default function Docs() {
       </button>
 
       {/* Content */}
-      <main className="flex-1 min-w-0 px-6 py-10 lg:px-12 lg:py-12 max-w-4xl">
+      <main className="flex-1 min-w-0 overflow-y-auto px-6 py-10 lg:px-12 lg:py-12 [&>*]:max-w-4xl">
         <SectionContent section={currentSection} />
         <PrevNextNav sectionId={currentSectionId} />
       </main>

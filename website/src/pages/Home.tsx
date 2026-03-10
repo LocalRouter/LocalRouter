@@ -21,6 +21,7 @@ import {
   Database,
   Minimize2,
   ArrowRight,
+  Zap,
 } from 'lucide-react'
 
 export default function Home() {
@@ -31,7 +32,7 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 sm:py-32 lg:px-8">
           <div className="mx-auto max-w-3xl text-center">
             <h1 className="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-              Local Firewall for
+              Local proxy for
               <br />
               <span className="text-primary">LLM</span>
               {"s, "}
@@ -978,9 +979,10 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature 3: Unified MCP */}
-      <section className="border-b py-16 sm:py-24">
+      {/* MCP Platform */}
+      <section className="border-b py-20 sm:py-32">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          {/* Hero: Unified MCP Gateway */}
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
             <div>
               <div className="flex items-center gap-2 mb-4">
@@ -1112,700 +1114,427 @@ export default function Home() {
               </div>
             </div>
           </div>
-        </div>
-      </section>
 
-      {/* Feature 4: Unified Skills */}
-      <section className="border-b py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            {/* Visual: Skills Architecture */}
-            <div className="relative order-2 lg:order-1 overflow-x-auto">
-              <div className="rounded-xl border bg-gradient-to-br from-violet-950 to-slate-900 p-6 shadow-2xl min-w-[480px]">
-                {/* Three-column layout: App → Gateway → Skills */}
-                <div className="flex items-stretch gap-3">
-                  {/* App */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="rounded-lg bg-blue-500/20 border border-blue-500/30 p-3 text-center">
-                      <div className="h-8 w-8 rounded bg-blue-500/30 flex items-center justify-center mx-auto mb-1">
-                        <span className="text-blue-400 text-sm font-bold">{'</>'}</span>
-                      </div>
-                      <div className="text-white text-xs font-medium">App</div>
-                      <div className="text-blue-400 text-[10px]">Claude Code</div>
-                    </div>
+          {/* Sub-features: Skills, Coding Agents, Marketplace */}
+          <div className="mt-16 pt-16 border-t border-border/50">
+            <div className="grid gap-8 md:grid-cols-2">
+              {/* Skills via MCP */}
+              <div className="group rounded-xl border bg-card p-6 hover:border-violet-500/50 transition-colors">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-8 w-8 rounded-lg bg-violet-500/10 flex items-center justify-center">
+                    <Sparkles className="h-4 w-4 text-violet-500" />
                   </div>
-
-                  {/* Connection */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="flex items-center gap-1">
-                      <div className="w-6 h-0.5 bg-slate-500" />
-                      <div className="px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 text-[9px] font-mono">MCP</div>
-                      <div className="w-6 h-0.5 bg-slate-500" />
-                    </div>
-                  </div>
-
-                  {/* Gateway */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="rounded-lg bg-violet-500/20 border-2 border-violet-500/50 p-3 text-center">
-                      <Sparkles className="h-6 w-6 text-violet-400 mx-auto mb-1" />
-                      <div className="text-white text-xs font-medium">Skills</div>
-                      <div className="text-violet-400 text-[10px]">Gateway</div>
-                    </div>
-                  </div>
-
-                  {/* Arrow */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="w-3 h-0.5 bg-violet-600" />
-                  </div>
-
-                  {/* Skills */}
-                  <div className="flex flex-col gap-2">
-                    <div className="rounded-lg bg-violet-500/10 border border-violet-500/30 p-2 flex items-center gap-2">
-                      <Blocks className="h-4 w-4 text-violet-400" />
-                      <div>
-                        <div className="text-white text-xs font-medium">Web Search</div>
-                        <div className="text-violet-400 text-[10px]">Multi-step</div>
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-violet-500/10 border border-violet-500/30 p-2 flex items-center gap-2">
-                      <Blocks className="h-4 w-4 text-violet-400" />
-                      <div>
-                        <div className="text-white text-xs font-medium">Code Review</div>
-                        <div className="text-violet-400 text-[10px]">Multi-step</div>
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-violet-500/10 border border-violet-500/30 p-2 flex items-center gap-2">
-                      <Blocks className="h-4 w-4 text-violet-400" />
-                      <div>
-                        <div className="text-white text-xs font-medium">Summarize</div>
-                        <div className="text-violet-400 text-[10px]">Multi-step</div>
-                      </div>
-                    </div>
-                  </div>
+                  <span className="text-sm font-medium text-violet-500 uppercase tracking-wide">Skills</span>
                 </div>
-
-                {/* Legend */}
-                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center gap-4">
-                  <div className="flex items-center gap-1.5">
-                    <div className="h-2 w-2 rounded-full bg-violet-500" />
-                    <span className="text-slate-400 text-[10px]">Skills (multi-step tools)</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="h-2 w-2 rounded-full bg-slate-500" />
-                    <span className="text-slate-400 text-[10px]">MCP transport</span>
-                  </div>
-                </div>
+                <h3 className="text-xl font-bold tracking-tight">Skills via MCP</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Multi-step workflows exposed as callable MCP tools. Web search, code review, document summarization—each skill chains multiple operations behind a single tool call.
+                </p>
+                <ul className="mt-4 space-y-2">
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-violet-500 mt-0.5" />
+                    <span><span className="font-medium">Composite workflows</span> — orchestrates API calls, file I/O, shell commands as atomic tools</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-violet-500 mt-0.5" />
+                    <span><span className="font-medium">Per-client whitelist</span> — assign specific skills per client</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-violet-500 mt-0.5" />
+                    <span><span className="font-medium">Standard MCP interface</span> — compatible with any MCP client</span>
+                  </li>
+                </ul>
+                <Link to="/docs/skills" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-violet-500 hover:text-violet-400 transition-colors">
+                  Learn more <span aria-hidden="true">&rarr;</span>
+                </Link>
               </div>
-            </div>
 
-            <div className="order-1 lg:order-2">
-              <div className="flex items-center gap-2 mb-4">
-                <Sparkles className="h-5 w-5 text-violet-500" />
-                <span className="text-sm font-medium text-violet-500 uppercase tracking-wide">Skills</span>
-              </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Skills via MCP
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Multi-step workflows exposed as callable MCP tools. Web search, code review, document summarization—each skill chains multiple operations behind a single tool call.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Composite workflows</span>
-                    <p className="text-sm text-muted-foreground">Each skill orchestrates multiple sub-operations—API calls, file I/O, shell commands—as a single atomic tool</p>
+              {/* AI Coding Agents via MCP */}
+              <div className="group rounded-xl border bg-card p-6 hover:border-orange-500/50 transition-colors">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-8 w-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                    <Terminal className="h-4 w-4 text-orange-500" />
                   </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Per-client skill whitelist</span>
-                    <p className="text-sm text-muted-foreground">Assign specific skills to each client—others remain inaccessible</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Standard MCP interface</span>
-                    <p className="text-sm text-muted-foreground">Skills exposed via MCP protocol—compatible with any MCP client without custom integration</p>
-                  </div>
-                </li>
-              </ul>
-              <Link to="/docs/skills" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-violet-500 hover:text-violet-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Feature 5: AI Coding Agents via MCP */}
-      <section className="border-b py-16 sm:py-24 bg-muted/30">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            <div className="order-2 overflow-x-auto">
-              <div className="rounded-xl border bg-gradient-to-br from-orange-950 to-slate-900 p-6 shadow-2xl min-w-[480px]">
-                {/* Three-column layout: Client → Gateway → Agents */}
-                <div className="flex items-stretch gap-3">
-                  {/* Client */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="rounded-lg bg-blue-500/20 border border-blue-500/30 p-3 text-center">
-                      <div className="h-8 w-8 rounded bg-blue-500/30 flex items-center justify-center mx-auto mb-1">
-                        <span className="text-blue-400 text-sm font-bold">{'</>'}</span>
-                      </div>
-                      <div className="text-white text-xs font-medium">Client</div>
-                      <div className="text-blue-400 text-[10px]">MCP App</div>
-                    </div>
-                  </div>
-
-                  {/* Connection */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="flex items-center gap-1">
-                      <div className="w-6 h-0.5 bg-slate-500" />
-                      <div className="px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 text-[9px] font-mono">MCP</div>
-                      <div className="w-6 h-0.5 bg-slate-500" />
-                    </div>
-                  </div>
-
-                  {/* Gateway */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="rounded-lg bg-orange-500/20 border-2 border-orange-500/50 p-3 text-center">
-                      <Terminal className="h-6 w-6 text-orange-400 mx-auto mb-1" />
-                      <div className="text-white text-xs font-medium">Agents</div>
-                      <div className="text-orange-400 text-[10px]">Gateway</div>
-                    </div>
-                  </div>
-
-                  {/* Arrow */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="w-3 h-0.5 bg-orange-600" />
-                  </div>
-
-                  {/* Agent processes */}
-                  <div className="flex flex-col gap-2">
-                    <div className="rounded-lg bg-orange-500/10 border border-orange-500/30 p-2 flex items-center gap-2">
-                      <Terminal className="h-4 w-4 text-orange-400" />
-                      <div>
-                        <div className="text-white text-xs font-medium">Claude Code</div>
-                        <div className="text-orange-400 text-[10px]">Session</div>
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-orange-500/10 border border-orange-500/30 p-2 flex items-center gap-2">
-                      <Terminal className="h-4 w-4 text-orange-400" />
-                      <div>
-                        <div className="text-white text-xs font-medium">Gemini CLI</div>
-                        <div className="text-orange-400 text-[10px]">Session</div>
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-orange-500/10 border border-orange-500/30 p-2 flex items-center gap-2">
-                      <Terminal className="h-4 w-4 text-orange-400" />
-                      <div>
-                        <div className="text-white text-xs font-medium">Codex</div>
-                        <div className="text-orange-400 text-[10px]">Session</div>
-                      </div>
-                    </div>
-                  </div>
+                  <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">Coding Agents</span>
                 </div>
-
-                {/* Legend */}
-                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center gap-4">
-                  <div className="flex items-center gap-1.5">
-                    <div className="h-2 w-2 rounded-full bg-orange-500" />
-                    <span className="text-slate-400 text-[10px]">Agent sessions</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="h-2 w-2 rounded-full bg-slate-500" />
-                    <span className="text-slate-400 text-[10px]">MCP transport</span>
-                  </div>
-                </div>
+                <h3 className="text-xl font-bold tracking-tight">AI Coding Agents via MCP</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Orchestrate AI coding agents as MCP tools. Claude Code, Gemini CLI, Codex, and more — managed through unified MCP tools.
+                </p>
+                <ul className="mt-4 space-y-2">
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
+                    <span><span className="font-medium">10 agents</span> — Claude Code, Gemini CLI, Codex, Amp, Aider, and more</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
+                    <span><span className="font-medium">Session-based</span> — long-lived with bidirectional communication</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
+                    <span><span className="font-medium">Approval routing</span> — tool approvals forwarded via MCP elicitation</span>
+                  </li>
+                </ul>
+                <Link to="/docs/coding-agents" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-orange-500 hover:text-orange-400 transition-colors">
+                  Learn more <span aria-hidden="true">&rarr;</span>
+                </Link>
               </div>
-            </div>
 
-            <div className="order-1">
-              <div className="flex items-center gap-2 mb-4">
-                <Terminal className="h-5 w-5 text-orange-500" />
-                <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">Coding Agents</span>
+              {/* Marketplace for MCP & Skills */}
+              <div className="group rounded-xl border bg-card p-6 hover:border-cyan-500/50 transition-colors">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-8 w-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                    <Store className="h-4 w-4 text-cyan-500" />
+                  </div>
+                  <span className="text-sm font-medium text-cyan-500 uppercase tracking-wide">Marketplace</span>
+                </div>
+                <h3 className="text-xl font-bold tracking-tight">Marketplace for MCP &amp; Skills</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Browse and install MCP servers and skills from registries. AI-assisted discovery via MCP tools. All installs require your approval.
+                </p>
+                <ul className="mt-4 space-y-2">
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-cyan-500 mt-0.5" />
+                    <span><span className="font-medium">Multiple registries</span> — official, community, and private sources</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-cyan-500 mt-0.5" />
+                    <span><span className="font-medium">MCP-exposed search</span> — AI agents query and suggest installations</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-cyan-500 mt-0.5" />
+                    <span><span className="font-medium">Gated installation</span> — explicit approval required for every package</span>
+                  </li>
+                </ul>
+                <Link to="/docs/marketplace" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-cyan-500 hover:text-cyan-400 transition-colors">
+                  Learn more <span aria-hidden="true">&rarr;</span>
+                </Link>
               </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                AI Coding Agents via MCP
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Orchestrate AI coding agents as MCP tools. Each client can be assigned a coding agent — Claude Code, Gemini CLI, Codex, and more — and manage sessions through a unified set of MCP tools.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">10 supported agents</span>
-                    <p className="text-sm text-muted-foreground">Claude Code, Gemini CLI, Codex, Amp, Aider, Cursor, Opencode, Qwen Code, Copilot, and Droid — auto-detected from PATH</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Session-based interaction</span>
-                    <p className="text-sm text-muted-foreground">Long-lived sessions with bidirectional communication. Poll status, send messages, auto-resume on exit</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Approval routing</span>
-                    <p className="text-sm text-muted-foreground">Tool and plan approvals forwarded via MCP elicitation or polling. Full control over agent permissions</p>
-                  </div>
-                </li>
-              </ul>
-              <Link to="/docs/coding-agents" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-orange-500 hover:text-orange-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
-            </div>
-          </div>
-        </div>
-      </section>
 
-      {/* Feature 7: Marketplace */}
-      <section className="border-b py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            <div className="order-1 lg:order-2">
-              <div className="flex items-center gap-2 mb-4">
-                <Store className="h-5 w-5 text-cyan-500" />
-                <span className="text-sm font-medium text-cyan-500 uppercase tracking-wide">Marketplace</span>
-              </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Marketplace for MCP &amp; Skills
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Browse and install MCP servers and skills from your registries. Marketplace accessible over MCP tools for AI-assisted discovery. All installs require your approval.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-cyan-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Multiple registry sources</span>
-                    <p className="text-sm text-muted-foreground">Connect official, community, and private MCP/Skill registries</p>
+              {/* MCP via LLM */}
+              <div className="group rounded-xl border bg-card p-6 hover:border-rose-500/50 transition-colors">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-8 w-8 rounded-lg bg-rose-500/10 flex items-center justify-center">
+                    <Route className="h-4 w-4 text-rose-500" />
                   </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-cyan-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">MCP-exposed search</span>
-                    <p className="text-sm text-muted-foreground">Marketplace search available as MCP tool—AI agents can query and suggest installations</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-cyan-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Gated installation</span>
-                    <p className="text-sm text-muted-foreground">No package executes without explicit user confirmation via approval dialog</p>
-                  </div>
-                </li>
-              </ul>
-              <Link to="/docs/marketplace" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-cyan-500 hover:text-cyan-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
-            </div>
-            {/* Visual: Marketplace Browser */}
-            <div className="relative overflow-x-auto order-2 lg:order-1">
-              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl min-w-[480px]">
-                {/* Header */}
-                <div className="flex items-center gap-3 mb-5 pb-8 border-b border-slate-700">
-                  <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
-                    <Store className="h-5 w-5 text-white" />
-                  </div>
-                  <div>
-                    <div className="text-white font-semibold">Marketplace</div>
-                    <div className="text-slate-400 text-xs">3 sources connected</div>
-                  </div>
-                  <div className="ml-auto">
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-600">
-                      <Search className="h-4 w-4 text-slate-400" />
-                      <span className="text-slate-400 text-xs">Search MCPs &amp; Skills...</span>
-                    </div>
-                  </div>
+                  <span className="text-sm font-medium text-rose-500 uppercase tracking-wide">MCP via LLM</span>
                 </div>
-                {/* Results */}
-                <div className="space-y-3">
-                  {/* MCP Server */}
-                  <div className="rounded-lg bg-white/5 border border-white/10 p-3 hover:border-cyan-500/50 transition-colors cursor-pointer">
-                    <div className="flex items-start gap-3">
-                      <div className="h-10 w-10 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center shrink-0">
-                        <img src="/icons/github.svg" alt="GitHub" className="h-5 w-5" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-white text-sm font-medium">GitHub MCP</span>
-                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400">MCP</span>
-                        </div>
-                        <p className="text-slate-400 text-xs mt-0.5 truncate">Create issues, PRs, search repos, manage workflows</p>
-                        <div className="flex items-center gap-3 mt-2">
-                          <span className="text-slate-500 text-[10px]">Official Registry</span>
-                          <span className="text-slate-500 text-[10px]">12 tools</span>
-                        </div>
-                      </div>
-                      <button className="px-2.5 py-1 rounded bg-cyan-500/20 text-cyan-400 text-xs font-medium hover:bg-cyan-500/30 transition-colors flex items-center gap-1">
-                        <Download className="h-3 w-3" />
-                        Install
-                      </button>
-                    </div>
-                  </div>
-                  {/* Skill */}
-                  <div className="rounded-lg bg-white/5 border border-white/10 p-3 hover:border-cyan-500/50 transition-colors cursor-pointer">
-                    <div className="flex items-start gap-3">
-                      <div className="h-10 w-10 rounded-lg bg-violet-500/20 border border-violet-500/30 flex items-center justify-center shrink-0">
-                        <Terminal className="h-5 w-5 text-violet-400" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-white text-sm font-medium">Code Review</span>
-                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-violet-500/20 text-violet-400">Skill</span>
-                        </div>
-                        <p className="text-slate-400 text-xs mt-0.5 truncate">Multi-step code analysis with security scanning</p>
-                        <div className="flex items-center gap-3 mt-2">
-                          <span className="text-slate-500 text-[10px]">Community</span>
-                          <span className="text-slate-500 text-[10px]">4 steps</span>
-                        </div>
-                      </div>
-                      <button className="px-2.5 py-1 rounded bg-cyan-500/20 text-cyan-400 text-xs font-medium hover:bg-cyan-500/30 transition-colors flex items-center gap-1">
-                        <Download className="h-3 w-3" />
-                        Install
-                      </button>
-                    </div>
-                  </div>
-                  {/* Another MCP */}
-                  <div className="rounded-lg bg-white/5 border border-white/10 p-3 hover:border-cyan-500/50 transition-colors cursor-pointer">
-                    <div className="flex items-start gap-3">
-                      <div className="h-10 w-10 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
-                        <img src="/icons/jira.svg" alt="Jira" className="h-5 w-5" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-white text-sm font-medium">Jira MCP</span>
-                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400">MCP</span>
-                        </div>
-                        <p className="text-slate-400 text-xs mt-0.5 truncate">Create and manage Jira issues, sprints, boards</p>
-                        <div className="flex items-center gap-3 mt-2">
-                          <span className="text-slate-500 text-[10px]">Official Registry</span>
-                          <span className="text-slate-500 text-[10px]">8 tools</span>
-                        </div>
-                      </div>
-                      <div className="px-2.5 py-1 rounded bg-slate-700 text-slate-400 text-xs font-medium flex items-center gap-1">
-                        <Check className="h-3 w-3" />
-                        Installed
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                <h3 className="text-xl font-bold tracking-tight">MITM MCP Injection</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Optionally inject MCP tools into LLM requests and execute tool calls server-side. Gives MCP capabilities to clients that don't natively support MCP — no client changes needed.
+                </p>
+                <ul className="mt-4 space-y-2">
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-rose-500 mt-0.5" />
+                    <span><span className="font-medium">Optional per-client</span> — enable for clients without MCP support, disable for those that have it</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-rose-500 mt-0.5" />
+                    <span><span className="font-medium">Agentic loop</span> — automatic tool call → execute → resume cycles</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-rose-500 mt-0.5" />
+                    <span><span className="font-medium">Mixed tools</span> — MCP tools run server-side, client tools returned normally</span>
+                  </li>
+                </ul>
+                <Link to="/docs/mcp-via-llm" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-rose-500 hover:text-rose-400 transition-colors">
+                  Learn more <span aria-hidden="true">&rarr;</span>
+                </Link>
               </div>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Feature 8: JSON Repair */}
-      <section className="border-b py-16 sm:py-24">
+      {/* Optimizations */}
+      <section className="border-b py-20 sm:py-32 bg-muted/30">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          {/* Hero: Built-in Optimizations */}
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
             <div>
               <div className="flex items-center gap-2 mb-4">
-                <Wrench className="h-5 w-5 text-blue-500" />
-                <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">JSON Repair</span>
+                <Zap className="h-5 w-5 text-teal-500" />
+                <span className="text-sm font-medium text-teal-500 uppercase tracking-wide">Optimizations</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Automatic Response Healing
+                Built-in Optimizations
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                LLMs sometimes return malformed JSON — trailing commas, missing brackets, wrong types. LocalRouter fixes it automatically before it reaches your app, including during streaming.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Syntax repair</span>
-                    <p className="text-sm text-muted-foreground">Fixes trailing commas, missing brackets, unquoted keys, single quotes, markdown fences, and prose wrapping</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Schema coercion</span>
-                    <p className="text-sm text-muted-foreground">Coerces types, normalizes enums, strips extra fields, and inserts defaults to match your JSON Schema</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Works with streaming</span>
-                    <p className="text-sm text-muted-foreground">Character-at-a-time state machine repairs JSON inline as chunks arrive — no full-response buffering</p>
-                  </div>
-                </li>
-              </ul>
-            </div>
-            {/* Visual: Before → After */}
-            <div className="relative">
-              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl">
-                {/* Before */}
-                <div className="mb-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="h-2 w-2 rounded-full bg-red-500" />
-                    <span className="text-xs text-slate-400 font-medium uppercase">LLM Response</span>
-                  </div>
-                  <pre className="text-xs text-slate-300 font-mono bg-white/5 rounded-lg p-3 border border-white/10 overflow-x-auto">
-{`\`\`\`json
-{name: 'Alice',
-  "age": "28",
-  "role": "admin"
-  "active": True,
-  "extra": "field",}
-\`\`\``}
-                  </pre>
-                </div>
-                {/* Arrow */}
-                <div className="flex items-center justify-center my-3">
-                  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 border border-blue-500/30">
-                    <Wrench className="h-3 w-3 text-blue-400" />
-                    <span className="text-xs text-blue-400 font-medium">JSON Repair</span>
-                  </div>
-                </div>
-                {/* After */}
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="h-2 w-2 rounded-full bg-green-500" />
-                    <span className="text-xs text-slate-400 font-medium uppercase">Repaired Output</span>
-                  </div>
-                  <pre className="text-xs text-slate-300 font-mono bg-white/5 rounded-lg p-3 border border-green-500/30 overflow-x-auto">
-{`{
-  "name": "Alice",
-  "age": 28,
-  "role": "Admin",
-  "active": true
-}`}
-                  </pre>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">fence stripped</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">keys quoted</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">quotes fixed</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">comma added</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">age &rarr; int</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">role &rarr; Admin</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-400">True &rarr; true</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400">extra removed</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Feature 9: Context Management */}
-      <section className="border-b py-16 sm:py-24 bg-muted/30">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <Database className="h-5 w-5 text-teal-500" />
-                <span className="text-sm font-medium text-teal-500 uppercase tracking-wide">Context Management</span>
-              </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                98% Smaller MCP Catalogs
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Progressive compression shrinks massive MCP tool catalogs to fit any context window. A built-in FTS5 search index lets AI discover and activate tools on-demand — nothing is lost, just deferred.
+                Automatic repairs, intelligent compression, and token optimization — all running transparently in the request pipeline with zero configuration required.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-teal-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">3-phase progressive compression</span>
-                    <p className="text-sm text-muted-foreground">Compresses descriptions, defers entire servers, then truncates to counts — automatically tuned to your threshold</p>
+                    <span className="font-medium">Pipeline stages run in parallel</span>
+                    <p className="text-sm text-muted-foreground">JSON repair, catalog compression, output indexing, and history compression execute concurrently — no added latency</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-teal-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Search-based activation</span>
-                    <p className="text-sm text-muted-foreground">AI calls <code className="text-xs bg-muted px-1 rounded">ctx_search</code> to discover deferred tools by keyword — matched tools are instantly activated</p>
+                    <span className="font-medium">Zero-config defaults</span>
+                    <p className="text-sm text-muted-foreground">Works out of the box with sensible defaults — per-client overrides available for every stage</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-teal-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Response compression</span>
-                    <p className="text-sm text-muted-foreground">Large tool outputs are indexed and truncated — AI retrieves full content via search when needed</p>
+                    <span className="font-medium">Transparent to clients</span>
+                    <p className="text-sm text-muted-foreground">All optimizations happen between your app and the provider — no client-side changes needed</p>
                   </div>
                 </li>
               </ul>
-              <Link to="/docs/context-management" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-teal-500 hover:text-teal-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
             </div>
-            {/* Visual: Compression Pipeline */}
+            {/* Visual: Optimization Pipeline */}
             <div className="relative overflow-x-auto">
-              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl min-w-[480px]">
-                {/* Before */}
-                <div className="mb-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="h-2 w-2 rounded-full bg-red-500" />
-                    <span className="text-xs text-slate-400 font-medium uppercase">Before — 42 tools loaded</span>
-                    <span className="ml-auto text-xs text-red-400 font-mono">~48,000 tokens</span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {['filesystem__read', 'filesystem__write', 'filesystem__list', 'filesystem__search', 'github__create_issue', 'github__list_prs', 'github__review', 'github__merge', 'slack__send', 'slack__read', 'slack__search', 'jira__create', 'jira__update', 'jira__search', 'postgres__query'].map((tool) => (
-                      <span key={tool} className="px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-slate-400 border border-white/10 font-mono">{tool}</span>
-                    ))}
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-slate-500 border border-white/10">+27 more...</span>
-                  </div>
-                </div>
-                {/* Arrow */}
-                <div className="flex items-center justify-center my-3">
-                  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-teal-500/20 border border-teal-500/30">
-                    <Database className="h-3 w-3 text-teal-400" />
-                    <span className="text-xs text-teal-400 font-medium">Context Management</span>
-                  </div>
-                </div>
-                {/* After */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="h-2 w-2 rounded-full bg-green-500" />
-                    <span className="text-xs text-slate-400 font-medium uppercase">After — 1 search tool active</span>
-                    <span className="ml-auto text-xs text-green-400 font-mono">~960 tokens</span>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="rounded-lg bg-teal-500/10 border border-teal-500/30 p-2.5">
-                      <div className="flex items-center gap-2">
-                        <Search className="h-3.5 w-3.5 text-teal-400" />
-                        <span className="text-white text-xs font-medium font-mono">ctx_search</span>
-                        <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-teal-500/20 text-teal-400">FTS5</span>
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-teal-950 to-slate-900 p-6 shadow-2xl min-w-[480px]">
+                {/* Three nodes: Client → LocalRouter → LLM */}
+                <div className="flex items-start gap-3">
+                  {/* Client */}
+                  <div className="flex flex-col items-center w-20 shrink-0">
+                    <div className="rounded-lg bg-blue-500/20 border border-blue-500/30 p-2.5 text-center w-full">
+                      <div className="h-7 w-7 rounded bg-blue-500/30 flex items-center justify-center mx-auto mb-1">
+                        <span className="text-blue-400 text-xs font-bold">{'</>'}</span>
                       </div>
-                      <p className="text-slate-400 text-[10px] mt-1">Search across 42 tools, 8 resources, 3 prompts from 5 servers</p>
+                      <div className="text-white text-[10px] font-medium">Client</div>
                     </div>
-                    <div className="rounded-lg bg-white/5 border border-white/10 p-2 flex items-center gap-2">
-                      <span className="text-slate-500 text-[10px]">AI searches "create github issue"</span>
-                      <ArrowRight className="h-3 w-3 text-slate-600" />
-                      <span className="text-teal-400 text-[10px] font-medium">github__create_issue activated</span>
+                  </div>
+
+                  {/* Request flow (top) + Response flow (bottom) */}
+                  <div className="flex-1 flex flex-col gap-3 pt-1">
+                    {/* Request → */}
+                    <div>
+                      <div className="flex items-center gap-1 mb-1.5">
+                        <div className="flex-1 h-px bg-slate-600" />
+                        <ArrowRight className="h-3 w-3 text-slate-500" />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5 rounded bg-orange-500/10 border border-orange-500/20 px-2 py-1">
+                          <Minimize2 className="h-3 w-3 text-orange-400 shrink-0" />
+                          <span className="text-[10px] text-orange-400 font-medium">Compressed Chat History</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 rounded bg-teal-500/10 border border-teal-500/20 px-2 py-1">
+                          <Database className="h-3 w-3 text-teal-400 shrink-0" />
+                          <span className="text-[10px] text-teal-400 font-medium">Deferred Loading</span>
+                        </div>
+                      </div>
+                    </div>
+                    {/* ← Response */}
+                    <div>
+                      <div className="flex items-center gap-1 mb-1.5">
+                        <ArrowRight className="h-3 w-3 text-slate-500 rotate-180" />
+                        <div className="flex-1 h-px bg-slate-600" />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5 rounded bg-blue-500/10 border border-blue-500/20 px-2 py-1">
+                          <Wrench className="h-3 w-3 text-blue-400 shrink-0" />
+                          <span className="text-[10px] text-blue-400 font-medium">Response Healing</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 rounded bg-sky-500/10 border border-sky-500/20 px-2 py-1">
+                          <Search className="h-3 w-3 text-sky-400 shrink-0" />
+                          <span className="text-[10px] text-sky-400 font-medium">Indexed Tool Output</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* LocalRouter */}
+                  <div className="flex flex-col items-center w-24 shrink-0">
+                    <div className="rounded-lg bg-teal-500/20 border-2 border-teal-500/50 p-2.5 text-center w-full">
+                      <Zap className="h-5 w-5 text-teal-400 mx-auto mb-1" />
+                      <div className="text-white text-[10px] font-medium">LocalRouter</div>
+                      <div className="text-teal-400 text-[9px]">MCP Gateway</div>
+                    </div>
+                  </div>
+
+                  {/* Request/Response to LLM */}
+                  <div className="flex-1 flex flex-col gap-3 pt-1">
+                    {/* Request → */}
+                    <div>
+                      <div className="flex items-center gap-1 mb-1.5">
+                        <div className="flex-1 h-px bg-slate-600" />
+                        <ArrowRight className="h-3 w-3 text-slate-500" />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="rounded bg-white/5 border border-white/10 px-2 py-1">
+                          <span className="text-slate-400 text-[10px]">Optimized request</span>
+                        </div>
+                      </div>
+                    </div>
+                    {/* ← Response */}
+                    <div>
+                      <div className="flex items-center gap-1 mb-1.5">
+                        <ArrowRight className="h-3 w-3 text-slate-500 rotate-180" />
+                        <div className="flex-1 h-px bg-slate-600" />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="rounded bg-white/5 border border-white/10 px-2 py-1">
+                          <span className="text-slate-400 text-[10px]">Raw response</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* LLM Provider */}
+                  <div className="flex flex-col items-center w-20 shrink-0">
+                    <div className="rounded-lg bg-emerald-500/20 border border-emerald-500/30 p-2.5 text-center w-full">
+                      <div className="h-7 w-7 rounded bg-emerald-500/30 flex items-center justify-center mx-auto mb-1">
+                        <Zap className="h-3.5 w-3.5 text-emerald-400" />
+                      </div>
+                      <div className="text-white text-[10px] font-medium">LLM</div>
                     </div>
                   </div>
                 </div>
-                {/* Compression ratio */}
-                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center">
-                  <span className="text-teal-400 text-xs font-medium">98% context reduction</span>
+
+                {/* Legend */}
+                <div className="mt-5 pt-3 border-t border-white/10 grid grid-cols-2 gap-x-4 gap-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Minimize2 className="h-2.5 w-2.5 text-orange-400" />
+                    <span className="text-slate-400 text-[10px]">Compresses past messages in history</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Wrench className="h-2.5 w-2.5 text-blue-400" />
+                    <span className="text-slate-400 text-[10px]">Fixes malformed JSON responses</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Database className="h-2.5 w-2.5 text-teal-400" />
+                    <span className="text-slate-400 text-[10px]">Defers MCP tools, loads on-demand</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Search className="h-2.5 w-2.5 text-sky-400" />
+                    <span className="text-slate-400 text-[10px]">Indexes file reads, scripts, web fetch</span>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      </section>
 
-      {/* Feature 10: Prompt Compression */}
-      <section className="border-b py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            <div className="order-1 lg:order-2">
-              <div className="flex items-center gap-2 mb-4">
-                <Minimize2 className="h-5 w-5 text-orange-500" />
-                <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">Prompt Compression</span>
+          {/* Sub-features */}
+          <div className="mt-16 pt-16 border-t border-border/50">
+            <div className="grid gap-8 md:grid-cols-2">
+              {/* Deferred Loading */}
+              <div className="group rounded-xl border bg-card p-6 hover:border-teal-500/50 transition-colors">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-8 w-8 rounded-lg bg-teal-500/10 flex items-center justify-center">
+                    <Database className="h-4 w-4 text-teal-500" />
+                  </div>
+                  <span className="text-sm font-medium text-teal-500 uppercase tracking-wide">Context Management</span>
+                </div>
+                <h3 className="text-xl font-bold tracking-tight">Deferred Loading</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Progressive compression shrinks MCP tool catalogs to fit any context window. FTS5 search index lets AI discover and activate tools on-demand.
+                </p>
+                <ul className="mt-4 space-y-2">
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-teal-500 mt-0.5" />
+                    <span><span className="font-medium">3-phase compression</span> — descriptions, servers, then counts</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-teal-500 mt-0.5" />
+                    <span><span className="font-medium">Search activation</span> — <code className="text-xs bg-muted px-1 rounded">ctx_search</code> discovers deferred tools</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-teal-500 mt-0.5" />
+                    <span><span className="font-medium">Auto-tuned</span> — thresholds adapt to your context window</span>
+                  </li>
+                </ul>
+                <Link to="/docs/context-management" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-teal-500 hover:text-teal-400 transition-colors">
+                  Learn more <span aria-hidden="true">&rarr;</span>
+                </Link>
               </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                5-14x Fewer Input Tokens
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                LLMLingua-2 compresses chat histories by removing redundant tokens before sending to providers. Extractive only — keeps original tokens, zero hallucination risk.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Extractive token classification</span>
-                    <p className="text-sm text-muted-foreground">BERT-based model identifies and keeps only essential tokens — no paraphrasing, no generated text</p>
+
+              {/* Automatic Response Healing */}
+              <div className="group rounded-xl border bg-card p-6 hover:border-blue-500/50 transition-colors">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-8 w-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                    <Wrench className="h-4 w-4 text-blue-500" />
                   </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Parallel pipeline execution</span>
-                    <p className="text-sm text-muted-foreground">Runs alongside guardrails and routing — adds no latency to the request pipeline</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Per-client configuration</span>
-                    <p className="text-sm text-muted-foreground">Set compression rate, minimum messages, and preserved recent messages per client</p>
-                  </div>
-                </li>
-              </ul>
-              <Link to="/docs/prompt-compression" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-orange-500 hover:text-orange-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
-            </div>
-            {/* Visual: Before → After compression */}
-            <div className="relative overflow-x-auto order-2 lg:order-1">
-              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl min-w-[480px]">
-                {/* Messages before */}
-                <div className="mb-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="h-2 w-2 rounded-full bg-red-500" />
-                    <span className="text-xs text-slate-400 font-medium uppercase">Chat history — 8 messages</span>
-                    <span className="ml-auto text-xs text-red-400 font-mono">12,400 tokens</span>
-                  </div>
-                  <div className="space-y-1.5">
-                    <div className="rounded bg-blue-500/10 border border-blue-500/20 px-2.5 py-1.5">
-                      <span className="text-blue-400 text-[10px] font-medium">system</span>
-                      <p className="text-slate-400 text-[10px] mt-0.5">You are a helpful assistant that specializes in analyzing...</p>
-                    </div>
-                    <div className="rounded bg-white/5 border border-white/10 px-2.5 py-1.5">
-                      <span className="text-slate-300 text-[10px] font-medium">user</span>
-                      <p className="text-slate-500 text-[10px] mt-0.5">I need you to look at the following codebase and identify...</p>
-                    </div>
-                    <div className="rounded bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5">
-                      <span className="text-emerald-400 text-[10px] font-medium">assistant</span>
-                      <p className="text-slate-500 text-[10px] mt-0.5">I've analyzed the codebase and found several issues that...</p>
-                    </div>
-                    <div className="flex items-center gap-1 px-2">
-                      <div className="h-0.5 w-0.5 rounded-full bg-slate-600" />
-                      <div className="h-0.5 w-0.5 rounded-full bg-slate-600" />
-                      <div className="h-0.5 w-0.5 rounded-full bg-slate-600" />
-                      <span className="text-slate-600 text-[10px] ml-1">5 more messages</span>
-                    </div>
-                  </div>
+                  <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">JSON Repair</span>
                 </div>
-                {/* Arrow */}
-                <div className="flex items-center justify-center my-3">
-                  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-orange-500/20 border border-orange-500/30">
-                    <Minimize2 className="h-3 w-3 text-orange-400" />
-                    <span className="text-xs text-orange-400 font-medium">LLMLingua-2</span>
-                    <span className="text-[10px] text-orange-400/70">20ms</span>
+                <h3 className="text-xl font-bold tracking-tight">Automatic Response Healing</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  LLMs return malformed JSON — trailing commas, missing brackets, wrong types. LocalRouter fixes it automatically before it reaches your app, including during streaming.
+                </p>
+                <ul className="mt-4 space-y-2">
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-blue-500 mt-0.5" />
+                    <span><span className="font-medium">Syntax repair</span> — fixes commas, brackets, quotes, fences, and prose wrapping</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-blue-500 mt-0.5" />
+                    <span><span className="font-medium">Schema coercion</span> — coerces types, normalizes enums, strips extra fields</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-blue-500 mt-0.5" />
+                    <span><span className="font-medium">Streaming</span> — character-at-a-time state machine, no buffering</span>
+                  </li>
+                </ul>
+                <Link to="/docs/json-repair" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-blue-500 hover:text-blue-400 transition-colors">
+                  Learn more <span aria-hidden="true">&rarr;</span>
+                </Link>
+              </div>
+
+              {/* Indexed Tool Output */}
+              <div className="group rounded-xl border bg-card p-6 hover:border-sky-500/50 transition-colors">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-8 w-8 rounded-lg bg-sky-500/10 flex items-center justify-center">
+                    <Search className="h-4 w-4 text-sky-500" />
                   </div>
+                  <span className="text-sm font-medium text-sky-500 uppercase tracking-wide">Context Mode</span>
                 </div>
-                {/* After */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="h-2 w-2 rounded-full bg-green-500" />
-                    <span className="text-xs text-slate-400 font-medium uppercase">Compressed — recent 4 preserved</span>
-                    <span className="ml-auto text-xs text-green-400 font-mono">2,480 tokens</span>
+                <h3 className="text-xl font-bold tracking-tight">Indexed Tool Output</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Large outputs from Bash, WebFetch, and MCP tools are automatically indexed into a searchable FTS5 store. AI retrieves relevant fragments on demand instead of flooding context.
+                </p>
+                <ul className="mt-4 space-y-2">
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-sky-500 mt-0.5" />
+                    <span><span className="font-medium">Auto-indexing</span> — tool outputs above threshold are indexed and truncated</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-sky-500 mt-0.5" />
+                    <span><span className="font-medium">Search retrieval</span> — AI queries indexed content via <code className="text-xs bg-muted px-1 rounded">ctx_search</code></span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-sky-500 mt-0.5" />
+                    <span><span className="font-medium">Configurable</span> — per-client thresholds, retention, and indexing rules</span>
+                  </li>
+                </ul>
+                <Link to="/docs/context-management" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-sky-500 hover:text-sky-400 transition-colors">
+                  Learn more <span aria-hidden="true">&rarr;</span>
+                </Link>
+              </div>
+
+              {/* Compressed Chat History */}
+              <div className="group rounded-xl border bg-card p-6 hover:border-orange-500/50 transition-colors">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-8 w-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                    <Minimize2 className="h-4 w-4 text-orange-500" />
                   </div>
-                  <div className="space-y-1.5">
-                    <div className="rounded bg-orange-500/10 border border-orange-500/20 px-2.5 py-1.5">
-                      <span className="text-orange-400 text-[10px] font-medium">compressed (4 messages)</span>
-                      <p className="text-slate-500 text-[10px] mt-0.5"><span className="line-through text-slate-600">You are a</span> helpful assistant <span className="line-through text-slate-600">that specializes in</span> analyzing...</p>
-                    </div>
-                    <div className="rounded bg-white/5 border border-white/10 px-2.5 py-1.5 ring-1 ring-green-500/30">
-                      <div className="flex items-center gap-1">
-                        <span className="text-slate-300 text-[10px] font-medium">user</span>
-                        <span className="text-green-400 text-[9px] ml-auto">preserved</span>
-                      </div>
-                      <p className="text-slate-400 text-[10px] mt-0.5">Can you also check the authentication module for...</p>
-                    </div>
-                  </div>
+                  <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">Prompt Compression</span>
                 </div>
-                {/* Savings */}
-                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center gap-6">
-                  <span className="text-orange-400 text-xs font-medium">5x compression</span>
-                  <span className="text-slate-500 text-xs">|</span>
-                  <span className="text-green-400 text-xs font-medium">80% cost savings</span>
-                </div>
+                <h3 className="text-xl font-bold tracking-tight">Compressed Chat History</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  LLMLingua-2 compresses older messages in chat histories by removing redundant tokens. Recent messages are preserved intact. Extractive only — zero hallucination risk.
+                </p>
+                <ul className="mt-4 space-y-2">
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
+                    <span><span className="font-medium">Past messages only</span> — recent messages preserved, older history compressed</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
+                    <span><span className="font-medium">Extractive</span> — keeps original tokens, no paraphrasing or generated text</span>
+                  </li>
+                  <li className="flex gap-2 text-sm">
+                    <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
+                    <span><span className="font-medium">Per-client config</span> — compression rate, min messages, preserved recents</span>
+                  </li>
+                </ul>
+                <Link to="/docs/prompt-compression" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-orange-500 hover:text-orange-400 transition-colors">
+                  Learn more <span aria-hidden="true">&rarr;</span>
+                </Link>
               </div>
             </div>
           </div>
@@ -1876,6 +1605,41 @@ export default function Home() {
             </div>
             <Link to="/docs/privacy-security" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-primary hover:text-primary/80 transition-colors">
               Learn more <span aria-hidden="true">&rarr;</span>
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Research */}
+      <section className="border-b py-16 sm:py-24 bg-muted/30">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center mb-10">
+            <FlaskConical className="mx-auto h-12 w-12 text-primary" />
+            <h2 className="mt-4 text-2xl font-bold sm:text-3xl">Research</h2>
+            <p className="mt-4 text-muted-foreground">
+              Technical deep-dives into the novel approaches behind LocalRouter.
+            </p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 max-w-4xl mx-auto">
+            <Link to="/research/mcp-via-llm" className="group rounded-xl border bg-card p-5 hover:border-primary/50 transition-colors">
+              <Zap className="h-5 w-5 text-primary mb-2" />
+              <h3 className="font-semibold text-sm group-hover:text-primary transition-colors">MCP via LLM</h3>
+              <p className="text-xs text-muted-foreground mt-1">Server-side agentic orchestration for transparent MCP tool execution</p>
+            </Link>
+            <Link to="/research/unified-mcp-gateway" className="group rounded-xl border bg-card p-5 hover:border-primary/50 transition-colors">
+              <Wrench className="h-5 w-5 text-primary mb-2" />
+              <h3 className="font-semibold text-sm group-hover:text-primary transition-colors">Unified MCP Gateway</h3>
+              <p className="text-xs text-muted-foreground mt-1">Aggregating multiple MCP servers with progressive catalog compression</p>
+            </Link>
+            <Link to="/research/json-healing" className="group rounded-xl border bg-card p-5 hover:border-primary/50 transition-colors">
+              <Blocks className="h-5 w-5 text-primary mb-2" />
+              <h3 className="font-semibold text-sm group-hover:text-primary transition-colors">Streaming JSON Healing</h3>
+              <p className="text-xs text-muted-foreground mt-1">Single-pass O(n) streaming repair with minimal buffering</p>
+            </Link>
+          </div>
+          <div className="text-center mt-6">
+            <Link to="/research" className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:text-primary/80 transition-colors">
+              View all research <span aria-hidden="true">&rarr;</span>
             </Link>
           </div>
         </div>
