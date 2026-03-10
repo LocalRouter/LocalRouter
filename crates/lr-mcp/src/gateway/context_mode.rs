@@ -762,7 +762,7 @@ pub fn build_fallback_ctx_search_tool(indexing_tools_enabled: bool) -> McpTool {
 /// Build fallback tool definitions for all context-mode tools before transport is initialized.
 /// Returns all tools (filtered by `indexing_tools_enabled`) with hardcoded schemas that match
 /// the actual context-mode MCP server definitions.
-fn build_fallback_tools(indexing_tools_enabled: bool) -> Vec<McpTool> {
+pub fn build_fallback_tools(indexing_tools_enabled: bool) -> Vec<McpTool> {
     let mut tools = vec![build_fallback_ctx_search_tool(indexing_tools_enabled)];
 
     if indexing_tools_enabled {

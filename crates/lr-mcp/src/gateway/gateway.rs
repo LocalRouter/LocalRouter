@@ -1971,6 +1971,7 @@ impl McpGateway {
     pub async fn get_or_build_preview_context(
         &self,
         client_id: &str,
+        allowed_server_ids: Vec<String>,
     ) -> Result<InstructionsContext, String> {
         // 1. Try this client's active session
         for entry in self.sessions.iter() {
@@ -1992,20 +1993,71 @@ impl McpGateway {
             }
         }
 
-        // 3. Build from running servers
-        let running_ids: Vec<String> = self
-            .server_manager
-            .list_configs()
-            .iter()
-            .filter(|c| c.enabled && self.server_manager.is_running(&c.id))
-            .map(|c| c.id.clone())
-            .collect();
-
-        if running_ids.is_empty() {
+        if allowed_server_ids.is_empty() {
             return Err(
-                "No active sessions or running servers. Connect a client first, or use Mock data."
+                "Client has no MCP servers configured. Add servers in the client's MCP permissions."
                     .to_string(),
             );
+        }
+
+        // 3. Start servers on demand if not already running
+        let start_timeout = tokio::time::Duration::from_secs(15);
+        let mut start_futures = Vec::new();
+
+        for server_id in &allowed_server_ids {
+            if self.server_manager.is_running(server_id) {
+                continue;
+            }
+            let sid = server_id.clone();
+            let manager = self.server_manager.clone();
+            start_futures.push(async move {
+                let result =
+                    tokio::time::timeout(start_timeout, manager.start_server(&sid)).await;
+                (sid, result)
+            });
+        }
+
+        let mut running_ids: Vec<String> = allowed_server_ids
+            .iter()
+            .filter(|id| self.server_manager.is_running(id))
+            .cloned()
+            .collect();
+        let mut unavailable = Vec::new();
+
+        if !start_futures.is_empty() {
+            let results = futures::future::join_all(start_futures).await;
+            for (server_id, result) in results {
+                match result {
+                    Ok(Ok(())) => {
+                        running_ids.push(server_id);
+                    }
+                    Ok(Err(e)) => {
+                        let name = self
+                            .server_manager
+                            .get_config(&server_id)
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| server_id.clone());
+                        unavailable.push(UnavailableServerInfo {
+                            name,
+                            error: e.to_string(),
+                        });
+                    }
+                    Err(_) => {
+                        let name = self
+                            .server_manager
+                            .get_config(&server_id)
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| server_id.clone());
+                        unavailable.push(UnavailableServerInfo {
+                            name,
+                            error: format!(
+                                "Server startup timed out after {}s",
+                                start_timeout.as_secs()
+                            ),
+                        });
+                    }
+                }
+            }
         }
 
         // Fetch tools, resources, prompts from running servers
@@ -2082,7 +2134,7 @@ impl McpGateway {
 
         Ok(InstructionsContext {
             servers: server_infos,
-            unavailable_servers: Vec::new(),
+            unavailable_servers: unavailable,
             context_management_enabled: false,
             indexing_tools_enabled: false,
             catalog_compression: None,
