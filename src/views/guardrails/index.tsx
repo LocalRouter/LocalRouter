@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { type PickerSelection } from "@/components/guardrails/SafetyModelPicker"
 import { GuardrailsTab as GuardrailsTryItOut } from "@/views/try-it-out/guardrails-tab"
+import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { GuardrailsPanel } from "./guardrails-panel"
 import type {
   GuardrailsConfig,
@@ -205,6 +206,15 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
         </TabsContent>
 
         <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
+          <div className="flex items-center justify-between mb-4 pb-4 border-b">
+            <div>
+              <span className="text-sm font-medium">Approval Popup Preview</span>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Preview the popup shown when a guardrail flags content with an &ldquo;Ask&rdquo; action
+              </p>
+            </div>
+            <SamplePopupButton popupType="guardrail" />
+          </div>
           <GuardrailsTryItOut forcedMode="all_models" hideModeSwitcher initialClientId={initClientId} />
         </TabsContent>
 
@@ -219,7 +229,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
                   <div>
                     <Label>Parallel Scanning</Label>
                     <p className="text-xs text-muted-foreground">
-                      Run safety checks alongside the LLM request for lower latency. Automatically falls back to sequential scanning for models with side effects (e.g. Perplexity Sonar).
+                      Run safety checks alongside the LLM request for lower latency. Automatically falls back to sequential scanning for requests with side effects (e.g. Perplexity Sonar, non-function tools). For MCP via LLM, guardrails run in parallel but must complete before any tool execution.
                     </p>
                   </div>
                   <Switch

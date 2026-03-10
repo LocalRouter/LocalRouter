@@ -17,11 +17,14 @@ import {
 import { cn } from "@/lib/utils"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import type { ContextManagementConfig, ActiveSessionInfo, ContextModeInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo } from "@/types/tauri-commands"
+import { ToolList } from "@/components/shared/ToolList"
+import type { ToolListItem } from "@/components/shared/ToolList"
+import type { ContextManagementConfig, ActiveSessionInfo, ContextModeInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo, ToolDefinition, GetContextModeToolDefinitionsParams } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
 const DEFAULT_CATALOG_THRESHOLD_BYTES = 1000
 const DEFAULT_RESPONSE_THRESHOLD_BYTES = 200
+
 
 interface ContextManagementViewProps {
   activeSubTab?: string | null
@@ -45,6 +48,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<string | null>(null)
   const [searchLoading, setSearchLoading] = useState(false)
+  const [indexingTools, setIndexingTools] = useState<ToolListItem[]>([])
 
   const tab = activeSubTab || "info"
 
@@ -167,6 +171,24 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
       clearInterval(interval)
     }
   }, [loadSessions])
+
+  // Load indexing tool definitions (re-fetches when config changes)
+  useEffect(() => {
+    const enabled = config?.indexing_tools ?? false
+    invoke<ToolDefinition[]>("get_context_mode_tool_definitions", {
+      indexingToolsEnabled: enabled,
+    } satisfies GetContextModeToolDefinitionsParams as Record<string, unknown>)
+      .then((defs) =>
+        setIndexingTools(
+          defs.map((d): ToolListItem => ({
+            name: d.name,
+            description: d.description,
+            inputSchema: d.input_schema,
+          }))
+        )
+      )
+      .catch(() => setIndexingTools([]))
+  }, [config?.indexing_tools])
 
   // Clear selected session if it disappears
   useEffect(() => {
@@ -357,7 +379,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Enable Catalog Compression</CardTitle>
+                    <CardTitle className="text-base">Default: Enable Catalog Compression</CardTitle>
                     <Switch
                       checked={config.enabled}
                       onCheckedChange={(enabled) => updateField("enabled", enabled)}
@@ -394,7 +416,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Indexing Tools</CardTitle>
+                    <CardTitle className="text-base">Default: Indexing Tools</CardTitle>
                     <Switch
                       checked={config.indexing_tools}
                       onCheckedChange={(v) => updateField("indexingTools", v)}
@@ -415,14 +437,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_execute</code>
-                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_execute_file</code>
-                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_batch_execute</code>
-                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_index</code>
-                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_fetch_and_index</code>
-                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_search</code>
-                  </div>
+                  <ToolList tools={indexingTools} compact />
                   <div className="p-3 rounded-lg border border-amber-600/50 bg-amber-500/10">
                     <div className="flex gap-2 items-start">
                       <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
@@ -937,17 +952,24 @@ interface CompressionPreviewProps {
 
 function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
   const [threshold, setThreshold] = useState(initialThreshold)
-  const [source, setSource] = useState("mock")
+  const [source, setSource] = useState<string | null>(null)
   const [preview, setPreview] = useState<CatalogCompressionPreview | null>(null)
   const [loading, setLoading] = useState(false)
   const [clients, setClients] = useState<ClientInfo[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  // Load clients for the dropdown
+  // Load clients for the dropdown and set default source
   useEffect(() => {
     invoke<ClientInfo[]>("list_clients")
-      .then(setClients)
-      .catch((e) => console.error("Failed to load clients:", e))
+      .then((loaded) => {
+        setClients(loaded)
+        const firstEnabled = loaded.find((c) => c.enabled)
+        setSource(firstEnabled ? `client:${firstEnabled.client_id}` : "mock")
+      })
+      .catch((e) => {
+        console.error("Failed to load clients:", e)
+        setSource("mock")
+      })
   }, [])
 
   const fetchPreview = useCallback(async (bytes: number, src: string) => {
@@ -968,14 +990,9 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
     }
   }, [])
 
-  // Load on mount
+  // Debounced fetch on slider/source change (also serves as initial load once source is set)
   useEffect(() => {
-    fetchPreview(initialThreshold, source)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Debounced fetch on slider/source change
-  useEffect(() => {
+    if (source === null) return
     const timer = setTimeout(() => {
       fetchPreview(threshold, source)
     }, 300)
@@ -1002,16 +1019,16 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
           <div className="space-y-1.5">
             <label className="text-sm text-muted-foreground">Source</label>
             <select
-              value={source}
+              value={source ?? ""}
               onChange={(e) => setSource(e.target.value)}
               className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
             >
-              <option value="mock">Mock Servers (GitHub, Atlassian, Filesystem, PostgreSQL, Slack)</option>
               {clients.filter((c) => c.enabled).map((c) => (
                 <option key={c.id} value={`client:${c.client_id}`}>
                   {c.name}
                 </option>
               ))}
+              <option value="mock">Mock Servers (GitHub, Atlassian, Filesystem, PostgreSQL, Slack)</option>
             </select>
           </div>
 
@@ -1196,89 +1213,53 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
   const prompts = server.prompts ?? []
   const totalItems = server.tool_names.length + server.resource_names.length + server.prompt_names.length
 
+  // Build unified list of all items for ToolList
+  const allItems: ToolListItem[] = [
+    // Tools with full details
+    ...tools.map((t): ToolListItem => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.input_schema as Record<string, unknown> | null,
+      itemType: "tool",
+    })),
+    // Tools with names only (no full details available)
+    ...server.tool_names
+      .filter((name) => !tools.some((t) => t.name === name))
+      .map((name): ToolListItem => ({ name, itemType: "tool" })),
+    // Resources with full details
+    ...resources.map((res): ToolListItem => ({
+      name: res.name,
+      description: res.description,
+      itemType: "resource",
+    })),
+    // Resources with names only
+    ...server.resource_names
+      .filter((name) => !resources.some((r) => r.name === name))
+      .map((name): ToolListItem => ({ name, itemType: "resource" })),
+    // Prompts with full details
+    ...prompts.map((p): ToolListItem => ({
+      name: p.name,
+      description: p.description,
+      itemType: "prompt",
+    })),
+    // Prompts with names only
+    ...server.prompt_names
+      .filter((name) => !prompts.some((p) => p.name === name))
+      .map((name): ToolListItem => ({ name, itemType: "prompt" })),
+  ]
+
   return (
     <div>
       <div className="flex items-center gap-2 mb-1">
         <span className="text-xs font-semibold">{server.name}</span>
-        {server.is_virtual && <span className="text-[10px] text-muted-foreground">(virtual)</span>}
         {mode === "compressed" && isCompressed && (
           <Badge variant="outline" className="text-[10px] px-1 py-0 text-yellow-600 border-yellow-600/30">compressed</Badge>
         )}
         <span className="text-[10px] text-muted-foreground">{totalItems} items</span>
       </div>
 
-      {/* Tool details */}
-      <div className="ml-2 space-y-1">
-        {tools.length > 0 ? tools.map((tool) => (
-          <div key={tool.name}>
-            <div className="text-[11px] font-mono">
-              <span className="text-foreground/70">•</span>{" "}
-              <code className="text-foreground/80">{tool.name}</code>{" "}
-              <span className="text-muted-foreground/60">(tool)</span>
-            </div>
-            {tool.description && (
-              <div className="ml-4 text-[10px] text-muted-foreground">{tool.description}</div>
-            )}
-            {(() => {
-              const schema = tool.input_schema as Record<string, unknown> | null
-              const props = schema?.properties as Record<string, Record<string, string>> | undefined
-              if (!props) return null
-              const reqArr = Array.isArray(schema?.required) ? (schema.required as string[]) : []
-              return (
-                <div className="ml-4 text-[10px] text-muted-foreground/70 font-mono">
-                  {Object.entries(props).map(([key, prop]) => (
-                    <div key={key} className="ml-2">
-                      <span className="text-foreground/60">{key}</span>
-                      {prop.type && <span className="text-blue-500/60">{`: ${prop.type}`}</span>}
-                      {reqArr.includes(key) && <span className="text-red-500/50">*</span>}
-                      {prop.description && <span className="text-muted-foreground/50">{` — ${prop.description}`}</span>}
-                    </div>
-                  ))}
-                </div>
-              )
-            })()}
-          </div>
-        )) : server.tool_names.map((name) => (
-          <div key={name} className="text-[11px] font-mono text-muted-foreground">
-            <span className="text-foreground/70">•</span> <code className="text-foreground/80">{name}</code> <span className="text-muted-foreground/60">(tool)</span>
-          </div>
-        ))}
-
-        {/* Resources */}
-        {resources.length > 0 ? resources.map((res) => (
-          <div key={res.name}>
-            <div className="text-[11px] font-mono">
-              <span className="text-foreground/70">•</span>{" "}
-              <code className="text-foreground/80">{res.name}</code>{" "}
-              <span className="text-blue-500/60">(resource)</span>
-            </div>
-            {res.description && (
-              <div className="ml-4 text-[10px] text-muted-foreground">{res.description}</div>
-            )}
-          </div>
-        )) : server.resource_names.map((name) => (
-          <div key={name} className="text-[11px] font-mono text-muted-foreground">
-            <span className="text-foreground/70">•</span> <code className="text-foreground/80">{name}</code> <span className="text-blue-500/60">(resource)</span>
-          </div>
-        ))}
-
-        {/* Prompts */}
-        {prompts.length > 0 ? prompts.map((prompt) => (
-          <div key={prompt.name}>
-            <div className="text-[11px] font-mono">
-              <span className="text-foreground/70">•</span>{" "}
-              <code className="text-foreground/80">{prompt.name}</code>{" "}
-              <span className="text-purple-500/60">(prompt)</span>
-            </div>
-            {prompt.description && (
-              <div className="ml-4 text-[10px] text-muted-foreground">{prompt.description}</div>
-            )}
-          </div>
-        )) : server.prompt_names.map((name) => (
-          <div key={name} className="text-[11px] font-mono text-muted-foreground">
-            <span className="text-foreground/70">•</span> <code className="text-foreground/80">{name}</code> <span className="text-purple-500/60">(prompt)</span>
-          </div>
-        ))}
+      <div className="ml-2">
+        <ToolList tools={allItems} compact />
       </div>
 
       {mode === "compressed" && isCompressed && (

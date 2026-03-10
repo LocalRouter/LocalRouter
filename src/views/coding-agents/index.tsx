@@ -18,13 +18,17 @@ import {
 } from "@/components/ui/resizable"
 import { CodingAgentsIcon } from "@/components/icons/category-icons"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
+import { ToolList } from "@/components/shared/ToolList"
+import type { ToolListItem } from "@/components/shared/ToolList"
 import { cn } from "@/lib/utils"
 import type {
   CodingAgentInfo,
   CodingAgentType,
   CodingSessionInfo,
   CodingSessionDetail,
+  ToolDefinition,
   GetCodingAgentVersionParams,
+  GetCodingAgentToolDefinitionsParams,
   GetCodingSessionDetailParams,
   OpenPathParams,
 } from "@/types/tauri-commands"
@@ -91,6 +95,9 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
   const [agentVersion, setAgentVersion] = useState<string | null>(null)
   const [versionLoading, setVersionLoading] = useState(false)
   const lastLimitRef = useRef(5)
+
+  // Tool definitions state
+  const [agentTools, setAgentTools] = useState<ToolListItem[]>([])
 
   // Session detail state
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
@@ -195,6 +202,27 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
       .catch(() => setAgentVersion(null))
       .finally(() => setVersionLoading(false))
   }, [selectedAgent, agents])
+
+  // Load tool definitions when selecting an agent
+  useEffect(() => {
+    if (!selectedAgent) {
+      setAgentTools([])
+      return
+    }
+    invoke<ToolDefinition[]>("get_coding_agent_tool_definitions", {
+      agentType: selectedAgent,
+    } satisfies GetCodingAgentToolDefinitionsParams as Record<string, unknown>)
+      .then((defs) =>
+        setAgentTools(
+          defs.map((d): ToolListItem => ({
+            name: d.name,
+            description: d.description,
+            inputSchema: d.input_schema,
+          }))
+        )
+      )
+      .catch(() => setAgentTools([]))
+  }, [selectedAgent])
 
   // Load session detail when selected, and poll for live sessions
   useEffect(() => {
@@ -567,6 +595,19 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                                   })}
                                 </div>
                               </div>
+                            </CardContent>
+                          </Card>
+
+                          {/* MCP Tools */}
+                          <Card>
+                            <CardHeader className="pb-3">
+                              <CardTitle className="text-sm">MCP Tools</CardTitle>
+                              <CardDescription>
+                                Tools exposed through the unified MCP gateway when this agent is enabled.
+                              </CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                              <ToolList tools={agentTools} />
                             </CardContent>
                           </Card>
                         </div>

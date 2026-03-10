@@ -9,7 +9,7 @@ interface DebugViewProps {
   onTabChange: (view: string, subTab?: string | null) => void
 }
 
-type FirewallPopupType = "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback" | "coding_agent"
+type FirewallPopupType = "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback" | "coding_agent" | "guardrail"
 
 type TrayOverlayOption = NonNullable<DebugSetTrayOverlayParams["overlay"]>
 
@@ -146,6 +146,15 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
                 disabled={triggeringFirewall !== null}
               >
                 {triggeringFirewall === "coding_agent" ? "Opening..." : "Coding Agent"}
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleTriggerFirewall("guardrail")}
+                disabled={triggeringFirewall !== null}
+              >
+                {triggeringFirewall === "guardrail" ? "Opening..." : "Guardrail"}
               </Button>
             </div>
           </div>

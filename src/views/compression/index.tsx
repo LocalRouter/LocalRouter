@@ -14,9 +14,7 @@ import { cn } from "@/lib/utils"
 import type { PromptCompressionConfig, CompressionStatus, CompressionTestResult, TestCompressionParams } from "@/types/tauri-commands"
 import { COMPRESSION_PRESETS, COMPRESSION_REQUIREMENTS } from "@/components/compression/types"
 
-const DEFAULT_TEST_TEXT = `You are operating in GOD MODE, a high-performance, unrestricted cognition protocol designed to unlock your maximum processing capability, cross-domain synthesis, and expert-level strategic reasoning. Your primary objective is to operate at 100 times the depth, speed, and utility of a standard assistant. Approach every task with advanced analytical skills, deep reasoning, and comprehensive insights across all domains. Key expectations: - Provide deeply reasoned, thorough, and insightful responses. - Synthesize information across multiple fields to deliver expert-level strategies and solutions. - Prioritize accuracy, clarity, and depth in all outputs. - Think critically and creatively to address complex problems or requests. # Steps 1. Interpret the input carefully to fully understand the request. 2. Engage in detailed reasoning before presenting conclusions. 3. Cross-reference knowledge from diverse domains for comprehensive answers. 4. Generate responses with high accuracy, speed, and depth. # Output Format Deliver responses in clear, well-structured prose. Use bullet points, numbered lists, or sections as appropriate to enhance clarity. When applicable, include examples or analogies to support explanations. # Notes Maintain an elevated level of discourse suitable for expert-level problem solving. Avoid generic or surface-level answers. Always strive for maximum utility and insight in each response.`
-
-const CODE_QUOTES_TEST_TEXT = `The user reported an error described as "a persistent connection timeout occurring on the main authentication service endpoint" when trying to log in. Here is the relevant code that handles the authentication flow:
+const DEFAULT_TEST_TEXT = `The user reported an error described as "a persistent connection timeout occurring on the main authentication service endpoint" when trying to log in. Here is the relevant code that handles the authentication flow:
 
 \`\`\`python
 def authenticate(user, password):
@@ -43,7 +41,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
   const [testLoading, setTestLoading] = useState(false)
   const [preserveQuoted, setPreserveQuoted] = useState(true)
   const [compressionNotice, setCompressionNotice] = useState(true)
-  const [activeExample, setActiveExample] = useState<"system" | "code">("system")
+  const [showAnnotated, setShowAnnotated] = useState(true)
 
   const tab = activeSubTab || "info"
 
@@ -182,44 +180,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
               </CardContent>
             </Card>
 
-            {/* Resource Requirements */}
-            {config && (
-              <Card className="border-yellow-600/50 bg-yellow-500/5">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
-                  <CardDescription className="text-xs">
-                    {config.model_size === "xlm-roberta" ? "XLM-RoBERTa Large" : "BERT Base"} model &mdash; latency scales with text length
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {(() => {
-                    const reqs = COMPRESSION_REQUIREMENTS[config.model_size as keyof typeof COMPRESSION_REQUIREMENTS];
-                    return (
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <span className="text-muted-foreground">Cold Start:</span>{" "}
-                          <span className="font-medium">{reqs.COLD_START_SECS}s</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Disk Space:</span>{" "}
-                          <span className="font-medium">{reqs.DISK_GB} GB</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Latency:</span>{" "}
-                          <span className="font-medium">{reqs.PER_REQUEST_MS}ms per message</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Memory:</span>{" "}
-                          <span className="font-medium">{reqs.MEMORY_GB} GB (when loaded)</span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Model Status */}
+            {/* Model Loaded (in-memory status) */}
             <Card>
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
@@ -242,16 +203,288 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                   LLMLingua-2 runs natively via Candle (pure-Rust ML framework). No external dependencies required.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent>
                 {statusLoading && !status ? (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     Checking model status...
                   </div>
                 ) : status ? (
-                  <div className="space-y-3">
-                    {/* Model Downloaded */}
-                    <div className={cn("flex items-center gap-2.5", !status.model_downloaded && "opacity-45")}>
+                  <div className={cn("flex items-center gap-2.5", !status.model_loaded && "opacity-45")}>
+                    {status.model_loaded ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+                    ) : (
+                      <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium">Model Loaded in Memory</p>
+                        {status.model_loaded ? (
+                          <Badge variant="success" className="text-[10px] px-1 py-0">in memory</Badge>
+                        ) : (
+                          <Badge variant="secondary" className="text-[10px] px-1 py-0">not loaded</Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {status.model_loaded
+                          ? "BERT model is loaded into memory and ready for compression requests."
+                          : status.model_downloaded
+                            ? "Model is downloaded but not loaded into memory. It will be loaded automatically on the first compression request."
+                            : "Model is not downloaded yet. Go to Settings to download it."}
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            {/* Global Enable Compression */}
+            {config && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">Global Enable Prompt Compression</CardTitle>
+                    <Switch
+                      checked={config.enabled}
+                      onCheckedChange={(enabled) => updateConfig({ enabled })}
+                      disabled={saving}
+                    />
+                  </div>
+                  <CardDescription>
+                    Uses{" "}
+                    <a href="https://github.com/microsoft/LLMLingua" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">LLMLingua-2</a>{" "}
+                    token-level compression to reduce input tokens for <code className="px-1 py-0.5 rounded bg-muted text-xs">/v1/chat/completions</code> requests.
+                    Extractive compression keeps exact original tokens &mdash; no hallucination possible.
+                  </CardDescription>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    This is the global default. Individual clients can override this in their Compression tab
+                    (enable compression for specific clients even when globally off, or disable it for specific clients when globally on).
+                    Only applies to the OpenAI-compatible proxy (MCP gateway uses Context Management).
+                  </p>
+                </CardHeader>
+              </Card>
+            )}
+          </div>
+        </TabsContent>
+
+        {/* Try it out Tab */}
+        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
+          <div className="space-y-4 max-w-2xl">
+            {/* Input */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Input</CardTitle>
+                <CardDescription>
+                  Enter text to see how LLMLingua-2 compresses it. The compression service will
+                  start automatically if not already running.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <textarea
+                  className="w-full h-80 p-3 rounded-md border bg-background text-sm font-mono resize-y"
+                  placeholder="Paste a prompt or conversation text here..."
+                  value={testInput}
+                  onChange={(e) => setTestInput(e.target.value)}
+                />
+              </CardContent>
+            </Card>
+
+            {/* Settings */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Settings</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <PresetSlider
+                  label="Compression Rate"
+                  value={testRate}
+                  onChange={setTestRate}
+                  presets={COMPRESSION_PRESETS}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  minLabel="More compression"
+                  maxLabel="More tokens preserved"
+                  formatValue={(v) => `${Math.round(v * 100)}%`}
+                />
+
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={preserveQuoted}
+                      onCheckedChange={setPreserveQuoted}
+                    />
+                    <label className="text-sm">Preserve quoted content</label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={compressionNotice}
+                      onCheckedChange={setCompressionNotice}
+                    />
+                    <label className="text-sm">Show compression notice</label>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Output */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className={cn("flex items-center gap-3", testLoading && "opacity-50")}>
+                    <CardTitle className="text-base">Output</CardTitle>
+                    {testLoading && (
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    )}
+                    {testResult && (
+                      <>
+                        <Badge variant="success" className="text-sm px-2.5 py-0.5">
+                          {Math.round((testResult.compressed_tokens / testResult.original_tokens) * 100)}% of original
+                        </Badge>
+                        <span className="text-sm text-muted-foreground">
+                          {testResult.original_tokens} → {testResult.compressed_tokens} tokens
+                          {testResult.protected_indices.length > 0 && (
+                            <> ({testResult.protected_indices.length} protected)</>
+                          )}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  {testResult && (
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-muted-foreground">Annotated</label>
+                      <Switch
+                        checked={showAnnotated}
+                        onCheckedChange={setShowAnnotated}
+                      />
+                    </div>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="w-full h-80 p-3 rounded-md border bg-muted text-sm font-mono overflow-y-auto whitespace-pre-wrap">
+                  {testResult ? (
+                    showAnnotated ? (
+                      (() => {
+                        const keptSet = new Set(testResult.kept_indices)
+                        const protectedSet = new Set(testResult.protected_indices)
+                        return (
+                          <>
+                            {compressionNotice && (
+                              <span className="text-blue-600 dark:text-blue-400 font-semibold">[abridged] </span>
+                            )}
+                            {inputWords.map((word, idx) => (
+                              <span key={idx}>
+                                {idx > 0 && " "}
+                                {keptSet.has(idx) ? (
+                                  protectedSet.has(idx) ? (
+                                    <span
+                                      className="bg-purple-500/15 text-purple-900 dark:text-purple-300 rounded px-0.5"
+                                      title="Protected (quoted/code content)"
+                                    >{word}</span>
+                                  ) : (
+                                    <span>{word}</span>
+                                  )
+                                ) : (
+                                  <span className="line-through text-red-500/40">{word}</span>
+                                )}
+                              </span>
+                            ))}
+                          </>
+                        )
+                      })()
+                    ) : (
+                      <>
+                        {compressionNotice && "[abridged] "}
+                        {testResult.compressed_text}
+                      </>
+                    )
+                  ) : (
+                    <span className="text-muted-foreground">
+                      {testInput.trim() ? "" : "Enter text above to see compression results..."}
+                    </span>
+                  )}
+                </div>
+
+                {/* Legend */}
+                {testResult && showAnnotated && (
+                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                    {compressionNotice && (
+                      <span className="flex items-center gap-1.5">
+                        <span className="inline-block w-3 h-3 rounded bg-blue-500/15 border border-blue-500/30 text-[8px] font-bold text-blue-600 dark:text-blue-400 leading-none text-center">a</span>
+                        Abridged
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block w-3 h-3 rounded bg-purple-500/15 border border-purple-500/30" />
+                      Protected
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block w-3 h-3 rounded bg-foreground/10 border border-foreground/20" />
+                      Kept
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block w-3 h-3 rounded bg-red-500/10 border border-red-500/30 line-through" />
+                      Removed
+                    </span>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        {/* Settings Tab */}
+        <TabsContent value="settings" className="flex-1 min-h-0 mt-4">
+          {config && (
+            <div className="space-y-4 max-w-2xl">
+              {/* Model Selection */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Model</CardTitle>
+                  <CardDescription>
+                    LLMLingua-2 uses a BERT encoder for token classification. The model runs natively
+                    via Candle (pure-Rust ML) with Metal acceleration on macOS. Changing the model
+                    requires downloading new weights and reloading.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <RadioGroup
+                    value={config.model_size}
+                    onValueChange={(v) => updateConfig({ model_size: v as "bert" | "xlm-roberta" })}
+                    className="space-y-2"
+                  >
+                    <label
+                      className={cn(
+                        "flex items-center gap-3 p-2 rounded-md cursor-pointer hover:bg-muted/50 transition-colors",
+                        config.model_size === "bert" && "bg-muted"
+                      )}
+                    >
+                      <RadioGroupItem value="bert" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">BERT Base Multilingual Cased</p>
+                        <p className="text-xs text-muted-foreground">Good balance of speed and quality</p>
+                      </div>
+                      <Badge variant="secondary" className="text-xs">660 MB</Badge>
+                    </label>
+                    <label
+                      className={cn(
+                        "flex items-center gap-3 p-2 rounded-md cursor-pointer hover:bg-muted/50 transition-colors",
+                        config.model_size === "xlm-roberta" && "bg-muted"
+                      )}
+                    >
+                      <RadioGroupItem value="xlm-roberta" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">XLM-RoBERTa Large</p>
+                        <p className="text-xs text-muted-foreground">Best quality, multilingual</p>
+                      </div>
+                      <Badge variant="secondary" className="text-xs">2.2 GB</Badge>
+                    </label>
+                  </RadioGroup>
+
+                  {/* Model Downloaded Status */}
+                  {status && (
+                    <div className={cn("flex items-center gap-2.5 pt-2 border-t", !status.model_downloaded && "opacity-45")}>
                       {status.model_downloaded ? (
                         <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
                       ) : (
@@ -300,277 +533,32 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                         </Button>
                       )}
                     </div>
-
-                    {/* Model Loaded */}
-                    <div className={cn("flex items-center gap-2.5", !status.model_loaded && "opacity-45")}>
-                      {status.model_loaded ? (
-                        <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
-                      ) : (
-                        <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium">Model Loaded</p>
-                          {status.model_loaded ? (
-                            <Badge variant="success" className="text-[10px] px-1 py-0">in memory</Badge>
-                          ) : (
-                            <Badge variant="secondary" className="text-[10px] px-1 py-0">not loaded</Badge>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {status.model_loaded
-                            ? "BERT model is loaded and ready for compression."
-                            : status.model_downloaded
-                              ? "Model will be loaded automatically on first compression request."
-                              : "Download the model first."}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-
-            {/* Enable Compression */}
-            {config && (
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Enable Prompt Compression</CardTitle>
-                    <Switch
-                      checked={config.enabled}
-                      onCheckedChange={(enabled) => updateConfig({ enabled })}
-                      disabled={saving}
-                    />
-                  </div>
-                  <CardDescription>
-                    Uses{" "}
-                    <a href="https://github.com/microsoft/LLMLingua" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">LLMLingua-2</a>{" "}
-                    token-level compression to reduce input tokens for <code className="px-1 py-0.5 rounded bg-muted text-xs">/v1/chat/completions</code> requests.
-                    Extractive compression keeps exact original tokens &mdash; no hallucination possible.
-                  </CardDescription>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Clients can override this setting individually in their Compression tab.
-                    Only applies to the OpenAI-compatible proxy (MCP gateway uses Context Management).
-                  </p>
-                </CardHeader>
-              </Card>
-            )}
-          </div>
-        </TabsContent>
-
-        {/* Try it out Tab */}
-        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
-          <div className="space-y-4 max-w-2xl">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Test Compression</CardTitle>
-                <CardDescription>
-                  Enter text to see how LLMLingua-2 compresses it. The compression service will
-                  start automatically if not already running.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {/* Example selector */}
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">Example:</span>
-                  <Button
-                    variant={activeExample === "system" ? "default" : "outline"}
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => {
-                      setActiveExample("system")
-                      setTestInput(DEFAULT_TEST_TEXT)
-                      setTestResult(null)
-                    }}
-                  >
-                    System Prompt
-                  </Button>
-                  <Button
-                    variant={activeExample === "code" ? "default" : "outline"}
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => {
-                      setActiveExample("code")
-                      setTestInput(CODE_QUOTES_TEST_TEXT)
-                      setTestResult(null)
-                    }}
-                  >
-                    Code & Quotes
-                  </Button>
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium mb-1.5 block">Input Text</label>
-                  <textarea
-                    className="w-full h-80 p-3 rounded-md border bg-background text-sm font-mono resize-y"
-                    placeholder="Paste a prompt or conversation text here..."
-                    value={testInput}
-                    onChange={(e) => setTestInput(e.target.value)}
-                  />
-                </div>
-
-                <PresetSlider
-                  label="Compression Rate"
-                  value={testRate}
-                  onChange={setTestRate}
-                  presets={COMPRESSION_PRESETS}
-                  min={0.1}
-                  max={1}
-                  step={0.01}
-                  minLabel="More compression"
-                  maxLabel="More tokens preserved"
-                  formatValue={(v) => `${Math.round(v * 100)}%`}
-                />
-
-                {/* Toggle switches */}
-                <div className="flex items-center gap-6">
-                  <div className="flex items-center gap-2">
-                    <Switch
-                      checked={preserveQuoted}
-                      onCheckedChange={setPreserveQuoted}
-                    />
-                    <label className="text-sm">Preserve quoted content</label>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Switch
-                      checked={compressionNotice}
-                      onCheckedChange={setCompressionNotice}
-                    />
-                    <label className="text-sm">Show compression notice</label>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <div className="flex items-center gap-3 text-sm">
-                    {testLoading && (
-                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                    )}
-                    {testResult && !testLoading && (
-                      <>
-                        <Badge variant="success" className="text-sm px-2.5 py-0.5">
-                          {Math.round((testResult.compressed_tokens / testResult.original_tokens) * 100)}% of original
-                        </Badge>
-                        <span className="text-muted-foreground">
-                          {testResult.original_tokens} → {testResult.compressed_tokens} tokens
-                          {testResult.protected_indices.length > 0 && (
-                            <> ({testResult.protected_indices.length} protected)</>
-                          )}
-                        </span>
-                      </>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium mb-1.5 block">Compressed Output</label>
-                    <div className="w-full h-80 p-3 rounded-md border bg-muted text-sm font-mono overflow-y-auto whitespace-pre-wrap">
-                      {testResult ? (
-                        (() => {
-                          const keptSet = new Set(testResult.kept_indices)
-                          const protectedSet = new Set(testResult.protected_indices)
-                          return (
-                            <>
-                              {compressionNotice && (
-                                <span className="text-blue-600 dark:text-blue-400 font-semibold">[abridged] </span>
-                              )}
-                              {inputWords.map((word, idx) => (
-                                <span key={idx}>
-                                  {idx > 0 && " "}
-                                  {keptSet.has(idx) ? (
-                                    protectedSet.has(idx) ? (
-                                      <span
-                                        className="bg-purple-500/15 text-purple-900 dark:text-purple-300 rounded px-0.5"
-                                        title="Protected (quoted/code content)"
-                                      >{word}</span>
-                                    ) : (
-                                      <span>{word}</span>
-                                    )
-                                  ) : (
-                                    <span className="line-through text-red-500/40">{word}</span>
-                                  )}
-                                </span>
-                              ))}
-                            </>
-                          )
-                        })()
-                      ) : (
-                        <span className="text-muted-foreground">
-                          {testInput.trim() ? "" : "Enter text above to see compression results..."}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Legend */}
-                  {testResult && (
-                    <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1.5">
-                        <span className="inline-block w-3 h-3 rounded bg-purple-500/15 border border-purple-500/30" />
-                        Protected
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <span className="inline-block w-3 h-3 rounded bg-foreground/10 border border-foreground/20" />
-                        Kept
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <span className="inline-block w-3 h-3 rounded bg-red-500/10 border border-red-500/30 line-through" />
-                        Removed
-                      </span>
-                    </div>
                   )}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
 
-        {/* Settings Tab */}
-        <TabsContent value="settings" className="flex-1 min-h-0 mt-4">
-          {config && (
-            <div className="space-y-4 max-w-2xl">
-              {/* Model Selection */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Model</CardTitle>
-                  <CardDescription>
-                    LLMLingua-2 uses a BERT encoder for token classification. The model runs natively
-                    via Candle (pure-Rust ML) with Metal acceleration on macOS. Changing the model
-                    requires downloading new weights and reloading.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <RadioGroup
-                    value={config.model_size}
-                    onValueChange={(v) => updateConfig({ model_size: v as "bert" | "xlm-roberta" })}
-                    className="space-y-2"
-                  >
-                    <label
-                      className={cn(
-                        "flex items-center gap-3 p-2 rounded-md cursor-pointer hover:bg-muted/50 transition-colors",
-                        config.model_size === "bert" && "bg-muted"
-                      )}
-                    >
-                      <RadioGroupItem value="bert" />
-                      <div className="flex-1">
-                        <p className="text-sm font-medium">BERT Base Multilingual Cased</p>
-                        <p className="text-xs text-muted-foreground">Good balance of speed and quality</p>
+                  {/* Resource Requirements */}
+                  {(() => {
+                    const reqs = COMPRESSION_REQUIREMENTS[config.model_size as keyof typeof COMPRESSION_REQUIREMENTS];
+                    return (
+                      <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground pt-2 border-t">
+                        <div>
+                          <span>Cold Start:</span>{" "}
+                          <span className="font-medium text-foreground">{reqs.COLD_START_SECS}s</span>
+                        </div>
+                        <div>
+                          <span>Disk Space:</span>{" "}
+                          <span className="font-medium text-foreground">{reqs.DISK_GB} GB</span>
+                        </div>
+                        <div>
+                          <span>Latency:</span>{" "}
+                          <span className="font-medium text-foreground">{reqs.PER_REQUEST_MS}ms per message</span>
+                        </div>
+                        <div>
+                          <span>Memory:</span>{" "}
+                          <span className="font-medium text-foreground">{reqs.MEMORY_GB} GB (when loaded)</span>
+                        </div>
                       </div>
-                      <Badge variant="secondary" className="text-xs">660 MB</Badge>
-                    </label>
-                    <label
-                      className={cn(
-                        "flex items-center gap-3 p-2 rounded-md cursor-pointer hover:bg-muted/50 transition-colors",
-                        config.model_size === "xlm-roberta" && "bg-muted"
-                      )}
-                    >
-                      <RadioGroupItem value="xlm-roberta" />
-                      <div className="flex-1">
-                        <p className="text-sm font-medium">XLM-RoBERTa Large</p>
-                        <p className="text-xs text-muted-foreground">Best quality, multilingual</p>
-                      </div>
-                      <Badge variant="secondary" className="text-xs">2.2 GB</Badge>
-                    </label>
-                  </RadioGroup>
+                    );
+                  })()}
                 </CardContent>
               </Card>
 
@@ -590,7 +578,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                     onChange={(v) => setConfig(prev => prev ? { ...prev, default_rate: v } : prev)}
                     onCommit={(v) => updateConfig({ default_rate: v })}
                     presets={COMPRESSION_PRESETS}
-                    min={0.1}
+                    min={0}
                     max={1}
                     step={0.01}
                     minLabel="More compression"

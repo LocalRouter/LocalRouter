@@ -205,7 +205,7 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
             <div>
               <Label>Parallel Scanning</Label>
               <p className="text-xs text-muted-foreground">
-                Run safety checks alongside the LLM request for lower latency. Automatically falls back to sequential scanning for models with side effects (e.g. Perplexity Sonar).
+                Run safety checks alongside the LLM request for lower latency. Automatically falls back to sequential scanning for requests with side effects (e.g. Perplexity Sonar, non-function tools). For MCP via LLM, guardrails run in parallel but must complete before any tool execution.
               </p>
             </div>
             <Switch

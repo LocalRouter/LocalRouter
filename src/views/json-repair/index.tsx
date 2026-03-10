@@ -127,8 +127,8 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <CardTitle className="text-base">Enable JSON Repair</CardTitle>
-                      <CardDescription>Automatically repair JSON responses for requests with JSON response format</CardDescription>
+                      <CardTitle className="text-base">Global Enable JSON Repair</CardTitle>
+                      <CardDescription>Automatically repair JSON responses for requests with JSON response format. Individual clients can override this in their settings.</CardDescription>
                     </div>
                     <Switch
                       checked={config.enabled}
