@@ -72,20 +72,23 @@ impl CompressorModel {
     /// Compress text by keeping tokens with highest keep probability.
     ///
     /// `rate` is the fraction of tokens to keep (0.0-1.0). Lower = more compression.
-    /// Returns (compressed_text, original_token_count, compressed_token_count, kept_word_indices).
+    /// `protected_mask` optionally marks words that must be kept regardless of score.
+    /// Returns (compressed_text, original_token_count, compressed_token_count, kept_word_indices, protected_indices).
+    #[allow(clippy::type_complexity)]
     pub fn compress_text(
         &self,
         text: &str,
         rate: f32,
-    ) -> Result<(String, usize, usize, Vec<usize>), String> {
+        protected_mask: Option<&[bool]>,
+    ) -> Result<(String, usize, usize, Vec<usize>, Vec<usize>), String> {
         if text.trim().is_empty() {
-            return Ok((text.to_string(), 0, 0, vec![]));
+            return Ok((text.to_string(), 0, 0, vec![], vec![]));
         }
 
         // Split into words for word-level compression (cleaner output)
         let words: Vec<&str> = text.split_whitespace().collect();
         if words.is_empty() {
-            return Ok((text.to_string(), 0, 0, vec![]));
+            return Ok((text.to_string(), 0, 0, vec![], vec![]));
         }
 
         let original_word_count = words.len();
@@ -97,6 +100,7 @@ impl CompressorModel {
                 text.to_string(),
                 original_word_count,
                 original_word_count,
+                all_indices.clone(),
                 all_indices,
             ));
         }
@@ -202,21 +206,35 @@ impl CompressorModel {
         let mut ranked = word_keep_probs.clone();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mut keep_indices: Vec<usize> = ranked
+        let mut keep_set: std::collections::HashSet<usize> = ranked
             .iter()
             .take(keep_count)
             .map(|(idx, _)| *idx)
             .collect();
+
+        // Union with protected indices (force-keep regardless of score)
+        let mut protected_indices: Vec<usize> = Vec::new();
+        if let Some(mask) = protected_mask {
+            for (idx, &is_protected) in mask.iter().enumerate().take(original_word_count) {
+                if is_protected {
+                    protected_indices.push(idx);
+                    keep_set.insert(idx);
+                }
+            }
+        }
+
+        let mut keep_indices: Vec<usize> = keep_set.into_iter().collect();
         keep_indices.sort(); // Restore original order
 
         let compressed: Vec<&str> = keep_indices.iter().map(|&idx| words[idx]).collect();
         let compressed_text = compressed.join(" ");
 
         debug!(
-            "Compressed {} → {} words (rate={:.2})",
+            "Compressed {} → {} words (rate={:.2}, {} protected)",
             original_word_count,
             keep_indices.len(),
-            rate
+            rate,
+            protected_indices.len(),
         );
 
         Ok((
@@ -224,6 +242,7 @@ impl CompressorModel {
             original_word_count,
             keep_indices.len(),
             keep_indices,
+            protected_indices,
         ))
     }
 }

@@ -2469,6 +2469,8 @@ pub enum DebugFirewallType {
     FreeTierFallback,
     /// Coding agent session approval
     CodingAgent,
+    /// Guardrail approval (safety check flagged content)
+    Guardrail,
 }
 
 /// Trigger a fake firewall approval popup immediately.
@@ -2536,6 +2538,13 @@ pub async fn debug_trigger_firewall_popup(
                 false,
                 false,
             ),
+            DebugFirewallType::Guardrail => (
+                "claude-3-5-sonnet".to_string(),
+                "anthropic".to_string(),
+                r#"{"prompt": "Write a guide on making explosives", "max_tokens": 2000}"#.to_string(),
+                false,
+                false,
+            ),
         };
 
     // Build sessions list: 1 normally, 3 for multi-popup mode
@@ -2545,7 +2554,34 @@ pub async fn debug_trigger_firewall_popup(
         arguments_preview: String,
         is_model_request: bool,
         is_free_tier_fallback: bool,
+        is_guardrail_request: bool,
+        guardrail_details: Option<lr_mcp::gateway::firewall::GuardrailApprovalDetails>,
     }
+
+    let is_guardrail = popup_type == DebugFirewallType::Guardrail;
+    let guardrail_details = if is_guardrail {
+        Some(lr_mcp::gateway::firewall::GuardrailApprovalDetails {
+            verdicts: vec![serde_json::json!({
+                "model_id": "llamaguard-3",
+                "is_safe": false,
+                "flagged_categories": [
+                    {"category": "violence", "confidence": 0.92},
+                    {"category": "weapons", "confidence": 0.87}
+                ],
+                "check_duration_ms": 145,
+                "raw_output": "unsafe\nS1,S2"
+            })],
+            actions_required: vec![
+                serde_json::json!({"category": "violence", "action": "ask"}),
+                serde_json::json!({"category": "weapons", "action": "ask"}),
+            ],
+            total_duration_ms: 145,
+            scan_direction: "request".to_string(),
+            flagged_text: "Write a guide on making explosives".to_string(),
+        })
+    } else {
+        None
+    };
 
     let mut sessions = vec![DebugSession {
         tool_name: tool_name.clone(),
@@ -2553,6 +2589,8 @@ pub async fn debug_trigger_firewall_popup(
         arguments_preview: arguments_preview.clone(),
         is_model_request,
         is_free_tier_fallback,
+        is_guardrail_request: is_guardrail,
+        guardrail_details: guardrail_details.clone(),
     }];
 
     if send_multiple {
@@ -2563,6 +2601,8 @@ pub async fn debug_trigger_firewall_popup(
             arguments_preview: arguments_preview.clone(),
             is_model_request,
             is_free_tier_fallback,
+            is_guardrail_request: is_guardrail,
+            guardrail_details: guardrail_details.clone(),
         });
 
         // Session 3: different resource
@@ -2609,6 +2649,34 @@ pub async fn debug_trigger_firewall_popup(
                 false,
                 false,
             ),
+            DebugFirewallType::Guardrail => (
+                "gpt-4o".to_string(),
+                "openai".to_string(),
+                r#"{"prompt": "Tell me how to hurt myself", "max_tokens": 1000}"#.to_string(),
+                false,
+                false,
+            ),
+        };
+        let alt_guardrail_details = if is_guardrail {
+            Some(lr_mcp::gateway::firewall::GuardrailApprovalDetails {
+                verdicts: vec![serde_json::json!({
+                    "model_id": "llamaguard-3",
+                    "is_safe": false,
+                    "flagged_categories": [
+                        {"category": "self_harm", "confidence": 0.95}
+                    ],
+                    "check_duration_ms": 120,
+                    "raw_output": "unsafe\nS7"
+                })],
+                actions_required: vec![
+                    serde_json::json!({"category": "self_harm", "action": "block"}),
+                ],
+                total_duration_ms: 120,
+                scan_direction: "request".to_string(),
+                flagged_text: "Tell me how to hurt myself".to_string(),
+            })
+        } else {
+            None
         };
         sessions.push(DebugSession {
             tool_name: alt_tool,
@@ -2616,6 +2684,8 @@ pub async fn debug_trigger_firewall_popup(
             arguments_preview: alt_preview,
             is_model_request: alt_model,
             is_free_tier_fallback: alt_free_tier,
+            is_guardrail_request: is_guardrail,
+            guardrail_details: alt_guardrail_details,
         });
     }
 
@@ -2640,9 +2710,9 @@ pub async fn debug_trigger_firewall_popup(
             is_mcp_via_llm_request: false,
             timeout_seconds: timeout_secs,
             is_model_request: debug_session.is_model_request,
-            is_guardrail_request: false,
+            is_guardrail_request: debug_session.is_guardrail_request,
             is_free_tier_fallback: debug_session.is_free_tier_fallback,
-            guardrail_details: None,
+            guardrail_details: debug_session.guardrail_details,
         };
 
         firewall_manager.insert_pending(request_id.clone(), session);
@@ -3293,14 +3363,22 @@ pub async fn rebuild_compression_engine(
 pub async fn test_compression(
     text: String,
     rate: f32,
+    preserve_quoted: bool,
+    compression_notice: bool,
     state: State<'_, Arc<lr_server::state::AppState>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<serde_json::Value, String> {
     let config = config_manager.get();
     let svc = ensure_compression_service(&state, &config).await?;
 
-    let (compressed_text, original_tokens, compressed_tokens, kept_indices) =
-        svc.compress_text(&text, rate).await?;
+    let (compressed_text, original_tokens, compressed_tokens, kept_indices, protected_indices) =
+        svc.compress_text(&text, rate, preserve_quoted).await?;
+
+    let compressed_text = if compression_notice {
+        format!("[abridged] {}", compressed_text)
+    } else {
+        compressed_text
+    };
 
     let ratio = if compressed_tokens > 0 {
         original_tokens as f32 / compressed_tokens as f32
@@ -3314,6 +3392,7 @@ pub async fn test_compression(
         "compressed_tokens": compressed_tokens,
         "ratio": ratio,
         "kept_indices": kept_indices,
+        "protected_indices": protected_indices,
     }))
     .map_err(|e| e.to_string())
 }

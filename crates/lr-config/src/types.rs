@@ -1684,6 +1684,7 @@ pub struct GuardrailsConfig {
 
     /// Run guardrails in parallel with LLM request, buffering response until safe (default: true).
     /// Falls back to sequential when side effects are detected (e.g. web search tools, Perplexity Sonar).
+    /// For MCP via LLM, guardrails run in parallel but gate before tool execution.
     #[serde(default = "default_true")]
     pub parallel_guardrails: bool,
 }
@@ -1817,6 +1818,14 @@ pub struct PromptCompressionConfig {
     /// Minimum word count for a message to be compressed (default: 5)
     #[serde(default = "default_min_message_words")]
     pub min_message_words: u32,
+
+    /// Preserve quoted text and code blocks during compression (default: true)
+    #[serde(default = "default_true")]
+    pub preserve_quoted_text: bool,
+
+    /// Prepend [abridged] to each compressed message (default: false)
+    #[serde(default)]
+    pub compression_notice: bool,
 }
 
 fn default_compression_model_size() -> String {
@@ -1849,6 +1858,8 @@ impl Default for PromptCompressionConfig {
             min_messages: default_min_messages(),
             preserve_recent: default_preserve_recent(),
             min_message_words: default_min_message_words(),
+            preserve_quoted_text: true,
+            compression_notice: false,
         }
     }
 }
@@ -1875,6 +1886,14 @@ pub struct ClientPromptCompressionConfig {
     /// Override global compress_system_prompt setting
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compress_system_prompt: Option<bool>,
+
+    /// Override global preserve_quoted_text setting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserve_quoted_text: Option<bool>,
+
+    /// Override global compression_notice setting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_notice: Option<bool>,
 }
 
 /// JSON repair configuration (automatic JSON healing for LLM responses)

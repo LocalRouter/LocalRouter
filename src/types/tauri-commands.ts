@@ -2583,6 +2583,8 @@ export interface PromptCompressionConfig {
   min_messages: number
   preserve_recent: number
   min_message_words: number
+  preserve_quoted_text: boolean
+  compression_notice: boolean
 }
 
 /** Per-client prompt compression configuration */
@@ -2592,6 +2594,8 @@ export interface ClientPromptCompressionConfig {
   preserve_recent: number | null
   rate: number | null
   compress_system_prompt: boolean | null
+  preserve_quoted_text: boolean | null
+  compression_notice: boolean | null
 }
 
 /** Compression model status */
@@ -2609,12 +2613,15 @@ export interface CompressionTestResult {
   compressed_tokens: number
   ratio: number
   kept_indices: number[]
+  protected_indices: number[]
 }
 
 /** Params for test_compression */
 export interface TestCompressionParams {
   text: string
   rate: number
+  preserveQuoted: boolean
+  compressionNotice: boolean
 }
 
 /** Params for update_compression_config */

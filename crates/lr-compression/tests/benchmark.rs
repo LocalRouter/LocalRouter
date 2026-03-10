@@ -20,6 +20,8 @@ async fn benchmark_bert_resources() {
         preserve_recent: 4,
         compress_system_prompt: false,
         min_message_words: 20,
+        preserve_quoted_text: true,
+        compression_notice: false,
     };
 
     let service = CompressionService::new(config).expect("Failed to create service");
@@ -73,7 +75,7 @@ async fn benchmark_bert_resources() {
     let long_text = &medium_text.repeat(3);
 
     // Warmup
-    let _ = service.compress_text(short_text, 0.5).await;
+    let _ = service.compress_text(short_text, 0.5, false).await;
 
     // Benchmark per-request latency (10 iterations each)
     let iterations = 10;
@@ -86,7 +88,7 @@ async fn benchmark_bert_resources() {
         let mut durations = Vec::new();
         for _ in 0..iterations {
             let start = Instant::now();
-            let _ = service.compress_text(text, 0.5).await;
+            let _ = service.compress_text(text, 0.5, false).await;
             durations.push(start.elapsed().as_micros());
         }
         let avg_us = durations.iter().sum::<u128>() / iterations as u128;

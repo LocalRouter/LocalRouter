@@ -36,6 +36,8 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
     preserve_recent: null,
     rate: null,
     compress_system_prompt: null,
+    preserve_quoted_text: null,
+    compression_notice: null,
   })
   const [globalConfig, setGlobalConfig] = useState<PromptCompressionConfig | null>(null)
   const [loading, setLoading] = useState(true)
@@ -88,6 +90,8 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
   const effectiveMinMessages = config.min_messages ?? globalConfig?.min_messages ?? 6
   const effectivePreserveRecent = config.preserve_recent ?? globalConfig?.preserve_recent ?? 4
   const effectiveCompressSystem = config.compress_system_prompt ?? globalConfig?.compress_system_prompt ?? false
+  const effectivePreserveQuoted = config.preserve_quoted_text ?? globalConfig?.preserve_quoted_text ?? true
+  const effectiveCompressionNotice = config.compression_notice ?? globalConfig?.compression_notice ?? false
 
   return (
     <div className="space-y-4">
@@ -269,6 +273,56 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
               <Switch
                 checked={effectiveCompressSystem}
                 onCheckedChange={(checked) => saveConfig({ ...config, compress_system_prompt: checked })}
+              />
+            </div>
+          </div>
+
+          {/* Preserve Quoted & Code Content */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label className="text-sm">Preserve Quoted & Code Content</Label>
+              <p className="text-xs text-muted-foreground">
+                Force-keep words inside quotes, inline code, and fenced code blocks.
+                {config.preserve_quoted_text === null && ` Global: ${effectivePreserveQuoted ? "on" : "off"}`}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {config.preserve_quoted_text !== null && (
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => saveConfig({ ...config, preserve_quoted_text: null })}
+                >
+                  Reset
+                </button>
+              )}
+              <Switch
+                checked={effectivePreserveQuoted}
+                onCheckedChange={(checked) => saveConfig({ ...config, preserve_quoted_text: checked })}
+              />
+            </div>
+          </div>
+
+          {/* Compression Notice */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label className="text-sm">Compression Notice</Label>
+              <p className="text-xs text-muted-foreground">
+                Prepend [abridged] to each compressed message.
+                {config.compression_notice === null && ` Global: ${effectiveCompressionNotice ? "on" : "off"}`}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {config.compression_notice !== null && (
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => saveConfig({ ...config, compression_notice: null })}
+                >
+                  Reset
+                </button>
+              )}
+              <Switch
+                checked={effectiveCompressionNotice}
+                onCheckedChange={(checked) => saveConfig({ ...config, compression_notice: checked })}
               />
             </div>
           </div>

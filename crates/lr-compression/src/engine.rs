@@ -2,6 +2,7 @@
 
 use crate::downloader::{self, repo_id_for_model};
 use crate::model::CompressorModel;
+use crate::protection;
 use crate::types::*;
 use lr_config::types::PromptCompressionConfig;
 use lr_utils::paths;
@@ -104,7 +105,8 @@ impl CompressionService {
         &self,
         text: &str,
         rate: f32,
-    ) -> Result<(String, usize, usize, Vec<usize>), String> {
+        preserve_quoted: bool,
+    ) -> Result<(String, usize, usize, Vec<usize>, Vec<usize>), String> {
         // Lazy-load model if not loaded
         if self.model.read().await.is_none() {
             self.load().await?;
@@ -114,11 +116,22 @@ impl CompressionService {
         let model_guard = self.model.read().await;
         let model = model_guard.as_ref().ok_or("Model not loaded")?;
 
-        // Run inference (blocking, ~20-80ms)
-        model.compress_text(&text_owned, rate)
+        let protected_mask = if preserve_quoted {
+            let words: Vec<&str> = text_owned.split_whitespace().collect();
+            Some(protection::detect_protected_words(&words))
+        } else {
+            None
+        };
+
+        model.compress_text(
+            &text_owned,
+            rate,
+            protected_mask.as_deref(),
+        )
     }
 
     /// Compress chat messages for the pipeline
+    #[allow(clippy::too_many_arguments)]
     pub async fn compress_messages(
         &self,
         messages: &[CompressedMessage],
@@ -126,6 +139,8 @@ impl CompressionService {
         preserve_recent: u32,
         compress_system: bool,
         min_message_words: u32,
+        preserve_quoted: bool,
+        compression_notice: bool,
     ) -> Result<CompressionResult, String> {
         let start = Instant::now();
         let original_count = messages.len();
@@ -172,12 +187,23 @@ impl CompressionService {
                     total_compressed += word_count;
                     compressed_messages.push(msg.clone());
                 } else {
-                    let (compressed_text, _orig, comp, _kept) =
-                        model.compress_text(&msg.content, rate)?;
+                    let protected_mask = if preserve_quoted {
+                        let words: Vec<&str> = msg.content.split_whitespace().collect();
+                        Some(protection::detect_protected_words(&words))
+                    } else {
+                        None
+                    };
+                    let (compressed_text, _orig, comp, _kept, _protected) =
+                        model.compress_text(&msg.content, rate, protected_mask.as_deref())?;
                     total_compressed += comp;
+                    let content = if compression_notice {
+                        format!("[abridged] {}", compressed_text)
+                    } else {
+                        compressed_text
+                    };
                     compressed_messages.push(CompressedMessage {
                         role: msg.role.clone(),
-                        content: compressed_text,
+                        content,
                     });
                 }
             }

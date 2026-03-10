@@ -439,7 +439,9 @@ pub async fn chat_completions(
         );
     }
 
-    // MCP via LLM: intercept after compression + RouteLLM are applied
+    // MCP via LLM: intercept after compression + RouteLLM are applied.
+    // Guardrails run in parallel with the LLM call when possible; the orchestrator
+    // awaits the guardrail gate before executing tools or returning a response.
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
         if client.client_mode == lr_config::ClientMode::McpViaLlm {
             return handle_mcp_via_llm(
@@ -1139,6 +1141,7 @@ async fn check_model_firewall_permission(
 ///
 /// Side effects include non-function tools (e.g. web_search_preview, code_interpreter)
 /// and models that inherently perform web searches (e.g. Perplexity Sonar).
+/// Used by both the standard flow and MCP via LLM to determine parallel vs sequential mode.
 fn has_side_effects(request: &ChatCompletionRequest) -> bool {
     // Non-function tools can trigger real-world actions
     if let Some(tools) = &request.tools {
@@ -1174,7 +1177,7 @@ async fn run_prompt_compression(
     }
 
     // Resolve per-client settings (client overrides > global defaults)
-    let (enabled, min_messages, preserve_recent, rate, compress_system, min_message_words) =
+    let (enabled, min_messages, preserve_recent, rate, compress_system, min_message_words, preserve_quoted, compression_notice) =
         if let Some(client_ctx) = client_context {
             if let Some(client) = state.client_manager.get_client(&client_ctx.client_id) {
                 let pc = &client.prompt_compression;
@@ -1188,6 +1191,10 @@ async fn run_prompt_compression(
                     pc.compress_system_prompt
                         .unwrap_or(config.prompt_compression.compress_system_prompt),
                     config.prompt_compression.min_message_words,
+                    pc.preserve_quoted_text
+                        .unwrap_or(config.prompt_compression.preserve_quoted_text),
+                    pc.compression_notice
+                        .unwrap_or(config.prompt_compression.compression_notice),
                 )
             } else {
                 return Ok(None); // Unknown client
@@ -1201,6 +1208,8 @@ async fn run_prompt_compression(
                 config.prompt_compression.default_rate,
                 config.prompt_compression.compress_system_prompt,
                 config.prompt_compression.min_message_words,
+                config.prompt_compression.preserve_quoted_text,
+                config.prompt_compression.compression_notice,
             )
         };
 
@@ -1244,6 +1253,8 @@ async fn run_prompt_compression(
             preserve_recent,
             compress_system,
             min_message_words,
+            preserve_quoted,
+            compression_notice,
         )
         .await?;
 
@@ -1701,7 +1712,9 @@ fn convert_to_provider_request(
 /// final response. The client speaks only the OpenAI protocol.
 ///
 /// Called after compression and RouteLLM are already applied to the request/provider_request.
-/// Guardrails are awaited sequentially here since MCP tool execution has side effects.
+/// Guardrails run in parallel with the LLM call when possible (no side effects from the
+/// model itself). The orchestrator awaits the guardrail gate before executing any tools
+/// or returning a response. Falls back to sequential when the model has side effects.
 async fn handle_mcp_via_llm(
     state: AppState,
     auth: AuthContext,
@@ -1711,22 +1724,58 @@ async fn handle_mcp_via_llm(
     guardrail_handle: GuardrailHandle,
     _compression_tokens_saved: u64,
 ) -> ApiResult<Response> {
-    // Await guardrails sequentially (MCP via LLM executes tools = side effects)
-    if let Some(handle) = guardrail_handle {
-        let guardrail_result = handle.await.map_err(|e| {
-            ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
-        })??;
-        if let Some(check_result) = guardrail_result {
-            handle_guardrail_approval(
-                &state,
-                client_auth.as_ref().map(|e| &e.0),
-                &request,
-                check_result,
-                "request",
-            )
-            .await?;
+    // Determine if we can run guardrails in parallel with the LLM call.
+    // The LLM call itself is safe, but the orchestrator must await guardrails
+    // before executing any tool calls or returning a response.
+    // Falls back to sequential when the model has side effects (e.g. Perplexity Sonar).
+    let config = state.config_manager.get();
+    let use_parallel = config.guardrails.parallel_guardrails && !has_side_effects(&request);
+
+    let guardrail_gate = if use_parallel {
+        // Parallel mode: wrap guardrail processing into a gate task.
+        // The orchestrator will await this after the LLM call returns.
+        guardrail_handle.map(|handle| {
+            let state = state.clone();
+            let client_auth = client_auth.clone();
+            let request = request.clone();
+            tokio::spawn(async move {
+                let result = handle
+                    .await
+                    .map_err(|e| format!("Guardrail check failed: {}", e))?
+                    .map_err(|e| format!("{:?}", e))?;
+                if let Some(check_result) = result {
+                    handle_guardrail_approval(
+                        &state,
+                        client_auth.as_ref().map(|e| &e.0),
+                        &request,
+                        check_result,
+                        "request",
+                    )
+                    .await
+                    .map_err(|e| format!("{:?}", e))?;
+                }
+                Ok(())
+            })
+        })
+    } else {
+        // Sequential mode: await guardrails before the LLM call starts
+        if let Some(handle) = guardrail_handle {
+            let guardrail_result = handle.await.map_err(|e| {
+                ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
+            })??;
+            if let Some(check_result) = guardrail_result {
+                handle_guardrail_approval(
+                    &state,
+                    client_auth.as_ref().map(|e| &e.0),
+                    &request,
+                    check_result,
+                    "request",
+                )
+                .await?;
+            }
         }
-    }
+        None
+    };
 
     let generation_id = format!("gen-{}", Uuid::new_v4());
     let started_at = Instant::now();
@@ -1805,6 +1854,7 @@ async fn handle_mcp_via_llm(
                 &client,
                 provider_request,
                 allowed_servers,
+                guardrail_gate,
             )
             .await
             .map_err(|e| {
@@ -2120,6 +2170,7 @@ async fn handle_mcp_via_llm(
             &client,
             provider_request,
             allowed_servers,
+            guardrail_gate,
         )
         .await
         .map_err(|e| ApiErrorResponse::bad_gateway(format!("MCP via LLM error: {}", e)))?;

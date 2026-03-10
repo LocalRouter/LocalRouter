@@ -8,6 +8,7 @@
 pub mod downloader;
 pub mod engine;
 pub mod model;
+pub mod protection;
 pub mod types;
 
 pub use downloader::{is_downloaded, repo_id_for_model};

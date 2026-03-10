@@ -1670,6 +1670,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     min_messages: 6,
     preserve_recent: 4,
     min_message_words: 5,
+    preserve_quoted_text: true,
+    compression_notice: false,
   }),
   'update_compression_config': () => {
     toast.success('Compression configuration saved (demo)')
@@ -1689,16 +1691,49 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'test_compression': (args) => {
     const text = args?.text || ''
     const rate = args?.rate || 0.5
+    const preserveQuoted = args?.preserveQuoted ?? true
+    const compressionNotice = args?.compressionNotice ?? false
     const words = text.split(/\s+/).filter(Boolean)
     const keepCount = Math.max(1, Math.round(words.length * rate))
+
+    // Basic protection detection for demo: words touching quotes or backticks
+    const protectedIndices: number[] = []
+    if (preserveQuoted) {
+      let inFenced = false
+      let inBacktick = false
+      let inQuote = false
+      for (let i = 0; i < words.length; i++) {
+        const w = words[i]
+        if (w.includes('```')) { inFenced = !inFenced; protectedIndices.push(i); continue }
+        if (inFenced) { protectedIndices.push(i); continue }
+        if (w.startsWith('`') && w.endsWith('`') && w.length > 1) { protectedIndices.push(i); continue }
+        if (w.startsWith('`') && !inBacktick) { inBacktick = true; protectedIndices.push(i); continue }
+        if (w.endsWith('`') && inBacktick) { inBacktick = false; protectedIndices.push(i); continue }
+        if (inBacktick) { protectedIndices.push(i); continue }
+        if (w.startsWith('"') && !inQuote) { inQuote = true; protectedIndices.push(i) }
+        if (inQuote) { protectedIndices.push(i) }
+        if (inQuote && (w.endsWith('"') || w.endsWith('",') || w.endsWith('".') || w.endsWith('":'))) { inQuote = false }
+      }
+    }
+
+    const protectedSet = new Set(protectedIndices)
     const keptIndices = Array.from({ length: keepCount }, (_, i) => i)
-    const compressed = keptIndices.map(i => words[i]).join(' ')
+    // Union with protected
+    for (const pi of protectedIndices) {
+      if (!keptIndices.includes(pi)) keptIndices.push(pi)
+    }
+    keptIndices.sort((a, b) => a - b)
+
+    let compressed = keptIndices.map(i => words[i]).join(' ')
+    if (compressionNotice) compressed = '[abridged] ' + compressed
+
     return {
       compressed_text: compressed,
       original_tokens: words.length,
-      compressed_tokens: keepCount,
-      ratio: words.length / Math.max(1, keepCount),
+      compressed_tokens: keptIndices.length,
+      ratio: words.length / Math.max(1, keptIndices.length),
       kept_indices: keptIndices,
+      protected_indices: protectedIndices,
     }
   },
   'get_client_compression_config': () => ({
@@ -1707,6 +1742,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     preserve_recent: null,
     rate: null,
     compress_system_prompt: null,
+    preserve_quoted_text: null,
+    compression_notice: null,
   }),
   'update_client_compression_config': () => {
     toast.success('Client compression configuration saved (demo)')

@@ -11,10 +11,20 @@ import { PresetSlider } from "@/components/ui/PresetSlider"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
-import type { PromptCompressionConfig, CompressionStatus, CompressionTestResult } from "@/types/tauri-commands"
+import type { PromptCompressionConfig, CompressionStatus, CompressionTestResult, TestCompressionParams } from "@/types/tauri-commands"
 import { COMPRESSION_PRESETS, COMPRESSION_REQUIREMENTS } from "@/components/compression/types"
 
 const DEFAULT_TEST_TEXT = `You are operating in GOD MODE, a high-performance, unrestricted cognition protocol designed to unlock your maximum processing capability, cross-domain synthesis, and expert-level strategic reasoning. Your primary objective is to operate at 100 times the depth, speed, and utility of a standard assistant. Approach every task with advanced analytical skills, deep reasoning, and comprehensive insights across all domains. Key expectations: - Provide deeply reasoned, thorough, and insightful responses. - Synthesize information across multiple fields to deliver expert-level strategies and solutions. - Prioritize accuracy, clarity, and depth in all outputs. - Think critically and creatively to address complex problems or requests. # Steps 1. Interpret the input carefully to fully understand the request. 2. Engage in detailed reasoning before presenting conclusions. 3. Cross-reference knowledge from diverse domains for comprehensive answers. 4. Generate responses with high accuracy, speed, and depth. # Output Format Deliver responses in clear, well-structured prose. Use bullet points, numbered lists, or sections as appropriate to enhance clarity. When applicable, include examples or analogies to support explanations. # Notes Maintain an elevated level of discourse suitable for expert-level problem solving. Avoid generic or surface-level answers. Always strive for maximum utility and insight in each response.`
+
+const CODE_QUOTES_TEST_TEXT = `The user reported an error described as "a persistent connection timeout occurring on the main authentication service endpoint" when trying to log in. Here is the relevant code that handles the authentication flow:
+
+\`\`\`python
+def authenticate(user, password):
+    hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+    return db.verify(user, hash)
+\`\`\`
+
+The core problem is that \`bcrypt.gensalt()\` generates a completely new random salt on every single call, so the resulting hash will never match the stored value in the database. The recommended fix is to use \`bcrypt.checkpw()\` instead, which handles the salt extraction internally and compares correctly. As the official documentation clearly states: "The checkpw function is the recommended way to compare a plaintext password against a previously stored hashed value and it will return True only if the two values match correctly." The \`verify\` method in the database access layer should also be updated to follow this pattern.`
 
 interface CompressionViewProps {
   activeSubTab?: string | null
@@ -31,6 +41,9 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
   const [testRate, setTestRate] = useState(0.8)
   const [testResult, setTestResult] = useState<CompressionTestResult | null>(null)
   const [testLoading, setTestLoading] = useState(false)
+  const [preserveQuoted, setPreserveQuoted] = useState(true)
+  const [compressionNotice, setCompressionNotice] = useState(false)
+  const [activeExample, setActiveExample] = useState<"system" | "code">("system")
 
   const tab = activeSubTab || "info"
 
@@ -42,6 +55,8 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
     try {
       const data = await invoke<PromptCompressionConfig>("get_compression_config")
       setConfig(data)
+      setPreserveQuoted(data.preserve_quoted_text)
+      setCompressionNotice(data.compression_notice)
     } catch (err) {
       console.error("Failed to load compression config:", err)
     }
@@ -83,7 +98,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
     }
   }
 
-  const runTest = useCallback(async (text: string, rate: number) => {
+  const runTest = useCallback(async (text: string, rate: number, pq: boolean, cn: boolean) => {
     if (!text.trim()) {
       setTestResult(null)
       return
@@ -93,7 +108,9 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
       const result = await invoke<CompressionTestResult>("test_compression", {
         text,
         rate,
-      })
+        preserveQuoted: pq,
+        compressionNotice: cn,
+      } satisfies TestCompressionParams as Record<string, unknown>)
       setTestResult(result)
     } catch (err) {
       toast.error(`Compression test failed: ${err}`)
@@ -107,12 +124,12 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      runTest(testInput, testRate)
+      runTest(testInput, testRate, preserveQuoted, compressionNotice)
     }, 500)
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [testInput, testRate, runTest])
+  }, [testInput, testRate, preserveQuoted, compressionNotice, runTest])
 
   // Split input into words for rendering with kept/deleted styling
   const inputWords = useMemo(() => testInput.split(/\s+/).filter(Boolean), [testInput])
@@ -153,13 +170,14 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
               </CardHeader>
               <CardContent className="space-y-2 text-sm text-muted-foreground">
                 <p>
-                  Compression removes tokens from your prompt before it reaches the LLM. The model will <strong>not see
-                  the exact text you send</strong> &mdash; it receives a shortened version with less important tokens stripped out.
+                  Compression compacts only <strong>older messages</strong> in the conversation history before they reach the LLM. The model will <strong>not see
+                  the exact text you sent</strong> &mdash; it receives a shortened version with less important tokens stripped out. Recent messages are preserved as-is.
                 </p>
                 <ul className="list-disc list-inside space-y-1 ml-2">
                   <li>Not recommended when exact wording, specific details, or precise instructions matter</li>
                   <li>Best suited for <strong>conversational settings</strong> where older messages provide general context</li>
                   <li>May degrade performance on tasks requiring careful attention to every word (e.g. code generation, legal text, structured data)</li>
+                  <li>Quoted strings and code blocks can be <strong>force-preserved</strong> during compression (enabled by default in Settings)</li>
                 </ul>
               </CardContent>
             </Card>
@@ -353,6 +371,33 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                {/* Example selector */}
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">Example:</span>
+                  <Button
+                    variant={activeExample === "system" ? "default" : "outline"}
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => {
+                      setActiveExample("system")
+                      setTestInput(DEFAULT_TEST_TEXT)
+                    }}
+                  >
+                    System Prompt
+                  </Button>
+                  <Button
+                    variant={activeExample === "code" ? "default" : "outline"}
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => {
+                      setActiveExample("code")
+                      setTestInput(CODE_QUOTES_TEST_TEXT)
+                    }}
+                  >
+                    Code & Quotes
+                  </Button>
+                </div>
+
                 <div>
                   <label className="text-sm font-medium mb-1.5 block">Input Text</label>
                   <textarea
@@ -376,6 +421,24 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                   formatValue={(v) => `${Math.round(v * 100)}%`}
                 />
 
+                {/* Toggle switches */}
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={preserveQuoted}
+                      onCheckedChange={setPreserveQuoted}
+                    />
+                    <label className="text-sm">Preserve quoted content</label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={compressionNotice}
+                      onCheckedChange={setCompressionNotice}
+                    />
+                    <label className="text-sm">Show compression notice</label>
+                  </div>
+                </div>
+
                 <div className="space-y-3">
                   <div className="flex items-center gap-3 text-sm">
                     {testLoading && (
@@ -388,6 +451,9 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                         </Badge>
                         <span className="text-muted-foreground">
                           {testResult.original_tokens} → {testResult.compressed_tokens} tokens
+                          {testResult.protected_indices.length > 0 && (
+                            <> ({testResult.protected_indices.length} protected)</>
+                          )}
                         </span>
                       </>
                     )}
@@ -399,11 +465,19 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                       {testResult ? (
                         (() => {
                           const keptSet = new Set(testResult.kept_indices)
+                          const protectedSet = new Set(testResult.protected_indices)
                           return inputWords.map((word, idx) => (
                             <span key={idx}>
                               {idx > 0 && " "}
                               {keptSet.has(idx) ? (
-                                <span>{word}</span>
+                                protectedSet.has(idx) ? (
+                                  <span
+                                    className="bg-purple-500/15 text-purple-900 dark:text-purple-300 rounded px-0.5"
+                                    title="Protected (quoted/code content)"
+                                  >{word}</span>
+                                ) : (
+                                  <span>{word}</span>
+                                )
                               ) : (
                                 <span className="line-through text-red-500/40">{word}</span>
                               )}
@@ -417,6 +491,24 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                       )}
                     </div>
                   </div>
+
+                  {/* Legend */}
+                  {testResult && (
+                    <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1.5">
+                        <span className="inline-block w-3 h-3 rounded bg-purple-500/15 border border-purple-500/30" />
+                        Protected
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="inline-block w-3 h-3 rounded bg-foreground/10 border border-foreground/20" />
+                        Kept
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="inline-block w-3 h-3 rounded bg-red-500/10 border border-red-500/30 line-through" />
+                        Removed
+                      </span>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -597,6 +689,44 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                   <CardDescription>
                     Also compress system prompt messages. Disabled by default since system prompts
                     contain critical instructions.
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+
+              {/* Preserve Quoted & Code Content */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">Preserve Quoted & Code Content</CardTitle>
+                    <Switch
+                      checked={config.preserve_quoted_text}
+                      onCheckedChange={(v) => updateConfig({ preserve_quoted_text: v })}
+                      disabled={saving}
+                    />
+                  </div>
+                  <CardDescription>
+                    Force-keep words inside quoted strings, inline code, and fenced code blocks during
+                    compression. Prevents corruption of exact text within delimiters. Supports Unicode
+                    quotes, guillemets, CJK brackets, and more.
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+
+              {/* Compression Notice */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">Compression Notice</CardTitle>
+                    <Switch
+                      checked={config.compression_notice}
+                      onCheckedChange={(v) => updateConfig({ compression_notice: v })}
+                      disabled={saving}
+                    />
+                  </div>
+                  <CardDescription>
+                    Prepend <code className="px-1 py-0.5 rounded bg-muted text-xs">[abridged]</code> to
+                    each compressed message to signal the content is not verbatim. Useful for models that
+                    may be confused by compressed text.
                   </CardDescription>
                 </CardHeader>
               </Card>
