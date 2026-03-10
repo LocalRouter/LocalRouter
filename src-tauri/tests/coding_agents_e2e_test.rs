@@ -71,6 +71,7 @@ async fn gateway_request(
             PermissionState::Off,
             PermissionState::Allow,
             Some(agent_type),
+            None,
             request,
         )
         .await
