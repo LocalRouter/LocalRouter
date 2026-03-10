@@ -37,7 +37,7 @@ pub fn is_marketplace_tool(name: &str) -> bool {
 /// Check if a marketplace tool is a read-only search tool (no approval needed).
 pub fn is_marketplace_search_tool(name: &str) -> bool {
     let stripped = name.strip_prefix(TOOL_PREFIX).unwrap_or(name);
-    matches!(stripped, tools::SEARCH_MCP_SERVERS | tools::SEARCH_SKILLS)
+    matches!(stripped, tools::SEARCH)
 }
 
 /// Central marketplace service
@@ -191,7 +191,7 @@ impl MarketplaceService {
         self.data_dir.join("marketplace-skills")
     }
 
-    /// List the 4 marketplace tools as JSON tool definitions
+    /// List the marketplace tools as JSON tool definitions
     pub fn list_tools(&self) -> Vec<Value> {
         tools::list_tools()
     }

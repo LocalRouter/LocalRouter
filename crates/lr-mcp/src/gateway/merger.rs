@@ -1891,10 +1891,10 @@ mod tests {
                 },
                 VirtualInstructions {
                     section_title: "Marketplace".to_string(),
-                    content: "Use marketplace tools to discover and install new MCP servers.\n".to_string(),
+                    content: "Use marketplace tools to discover and install new MCP servers and skills.\n".to_string(),
                     tool_names: vec![
-                        "marketplace__search_mcp_servers".to_string(),
-                        "marketplace__install_mcp_server".to_string(),
+                        "marketplace__search".to_string(),
+                        "marketplace__install".to_string(),
                     ],
                     priority: 20,
                 },
@@ -1914,7 +1914,7 @@ mod tests {
 
         // Tool annotations
         assert!(instructions.contains("`skill_get_info` (tool)"));
-        assert!(instructions.contains("`marketplace__search_mcp_servers` (tool)"));
+        assert!(instructions.contains("`marketplace__search` (tool)"));
         assert!(instructions.contains("`filesystem__read_file` (tool)"));
         assert!(instructions.contains("`knowledge__search` (tool)"));
         assert!(instructions.contains("`knowledge__docs` (resource)"));

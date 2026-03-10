@@ -146,6 +146,14 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
         }
     }
 
+    fn deferrable_tools(&self, state: &dyn VirtualSessionState) -> Vec<String> {
+        // All marketplace tools are deferrable — they can be activated via ctx_search
+        self.list_tools(state)
+            .into_iter()
+            .map(|t| t.name)
+            .collect()
+    }
+
     fn build_instructions(&self, state: &dyn VirtualSessionState) -> Option<VirtualInstructions> {
         let state = state
             .as_any()

@@ -1,33 +1,40 @@
 //! Marketplace tool definitions and handler
 //!
-//! Defines the 4 marketplace tools and handles tool calls.
+//! Defines the 2 marketplace tools (search + install) and handles tool calls.
 
 use crate::{MarketplaceError, MarketplaceService, TOOL_PREFIX};
 use serde_json::{json, Value};
 use tracing::{debug, info};
 
 /// Tool names (without prefix)
-pub const SEARCH_MCP_SERVERS: &str = "search_mcp_servers";
-pub const INSTALL_MCP_SERVER: &str = "install_mcp_server";
-pub const SEARCH_SKILLS: &str = "search_skills";
-pub const INSTALL_SKILL: &str = "install_skill";
+pub const SEARCH: &str = "search";
+pub const INSTALL: &str = "install";
 
 /// List all marketplace tools as JSON tool definitions
 pub fn list_tools() -> Vec<Value> {
     vec![
         json!({
-            "name": format!("{}{}", TOOL_PREFIX, SEARCH_MCP_SERVERS),
-            "description": "Search the MCP server registry for available servers. Returns a list of servers matching the query with their descriptions and installation options.",
+            "name": format!("{}{}", TOOL_PREFIX, SEARCH),
+            "description": "Search the marketplace for available MCP servers and/or skills. Returns matching results with descriptions and installation options.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query to find MCP servers (e.g., 'filesystem', 'database', 'github')"
+                        "description": "Search query (e.g., 'filesystem', 'database', 'github')"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["mcp", "skill", "all"],
+                        "description": "Type of items to search for: 'mcp' for MCP servers, 'skill' for skills, 'all' for both (default: 'all')"
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Optional source label to filter results (e.g., 'Anthropic', 'Community')"
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of results to return (default: 10, max: 50)",
+                        "description": "Maximum number of results per type (default: 10, max: 50)",
                         "minimum": 1,
                         "maximum": 50
                     }
@@ -36,56 +43,26 @@ pub fn list_tools() -> Vec<Value> {
             }
         }),
         json!({
-            "name": format!("{}{}", TOOL_PREFIX, INSTALL_MCP_SERVER),
-            "description": "Install an MCP server from the registry. This will prompt the user to confirm and configure the installation. After installation, the server will be available for use. Use the name and source from search results.",
+            "name": format!("{}{}", TOOL_PREFIX, INSTALL),
+            "description": "Install an MCP server or skill from the marketplace. The user will be prompted to confirm the installation. Use the name, source, and type from search results.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Name of the MCP server to install (from search results)"
+                        "description": "Name of the item to install (from search results)"
                     },
                     "source": {
                         "type": "string",
-                        "description": "Source ID of the marketplace (e.g., 'mcp-registry' from search results)"
+                        "description": "Source ID of the marketplace (e.g., 'mcp-registry', 'anthropic' from search results)"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["mcp", "skill"],
+                        "description": "Type of item to install: 'mcp' for MCP server, 'skill' for skill"
                     }
                 },
-                "required": ["name", "source"]
-            }
-        }),
-        json!({
-            "name": format!("{}{}", TOOL_PREFIX, SEARCH_SKILLS),
-            "description": "Browse available skills from configured skill sources. Returns a list of skills with their descriptions and metadata.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Optional search query to filter skills by name or description"
-                    },
-                    "source": {
-                        "type": "string",
-                        "description": "Optional source label to filter skills (e.g., 'Anthropic', 'Community')"
-                    }
-                }
-            }
-        }),
-        json!({
-            "name": format!("{}{}", TOOL_PREFIX, INSTALL_SKILL),
-            "description": "Install a skill from a configured skill source. This will download the skill files and make it available for use. The user will be prompted to confirm the installation. Use the name and source from search results.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the skill to install (from search results)"
-                    },
-                    "source": {
-                        "type": "string",
-                        "description": "Source ID of the marketplace (e.g., 'anthropic' from search results)"
-                    }
-                },
-                "required": ["name", "source"]
+                "required": ["name", "source", "type"]
             }
         }),
     ]
@@ -108,43 +85,21 @@ pub async fn handle_tool_call(
     );
 
     match tool {
-        SEARCH_MCP_SERVERS => {
-            if !service.is_mcp_enabled() {
-                return Err(MarketplaceError::NotEnabled(
-                    "MCP marketplace is not enabled".to_string(),
-                ));
-            }
-            handle_search_mcp_servers(service, arguments).await
-        }
-        INSTALL_MCP_SERVER => {
-            if !service.is_mcp_enabled() {
-                return Err(MarketplaceError::NotEnabled(
-                    "MCP marketplace is not enabled".to_string(),
-                ));
-            }
-            handle_install_mcp_server(service, arguments, client_id, client_name).await
-        }
-        SEARCH_SKILLS => {
-            if !service.is_skills_enabled() {
-                return Err(MarketplaceError::NotEnabled(
-                    "Skills marketplace is not enabled".to_string(),
-                ));
-            }
-            handle_search_skills(service, arguments).await
-        }
-        INSTALL_SKILL => {
-            if !service.is_skills_enabled() {
-                return Err(MarketplaceError::NotEnabled(
-                    "Skills marketplace is not enabled".to_string(),
-                ));
-            }
-            handle_install_skill(service, arguments, client_id, client_name).await
-        }
+        SEARCH => handle_search(service, arguments).await,
+        INSTALL => handle_install(service, arguments, client_id, client_name).await,
         _ => Err(MarketplaceError::InvalidToolName(tool_name.to_string())),
     }
 }
 
-async fn handle_search_mcp_servers(
+/// Resolve the search type from arguments, defaulting to "all"
+fn resolve_search_type(arguments: &Value) -> &str {
+    arguments
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("all")
+}
+
+async fn handle_search(
     service: &MarketplaceService,
     arguments: Value,
 ) -> Result<Value, MarketplaceError> {
@@ -153,23 +108,37 @@ async fn handle_search_mcp_servers(
         .and_then(|v| v.as_str())
         .ok_or_else(|| MarketplaceError::InvalidArguments("query is required".to_string()))?;
 
+    let search_type = resolve_search_type(&arguments);
+    let source = arguments.get("source").and_then(|v| v.as_str());
     let limit = arguments
         .get("limit")
         .and_then(|v| v.as_u64())
         .map(|v| v.min(50) as u32);
 
-    let results = service.search_mcp_servers(query, limit).await?;
+    let mut result = json!({});
 
-    info!("Found {} MCP servers matching '{}'", results.len(), query);
+    // Search MCP servers
+    if (search_type == "all" || search_type == "mcp") && service.is_mcp_enabled() {
+        let servers = service.search_mcp_servers(query, limit).await?;
+        info!("Found {} MCP servers matching '{}'", servers.len(), query);
+        result["servers"] = json!(servers);
+        result["server_count"] = json!(servers.len());
+    }
 
-    Ok(json!({
-        "servers": results,
-        "count": results.len(),
-        "hint": "Use marketplace__install_mcp_server to install a server"
-    }))
+    // Search skills
+    if (search_type == "all" || search_type == "skill") && service.is_skills_enabled() {
+        let skills = service.search_skills(Some(query), source).await?;
+        info!("Found {} skills matching '{}'", skills.len(), query);
+        result["skills"] = json!(skills);
+        result["skill_count"] = json!(skills.len());
+    }
+
+    result["hint"] = json!("Use marketplace__install with type 'mcp' or 'skill' to install an item");
+
+    Ok(result)
 }
 
-async fn handle_install_mcp_server(
+async fn handle_install(
     service: &MarketplaceService,
     arguments: Value,
     client_id: &str,
@@ -185,6 +154,42 @@ async fn handle_install_mcp_server(
         .and_then(|v| v.as_str())
         .ok_or_else(|| MarketplaceError::InvalidArguments("source is required".to_string()))?;
 
+    let install_type = arguments
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| MarketplaceError::InvalidArguments("type is required".to_string()))?;
+
+    match install_type {
+        "mcp" => {
+            if !service.is_mcp_enabled() {
+                return Err(MarketplaceError::NotEnabled(
+                    "MCP marketplace is not enabled".to_string(),
+                ));
+            }
+            handle_install_mcp_server(service, name, source, client_id, client_name).await
+        }
+        "skill" => {
+            if !service.is_skills_enabled() {
+                return Err(MarketplaceError::NotEnabled(
+                    "Skills marketplace is not enabled".to_string(),
+                ));
+            }
+            handle_install_skill(service, name, source, client_id, client_name).await
+        }
+        _ => Err(MarketplaceError::InvalidArguments(format!(
+            "Invalid type '{}'. Must be 'mcp' or 'skill'",
+            install_type
+        ))),
+    }
+}
+
+async fn handle_install_mcp_server(
+    service: &MarketplaceService,
+    name: &str,
+    source: &str,
+    client_id: &str,
+    client_name: &str,
+) -> Result<Value, MarketplaceError> {
     info!(
         "Client {} requesting MCP server install: {} from {}",
         client_id, name, source
@@ -198,7 +203,7 @@ async fn handle_install_mcp_server(
         .find(|s| s.name == name && s.source_id == source)
         .ok_or_else(|| {
             MarketplaceError::InstallError(format!(
-                "Server '{}' from source '{}' not found. Use marketplace__search_mcp_servers first.",
+                "Server '{}' from source '{}' not found. Use marketplace__search first.",
                 name, source
             ))
         })?;
@@ -215,14 +220,10 @@ async fn handle_install_mcp_server(
 
     match response.action {
         crate::install_popup::InstallAction::Install => {
-            // User approved - perform the install
             let config = response.config.ok_or_else(|| {
                 MarketplaceError::InstallError("No config provided by user".to_string())
             })?;
 
-            // The actual installation is done by Tauri command (commands_marketplace.rs)
-            // which has access to ConfigManager and McpServerManager
-            // Here we just return success indicator that the popup was approved
             Ok(json!({
                 "status": "approved",
                 "message": format!("Installation of '{}' from '{}' approved by user", name, source),
@@ -234,45 +235,13 @@ async fn handle_install_mcp_server(
     }
 }
 
-async fn handle_search_skills(
-    service: &MarketplaceService,
-    arguments: Value,
-) -> Result<Value, MarketplaceError> {
-    let query = arguments.get("query").and_then(|v| v.as_str());
-    let source = arguments.get("source").and_then(|v| v.as_str());
-
-    let results = service.search_skills(query, source).await?;
-
-    info!(
-        "Found {} skills matching query={:?}, source={:?}",
-        results.len(),
-        query,
-        source
-    );
-
-    Ok(json!({
-        "skills": results,
-        "count": results.len(),
-        "hint": "Use marketplace__install_skill to install a skill"
-    }))
-}
-
 async fn handle_install_skill(
     service: &MarketplaceService,
-    arguments: Value,
+    name: &str,
+    source: &str,
     client_id: &str,
     client_name: &str,
 ) -> Result<Value, MarketplaceError> {
-    let name = arguments
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| MarketplaceError::InvalidArguments("name is required".to_string()))?;
-
-    let source = arguments
-        .get("source")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| MarketplaceError::InvalidArguments("source is required".to_string()))?;
-
     info!(
         "Client {} requesting skill install: {} from {}",
         client_id, name, source
@@ -286,7 +255,7 @@ async fn handle_install_skill(
         .find(|s| s.name == name && s.source_id == source)
         .ok_or_else(|| {
             MarketplaceError::InstallError(format!(
-                "Skill '{}' from source '{}' not found. Use marketplace__search_skills first.",
+                "Skill '{}' from source '{}' not found. Use marketplace__search first.",
                 name, source
             ))
         })?;
@@ -303,7 +272,6 @@ async fn handle_install_skill(
 
     match response.action {
         crate::install_popup::InstallAction::Install => {
-            // User approved - the actual installation is done by Tauri command
             Ok(json!({
                 "status": "approved",
                 "message": format!("Installation of skill '{}' from '{}' approved by user", name, source),
@@ -322,7 +290,7 @@ mod tests {
     #[test]
     fn test_list_tools() {
         let tools = list_tools();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 2);
 
         // Check tool names
         let names: Vec<&str> = tools
@@ -330,10 +298,8 @@ mod tests {
             .map(|t| t.get("name").unwrap().as_str().unwrap())
             .collect();
 
-        assert!(names.contains(&"marketplace__search_mcp_servers"));
-        assert!(names.contains(&"marketplace__install_mcp_server"));
-        assert!(names.contains(&"marketplace__search_skills"));
-        assert!(names.contains(&"marketplace__install_skill"));
+        assert!(names.contains(&"marketplace__search"));
+        assert!(names.contains(&"marketplace__install"));
     }
 
     #[test]
