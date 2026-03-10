@@ -52,6 +52,8 @@ fn test_config() -> AppConfig {
                 catalog_compression_enabled: None,
                 prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
                 json_repair: lr_config::ClientJsonRepairConfig::default(),
+                mcp_sampling_permission: lr_config::PermissionState::Ask,
+                mcp_elicitation_permission: lr_config::PermissionState::Ask,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -87,6 +89,8 @@ fn test_config() -> AppConfig {
                 catalog_compression_enabled: None,
                 prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
                 json_repair: lr_config::ClientJsonRepairConfig::default(),
+                mcp_sampling_permission: lr_config::PermissionState::Ask,
+                mcp_elicitation_permission: lr_config::PermissionState::Ask,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -122,6 +126,8 @@ fn test_config() -> AppConfig {
                 catalog_compression_enabled: None,
                 prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
                 json_repair: lr_config::ClientJsonRepairConfig::default(),
+                mcp_sampling_permission: lr_config::PermissionState::Ask,
+                mcp_elicitation_permission: lr_config::PermissionState::Ask,
             },
         ],
         ..Default::default()

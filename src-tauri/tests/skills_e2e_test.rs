@@ -154,6 +154,7 @@ async fn test_skills_e2e_all_tool_commands() {
             PermissionState::Off,
             lr_config::PermissionState::Off,
             None,
+            None,
             tools_list_req,
         )
         .await
@@ -210,6 +211,7 @@ async fn test_skills_e2e_all_tool_commands() {
             PermissionState::Off,
             lr_config::PermissionState::Off,
             None,
+            None,
             show_req,
         )
         .await
@@ -259,6 +261,7 @@ async fn test_skills_e2e_all_tool_commands() {
             "Test Client".to_string(),
             PermissionState::Off,
             lr_config::PermissionState::Off,
+            None,
             None,
             tools_list_req2,
         )
@@ -343,6 +346,7 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             PermissionState::Off,
             lr_config::PermissionState::Off,
             None,
+            None,
             req,
         )
         .await
@@ -386,6 +390,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             PermissionState::Off,
             lr_config::PermissionState::Off,
             None,
+            None,
             req,
         )
         .await
@@ -411,6 +416,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             "Test Client".to_string(),
             PermissionState::Off,
             lr_config::PermissionState::Off,
+            None,
             None,
             req2,
         )

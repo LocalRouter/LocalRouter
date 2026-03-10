@@ -77,6 +77,8 @@ fn create_test_config(
         catalog_compression_enabled: None,
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
         json_repair: lr_config::ClientJsonRepairConfig::default(),
+        mcp_sampling_permission: lr_config::PermissionState::Ask,
+        mcp_elicitation_permission: lr_config::PermissionState::Ask,
     };
 
     AppConfig {
@@ -522,6 +524,8 @@ async fn test_disabled_client_returns_unauthorized() {
         catalog_compression_enabled: None,
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
         json_repair: lr_config::ClientJsonRepairConfig::default(),
+        mcp_sampling_permission: lr_config::PermissionState::Ask,
+        mcp_elicitation_permission: lr_config::PermissionState::Ask,
     };
 
     let config = AppConfig {
@@ -578,6 +582,8 @@ async fn test_client_with_missing_strategy() {
         catalog_compression_enabled: None,
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
         json_repair: lr_config::ClientJsonRepairConfig::default(),
+        mcp_sampling_permission: lr_config::PermissionState::Ask,
+        mcp_elicitation_permission: lr_config::PermissionState::Ask,
     };
 
     let config = AppConfig {
@@ -1173,6 +1179,8 @@ fn create_free_tier_config(
         catalog_compression_enabled: None,
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
         json_repair: lr_config::ClientJsonRepairConfig::default(),
+        mcp_sampling_permission: lr_config::PermissionState::Ask,
+        mcp_elicitation_permission: lr_config::PermissionState::Ask,
     };
 
     AppConfig {

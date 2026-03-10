@@ -55,6 +55,8 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         catalog_compression_enabled: None,
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
         json_repair: lr_config::ClientJsonRepairConfig::default(),
+        mcp_sampling_permission: lr_config::PermissionState::Ask,
+        mcp_elicitation_permission: lr_config::PermissionState::Ask,
     }
 }
 

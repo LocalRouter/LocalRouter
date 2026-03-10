@@ -318,6 +318,8 @@ impl ConfigManager {
             coding_agents_permissions: CodingAgentsPermissions::default(),
             coding_agent_permission: PermissionState::default(),
             coding_agent_type: None,
+            mcp_sampling_permission: PermissionState::Ask,
+            mcp_elicitation_permission: PermissionState::Ask,
         };
 
         self.update(|cfg| {

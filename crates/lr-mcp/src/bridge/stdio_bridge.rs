@@ -420,6 +420,8 @@ mod tests {
                 catalog_compression_enabled: None,
                 prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
                 json_repair: lr_config::ClientJsonRepairConfig::default(),
+                mcp_sampling_permission: PermissionState::Ask,
+                mcp_elicitation_permission: PermissionState::Ask,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -455,6 +457,8 @@ mod tests {
                 catalog_compression_enabled: None,
                 prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
                 json_repair: lr_config::ClientJsonRepairConfig::default(),
+                mcp_sampling_permission: PermissionState::Ask,
+                mcp_elicitation_permission: PermissionState::Ask,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -490,6 +494,8 @@ mod tests {
                 catalog_compression_enabled: None,
                 prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
                 json_repair: lr_config::ClientJsonRepairConfig::default(),
+                mcp_sampling_permission: PermissionState::Ask,
+                mcp_elicitation_permission: PermissionState::Ask,
             },
         ];
         config
