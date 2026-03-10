@@ -6,6 +6,24 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Emitter, State};
 
+/// Tool definition returned to the frontend (snake_case fields).
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: Option<String>,
+    pub input_schema: serde_json::Value,
+}
+
+impl From<lr_types::mcp_types::McpTool> for ToolDefinition {
+    fn from(tool: lr_types::mcp_types::McpTool) -> Self {
+        Self {
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.input_schema,
+        }
+    }
+}
+
 /// Detected agent info returned to the frontend.
 /// An agent is implicitly enabled when installed — no explicit enable flag.
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +216,29 @@ pub async fn set_client_coding_agent_permission(
     }
 
     Ok(())
+}
+
+/// Get the MCP tool definitions for a given coding agent type.
+/// Returns the 6 unified coding agent tools with their schemas.
+#[tauri::command]
+pub async fn get_coding_agent_tool_definitions(
+    agent_type: CodingAgentType,
+) -> Result<Vec<ToolDefinition>, String> {
+    Ok(lr_coding_agents::mcp_tools::build_tools_for_agent(agent_type)
+        .into_iter()
+        .map(ToolDefinition::from)
+        .collect())
+}
+
+/// Get the context-mode tool definitions (ctx_search + indexing tools).
+#[tauri::command]
+pub async fn get_context_mode_tool_definitions(
+    indexing_tools_enabled: bool,
+) -> Result<Vec<ToolDefinition>, String> {
+    Ok(lr_mcp::gateway::context_mode::build_fallback_tools(indexing_tools_enabled)
+        .into_iter()
+        .map(ToolDefinition::from)
+        .collect())
 }
 
 /// Set client coding agent type

@@ -56,8 +56,9 @@ pub fn build_coding_agent_tools(
     build_tools_for_agent(agent_type)
 }
 
-/// Build the 6 tools with unified `coding_agent_` prefix
-fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
+/// Build the 6 tools with unified `coding_agent_` prefix.
+/// Public so the UI can display tool definitions without starting an agent.
+pub fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
     let name = agent_type.display_name();
 
     vec![

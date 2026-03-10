@@ -1734,6 +1734,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_marketplace::marketplace_install_respond,
             ui::commands_marketplace::set_client_marketplace_enabled,
             ui::commands_marketplace::get_client_marketplace_enabled,
+            ui::commands_marketplace::get_marketplace_tool_definitions,
             // Free tier commands
             ui::commands_free_tier::get_free_tier_status,
             ui::commands_free_tier::set_provider_free_tier,
@@ -1750,6 +1751,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_coding_agents::set_max_coding_sessions,
             ui::commands_coding_agents::set_client_coding_agent_permission,
             ui::commands_coding_agents::set_client_coding_agent_type,
+            ui::commands_coding_agents::get_coding_agent_tool_definitions,
+            ui::commands_coding_agents::get_context_mode_tool_definitions,
             // Clipboard commands
             ui::commands::copy_image_to_clipboard,
             ui::commands::copy_text_to_clipboard,

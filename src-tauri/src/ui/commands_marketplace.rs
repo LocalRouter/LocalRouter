@@ -704,3 +704,18 @@ pub async fn get_client_marketplace_enabled(
 
     Ok(client.marketplace_enabled)
 }
+
+/// Get marketplace tool definitions for display in the UI.
+#[tauri::command]
+pub async fn get_marketplace_tool_definitions() -> Result<Vec<crate::ui::commands_coding_agents::ToolDefinition>, String> {
+    Ok(lr_marketplace::tools::list_tools()
+        .into_iter()
+        .map(|v| {
+            crate::ui::commands_coding_agents::ToolDefinition {
+                name: v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                description: v.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()),
+                input_schema: v.get("inputSchema").cloned().unwrap_or(serde_json::json!({})),
+            }
+        })
+        .collect())
+}

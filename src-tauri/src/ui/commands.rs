@@ -1899,8 +1899,35 @@ pub async fn preview_catalog_compression(
         // Real client by client_id
         Some(client_id) if client_id.starts_with("client:") => {
             let cid = &client_id["client:".len()..];
-            // Try active session first, then any session, then build from running servers
-            state.mcp_gateway.get_or_build_preview_context(cid).await?
+            // Resolve allowed server IDs from client's MCP permissions
+            let config = state.config_manager.get();
+            let client = config
+                .clients
+                .iter()
+                .find(|c| c.id == cid)
+                .ok_or_else(|| format!("Client not found: {cid}"))?;
+            let all_server_ids: Vec<String> = config
+                .mcp_servers
+                .iter()
+                .filter(|s| s.enabled)
+                .map(|s| s.id.clone())
+                .collect();
+            let allowed_server_ids: Vec<String> =
+                if client.mcp_permissions.global.is_enabled() {
+                    all_server_ids
+                } else {
+                    all_server_ids
+                        .into_iter()
+                        .filter(|sid| {
+                            client.mcp_permissions.has_any_enabled_for_server(sid)
+                        })
+                        .collect()
+                };
+            // Start servers on demand if needed
+            state
+                .mcp_gateway
+                .get_or_build_preview_context(cid, allowed_server_ids)
+                .await?
         }
         Some(other) => {
             return Err(format!("Unknown preview source: {other}"));
