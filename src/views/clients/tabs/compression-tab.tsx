@@ -36,8 +36,6 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
     preserve_recent: null,
     rate: null,
     compress_system_prompt: null,
-    preserve_quoted_text: null,
-    compression_notice: null,
   })
   const [globalConfig, setGlobalConfig] = useState<PromptCompressionConfig | null>(null)
   const [loading, setLoading] = useState(true)
@@ -90,8 +88,6 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
   const effectiveMinMessages = config.min_messages ?? globalConfig?.min_messages ?? 6
   const effectivePreserveRecent = config.preserve_recent ?? globalConfig?.preserve_recent ?? 4
   const effectiveCompressSystem = config.compress_system_prompt ?? globalConfig?.compress_system_prompt ?? false
-  const effectivePreserveQuoted = config.preserve_quoted_text ?? globalConfig?.preserve_quoted_text ?? true
-  const effectiveCompressionNotice = config.compression_notice ?? globalConfig?.compression_notice ?? false
 
   return (
     <div className="space-y-4">
@@ -126,7 +122,7 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
             <TriStateButton
               value={config.enabled}
               onChange={(v) => saveConfig({ ...config, enabled: v })}
-              defaultLabel={`Default (${globalConfig?.enabled ? "on" : "off"})`}
+              defaultLabel={`Default (${globalConfig?.enabled ? "On" : "Off"})`}
               onLabel="On"
               offLabel="Off"
             />
@@ -148,6 +144,29 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
           </CardDescription>
         </CardHeader>
       </Card>
+
+      {/* Info */}
+      <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-600/50">
+        <div className="flex items-start gap-3">
+          <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+          <div className="space-y-1">
+            <p className="text-sm text-blue-900 dark:text-blue-400">
+              Model size and service configuration are managed in{" "}
+              {onViewChange ? (
+                <button
+                  className="text-blue-500 hover:underline"
+                  onClick={() => onViewChange("compression", "settings")}
+                >
+                  Compression &rarr; Settings
+                </button>
+              ) : (
+                "Compression settings"
+              )}.
+              Currently using <strong>{globalConfig?.model_size || "mobile"}</strong> model.
+            </p>
+          </div>
+        </div>
+      </div>
 
       {/* Compression Settings */}
       <Card>
@@ -185,7 +204,7 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
               value={effectiveRate}
               onChange={(v) => saveConfig({ ...config, rate: v })}
               presets={COMPRESSION_PRESETS}
-              min={0.1}
+              min={0}
               max={1}
               step={0.01}
               minLabel="More compression"
@@ -277,80 +296,22 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
             </div>
           </div>
 
-          {/* Preserve Quoted & Code Content */}
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label className="text-sm">Preserve Quoted & Code Content</Label>
-              <p className="text-xs text-muted-foreground">
-                Force-keep words inside quotes, inline code, and fenced code blocks.
-                {config.preserve_quoted_text === null && ` Global: ${effectivePreserveQuoted ? "on" : "off"}`}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              {config.preserve_quoted_text !== null && (
-                <button
-                  className="text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => saveConfig({ ...config, preserve_quoted_text: null })}
-                >
-                  Reset
-                </button>
-              )}
-              <Switch
-                checked={effectivePreserveQuoted}
-                onCheckedChange={(checked) => saveConfig({ ...config, preserve_quoted_text: checked })}
-              />
-            </div>
-          </div>
-
-          {/* Compression Notice */}
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label className="text-sm">Compression Notice</Label>
-              <p className="text-xs text-muted-foreground">
-                Prepend [abridged] to each compressed message.
-                {config.compression_notice === null && ` Global: ${effectiveCompressionNotice ? "on" : "off"}`}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              {config.compression_notice !== null && (
-                <button
-                  className="text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => saveConfig({ ...config, compression_notice: null })}
-                >
-                  Reset
-                </button>
-              )}
-              <Switch
-                checked={effectiveCompressionNotice}
-                onCheckedChange={(checked) => saveConfig({ ...config, compression_notice: checked })}
-              />
-            </div>
-          </div>
+          {/* Global-only settings note */}
+          <p className="text-xs text-muted-foreground">
+            Quoted content preservation and compression notice are configured globally in{" "}
+            {onViewChange ? (
+              <button
+                className="text-blue-500 hover:underline"
+                onClick={() => onViewChange("compression", "settings")}
+              >
+                Compression &rarr; Settings
+              </button>
+            ) : (
+              "Compression settings"
+            )}.
+          </p>
         </CardContent>
       </Card>
-
-      {/* Info */}
-      <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-600/50">
-        <div className="flex items-start gap-3">
-          <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
-          <div className="space-y-1">
-            <p className="text-sm text-blue-900 dark:text-blue-400">
-              Model size and service configuration are managed in{" "}
-              {onViewChange ? (
-                <button
-                  className="text-blue-500 hover:underline"
-                  onClick={() => onViewChange("compression", "settings")}
-                >
-                  Compression &rarr; Settings
-                </button>
-              ) : (
-                "Compression settings"
-              )}.
-              Currently using <strong>{globalConfig?.model_size || "mobile"}</strong> model.
-            </p>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

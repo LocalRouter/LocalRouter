@@ -5,6 +5,8 @@ import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { PermissionStateButton } from "@/components/permissions"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
+import { ToolList } from "@/components/shared/ToolList"
+import type { ToolListItem } from "@/components/shared/ToolList"
 import {
   Select,
   SelectContent,
@@ -17,8 +19,10 @@ import type { PermissionState } from "@/components/permissions"
 import type {
   CodingAgentInfo,
   CodingAgentType,
+  ToolDefinition,
   SetClientCodingAgentPermissionParams,
   SetClientCodingAgentTypeParams,
+  GetCodingAgentToolDefinitionsParams,
 } from "@/types/tauri-commands"
 
 interface Client {
@@ -38,6 +42,7 @@ export function ClientCodingAgentsTab({ client, onUpdate }: CodingAgentsTabProps
   const [agents, setAgents] = useState<CodingAgentInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [agentTools, setAgentTools] = useState<ToolListItem[]>([])
 
   const loadAgents = useCallback(async () => {
     try {
@@ -61,6 +66,27 @@ export function ClientCodingAgentsTab({ client, onUpdate }: CodingAgentsTabProps
       unsubscribe.then((fn) => fn())
     }
   }, [loadAgents])
+
+  // Fetch tool definitions when agent type changes
+  useEffect(() => {
+    if (!client.coding_agent_type) {
+      setAgentTools([])
+      return
+    }
+    invoke<ToolDefinition[]>("get_coding_agent_tool_definitions", {
+      agentType: client.coding_agent_type,
+    } satisfies GetCodingAgentToolDefinitionsParams)
+      .then((defs) =>
+        setAgentTools(
+          defs.map((d): ToolListItem => ({
+            name: d.name,
+            description: d.description,
+            inputSchema: d.input_schema,
+          }))
+        )
+      )
+      .catch(() => setAgentTools([]))
+  }, [client.coding_agent_type])
 
   const handlePermissionChange = async (state: PermissionState) => {
     setSaving(true)
@@ -147,6 +173,18 @@ export function ClientCodingAgentsTab({ client, onUpdate }: CodingAgentsTabProps
               </SelectContent>
             </Select>
           </div>
+
+          {client.coding_agent_type && agentTools.length > 0 && (
+            <div className="p-4 rounded-lg bg-muted/50 border space-y-2">
+              <p className="text-sm text-muted-foreground">
+                When enabled, this client will have access to {agentTools.length} coding agent tools:
+              </p>
+              <ToolList
+                tools={agentTools}
+                compact
+              />
+            </div>
+          )}
 
           {!loading && installedAgents.length === 0 && (
             <p className="text-xs text-muted-foreground">

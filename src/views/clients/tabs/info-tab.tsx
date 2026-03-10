@@ -118,52 +118,49 @@ export function ClientInfoTab({ client }: InfoTabProps) {
   const weakModels = autoConfig?.routellm_config?.weak_models || []
   const hasRouteLLM = autoConfig?.routellm_config?.enabled === true
 
-  // Feature rows
-  const features: { label: string; value: string; source?: string }[] = []
+  // Feature pills
+  const pills: { label: string; detail?: string; source?: string }[] = []
 
   if (showLlm) {
     if (strongModels.length > 0) {
-      features.push({
-        label: "Strong models",
-        value: strongModels.map(([, m]) => formatModelName(m)).join(", "),
+      pills.push({
+        label: "Strong Models",
+        detail: strongModels.map(([, m]) => formatModelName(m)).join(", "),
       })
     }
     if (weakModels.length > 0) {
-      features.push({
-        label: "Weak models",
-        value: weakModels.map(([, m]) => formatModelName(m)).join(", "),
+      pills.push({
+        label: "Weak Models",
+        detail: weakModels.map(([, m]) => formatModelName(m)).join(", "),
       })
     }
     if (hasRouteLLM) {
-      features.push({
+      pills.push({
         label: "RouteLLM",
-        value: `threshold ${autoConfig?.routellm_config?.threshold}`,
+        detail: `threshold ${autoConfig?.routellm_config?.threshold}`,
       })
     }
     if (client.guardrails_active) {
-      features.push({ label: "GuardRails", value: "Active" })
+      pills.push({ label: "GuardRails" })
     }
   }
 
   if (showMcp && effectiveConfig) {
     if (effectiveConfig.context_management_effective) {
-      features.push({
+      pills.push({
         label: "Catalog Compression",
-        value: "On",
         source: effectiveConfig.context_management_source,
       })
     }
     if (effectiveConfig.indexing_tools_effective) {
-      features.push({
+      pills.push({
         label: "Indexing Tools",
-        value: "On",
         source: effectiveConfig.indexing_tools_source,
       })
     }
     if (effectiveConfig.catalog_compression_effective) {
-      features.push({
+      pills.push({
         label: "Deferred Loading",
-        value: "On",
         source: effectiveConfig.catalog_compression_source,
       })
     }
@@ -206,23 +203,28 @@ export function ClientInfoTab({ client }: InfoTabProps) {
         </div>
       ) : null}
 
-      {/* Features table */}
-      {features.length > 0 && (
-        <table className="w-full text-sm">
-          <tbody>
-            {features.map((f) => (
-              <tr key={f.label} className="border-b last:border-b-0">
-                <td className="py-1.5 pr-4 text-muted-foreground whitespace-nowrap">{f.label}</td>
-                <td className="py-1.5 font-medium">{f.value}</td>
-                {f.source && (
-                  <td className="py-1.5 pl-2 text-[10px] text-muted-foreground whitespace-nowrap">
-                    {f.source === "global" ? "inherited" : "override"}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {/* Feature pills */}
+      {pills.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {pills.map((p) => (
+            <span
+              key={p.label}
+              className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium bg-muted/50"
+              title={p.detail || undefined}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-green-500 shrink-0" />
+              {p.label}
+              {p.detail && (
+                <span className="text-muted-foreground font-normal truncate max-w-[200px]">{p.detail}</span>
+              )}
+              {p.source && (
+                <span className="text-[10px] text-muted-foreground/70 font-normal">
+                  ({p.source === "global" ? "inherited" : "override"})
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
       )}
     </div>
   )

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Shield, Info } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
-import { Badge } from "@/components/ui/Badge"
+import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { CategoryActionButton, type CategoryActionState } from "@/components/permissions/CategoryActionButton"
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
 import type { TreeNode } from "@/components/permissions/types"
@@ -153,7 +153,6 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
           <div className="flex items-center gap-2">
             <Shield className="h-5 w-5 text-red-500" />
             <CardTitle>GuardRails</CardTitle>
-            <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
           </div>
           <CardDescription>
             Safety scanning for this client's requests. Flagged content is handled based on
@@ -168,6 +167,17 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
             )}
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm font-medium">Approval Popup Preview</span>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Preview the popup shown when a guardrail flags content with an &ldquo;Ask&rdquo; action
+              </p>
+            </div>
+            <SamplePopupButton popupType="guardrail" />
+          </div>
+        </CardContent>
       </Card>
 
       {/* Available Models */}

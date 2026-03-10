@@ -5,7 +5,10 @@ import { AlertTriangle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { PermissionStateButton } from "@/components/permissions"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
+import { ToolList } from "@/components/shared/ToolList"
+import type { ToolListItem } from "@/components/shared/ToolList"
 import type { PermissionState } from "@/components/permissions"
+import type { ToolDefinition } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -24,10 +27,26 @@ export function ClientMarketplaceTab({ client, onUpdate }: MarketplaceTabProps) 
   const [marketplacePermission, setMarketplacePermission] = useState<PermissionState>(
     client.marketplace_permission
   )
+  const [marketplaceTools, setMarketplaceTools] = useState<ToolListItem[]>([])
 
   useEffect(() => {
     setMarketplacePermission(client.marketplace_permission)
   }, [client.marketplace_permission])
+
+  // Fetch tool definitions from backend
+  useEffect(() => {
+    invoke<ToolDefinition[]>("get_marketplace_tool_definitions")
+      .then((defs) =>
+        setMarketplaceTools(
+          defs.map((d): ToolListItem => ({
+            name: d.name,
+            description: d.description,
+            inputSchema: d.input_schema,
+          }))
+        )
+      )
+      .catch(() => setMarketplaceTools([]))
+  }, [])
 
   const handleMarketplacePermissionChange = async (state: PermissionState) => {
     try {
@@ -67,16 +86,14 @@ export function ClientMarketplaceTab({ client, onUpdate }: MarketplaceTabProps) 
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="p-4 rounded-lg bg-muted/50 border">
+          <div className="p-4 rounded-lg bg-muted/50 border space-y-2">
             <p className="text-sm text-muted-foreground">
-              When enabled, this client will have access to 4 marketplace tools:
+              When enabled, this client will have access to {marketplaceTools.length} marketplace tools:
             </p>
-            <ul className="list-disc list-inside mt-2 text-sm text-muted-foreground space-y-1">
-              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__search_mcp_servers</code> - Search the MCP registry</li>
-              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__install_mcp_server</code> - Install an MCP server</li>
-              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__search_skills</code> - Browse skill repositories</li>
-              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__install_skill</code> - Install a skill</li>
-            </ul>
+            <ToolList
+              tools={marketplaceTools}
+              compact
+            />
           </div>
           {marketplacePermission === "allow" && (
             <div className="p-3 rounded-lg border border-amber-600/50 bg-amber-500/10">
@@ -87,14 +104,6 @@ export function ClientMarketplaceTab({ client, onUpdate }: MarketplaceTabProps) 
                   Only enable if you trust the configured marketplace sources.
                 </p>
               </div>
-            </div>
-          )}
-          {marketplacePermission === "ask" && (
-            <div className="p-3 rounded-lg border border-blue-600/50 bg-blue-500/10">
-              <p className="text-sm text-blue-900 dark:text-blue-400">
-                Install requests from AI clients will show a confirmation dialog before proceeding.
-                Searching the marketplace does not require approval.
-              </p>
             </div>
           )}
           <div className="border-t pt-3 mt-3 flex items-center justify-between">

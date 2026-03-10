@@ -4,6 +4,7 @@ import { toast } from "sonner"
 import { Info, AlertTriangle } from "lucide-react"
 import { TriStateButton } from "@/components/ui/TriStateButton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
+import type { ContextManagementConfig } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -23,11 +24,18 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
   const [saving, setSaving] = useState(false)
   const [contextManagement, setContextManagement] = useState<boolean | null>(client.context_management_enabled)
   const [indexingTools, setIndexingTools] = useState<boolean | null>(client.indexing_tools_enabled)
+  const [globalConfig, setGlobalConfig] = useState<ContextManagementConfig | null>(null)
 
   useEffect(() => {
     setContextManagement(client.context_management_enabled)
     setIndexingTools(client.indexing_tools_enabled)
   }, [client.context_management_enabled, client.indexing_tools_enabled])
+
+  useEffect(() => {
+    invoke<ContextManagementConfig>("get_context_management_config")
+      .then(setGlobalConfig)
+      .catch(() => {})
+  }, [])
 
   const handleContextManagementChange = async (value: boolean | null) => {
     try {
@@ -83,6 +91,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
               value={contextManagement}
               onChange={handleContextManagementChange}
               disabled={saving}
+              defaultLabel={`Default (${globalConfig?.catalog_compression ? "On" : "Off"})`}
               onLabel="On"
               offLabel="Off"
             />
@@ -139,6 +148,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
               value={indexingTools}
               onChange={handleIndexingToolsChange}
               disabled={saving}
+              defaultLabel={`Default (${globalConfig?.indexing_tools ? "On" : "Off"})`}
               onLabel="On"
               offLabel="Off"
             />
