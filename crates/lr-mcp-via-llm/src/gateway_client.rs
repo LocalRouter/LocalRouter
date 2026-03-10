@@ -67,6 +67,7 @@ pub struct GatewayClient<'a> {
     marketplace_permission: lr_config::PermissionState,
     coding_agent_permission: lr_config::PermissionState,
     coding_agent_type: Option<lr_config::CodingAgentType>,
+    context_management_overrides: Option<lr_config::ContextManagementOverrides>,
 }
 
 impl<'a> GatewayClient<'a> {
@@ -112,6 +113,11 @@ impl<'a> GatewayClient<'a> {
             marketplace_permission: client.marketplace_permission.clone(),
             coding_agent_permission: client.coding_agent_permission.clone(),
             coding_agent_type: client.coding_agent_type,
+            context_management_overrides: Some(lr_config::ContextManagementOverrides {
+                context_management_enabled: client.context_management_enabled,
+                indexing_tools_enabled: client.indexing_tools_enabled,
+                catalog_compression_enabled: client.catalog_compression_enabled,
+            }),
         }
     }
 
@@ -141,6 +147,7 @@ impl<'a> GatewayClient<'a> {
                 self.marketplace_permission.clone(),
                 self.coding_agent_permission.clone(),
                 self.coding_agent_type,
+                self.context_management_overrides.clone(),
                 request,
             )
             .await

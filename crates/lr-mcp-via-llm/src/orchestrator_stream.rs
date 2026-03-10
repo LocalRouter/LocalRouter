@@ -746,6 +746,7 @@ async fn execute_resource_read_background(
             permissions.marketplace_permission.clone(),
             permissions.coding_agent_permission.clone(),
             permissions.coding_agent_type,
+            permissions.context_management_overrides.clone(),
             request,
         ),
     )
@@ -811,6 +812,7 @@ async fn execute_prompt_get_background(
             permissions.marketplace_permission.clone(),
             permissions.coding_agent_permission.clone(),
             permissions.coding_agent_type,
+            permissions.context_management_overrides.clone(),
             request,
         ),
     )

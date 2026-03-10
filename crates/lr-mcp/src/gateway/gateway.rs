@@ -295,6 +295,7 @@ impl McpGateway {
             lr_config::PermissionState::Off, // marketplace_permission
             lr_config::PermissionState::Off, // coding_agent_permission
             None,                            // coding_agent_type
+            None,                            // context_management_overrides
             request,
         )
         .await
@@ -318,6 +319,7 @@ impl McpGateway {
         marketplace_permission: lr_config::PermissionState,
         coding_agent_permission: lr_config::PermissionState,
         coding_agent_type: Option<lr_config::CodingAgentType>,
+        context_management_overrides: Option<lr_config::ContextManagementOverrides>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -358,6 +360,11 @@ impl McpGateway {
             c.marketplace_permission = marketplace_permission.clone();
             c.coding_agent_permission = coding_agent_permission.clone();
             c.coding_agent_type = coding_agent_type;
+            if let Some(ref overrides) = context_management_overrides {
+                c.context_management_enabled = overrides.context_management_enabled;
+                c.indexing_tools_enabled = overrides.indexing_tools_enabled;
+                c.catalog_compression_enabled = overrides.catalog_compression_enabled;
+            }
             c
         };
 
@@ -367,6 +374,19 @@ impl McpGateway {
             session_write.mcp_permissions = mcp_permissions;
             session_write.skills_permissions = skills_permissions;
             session_write.client_name = client_name;
+
+            // Invalidate tools cache if context management overrides changed
+            if session_write.context_management_overrides != context_management_overrides {
+                if session_write.context_management_overrides.is_some() {
+                    tracing::info!(
+                        "Context management overrides changed for session {}, invalidating tools cache",
+                        session_key
+                    );
+                    session_write.invalidate_tools_cache();
+                }
+                session_write.context_management_overrides =
+                    context_management_overrides.clone();
+            }
 
             // Update virtual server states
             for vs in self.virtual_servers.read().iter() {

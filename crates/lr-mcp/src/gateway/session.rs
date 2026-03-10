@@ -91,6 +91,9 @@ pub struct GatewaySession {
     /// Per-virtual-server session state (server_id -> state)
     pub virtual_server_state: HashMap<String, Box<dyn VirtualSessionState>>,
 
+    /// Context management overrides snapshot (for change detection / cache invalidation)
+    pub context_management_overrides: Option<lr_config::ContextManagementOverrides>,
+
     /// Catalog compression plan (computed during initialize when context management is enabled).
     /// Used to filter deferred items from tools/resources/prompts lists and compress descriptions.
     pub catalog_compression: Option<CatalogCompressionPlan>,
@@ -144,6 +147,7 @@ impl GatewaySession {
             firewall_session_approvals: HashSet::new(),
             firewall_session_denials: HashSet::new(),
             virtual_server_state: HashMap::new(),
+            context_management_overrides: None,
             catalog_compression: None,
             instructions_context: None,
         }

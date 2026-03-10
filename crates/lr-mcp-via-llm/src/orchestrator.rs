@@ -38,6 +38,7 @@ pub(crate) struct GatewayPermissions {
     pub marketplace_permission: lr_config::PermissionState,
     pub coding_agent_permission: lr_config::PermissionState,
     pub coding_agent_type: Option<lr_config::CodingAgentType>,
+    pub context_management_overrides: Option<lr_config::ContextManagementOverrides>,
 }
 
 impl GatewayPermissions {
@@ -50,6 +51,11 @@ impl GatewayPermissions {
             marketplace_permission: client.marketplace_permission.clone(),
             coding_agent_permission: client.coding_agent_permission.clone(),
             coding_agent_type: client.coding_agent_type,
+            context_management_overrides: Some(lr_config::ContextManagementOverrides {
+                context_management_enabled: client.context_management_enabled,
+                indexing_tools_enabled: client.indexing_tools_enabled,
+                catalog_compression_enabled: client.catalog_compression_enabled,
+            }),
         }
     }
 }
@@ -688,6 +694,7 @@ pub async fn execute_mcp_tool_background(
             permissions.marketplace_permission.clone(),
             permissions.coding_agent_permission.clone(),
             permissions.coding_agent_type,
+            permissions.context_management_overrides.clone(),
             request,
         ),
     )

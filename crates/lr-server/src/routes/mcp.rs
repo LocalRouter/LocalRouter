@@ -727,6 +727,11 @@ pub async fn mcp_gateway_handler(
                     client.marketplace_permission.clone(),
                     client.coding_agent_permission.clone(),
                     client.coding_agent_type,
+                    Some(lr_config::ContextManagementOverrides {
+                        context_management_enabled: client.context_management_enabled,
+                        indexing_tools_enabled: client.indexing_tools_enabled,
+                        catalog_compression_enabled: client.catalog_compression_enabled,
+                    }),
                     request,
                 ),
             )
@@ -799,6 +804,11 @@ pub async fn mcp_gateway_handler(
                 client.marketplace_permission.clone(),
                 client.coding_agent_permission.clone(),
                 client.coding_agent_type,
+                Some(lr_config::ContextManagementOverrides {
+                    context_management_enabled: client.context_management_enabled,
+                    indexing_tools_enabled: client.indexing_tools_enabled,
+                    catalog_compression_enabled: client.catalog_compression_enabled,
+                }),
                 request,
             )
             .await

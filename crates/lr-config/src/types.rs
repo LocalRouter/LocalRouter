@@ -1321,6 +1321,15 @@ pub struct ContextManagementConfig {
     pub response_threshold_bytes: usize,
 }
 
+/// Per-client context management overrides passed through the gateway API.
+/// `None` fields fall back to the global `ContextManagementConfig` defaults.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ContextManagementOverrides {
+    pub context_management_enabled: Option<bool>,
+    pub indexing_tools_enabled: Option<bool>,
+    pub catalog_compression_enabled: Option<bool>,
+}
+
 impl Default for ContextManagementConfig {
     fn default() -> Self {
         Self {
