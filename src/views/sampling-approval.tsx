@@ -1,14 +1,23 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
+import { LogicalSize } from "@tauri-apps/api/dpi"
 import { Button } from "@/components/ui/Button"
+import { ChevronDown } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { ProvidersIcon } from "@/components/icons/category-icons"
 
 interface SamplingApprovalDetails {
   request_id: string
   server_id: string
   message_count: number
   system_prompt: string | null
-  model_preferences: any | null
+  model_preferences: unknown | null
   max_tokens: number | null
   timeout_seconds: number
   created_at_secs_ago: number
@@ -19,22 +28,61 @@ export function SamplingApproval() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [buttonsReady, setButtonsReady] = useState(false)
 
   useEffect(() => {
-    const label = (window as any).__TAURI_INTERNALS__?.metadata?.currentWebview?.label || ""
-    const requestId = label.replace("sampling-approval-", "")
+    const loadDetails = async () => {
+      try {
+        const window = getCurrentWebviewWindow()
+        const label = window.label
+        const requestId = label.replace("sampling-approval-", "")
 
-    if (!requestId) {
-      setError("Missing request ID")
-      setLoading(false)
-      return
+        const result = await invoke<SamplingApprovalDetails>("get_sampling_approval_details", {
+          requestId,
+        })
+        setDetails(result)
+
+        // Resize and show window
+        const win = getCurrentWebviewWindow()
+        await win.setSize(new LogicalSize(400, 320))
+        await win.center()
+        await win.show()
+        await win.setFocus()
+      } catch (err) {
+        console.error("Failed to load sampling approval details:", err)
+        setError(typeof err === "string" ? err : "Failed to load approval details")
+      } finally {
+        setLoading(false)
+      }
     }
 
-    invoke<SamplingApprovalDetails>("get_sampling_approval_details", { requestId })
-      .then(setDetails)
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false))
+    loadDetails()
   }, [])
+
+  // Delay buttons until window is focused (prevent accidental clicks)
+  useEffect(() => {
+    if (loading || !details || buttonsReady) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const startTimer = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => setButtonsReady(true), 500)
+    }
+
+    const win = getCurrentWebviewWindow()
+    win.isFocused().then((focused) => {
+      if (focused) startTimer()
+    })
+
+    const unlistenPromise = win.onFocusChanged(({ payload: focused }) => {
+      if (focused) startTimer()
+    })
+
+    return () => {
+      if (timer) clearTimeout(timer)
+      unlistenPromise.then(fn => fn())
+    }
+  }, [loading, details, buttonsReady])
 
   const handleAction = async (action: "allow" | "deny") => {
     if (!details) return
@@ -44,82 +92,131 @@ export function SamplingApproval() {
         requestId: details.request_id,
         action,
       })
-      const window = getCurrentWebviewWindow()
-      await window.close()
-    } catch (e) {
-      setError(String(e))
+      await getCurrentWebviewWindow().close()
+    } catch (err) {
+      console.error("Failed to submit sampling approval:", err)
+      setError(typeof err === "string" ? err : "Failed to submit response")
       setSubmitting(false)
     }
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-background text-foreground p-4">
-        <p className="text-sm text-muted-foreground">Loading...</p>
+      <div className="flex items-center justify-center h-screen bg-background p-4">
+        <div className="text-muted-foreground text-sm">Loading...</div>
       </div>
     )
   }
 
-  if (error) {
+  if (error || !details) {
     return (
-      <div className="flex items-center justify-center h-screen bg-background text-foreground p-4">
-        <p className="text-sm text-red-500">{error}</p>
+      <div className="flex flex-col h-screen bg-background p-4">
+        <p className="text-sm text-destructive text-center">{error || "Request not found"}</p>
       </div>
     )
   }
 
-  if (!details) return null
+  const disabled = !buttonsReady || submitting
 
   return (
-    <div className="h-screen bg-background text-foreground p-4 flex flex-col">
-      <div className="flex-1 space-y-3">
-        <div>
-          <h2 className="text-base font-semibold">Sampling Request</h2>
-          <p className="text-xs text-muted-foreground mt-1">
-            Server <span className="font-medium text-foreground">{details.server_id}</span> is requesting an LLM completion
+    <div className="flex flex-col h-screen bg-background overflow-hidden">
+      <div className="flex flex-col flex-1 p-4 overflow-hidden">
+        {/* Header */}
+        <div className="mb-3 flex-shrink-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            <ProvidersIcon className="h-5 w-5 text-blue-500" />
+            <h1 className="text-sm font-bold">Sampling Request</h1>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            A backend MCP server is requesting an LLM completion
           </p>
         </div>
 
-        <div className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Messages</span>
+        {/* Details Grid */}
+        <div className="flex-1 overflow-auto">
+          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
+            <span className="text-muted-foreground">Server:</span>
+            <span className="font-medium truncate">{details.server_id}</span>
+
+            <span className="text-muted-foreground">Messages:</span>
             <span>{details.message_count}</span>
+
+            {details.max_tokens && (
+              <>
+                <span className="text-muted-foreground">Max tokens:</span>
+                <span>{details.max_tokens}</span>
+              </>
+            )}
           </div>
+
           {details.system_prompt && (
-            <div>
-              <span className="text-muted-foreground text-xs">System prompt</span>
-              <p className="text-xs mt-0.5 bg-muted/50 rounded p-2 max-h-20 overflow-auto">
-                {details.system_prompt.length > 200
-                  ? details.system_prompt.slice(0, 200) + "..."
+            <div className="mt-2">
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase">System prompt</span>
+              <div className="text-xs mt-0.5 bg-muted/50 rounded p-2 max-h-20 overflow-auto font-mono">
+                {details.system_prompt.length > 300
+                  ? details.system_prompt.slice(0, 300) + "..."
                   : details.system_prompt}
-              </p>
-            </div>
-          )}
-          {details.max_tokens && (
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Max tokens</span>
-              <span>{details.max_tokens}</span>
+              </div>
             </div>
           )}
         </div>
-      </div>
 
-      <div className="flex gap-2 pt-3 border-t">
-        <Button
-          variant="outline"
-          className="flex-1"
-          onClick={() => handleAction("deny")}
-          disabled={submitting}
-        >
-          Deny
-        </Button>
-        <Button
-          className="flex-1"
-          onClick={() => handleAction("allow")}
-          disabled={submitting}
-        >
-          Allow
-        </Button>
+        {/* Action Buttons - matching firewall pattern */}
+        <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
+          {/* Split button: Deny Once + dropdown */}
+          <div className="flex flex-1">
+            <Button
+              variant="destructive"
+              className="flex-1 h-10 rounded-r-none font-bold"
+              onClick={() => handleAction("deny")}
+              disabled={disabled}
+            >
+              Deny Once
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="destructive"
+                  className="h-10 px-2 rounded-l-none border-l border-red-700"
+                  disabled={disabled}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem onClick={() => handleAction("deny")}>
+                  Deny Always
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* Split button: Allow Once + dropdown */}
+          <div className="flex flex-1">
+            <Button
+              className="flex-1 h-10 rounded-r-none bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+              onClick={() => handleAction("allow")}
+              disabled={disabled}
+            >
+              Allow Once
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  className="h-10 px-2 rounded-l-none border-l border-emerald-700 bg-emerald-600 hover:bg-emerald-700 text-white"
+                  disabled={disabled}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => handleAction("allow")}>
+                  Allow Always
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
       </div>
     </div>
   )

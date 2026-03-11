@@ -115,11 +115,11 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
             </Button>
           </div>
 
-          {/* Firewall popups */}
+          {/* Approval popups */}
           <div className="border rounded-lg p-4 space-y-3">
-            <h2 className="text-sm font-medium">Firewall Approval Popups</h2>
+            <h2 className="text-sm font-medium">Approval Popups</h2>
             <p className="text-xs text-muted-foreground">
-              Test different types of firewall approval popups. Each button creates a fake
+              Test different types of approval popups. Each button creates a fake
               approval request and opens the popup immediately.
             </p>
 
@@ -195,24 +195,14 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
               >
                 {triggeringFirewall === "guardrail" ? "Opening..." : "Guardrail"}
               </Button>
-            </div>
-          </div>
 
-          {/* Sampling & Elicitation Popups */}
-          <div className="border rounded-lg p-4 space-y-3">
-            <h2 className="text-sm font-medium">Sampling & Elicitation Popups</h2>
-            <p className="text-xs text-muted-foreground">
-              Test MCP sampling approval and elicitation form popups.
-            </p>
-
-            <div className="grid grid-cols-2 gap-2">
               <Button
                 size="sm"
                 variant="outline"
                 onClick={handleTriggerSamplingApproval}
                 disabled={triggeringSampling || triggeringElicitation}
               >
-                {triggeringSampling ? "Opening..." : "Sampling Approval"}
+                {triggeringSampling ? "Opening..." : "Sampling"}
               </Button>
 
               <Button
@@ -221,7 +211,7 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
                 onClick={handleTriggerElicitationForm}
                 disabled={triggeringSampling || triggeringElicitation}
               >
-                {triggeringElicitation ? "Opening..." : "Elicitation Form"}
+                {triggeringElicitation ? "Opening..." : "Elicitation"}
               </Button>
             </div>
           </div>

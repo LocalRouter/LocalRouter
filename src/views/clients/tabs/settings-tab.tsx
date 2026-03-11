@@ -288,22 +288,40 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
           <CardContent className="space-y-4">
             {/* Sampling */}
             <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">Sampling</p>
-                <p className="text-xs text-muted-foreground">
-                  {clientMode === "mcp_via_llm"
-                    ? ({
-                        allow: "Automatically route to LLM",
-                        ask: "Show approval popup first",
-                        off: "Reject sampling requests",
-                      } as Record<string, string>)[client.mcp_sampling_permission || "ask"]
-                    : ({
-                        allow: "Forward to client",
-                        ask: "Show approval popup, then forward",
-                        off: "Reject sampling requests",
-                      } as Record<string, string>)[client.mcp_sampling_permission || "ask"]
-                  }
-                </p>
+              <div className="flex items-center gap-2">
+                <div>
+                  <p className="text-sm font-medium">Sampling</p>
+                  <p className="text-xs text-muted-foreground">
+                    {clientMode === "mcp_via_llm"
+                      ? ({
+                          allow: "Automatically route to LLM",
+                          ask: "Show approval popup first",
+                          off: "Reject sampling requests",
+                        } as Record<string, string>)[client.mcp_sampling_permission || "ask"]
+                      : ({
+                          allow: "Forward to client",
+                          ask: "Show approval popup, then forward",
+                          off: "Reject sampling requests",
+                        } as Record<string, string>)[client.mcp_sampling_permission || "ask"]
+                    }
+                  </p>
+                </div>
+                {(client.mcp_sampling_permission || "ask") === "ask" && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-6 px-2 text-muted-foreground"
+                    onClick={async () => {
+                      try {
+                        await invoke("debug_trigger_sampling_approval_popup")
+                      } catch (e) {
+                        console.error("Failed to trigger sampling popup:", e)
+                      }
+                    }}
+                  >
+                    Test
+                  </Button>
+                )}
               </div>
               <PermissionStateButton
                 value={client.mcp_sampling_permission || "ask"}
@@ -314,21 +332,43 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
 
             {/* Elicitation */}
             <div className="flex items-center justify-between pt-3 border-t">
-              <div>
-                <p className="text-sm font-medium">Elicitation</p>
-                <p className="text-xs text-muted-foreground">
-                  {clientMode === "mcp_via_llm"
-                    ? ({
-                        ask: "Show form popup for user input",
-                        off: "Reject elicitation requests",
-                      } as Record<string, string>)[client.mcp_elicitation_permission === "allow" ? "ask" : (client.mcp_elicitation_permission || "ask")]
-                    : ({
-                        allow: "Forward to client",
-                        ask: "Show form popup locally",
-                        off: "Reject elicitation requests",
-                      } as Record<string, string>)[client.mcp_elicitation_permission || "ask"]
-                  }
-                </p>
+              <div className="flex items-center gap-2">
+                <div>
+                  <p className="text-sm font-medium">Elicitation</p>
+                  <p className="text-xs text-muted-foreground">
+                    {clientMode === "mcp_via_llm"
+                      ? ({
+                          ask: "Show form popup for user input",
+                          off: "Reject elicitation requests",
+                        } as Record<string, string>)[client.mcp_elicitation_permission === "allow" ? "ask" : (client.mcp_elicitation_permission || "ask")]
+                      : ({
+                          allow: "Forward to client",
+                          ask: "Show form popup locally",
+                          off: "Reject elicitation requests",
+                        } as Record<string, string>)[client.mcp_elicitation_permission || "ask"]
+                    }
+                  </p>
+                </div>
+                {(() => {
+                  const perm = client.mcp_elicitation_permission || "ask"
+                  const effective = clientMode === "mcp_via_llm" && perm === "allow" ? "ask" : perm
+                  return effective === "ask"
+                })() ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-6 px-2 text-muted-foreground"
+                    onClick={async () => {
+                      try {
+                        await invoke("debug_trigger_elicitation_form_popup")
+                      } catch (e) {
+                        console.error("Failed to trigger elicitation popup:", e)
+                      }
+                    }}
+                  >
+                    Test
+                  </Button>
+                ) : null}
               </div>
               {clientMode === "mcp_via_llm" ? (
                 // MCP via LLM: only Ask/Off (no client to passthrough to)
