@@ -100,8 +100,7 @@ pub async fn chat_completions(
                         .join(", ");
 
                     // Check if this is an MCP via LLM client
-                    let is_mcp_via_llm =
-                        client.client_mode == lr_config::ClientMode::McpViaLlm;
+                    let is_mcp_via_llm = client.client_mode == lr_config::ClientMode::McpViaLlm;
 
                     // Build the request portion, augmenting with MCP tools for MCP via LLM
                     let mut request_json = serde_json::to_value(&request)
@@ -127,11 +126,7 @@ pub async fn chat_completions(
                         } else {
                             all_ids
                                 .iter()
-                                .filter(|id| {
-                                    client
-                                        .mcp_permissions
-                                        .has_any_enabled_for_server(id)
-                                })
+                                .filter(|id| client.mcp_permissions.has_any_enabled_for_server(id))
                                 .cloned()
                                 .collect()
                         };
@@ -143,11 +138,7 @@ pub async fn chat_completions(
                         );
                         match state
                             .mcp_via_llm_manager
-                            .list_tools_for_preview(
-                                state.mcp_gateway.clone(),
-                                &client,
-                                allowed,
-                            )
+                            .list_tools_for_preview(state.mcp_gateway.clone(), &client, allowed)
                             .await
                         {
                             Ok(tools) => {
@@ -266,9 +257,7 @@ pub async fn chat_completions(
         let is_mcp_via_llm_client = client_auth
             .as_ref()
             .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
-            .map_or(false, |c| {
-                c.client_mode == lr_config::ClientMode::McpViaLlm
-            });
+            .map_or(false, |c| c.client_mode == lr_config::ClientMode::McpViaLlm);
 
         if !is_mcp_via_llm_client {
             let firewall_edits = check_model_firewall_permission(
@@ -1074,7 +1063,7 @@ async fn check_model_firewall_permission(
                 serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({}));
             if let Some(obj) = full_request.as_object_mut() {
                 obj.remove("stream"); // not user-editable
-                // Merge MCP via LLM tools into the request so the popup shows the augmented request
+                                      // Merge MCP via LLM tools into the request so the popup shows the augmented request
                 if let Some(tools) = mcp_via_llm_tools {
                     obj.insert("tools".to_string(), tools);
                 }
@@ -1177,39 +1166,47 @@ async fn run_prompt_compression(
     }
 
     // Resolve per-client settings (client overrides > global defaults)
-    let (enabled, min_messages, preserve_recent, rate, compress_system, min_message_words, preserve_quoted, compression_notice) =
-        if let Some(client_ctx) = client_context {
-            if let Some(client) = state.client_manager.get_client(&client_ctx.client_id) {
-                let pc = &client.prompt_compression;
-                (
-                    pc.enabled.unwrap_or(true), // inherit global (enabled)
-                    pc.min_messages
-                        .unwrap_or(config.prompt_compression.min_messages),
-                    pc.preserve_recent
-                        .unwrap_or(config.prompt_compression.preserve_recent),
-                    pc.rate.unwrap_or(config.prompt_compression.default_rate),
-                    pc.compress_system_prompt
-                        .unwrap_or(config.prompt_compression.compress_system_prompt),
-                    config.prompt_compression.min_message_words,
-                    config.prompt_compression.preserve_quoted_text,
-                    config.prompt_compression.compression_notice,
-                )
-            } else {
-                return Ok(None); // Unknown client
-            }
-        } else {
-            // No client context — use global defaults
+    let (
+        enabled,
+        min_messages,
+        preserve_recent,
+        rate,
+        compress_system,
+        min_message_words,
+        preserve_quoted,
+        compression_notice,
+    ) = if let Some(client_ctx) = client_context {
+        if let Some(client) = state.client_manager.get_client(&client_ctx.client_id) {
+            let pc = &client.prompt_compression;
             (
-                true,
-                config.prompt_compression.min_messages,
-                config.prompt_compression.preserve_recent,
-                config.prompt_compression.default_rate,
-                config.prompt_compression.compress_system_prompt,
+                pc.enabled.unwrap_or(true), // inherit global (enabled)
+                pc.min_messages
+                    .unwrap_or(config.prompt_compression.min_messages),
+                pc.preserve_recent
+                    .unwrap_or(config.prompt_compression.preserve_recent),
+                pc.rate.unwrap_or(config.prompt_compression.default_rate),
+                pc.compress_system_prompt
+                    .unwrap_or(config.prompt_compression.compress_system_prompt),
                 config.prompt_compression.min_message_words,
                 config.prompt_compression.preserve_quoted_text,
                 config.prompt_compression.compression_notice,
             )
-        };
+        } else {
+            return Ok(None); // Unknown client
+        }
+    } else {
+        // No client context — use global defaults
+        (
+            true,
+            config.prompt_compression.min_messages,
+            config.prompt_compression.preserve_recent,
+            config.prompt_compression.default_rate,
+            config.prompt_compression.compress_system_prompt,
+            config.prompt_compression.min_message_words,
+            config.prompt_compression.preserve_quoted_text,
+            config.prompt_compression.compression_notice,
+        )
+    };
 
     if !enabled {
         return Ok(None);
@@ -1809,11 +1806,7 @@ async fn handle_mcp_via_llm(
         let mcp_tools_json = Some(
             match state
                 .mcp_via_llm_manager
-                .list_tools_for_preview(
-                    state.mcp_gateway.clone(),
-                    &client,
-                    allowed_servers.clone(),
-                )
+                .list_tools_for_preview(state.mcp_gateway.clone(), &client, allowed_servers.clone())
                 .await
             {
                 Ok(tools) => tools,

@@ -123,11 +123,7 @@ impl CompressionService {
             None
         };
 
-        model.compress_text(
-            &text_owned,
-            rate,
-            protected_mask.as_deref(),
-        )
+        model.compress_text(&text_owned, rate, protected_mask.as_deref())
     }
 
     /// Compress chat messages for the pipeline

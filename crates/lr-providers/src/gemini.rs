@@ -648,19 +648,18 @@ impl ModelProvider for GeminiProvider {
                                     }
 
                                     let has_tool_calls = !tool_call_deltas.is_empty();
-                                    let finish_reason =
-                                        if has_tool_calls && candidate.finish_reason.is_some() {
-                                            Some("tool_calls".to_string())
-                                        } else {
-                                            match candidate.finish_reason.as_deref() {
-                                                Some("STOP") => Some("stop".to_string()),
-                                                Some("MAX_TOKENS") => Some("length".to_string()),
-                                                Some("SAFETY") => {
-                                                    Some("content_filter".to_string())
-                                                }
-                                                _ => None,
-                                            }
-                                        };
+                                    let finish_reason = if has_tool_calls
+                                        && candidate.finish_reason.is_some()
+                                    {
+                                        Some("tool_calls".to_string())
+                                    } else {
+                                        match candidate.finish_reason.as_deref() {
+                                            Some("STOP") => Some("stop".to_string()),
+                                            Some("MAX_TOKENS") => Some("length".to_string()),
+                                            Some("SAFETY") => Some("content_filter".to_string()),
+                                            _ => None,
+                                        }
+                                    };
 
                                     parsed_chunks.push(Ok(CompletionChunk {
                                         id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
@@ -975,7 +974,10 @@ struct GeminiToolConfig {
 #[derive(Debug, Serialize, Deserialize)]
 struct GeminiFunctionCallingConfig {
     mode: String,
-    #[serde(rename = "allowedFunctionNames", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "allowedFunctionNames",
+        skip_serializing_if = "Option::is_none"
+    )]
     allowed_function_names: Option<Vec<String>>,
 }
 
@@ -1132,8 +1134,7 @@ mod tests {
             },
         ];
 
-        let (system_instruction, gemini_contents) =
-            provider.convert_messages_to_gemini(&messages);
+        let (system_instruction, gemini_contents) = provider.convert_messages_to_gemini(&messages);
 
         // System message should be extracted as system_instruction
         assert!(system_instruction.is_some());
@@ -1181,8 +1182,7 @@ mod tests {
             },
         ];
 
-        let (_system_instruction, gemini_contents) =
-            provider.convert_messages_to_gemini(&messages);
+        let (_system_instruction, gemini_contents) = provider.convert_messages_to_gemini(&messages);
 
         assert_eq!(gemini_contents.len(), 2);
         assert_eq!(gemini_contents[0].role, "user");
@@ -1238,8 +1238,7 @@ mod tests {
             },
         ];
 
-        let (_system_instruction, gemini_contents) =
-            provider.convert_messages_to_gemini(&messages);
+        let (_system_instruction, gemini_contents) = provider.convert_messages_to_gemini(&messages);
 
         assert_eq!(gemini_contents.len(), 3);
 

@@ -283,7 +283,9 @@ mod tests {
 
     #[test]
     fn test_fenced_code_block() {
-        let words: Vec<&str> = "before ``` def foo(): return 1 ``` after".split_whitespace().collect();
+        let words: Vec<&str> = "before ``` def foo(): return 1 ``` after"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         // "before" and "after" should not be protected
         assert!(!mask[0]); // before
@@ -298,7 +300,9 @@ mod tests {
 
     #[test]
     fn test_inline_code_self_contained() {
-        let words: Vec<&str> = "use `bcrypt.checkpw()` instead".split_whitespace().collect();
+        let words: Vec<&str> = "use `bcrypt.checkpw()` instead"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]); // use
         assert!(mask[1]); // `bcrypt.checkpw()`
@@ -317,8 +321,9 @@ mod tests {
 
     #[test]
     fn test_double_quoted_string() {
-        let words: Vec<&str> =
-            r#"reported "a persistent connection timeout" when trying"#.split_whitespace().collect();
+        let words: Vec<&str> = r#"reported "a persistent connection timeout" when trying"#
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]); // reported
         assert!(mask[1]); // "a
@@ -340,7 +345,9 @@ mod tests {
 
     #[test]
     fn test_curly_double_quotes() {
-        let words: Vec<&str> = "he said \u{201C}hello world\u{201D} today".split_whitespace().collect();
+        let words: Vec<&str> = "he said \u{201C}hello world\u{201D} today"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]); // he
         assert!(!mask[1]); // said
@@ -351,7 +358,9 @@ mod tests {
 
     #[test]
     fn test_curly_single_quotes() {
-        let words: Vec<&str> = "the \u{2018}quick brown\u{2019} fox".split_whitespace().collect();
+        let words: Vec<&str> = "the \u{2018}quick brown\u{2019} fox"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]); // the
         assert!(mask[1]); // 'quick
@@ -361,7 +370,9 @@ mod tests {
 
     #[test]
     fn test_german_quotes() {
-        let words: Vec<&str> = "er sagte \u{201E}hallo welt\u{201D} heute".split_whitespace().collect();
+        let words: Vec<&str> = "er sagte \u{201E}hallo welt\u{201D} heute"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]);
         assert!(!mask[1]);
@@ -372,7 +383,9 @@ mod tests {
 
     #[test]
     fn test_guillemets() {
-        let words: Vec<&str> = "il dit \u{00AB}bonjour monde\u{00BB} ici".split_whitespace().collect();
+        let words: Vec<&str> = "il dit \u{00AB}bonjour monde\u{00BB} ici"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]);
         assert!(!mask[1]);
@@ -383,7 +396,9 @@ mod tests {
 
     #[test]
     fn test_cjk_corner_brackets() {
-        let words: Vec<&str> = "text \u{300C}hello world\u{300D} more".split_whitespace().collect();
+        let words: Vec<&str> = "text \u{300C}hello world\u{300D} more"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]);
         assert!(mask[1]);
@@ -425,8 +440,7 @@ mod tests {
 
     #[test]
     fn test_multiple_quoted_regions() {
-        let words: Vec<&str> =
-            r#""hello" world "goodbye""#.split_whitespace().collect();
+        let words: Vec<&str> = r#""hello" world "goodbye""#.split_whitespace().collect();
         let mask = detect_protected_words(&words);
         assert!(mask[0]); // "hello"
         assert!(!mask[1]); // world
@@ -453,7 +467,9 @@ mod tests {
 
     #[test]
     fn test_no_special_content() {
-        let words: Vec<&str> = "hello world this is plain text".split_whitespace().collect();
+        let words: Vec<&str> = "hello world this is plain text"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(mask.iter().all(|&p| !p));
     }
@@ -492,7 +508,9 @@ mod tests {
 
     #[test]
     fn test_full_width_quotes() {
-        let words: Vec<&str> = "text \u{FF02}hello world\u{FF02} more".split_whitespace().collect();
+        let words: Vec<&str> = "text \u{FF02}hello world\u{FF02} more"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]);
         assert!(mask[1]);
@@ -502,7 +520,9 @@ mod tests {
 
     #[test]
     fn test_heavy_quotes() {
-        let words: Vec<&str> = "said \u{275D}hello world\u{275E} today".split_whitespace().collect();
+        let words: Vec<&str> = "said \u{275D}hello world\u{275E} today"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]);
         assert!(mask[1]);
@@ -512,7 +532,9 @@ mod tests {
 
     #[test]
     fn test_guillemet_single() {
-        let words: Vec<&str> = "mot \u{2039}bonjour\u{203A} ici".split_whitespace().collect();
+        let words: Vec<&str> = "mot \u{2039}bonjour\u{203A} ici"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]);
         assert!(mask[1]);
@@ -521,7 +543,9 @@ mod tests {
 
     #[test]
     fn test_cjk_double_corner() {
-        let words: Vec<&str> = "text \u{300E}hello world\u{300F} more".split_whitespace().collect();
+        let words: Vec<&str> = "text \u{300E}hello world\u{300F} more"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]);
         assert!(mask[1]);
@@ -531,7 +555,9 @@ mod tests {
 
     #[test]
     fn test_fenced_block_with_language() {
-        let words: Vec<&str> = "before ```python def foo(): pass ``` after".split_whitespace().collect();
+        let words: Vec<&str> = "before ```python def foo(): pass ``` after"
+            .split_whitespace()
+            .collect();
         let mask = detect_protected_words(&words);
         assert!(!mask[0]); // before
         assert!(mask[1]); // ```python
@@ -547,8 +573,8 @@ mod tests {
         // When already in a backtick region, a word like `b` should close the region
         let words: Vec<&str> = "`a `b` c".split_whitespace().collect();
         let mask = detect_protected_words(&words);
-        assert!(mask[0]);  // `a — opens backtick region
-        assert!(mask[1]);  // `b` — closes the region (ends with `)
+        assert!(mask[0]); // `a — opens backtick region
+        assert!(mask[1]); // `b` — closes the region (ends with `)
         assert!(!mask[2]); // c — NOT protected (region closed)
     }
 
@@ -563,5 +589,4 @@ mod tests {
         assert!(mask[3]); // world'
         assert!(!mask[4]); // today
     }
-
 }

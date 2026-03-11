@@ -219,8 +219,9 @@ impl OllamaMessage {
                     function: OllamaFunctionCall {
                         name: tc.function.name.clone(),
                         // Convert JSON string back to JSON object for Ollama
-                        arguments: serde_json::from_str(&tc.function.arguments)
-                            .unwrap_or_else(|_| serde_json::Value::String(tc.function.arguments.clone())),
+                        arguments: serde_json::from_str(&tc.function.arguments).unwrap_or_else(
+                            |_| serde_json::Value::String(tc.function.arguments.clone()),
+                        ),
                         index: None,
                     },
                 })
@@ -424,7 +425,11 @@ impl ModelProvider for OllamaProvider {
 
         let ollama_request = OllamaChatRequest {
             model: request.model.clone(),
-            messages: request.messages.iter().map(OllamaMessage::from_chat_message).collect(),
+            messages: request
+                .messages
+                .iter()
+                .map(OllamaMessage::from_chat_message)
+                .collect(),
             stream: false,
             options: Some(OllamaOptions {
                 temperature: request.temperature,
@@ -486,11 +491,7 @@ impl ModelProvider for OllamaProvider {
         let message = ollama_response.message.into_chat_message();
 
         // Determine finish_reason based on whether tool calls are present
-        let finish_reason = if message
-            .tool_calls
-            .as_ref()
-            .is_some_and(|tc| !tc.is_empty())
-        {
+        let finish_reason = if message.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty()) {
             Some("tool_calls".to_string())
         } else {
             Some("stop".to_string())
@@ -532,7 +533,11 @@ impl ModelProvider for OllamaProvider {
 
         let ollama_request = OllamaChatRequest {
             model: request.model.clone(),
-            messages: request.messages.iter().map(OllamaMessage::from_chat_message).collect(),
+            messages: request
+                .messages
+                .iter()
+                .map(OllamaMessage::from_chat_message)
+                .collect(),
             stream: true,
             options: Some(OllamaOptions {
                 temperature: request.temperature,
@@ -624,10 +629,8 @@ impl ModelProvider for OllamaProvider {
                                 let mut first = is_first_chunk.lock().unwrap();
                                 let is_first = *first;
 
-                                let has_tool_calls = message
-                                    .tool_calls
-                                    .as_ref()
-                                    .is_some_and(|tc| !tc.is_empty());
+                                let has_tool_calls =
+                                    message.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty());
 
                                 if !delta_content.is_empty() || has_tool_calls {
                                     *first = false;
@@ -656,9 +659,7 @@ impl ModelProvider for OllamaProvider {
 
                                 let finish_reason = if ollama_chunk.done {
                                     // Check both current chunk and any previous chunks
-                                    if has_tool_calls
-                                        || *seen_tool_calls.lock().unwrap()
-                                    {
+                                    if has_tool_calls || *seen_tool_calls.lock().unwrap() {
                                         Some("tool_calls".to_string())
                                     } else {
                                         Some("stop".to_string())

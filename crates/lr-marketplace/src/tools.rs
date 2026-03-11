@@ -133,7 +133,8 @@ async fn handle_search(
         result["skill_count"] = json!(skills.len());
     }
 
-    result["hint"] = json!("Use marketplace__install with type 'mcp' or 'skill' to install an item");
+    result["hint"] =
+        json!("Use marketplace__install with type 'mcp' or 'skill' to install an item");
 
     Ok(result)
 }
@@ -271,14 +272,12 @@ async fn handle_install_skill(
         .await?;
 
     match response.action {
-        crate::install_popup::InstallAction::Install => {
-            Ok(json!({
-                "status": "approved",
-                "message": format!("Installation of skill '{}' from '{}' approved by user", name, source),
-                "listing": listing,
-                "next_step": "The skill is being downloaded and will be available shortly"
-            }))
-        }
+        crate::install_popup::InstallAction::Install => Ok(json!({
+            "status": "approved",
+            "message": format!("Installation of skill '{}' from '{}' approved by user", name, source),
+            "listing": listing,
+            "next_step": "The skill is being downloaded and will be available shortly"
+        })),
         crate::install_popup::InstallAction::Cancel => Err(MarketplaceError::InstallCancelled),
     }
 }

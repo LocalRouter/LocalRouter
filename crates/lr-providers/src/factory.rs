@@ -291,8 +291,26 @@ impl DiscoverableProvider for OllamaProviderFactory {
     async fn is_available(&self) -> bool {
         let client = crate::http_client::discovery_client();
 
-        let url = format!("{}/api/tags", self.default_base_url());
-        client.get(&url).send().await.is_ok()
+        // Primary check: /api/tags is Ollama-specific
+        let tags_url = format!("{}/api/tags", self.default_base_url());
+        if client.get(&tags_url).send().await.is_err() {
+            return false;
+        }
+
+        // Bonus verification: GET / should return "Ollama is running"
+        // If this fails, still return true since /api/tags on port 11434 is a strong signal
+        let root_url = self.default_base_url().to_string();
+        if let Ok(resp) = client.get(&root_url).send().await {
+            if let Ok(body) = resp.text().await {
+                if !body.contains("Ollama is running") {
+                    tracing::debug!(
+                        "Ollama root check: body does not contain expected string, but /api/tags responded OK"
+                    );
+                }
+            }
+        }
+
+        true
     }
 
     fn default_base_url(&self) -> &str {
@@ -1781,7 +1799,7 @@ impl ProviderFactory for OpenAICodexProviderFactory {
 // ==================== LOCAL PROVIDER DISCOVERY ====================
 
 /// Discovered local provider information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DiscoveredProvider {
     /// Provider type identifier
     pub provider_type: String,
@@ -1803,8 +1821,8 @@ pub async fn discover_local_providers() -> Vec<DiscoveredProvider> {
         Box::new(LMStudioProviderFactory),
         Box::new(JanProviderFactory),
         Box::new(GPT4AllProviderFactory),
-        Box::new(LocalAIProviderFactory),
-        Box::new(LlamaCppProviderFactory),
+        // LocalAI and llama.cpp excluded: both use port 8080 which is too common
+        // to reliably identify as a local LLM provider
     ];
 
     for factory in &discoverable {
