@@ -21,6 +21,7 @@ members = [
     "crates/lr-compression",
     "crates/lr-json-repair",
     "crates/lr-mcp-via-llm",
+    "crates/lr-context",
 ]
 resolver = "2"
 
@@ -53,6 +54,7 @@ lr-coding-agents = { path = "crates/lr-coding-agents" }
 lr-compression = { path = "crates/lr-compression" }
 lr-json-repair = { path = "crates/lr-json-repair" }
 lr-mcp-via-llm = { path = "crates/lr-mcp-via-llm" }
+lr-context = { path = "crates/lr-context" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
@@ -146,7 +148,7 @@ dashmap = "6.1"
 tokio-tungstenite = "0.21"
 
 # Database
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled-full"] }
 
 # Lazy initialization
 once_cell = "1.20"
