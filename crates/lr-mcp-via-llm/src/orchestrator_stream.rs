@@ -61,8 +61,11 @@ pub async fn run_agentic_loop_streaming(
 
     // Initialize gateway session if needed
     if !gateway_initialized {
-        gw_client.initialize().await?;
+        let instructions = gw_client.initialize().await?;
         session.write().gateway_initialized = true;
+        if let Some(instructions) = instructions {
+            orchestrator::inject_server_instructions(&mut request, &instructions);
+        }
     }
 
     // Fetch MCP tools
@@ -91,33 +94,13 @@ pub async fn run_agentic_loop_streaming(
     // Merge MCP tools into request
     orchestrator::inject_mcp_tools(&mut request, &mcp_tools);
 
-    // Synthetic tool mappings for resources and prompts
-    let mut resource_tools: HashMap<String, String> = HashMap::new();
+    // Synthetic tool mappings for prompts
     let mut prompt_tools: HashMap<String, String> = HashMap::new();
 
-    // Expose MCP resources as synthetic tools
+    // Expose a single resource_read tool
     if config.expose_resources_as_tools {
-        match gw_client.list_resources().await {
-            Ok(resources) => {
-                if !resources.is_empty() {
-                    tracing::info!(
-                        "MCP via LLM streaming: exposing {} resources as tools",
-                        resources.len()
-                    );
-                    orchestrator::inject_resource_tools(
-                        &mut request,
-                        &resources,
-                        &mut resource_tools,
-                    );
-                    for name in resource_tools.keys() {
-                        mcp_tool_names.insert(name.clone());
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("MCP via LLM streaming: failed to list resources: {}", e);
-            }
-        }
+        orchestrator::inject_resource_read_tool(&mut request);
+        mcp_tool_names.insert(orchestrator::RESOURCE_READ_TOOL_NAME.to_string());
     }
 
     // Inject MCP prompts
@@ -183,7 +166,6 @@ pub async fn run_agentic_loop_streaming(
             request,
             &client_id,
             &mcp_tool_names,
-            &resource_tools,
             &prompt_tools,
             roots,
             servers,
@@ -220,7 +202,6 @@ async fn streaming_loop(
     mut request: CompletionRequest,
     client_id: &str,
     mcp_tool_names: &HashSet<String>,
-    resource_tools: &HashMap<String, String>,
     prompt_tools: &HashMap<String, String>,
     roots: Vec<lr_mcp::protocol::Root>,
     servers: Vec<String>,
@@ -501,21 +482,25 @@ async fn streaming_loop(
                         tool_call.id
                     );
 
-                    let result_content = if let Some(uri) = resource_tools.get(tool_name.as_str()) {
-                        // Synthetic resource tool — read the resource directly
+                    let result_content = if tool_name == orchestrator::RESOURCE_READ_TOOL_NAME {
+                        // resource_read tool — read MCP resource or skill file
+                        let name = arguments
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         match execute_resource_read_background(
                             &gateway,
                             client_id,
                             servers.clone(),
                             roots.clone(),
                             permissions,
-                            uri,
+                            name,
                         )
                         .await
                         {
                             Ok(content) => content,
                             Err(e) => {
-                                format!("Error reading resource '{}': {}", tool_name, e)
+                                format!("Error reading resource '{}': {}", name, e)
                             }
                         }
                     } else if let Some(prompt_name) = prompt_tools.get(tool_name.as_str()) {
@@ -727,21 +712,29 @@ fn build_finish_chunk_with_tools(tool_calls: &[&ToolCall], finish_reason: &str) 
 }
 
 /// Execute a resource read in the background via the gateway.
+///
+/// Tries MCP resource read by name first, then falls back to skill file read
+/// for names matching `<skill>/<subpath>`.
 async fn execute_resource_read_background(
     gateway: &lr_mcp::McpGateway,
     client_id: &str,
     allowed_servers: Vec<String>,
     roots: Vec<lr_mcp::protocol::Root>,
     permissions: &orchestrator::GatewayPermissions,
-    uri: &str,
+    name: &str,
 ) -> Result<String, String> {
     use lr_mcp::protocol::JsonRpcRequest;
 
+    if name.is_empty() {
+        return Err("missing 'name' parameter".to_string());
+    }
+
+    // Try as MCP resource first (by name)
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         id: Some(json!(1)),
         method: "resources/read".to_string(),
-        params: Some(json!({ "uri": uri })),
+        params: Some(json!({ "name": name })),
     };
 
     let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
@@ -750,8 +743,8 @@ async fn execute_resource_read_background(
         gateway.handle_request_with_skills(
             client_id,
             Some(&permissions.session_key),
-            allowed_servers,
-            roots,
+            allowed_servers.clone(),
+            roots.clone(),
             permissions.mcp_permissions.clone(),
             permissions.skills_permissions.clone(),
             permissions.client_name.clone(),
@@ -766,32 +759,85 @@ async fn execute_resource_read_background(
     )
     .await
     {
-        Ok(result) => result.map_err(|e| format!("resources/read '{}' failed: {}", uri, e))?,
-        Err(_) => return Err(format!("resources/read '{}' timed out", uri)),
+        Ok(result) => result.map_err(|e| format!("resources/read '{}' failed: {}", name, e))?,
+        Err(_) => return Err(format!("resources/read '{}' timed out", name)),
     };
 
-    if let Some(error) = response.error {
-        return Err(format!("resources/read '{}' error: {}", uri, error.message));
+    if response.error.is_none() {
+        let result = response.result.unwrap_or(json!({}));
+        // Extract text content: { contents: [{ uri, text, mimeType }] }
+        if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
+            let texts: Vec<String> = contents
+                .iter()
+                .filter_map(|c| {
+                    c.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect();
+            if !texts.is_empty() {
+                return Ok(texts.join("\n"));
+            }
+        }
+        return Ok(orchestrator::content_to_string(&result));
     }
 
-    let result = response.result.unwrap_or(json!({}));
+    // Not found as MCP resource — try as skill file (<skill_name>/<subpath>)
+    if let Some(slash_pos) = name.find('/') {
+        let skill_name = &name[..slash_pos];
+        let subpath = &name[slash_pos + 1..];
+        if !subpath.is_empty() {
+            let skill_request = JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(json!(1)),
+                method: "tools/call".to_string(),
+                params: Some(json!({
+                    "name": "skill_read_file",
+                    "arguments": { "skill": skill_name, "path": subpath }
+                })),
+            };
 
-    // Extract text content: { contents: [{ uri, text, mimeType }] }
-    if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
-        let texts: Vec<String> = contents
-            .iter()
-            .filter_map(|c| {
-                c.get("text")
-                    .and_then(|t| t.as_str())
-                    .map(|s| s.to_string())
-            })
-            .collect();
-        if !texts.is_empty() {
-            return Ok(texts.join("\n"));
+            let skill_response = match tokio::time::timeout(
+                timeout,
+                gateway.handle_request_with_skills(
+                    client_id,
+                    Some(&permissions.session_key),
+                    allowed_servers,
+                    roots,
+                    permissions.mcp_permissions.clone(),
+                    permissions.skills_permissions.clone(),
+                    permissions.client_name.clone(),
+                    permissions.marketplace_permission.clone(),
+                    permissions.coding_agent_permission.clone(),
+                    permissions.coding_agent_type,
+                    permissions.context_management_overrides.clone(),
+                    permissions.mcp_sampling_permission.clone(),
+                    permissions.mcp_elicitation_permission.clone(),
+                    skill_request,
+                ),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(|e| format!("skill file read failed: {}", e))?,
+                Err(_) => return Err(format!("skill file read '{}' timed out", name)),
+            };
+
+            if let Some(error) = skill_response.error {
+                return Err(format!(
+                    "resource '{}' not found as MCP resource or skill file: {}",
+                    name, error.message
+                ));
+            }
+
+            let result = skill_response.result.unwrap_or(json!({}));
+            return Ok(orchestrator::content_to_string(&result));
         }
     }
 
-    Ok(orchestrator::content_to_string(&result))
+    Err(format!(
+        "resource '{}' not found. Check the welcome message for available resource names.",
+        name
+    ))
 }
 
 /// Execute a prompt get in the background via the gateway.

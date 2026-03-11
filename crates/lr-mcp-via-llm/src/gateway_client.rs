@@ -20,19 +20,6 @@ pub struct McpTool {
     pub input_schema: Value,
 }
 
-/// Describes an MCP resource available via the gateway
-#[derive(Debug, Clone)]
-pub struct McpResource {
-    /// Namespaced resource name (e.g. "filesystem__config")
-    pub name: String,
-    /// Resource URI
-    pub uri: String,
-    /// Resource description
-    pub description: Option<String>,
-    /// MIME type
-    pub mime_type: Option<String>,
-}
-
 /// Describes an MCP prompt available via the gateway
 #[derive(Debug, Clone)]
 pub struct McpPrompt {
@@ -173,8 +160,9 @@ impl<'a> GatewayClient<'a> {
             .await
     }
 
-    /// Initialize the gateway session (creates server connections)
-    pub async fn initialize(&self) -> Result<(), McpViaLlmError> {
+    /// Initialize the gateway session (creates server connections).
+    /// Returns the unified gateway instructions if any MCP servers provided them.
+    pub async fn initialize(&self) -> Result<Option<String>, McpViaLlmError> {
         let capabilities = build_init_capabilities(
             &self.mcp_sampling_permission,
             &self.mcp_elicitation_permission,
@@ -204,12 +192,20 @@ impl<'a> GatewayClient<'a> {
             )));
         }
 
+        // Extract unified gateway instructions from the response
+        let instructions = response
+            .result
+            .as_ref()
+            .and_then(|r| r.get("instructions"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         // Send initialized notification (required by MCP protocol)
         let notif_request = self.make_request("notifications/initialized", Some(json!({})));
         // Fire-and-forget: notifications don't return meaningful results
         let _ = self.send_request(notif_request).await;
 
-        Ok(())
+        Ok(instructions)
     }
 
     /// List all available MCP tools for this session
@@ -315,70 +311,26 @@ impl<'a> GatewayClient<'a> {
         Ok(result)
     }
 
-    /// List all available MCP resources
-    pub async fn list_resources(&self) -> Result<Vec<McpResource>, McpViaLlmError> {
-        let request = self.make_request("resources/list", Some(json!({})));
-
-        let response = self
-            .send_request(request)
-            .await
-            .map_err(|e| McpViaLlmError::Gateway(format!("resources/list failed: {}", e)))?;
-
-        if let Some(error) = response.error {
-            return Err(McpViaLlmError::Gateway(format!(
-                "resources/list error: {}",
-                error.message
-            )));
-        }
-
-        let result = response.result.unwrap_or(json!({"resources": []}));
-        let resources_value = result
-            .get("resources")
-            .cloned()
-            .unwrap_or_else(|| json!([]));
-
-        let resources: Vec<McpResource> = resources_value
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|r| {
-                        Some(McpResource {
-                            name: r.get("name")?.as_str()?.to_string(),
-                            uri: r.get("uri")?.as_str()?.to_string(),
-                            description: r
-                                .get("description")
-                                .and_then(|d| d.as_str())
-                                .map(|s| s.to_string()),
-                            mime_type: r
-                                .get("mimeType")
-                                .and_then(|m| m.as_str())
-                                .map(|s| s.to_string()),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(resources)
-    }
-
-    /// Read an MCP resource by URI
-    pub async fn read_resource(&self, uri: &str) -> Result<String, McpViaLlmError> {
+    /// Read an MCP resource by namespaced name.
+    ///
+    /// Uses the gateway's name-based routing (which looks up server_id and
+    /// original name from the resource mapping).
+    pub async fn read_resource(&self, name: &str) -> Result<String, McpViaLlmError> {
         let request = self.make_request(
             "resources/read",
             Some(json!({
-                "uri": uri
+                "name": name
             })),
         );
 
         let response = self.send_request(request).await.map_err(|e| {
-            McpViaLlmError::ToolExecution(format!("resources/read '{}' failed: {}", uri, e))
+            McpViaLlmError::ToolExecution(format!("resources/read '{}' failed: {}", name, e))
         })?;
 
         if let Some(error) = response.error {
             return Err(McpViaLlmError::ToolExecution(format!(
                 "resources/read '{}' error: {}",
-                uri, error.message
+                name, error.message
             )));
         }
 
@@ -387,6 +339,63 @@ impl<'a> GatewayClient<'a> {
         // Extract text content: { contents: [{ uri, text, mimeType }] }
         if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
             let texts: Vec<String> = contents
+                .iter()
+                .filter_map(|c| {
+                    c.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect();
+            if !texts.is_empty() {
+                return Ok(texts.join("\n"));
+            }
+        }
+
+        Ok(result.to_string())
+    }
+
+    /// Read a skill file via the gateway's skill virtual server.
+    ///
+    /// The gateway routes this to the SkillsVirtualServer which reads the
+    /// file from disk after permission checks.
+    pub async fn read_skill_file(
+        &self,
+        skill_name: &str,
+        subpath: &str,
+    ) -> Result<String, McpViaLlmError> {
+        // Use the skill_read tool with a special "__file" action
+        // Actually, we call the skill file reader directly via a tools/call
+        // that the skills virtual server handles
+        let request = self.make_request(
+            "tools/call",
+            Some(json!({
+                "name": "skill_read_file",
+                "arguments": {
+                    "skill": skill_name,
+                    "path": subpath
+                }
+            })),
+        );
+
+        let response = self.send_request(request).await.map_err(|e| {
+            McpViaLlmError::ToolExecution(format!(
+                "skill file read '{}/{}' failed: {}",
+                skill_name, subpath, e
+            ))
+        })?;
+
+        if let Some(error) = response.error {
+            return Err(McpViaLlmError::ToolExecution(format!(
+                "skill file read '{}/{}' error: {}",
+                skill_name, subpath, error.message
+            )));
+        }
+
+        let result = response.result.unwrap_or(json!({}));
+
+        // Extract text from tool result content
+        if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
+            let texts: Vec<String> = content
                 .iter()
                 .filter_map(|c| {
                     c.get("text")
@@ -513,8 +522,14 @@ mod tests {
             &lr_config::PermissionState::Ask,
         );
         assert!(caps.get("roots").is_some());
-        assert!(caps.get("sampling").is_none(), "sampling should be absent when Off");
-        assert!(caps.get("elicitation").is_some(), "elicitation should be present when Ask");
+        assert!(
+            caps.get("sampling").is_none(),
+            "sampling should be absent when Off"
+        );
+        assert!(
+            caps.get("elicitation").is_some(),
+            "elicitation should be present when Ask"
+        );
     }
 
     #[test]
@@ -523,8 +538,14 @@ mod tests {
             &lr_config::PermissionState::Ask,
             &lr_config::PermissionState::Off,
         );
-        assert!(caps.get("sampling").is_some(), "sampling should be present when Ask");
-        assert!(caps.get("elicitation").is_none(), "elicitation should be absent when Off");
+        assert!(
+            caps.get("sampling").is_some(),
+            "sampling should be present when Ask"
+        );
+        assert!(
+            caps.get("elicitation").is_none(),
+            "elicitation should be absent when Off"
+        );
     }
 
     #[test]
@@ -533,8 +554,14 @@ mod tests {
             &lr_config::PermissionState::Allow,
             &lr_config::PermissionState::Allow,
         );
-        assert!(caps.get("sampling").is_some(), "sampling should be present when Allow");
-        assert!(caps.get("elicitation").is_some(), "elicitation should be present when Allow");
+        assert!(
+            caps.get("sampling").is_some(),
+            "sampling should be present when Allow"
+        );
+        assert!(
+            caps.get("elicitation").is_some(),
+            "elicitation should be present when Allow"
+        );
     }
 
     #[test]
@@ -543,7 +570,10 @@ mod tests {
             &lr_config::PermissionState::Allow,
             &lr_config::PermissionState::Off,
         );
-        assert!(caps.get("elicitation").is_none(), "elicitation should be absent when Off");
+        assert!(
+            caps.get("elicitation").is_none(),
+            "elicitation should be absent when Off"
+        );
     }
 
     #[test]

@@ -147,10 +147,10 @@ mod session_tests {
 
 #[cfg(test)]
 mod tool_injection_tests {
-    use crate::gateway_client::{McpPrompt, McpPromptArgument, McpResource, McpTool};
+    use crate::gateway_client::{McpPrompt, McpPromptArgument, McpTool};
     use crate::orchestrator::{
         content_to_string, inject_mcp_tools, inject_prompt_messages, inject_prompt_tools,
-        inject_resource_tools,
+        inject_resource_read_tool, inject_server_instructions, RESOURCE_READ_TOOL_NAME,
     };
     use lr_providers::{ChatMessage, ChatMessageContent, CompletionRequest};
     use serde_json::json;
@@ -289,47 +289,32 @@ mod tool_injection_tests {
         );
     }
 
-    // ── inject_resource_tools ─────────────────────────────────────────────
+    // ── inject_resource_read_tool ────────────────────────────────────────
 
     #[test]
-    fn resource_tools_synthetic_names() {
+    fn resource_read_tool_injected() {
         let mut request = make_request(vec![]);
-        let resources = vec![McpResource {
-            name: "server__config".to_string(),
-            uri: "file:///config.json".to_string(),
-            description: Some("Config file".to_string()),
-            mime_type: Some("application/json".to_string()),
-        }];
-        let mut map = HashMap::new();
 
-        inject_resource_tools(&mut request, &resources, &mut map);
+        inject_resource_read_tool(&mut request);
 
-        let rt = request.tools.unwrap();
-        assert_eq!(rt[0].function.name, "mcp_resource__server__config");
-        assert_eq!(rt[0].function.description.as_deref(), Some("Config file"));
-        assert_eq!(map["mcp_resource__server__config"], "file:///config.json");
+        let tools = request.tools.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].function.name, RESOURCE_READ_TOOL_NAME);
+        assert!(tools[0].function.description.as_ref().unwrap().contains("name"));
     }
 
     #[test]
-    fn resource_tools_auto_description() {
+    fn resource_read_tool_has_name_parameter() {
         let mut request = make_request(vec![]);
-        let resources = vec![McpResource {
-            name: "readme".to_string(),
-            uri: "file:///README.md".to_string(),
-            description: None,
-            mime_type: None,
-        }];
-        let mut map = HashMap::new();
 
-        inject_resource_tools(&mut request, &resources, &mut map);
+        inject_resource_read_tool(&mut request);
 
-        let rt = request.tools.unwrap();
-        assert!(rt[0]
-            .function
-            .description
-            .as_ref()
-            .unwrap()
-            .contains("readme"));
+        let tools = request.tools.unwrap();
+        let schema = &tools[0].function.parameters;
+        let props = schema.get("properties").unwrap();
+        assert!(props.get("name").is_some());
+        let required = schema.get("required").unwrap().as_array().unwrap();
+        assert!(required.iter().any(|v| v.as_str() == Some("name")));
     }
 
     // ── inject_prompt_tools ───────────────────────────────────────────────
@@ -428,6 +413,54 @@ mod tool_injection_tests {
         assert_eq!(extract_text(&request.messages[0]), "Real");
     }
 
+    // ── inject_server_instructions ─────────────────────────────────────────
+
+    #[test]
+    fn server_instructions_placed_after_system_before_user() {
+        let mut request = make_request(vec![
+            msg("system", "System prompt"),
+            msg("system", "More system"),
+            msg("user", "Hello"),
+        ]);
+
+        inject_server_instructions(&mut request, "Unified MCP Gateway instructions here.");
+
+        assert_eq!(request.messages.len(), 4);
+        assert_eq!(request.messages[0].role, "system");
+        assert_eq!(extract_text(&request.messages[0]), "System prompt");
+        assert_eq!(request.messages[1].role, "system");
+        assert_eq!(extract_text(&request.messages[1]), "More system");
+        assert_eq!(request.messages[2].role, "system");
+        assert_eq!(
+            extract_text(&request.messages[2]),
+            "Unified MCP Gateway instructions here."
+        );
+        assert_eq!(request.messages[3].role, "user");
+        assert_eq!(extract_text(&request.messages[3]), "Hello");
+    }
+
+    #[test]
+    fn server_instructions_before_user_when_no_system() {
+        let mut request = make_request(vec![msg("user", "Hi")]);
+
+        inject_server_instructions(&mut request, "Gateway info");
+
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.messages[0].role, "system");
+        assert_eq!(extract_text(&request.messages[0]), "Gateway info");
+        assert_eq!(request.messages[1].role, "user");
+    }
+
+    #[test]
+    fn server_instructions_appended_when_all_system() {
+        let mut request = make_request(vec![msg("system", "A"), msg("system", "B")]);
+
+        inject_server_instructions(&mut request, "Gateway");
+
+        assert_eq!(request.messages.len(), 3);
+        assert_eq!(extract_text(&request.messages[2]), "Gateway");
+    }
+
     // ── content_to_string ─────────────────────────────────────────────────
 
     #[test]
@@ -486,14 +519,14 @@ mod tool_classification_tests {
 
     #[test]
     fn mixed() {
-        let mcp: HashSet<String> = ["fs__read", "mcp_resource__cfg"]
+        let mcp: HashSet<String> = ["fs__read", "resource_read"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         let calls = [
             tc("1", "fs__read"),
             tc("2", "client_search"),
-            tc("3", "mcp_resource__cfg"),
+            tc("3", "resource_read"),
         ];
         let (m, c): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 2);
@@ -502,12 +535,12 @@ mod tool_classification_tests {
     }
 
     #[test]
-    fn synthetic_resource_classified_as_mcp() {
-        let mcp: HashSet<String> = ["mcp_resource__server__config"]
+    fn resource_read_classified_as_mcp() {
+        let mcp: HashSet<String> = ["resource_read"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let calls = [tc("1", "mcp_resource__server__config")];
+        let calls = [tc("1", "resource_read")];
         let (m, _): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 1);
     }

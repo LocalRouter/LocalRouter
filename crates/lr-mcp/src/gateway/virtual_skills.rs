@@ -11,7 +11,7 @@ use super::gateway_tools::FirewallDecisionResult;
 use super::virtual_server::*;
 use crate::protocol::McpTool;
 use lr_skills::manager::SkillManager;
-use lr_skills::mcp_tools::SKILL_META_TOOL_NAME;
+use lr_skills::mcp_tools::{SKILL_META_TOOL_NAME, SKILL_READ_FILE_TOOL_NAME};
 
 /// Virtual MCP server for AgentSkills.io skills.
 pub struct SkillsVirtualServer {
@@ -28,6 +28,7 @@ impl SkillsVirtualServer {
 #[derive(Clone)]
 pub struct SkillsSessionState {
     pub permissions: lr_config::SkillsPermissions,
+    pub context_management_enabled: bool,
 }
 
 impl VirtualSessionState for SkillsSessionState {
@@ -44,11 +45,11 @@ impl VirtualSessionState for SkillsSessionState {
 
 /// Extract skill name from tool call arguments for firewall rule matching.
 ///
-/// With the meta-tool pattern, the skill name comes from the `skill`
+/// With the meta-tool pattern, the skill name comes from the `name`
 /// argument rather than being encoded in the tool name.
 fn extract_skill_name_from_arguments(arguments: Option<&Value>) -> Option<String> {
     arguments
-        .and_then(|args| args.get("skill"))
+        .and_then(|args| args.get("name").or_else(|| args.get("skill")))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
 }
@@ -64,7 +65,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
     }
 
     fn owns_tool(&self, tool_name: &str) -> bool {
-        tool_name == SKILL_META_TOOL_NAME
+        tool_name == SKILL_META_TOOL_NAME || tool_name == SKILL_READ_FILE_TOOL_NAME
     }
 
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
@@ -89,7 +90,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
         session_approved: bool,
         session_denied: bool,
     ) -> VirtualFirewallResult {
-        // Extract skill name from the `skill` argument of the meta-tool
+        // Extract skill name from the `name` argument of the meta-tool
         let skill_name = match extract_skill_name_from_arguments(arguments) {
             Some(name) => name,
             None => {
@@ -127,6 +128,31 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
+        // Handle skill_read_file (internal tool, not listed to LLM)
+        if tool_name == SKILL_READ_FILE_TOOL_NAME {
+            let skill_name = arguments
+                .get("skill")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let subpath = arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            return match lr_skills::mcp_tools::read_skill_file(
+                skill_name,
+                subpath,
+                &self.skill_manager,
+                &state.permissions,
+            ) {
+                Ok(content) => VirtualToolCallResult::Success(serde_json::json!({
+                    "content": [{ "type": "text", "text": content }]
+                })),
+                Err(e) => VirtualToolCallResult::ToolError(e),
+            };
+        }
+
+        // Handle skill_read
         match lr_skills::mcp_tools::handle_skill_tool_call(
             tool_name,
             &arguments,
@@ -158,32 +184,16 @@ impl VirtualMcpServer for SkillsVirtualServer {
             return None;
         }
 
-        let all_skills = self.skill_manager.get_all();
-        let accessible: Vec<_> = all_skills
-            .iter()
-            .filter(|s| {
-                s.enabled
-                    && state
-                        .permissions
-                        .resolve_skill(&s.metadata.name)
-                        .is_enabled()
-            })
-            .collect();
-
-        if accessible.is_empty() {
-            return None;
-        }
-
-        // Build skill catalog with metadata for progressive disclosure.
-        // The model sees this list in the system prompt and calls
-        // `skill_get_info` with the skill name to load full instructions.
-        let content = String::from(
-            "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n",
+        // Build skill catalog using the shared function from lr_skills
+        let catalog = lr_skills::mcp_tools::build_skill_catalog(
+            &self.skill_manager,
+            &state.permissions,
+            state.context_management_enabled,
         );
 
         Some(VirtualInstructions {
             section_title: "Skills".to_string(),
-            content,
+            content: catalog?,
             tool_names: Vec::new(), // populated by gateway
             priority: 30,
         })
@@ -192,6 +202,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {
         Box::new(SkillsSessionState {
             permissions: client.skills_permissions.clone(),
+            context_management_enabled: client.context_management_enabled.unwrap_or(false),
         })
     }
 
@@ -202,6 +213,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
     ) {
         if let Some(s) = state.as_any_mut().downcast_mut::<SkillsSessionState>() {
             s.permissions = client.skills_permissions.clone();
+            s.context_management_enabled = client.context_management_enabled.unwrap_or(false);
         }
     }
 }

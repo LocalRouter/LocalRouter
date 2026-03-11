@@ -1629,14 +1629,16 @@ mod session_tests {
         .expect("should succeed");
 
         let s = session.read();
-        // History should include: user msg, assistant (with tool call), tool result, final assistant
+        // History should include: gateway instructions (system), user msg, assistant (with tool call), tool result, final assistant
         assert!(
-            s.history.full_messages.len() >= 3,
-            "Expected at least 3 messages in history, got {}",
+            s.history.full_messages.len() >= 4,
+            "Expected at least 4 messages in history, got {}",
             s.history.full_messages.len()
         );
-        // First message should be user
-        assert_eq!(s.history.full_messages[0].role, "user");
+        // First message should be the injected gateway instructions (system)
+        assert_eq!(s.history.full_messages[0].role, "system");
+        // Second message should be user
+        assert_eq!(s.history.full_messages[1].role, "user");
     }
 
     #[tokio::test]

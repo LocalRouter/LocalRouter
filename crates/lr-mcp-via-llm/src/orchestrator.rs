@@ -107,8 +107,11 @@ pub async fn run_agentic_loop(
 
     // Initialize gateway session if needed
     if !gateway_initialized {
-        gw_client.initialize().await?;
+        let instructions = gw_client.initialize().await?;
         session.write().gateway_initialized = true;
+        if let Some(instructions) = instructions {
+            inject_server_instructions(&mut request, &instructions);
+        }
     }
 
     // Fetch MCP tools
@@ -139,30 +142,13 @@ pub async fn run_agentic_loop(
     // Merge MCP tools into request
     inject_mcp_tools(&mut request, &mcp_tools);
 
-    // Synthetic tool mappings for resources and prompts
-    let mut resource_tools: HashMap<String, String> = HashMap::new(); // tool_name -> uri
+    // Synthetic tool mappings for prompts
     let mut prompt_tools: HashMap<String, String> = HashMap::new(); // tool_name -> prompt_name
 
-    // Expose MCP resources as synthetic tools (lazy fetch)
+    // Expose a single resource_read tool (replaces N per-resource synthetic tools)
     if config.expose_resources_as_tools {
-        match gw_client.list_resources().await {
-            Ok(resources) => {
-                if !resources.is_empty() {
-                    tracing::info!(
-                        "MCP via LLM: exposing {} resources as tools",
-                        resources.len()
-                    );
-                    inject_resource_tools(&mut request, &resources, &mut resource_tools);
-                    // Add synthetic names to MCP tool set so they're classified as server-side
-                    for name in resource_tools.keys() {
-                        mcp_tool_names.insert(name.clone());
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("MCP via LLM: failed to list resources: {}", e);
-            }
-        }
+        inject_resource_read_tool(&mut request);
+        mcp_tool_names.insert(RESOURCE_READ_TOOL_NAME.to_string());
     }
 
     // Inject MCP prompts
@@ -444,14 +430,13 @@ pub async fn run_agentic_loop(
                     );
                     mcp_tools_called.push(tool_name.clone());
 
-                    let result_content = if let Some(uri) = resource_tools.get(tool_name.as_str()) {
-                        // Synthetic resource tool — read the resource
-                        match gw_client.read_resource(uri).await {
-                            Ok(content) => content,
-                            Err(e) => {
-                                format!("Error reading resource '{}': {}", tool_name, e)
-                            }
-                        }
+                    let result_content = if tool_name == RESOURCE_READ_TOOL_NAME {
+                        // resource_read tool — read MCP resource or skill file
+                        let name = arguments
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        execute_resource_read(&gw_client, name).await
                     } else if let Some(prompt_name) = prompt_tools.get(tool_name.as_str()) {
                         // Synthetic prompt tool — get the prompt and format as text
                         match gw_client.get_prompt(prompt_name, arguments.clone()).await {
@@ -845,45 +830,78 @@ pub(crate) fn content_to_string(value: &Value) -> String {
     }
 }
 
-/// Inject MCP resources as synthetic function tools.
-/// Each resource becomes a no-argument tool that reads the resource on demand.
-pub(crate) fn inject_resource_tools(
-    request: &mut CompletionRequest,
-    resources: &[crate::gateway_client::McpResource],
-    resource_tools: &mut HashMap<String, String>,
-) {
-    let tools: Vec<lr_providers::Tool> = resources
-        .iter()
-        .map(|r| {
-            // Synthetic tool name: mcp_resource__<namespaced_name>
-            let tool_name = format!("mcp_resource__{}", r.name);
-            resource_tools.insert(tool_name.clone(), r.uri.clone());
+/// The single resource_read tool name.
+pub(crate) const RESOURCE_READ_TOOL_NAME: &str = "resource_read";
 
-            let description = r.description.clone().unwrap_or_else(|| {
-                format!(
-                    "Read the resource '{}'{}",
-                    r.name,
-                    r.mime_type
-                        .as_ref()
-                        .map(|m| format!(" ({})", m))
-                        .unwrap_or_default()
-                )
-            });
-
-            lr_providers::Tool {
-                tool_type: "function".to_string(),
-                function: lr_providers::FunctionDefinition {
-                    name: tool_name,
-                    description: Some(description),
-                    parameters: json!({"type": "object", "properties": {}}),
+/// Inject a single `resource_read` tool into the request.
+///
+/// Replaces the old approach of creating N synthetic per-resource tools.
+/// Resource names are listed in the welcome message; the LLM calls this
+/// tool with the name to fetch content.
+pub(crate) fn inject_resource_read_tool(request: &mut CompletionRequest) {
+    let tool = lr_providers::Tool {
+        tool_type: "function".to_string(),
+        function: lr_providers::FunctionDefinition {
+            name: RESOURCE_READ_TOOL_NAME.to_string(),
+            description: Some(
+                "Read a resource by name. MCP resource names are listed in the welcome message. \
+                 Skill files can be read as <skill>/<path> (e.g. \"my-skill/scripts/run.sh\"). \
+                 If resources are hidden due to compression, use ctx_search to discover them."
+                    .to_string(),
+            ),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Resource name or skill file path"
+                    }
                 },
-            }
-        })
-        .collect();
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+        },
+    };
 
     match &mut request.tools {
-        Some(existing) => existing.extend(tools),
-        None => request.tools = Some(tools),
+        Some(existing) => existing.push(tool),
+        None => request.tools = Some(vec![tool]),
+    }
+}
+
+/// Execute a resource_read call — resolves to MCP resource or skill file.
+async fn execute_resource_read(gw_client: &GatewayClient<'_>, name: &str) -> String {
+    if name.is_empty() {
+        return "Error: missing 'name' parameter".to_string();
+    }
+
+    // Try reading as an MCP resource first (by namespaced name)
+    match gw_client.read_resource(name).await {
+        Ok(content) => content,
+        Err(_) => {
+            // Not found as MCP resource — try as skill file
+            // Skill files use the pattern: <skill_name>/<subpath>
+            if let Some(slash_pos) = name.find('/') {
+                let skill_name = &name[..slash_pos];
+                let subpath = &name[slash_pos + 1..];
+                if !subpath.is_empty() {
+                    // Try reading via the gateway's skill file reader
+                    match gw_client.read_skill_file(skill_name, subpath).await {
+                        Ok(content) => return content,
+                        Err(e) => {
+                            return format!(
+                                "Error: resource '{}' not found as MCP resource or skill file: {}",
+                                name, e
+                            );
+                        }
+                    }
+                }
+            }
+            format!(
+                "Error: resource '{}' not found. Check the welcome message for available resource names.",
+                name
+            )
+        }
     }
 }
 
@@ -986,4 +1004,25 @@ pub(crate) fn inject_prompt_messages(request: &mut CompletionRequest, prompt_mes
             offset += 1;
         }
     }
+}
+
+/// Inject the unified MCP gateway instructions as a system message.
+/// Placed after all existing system messages but before the first non-system message.
+pub(crate) fn inject_server_instructions(request: &mut CompletionRequest, instructions: &str) {
+    let insert_idx = request
+        .messages
+        .iter()
+        .position(|m| m.role != "system")
+        .unwrap_or(request.messages.len());
+
+    request.messages.insert(
+        insert_idx,
+        ChatMessage {
+            role: "system".to_string(),
+            content: ChatMessageContent::Text(instructions.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    );
 }
