@@ -769,9 +769,23 @@ impl McpGateway {
     /// Handle elicitation/requestInput
     async fn handle_elicitation_request(
         &self,
-        _session: Arc<RwLock<GatewaySession>>,
+        session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        // Check elicitation permission
+        let elicitation_permission = session.read().await.mcp_elicitation_permission.clone();
+
+        if matches!(elicitation_permission, lr_config::PermissionState::Off) {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::custom(
+                    -32601,
+                    "Elicitation is disabled for this client".to_string(),
+                    None,
+                ),
+            ));
+        }
+
         // Parse elicitation request from params
         let elicitation_req: crate::protocol::ElicitationRequest = match request.params.as_ref() {
             Some(params) => serde_json::from_value(params.clone()).map_err(|e| {

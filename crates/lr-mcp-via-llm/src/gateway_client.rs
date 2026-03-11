@@ -72,6 +72,23 @@ pub struct GatewayClient<'a> {
     mcp_elicitation_permission: lr_config::PermissionState,
 }
 
+/// Build the MCP initialize capabilities JSON based on permission settings.
+pub(crate) fn build_init_capabilities(
+    sampling_permission: &lr_config::PermissionState,
+    elicitation_permission: &lr_config::PermissionState,
+) -> Value {
+    let mut capabilities = json!({
+        "roots": { "listChanged": false }
+    });
+    if !matches!(sampling_permission, lr_config::PermissionState::Off) {
+        capabilities["sampling"] = json!({});
+    }
+    if !matches!(elicitation_permission, lr_config::PermissionState::Off) {
+        capabilities["elicitation"] = json!({});
+    }
+    capabilities
+}
+
 impl<'a> GatewayClient<'a> {
     /// Access the roots list (needed for spawning background tasks)
     pub fn roots(&self) -> &[Root] {
@@ -158,21 +175,10 @@ impl<'a> GatewayClient<'a> {
 
     /// Initialize the gateway session (creates server connections)
     pub async fn initialize(&self) -> Result<(), McpViaLlmError> {
-        let mut capabilities = json!({
-            "roots": { "listChanged": false }
-        });
-        if !matches!(
-            self.mcp_sampling_permission,
-            lr_config::PermissionState::Off
-        ) {
-            capabilities["sampling"] = json!({});
-        }
-        if !matches!(
-            self.mcp_elicitation_permission,
-            lr_config::PermissionState::Off
-        ) {
-            capabilities["elicitation"] = json!({});
-        }
+        let capabilities = build_init_capabilities(
+            &self.mcp_sampling_permission,
+            &self.mcp_elicitation_permission,
+        );
 
         let request = self.make_request(
             "initialize",
@@ -493,5 +499,62 @@ impl<'a> GatewayClient<'a> {
             .unwrap_or_default();
 
         Ok(messages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sampling_off_no_capability() {
+        let caps = build_init_capabilities(
+            &lr_config::PermissionState::Off,
+            &lr_config::PermissionState::Ask,
+        );
+        assert!(caps.get("roots").is_some());
+        assert!(caps.get("sampling").is_none(), "sampling should be absent when Off");
+        assert!(caps.get("elicitation").is_some(), "elicitation should be present when Ask");
+    }
+
+    #[test]
+    fn test_sampling_ask_has_capability() {
+        let caps = build_init_capabilities(
+            &lr_config::PermissionState::Ask,
+            &lr_config::PermissionState::Off,
+        );
+        assert!(caps.get("sampling").is_some(), "sampling should be present when Ask");
+        assert!(caps.get("elicitation").is_none(), "elicitation should be absent when Off");
+    }
+
+    #[test]
+    fn test_sampling_allow_has_capability() {
+        let caps = build_init_capabilities(
+            &lr_config::PermissionState::Allow,
+            &lr_config::PermissionState::Allow,
+        );
+        assert!(caps.get("sampling").is_some(), "sampling should be present when Allow");
+        assert!(caps.get("elicitation").is_some(), "elicitation should be present when Allow");
+    }
+
+    #[test]
+    fn test_elicitation_off_no_capability() {
+        let caps = build_init_capabilities(
+            &lr_config::PermissionState::Allow,
+            &lr_config::PermissionState::Off,
+        );
+        assert!(caps.get("elicitation").is_none(), "elicitation should be absent when Off");
+    }
+
+    #[test]
+    fn test_both_off_only_roots() {
+        let caps = build_init_capabilities(
+            &lr_config::PermissionState::Off,
+            &lr_config::PermissionState::Off,
+        );
+        assert!(caps.get("roots").is_some());
+        assert!(caps.get("sampling").is_none());
+        assert!(caps.get("elicitation").is_none());
+        assert_eq!(caps.as_object().unwrap().len(), 1);
     }
 }
