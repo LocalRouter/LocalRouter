@@ -793,6 +793,9 @@ impl AppState {
         // Read config before moving config_manager into struct
         let mcp_via_llm_config = config_manager.get().mcp_via_llm.clone();
 
+        // Wrap notification_tx in Arc before struct init so it can be shared
+        let notification_broadcast = Arc::new(notification_tx);
+
         Self {
             router,
             client_manager,
@@ -810,7 +813,7 @@ impl AppState {
             internal_test_secret: Arc::new(internal_test_secret),
             routellm_service: None,
             tray_graph_manager: Arc::new(RwLock::new(None)),
-            mcp_notification_broadcast: Arc::new(notification_tx),
+            mcp_notification_broadcast: notification_broadcast.clone(),
             client_notification_broadcast: Arc::new(client_notification_tx),
             sse_connection_manager: Arc::new(SseConnectionManager::new()),
             mcp_notification_handlers_registered: Arc::new(DashMap::new()),
@@ -824,7 +827,10 @@ impl AppState {
             compression_service: Arc::new(RwLock::new(None)),
             mcp_via_llm_manager: Arc::new(McpViaLlmManager::new(mcp_via_llm_config)),
             sampling_approval_manager: Arc::new(
-                lr_mcp::gateway::sampling_approval::SamplingApprovalManager::new(120),
+                lr_mcp::gateway::sampling_approval::SamplingApprovalManager::new_with_broadcast(
+                    120,
+                    notification_broadcast.clone(),
+                ),
             ),
         }
     }

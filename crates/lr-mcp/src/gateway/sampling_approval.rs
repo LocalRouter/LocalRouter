@@ -5,12 +5,13 @@
 #![allow(dead_code)]
 
 use dashmap::DashMap;
+use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::protocol::SamplingRequest;
+use crate::protocol::{JsonRpcNotification, SamplingRequest};
 use lr_types::{AppError, AppResult};
 
 /// User's decision on a sampling approval request
@@ -56,6 +57,10 @@ pub struct SamplingApprovalManager {
 
     /// Default timeout for approval requests (seconds)
     default_timeout_secs: u64,
+
+    /// Broadcast sender for notifications (optional)
+    notification_broadcast:
+        Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
 }
 
 impl SamplingApprovalManager {
@@ -64,6 +69,19 @@ impl SamplingApprovalManager {
         Self {
             pending: Arc::new(DashMap::new()),
             default_timeout_secs,
+            notification_broadcast: None,
+        }
+    }
+
+    /// Create a new sampling approval manager with notification broadcast support
+    pub fn new_with_broadcast(
+        default_timeout_secs: u64,
+        notification_broadcast: Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
+    ) -> Self {
+        Self {
+            pending: Arc::new(DashMap::new()),
+            default_timeout_secs,
+            notification_broadcast: Some(notification_broadcast),
         }
     }
 
@@ -104,6 +122,30 @@ impl SamplingApprovalManager {
             "Sampling approval request {} created for server {}",
             request_id, server_id
         );
+
+        // Broadcast notification to listeners (Tauri popup opener)
+        if let Some(broadcast) = &self.notification_broadcast {
+            let notification = JsonRpcNotification {
+                jsonrpc: "2.0".to_string(),
+                method: "sampling/approvalRequired".to_string(),
+                params: Some(json!({
+                    "request_id": request_id,
+                    "server_id": server_id,
+                    "timeout_seconds": timeout,
+                })),
+            };
+
+            if let Err(e) =
+                broadcast.send(("_sampling_approval".to_string(), notification))
+            {
+                error!("Failed to broadcast sampling approval request: {}", e);
+            } else {
+                debug!(
+                    "Broadcasted sampling approval request {} via notification",
+                    request_id
+                );
+            }
+        }
 
         // Wait for response with timeout
         match tokio::time::timeout(Duration::from_secs(timeout), rx).await {
@@ -254,6 +296,7 @@ impl Default for SamplingApprovalManager {
         Self {
             pending: Arc::new(DashMap::new()),
             default_timeout_secs: 120,
+            notification_broadcast: None,
         }
     }
 }
@@ -263,6 +306,7 @@ impl Clone for SamplingApprovalManager {
         Self {
             pending: self.pending.clone(),
             default_timeout_secs: self.default_timeout_secs,
+            notification_broadcast: self.notification_broadcast.clone(),
         }
     }
 }

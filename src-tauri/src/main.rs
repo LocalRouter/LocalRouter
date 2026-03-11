@@ -904,6 +904,152 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     }
                 });
                 info!("Spawned firewall approval popup listener");
+
+                // Spawn sampling approval popup listener
+                let app_handle_for_sampling = app.handle().clone();
+                let sampling_broadcast_rx =
+                    app_state.mcp_notification_broadcast.subscribe();
+                tokio::spawn(async move {
+                    use tauri::WebviewWindowBuilder;
+                    let mut rx = sampling_broadcast_rx;
+                    loop {
+                        match rx.recv().await {
+                            Ok((channel, notification)) => {
+                                if channel != "_sampling_approval" {
+                                    continue;
+                                }
+                                let request_id = notification
+                                    .params
+                                    .as_ref()
+                                    .and_then(|p| p.get("request_id"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+
+                                if request_id.is_empty() {
+                                    tracing::warn!(
+                                        "Sampling approval notification missing request_id"
+                                    );
+                                    continue;
+                                }
+
+                                tracing::info!(
+                                    "Opening sampling approval popup for request {}",
+                                    request_id
+                                );
+
+                                match WebviewWindowBuilder::new(
+                                    &app_handle_for_sampling,
+                                    format!("sampling-approval-{}", request_id),
+                                    tauri::WebviewUrl::App("index.html".into()),
+                                )
+                                .title("Sampling Approval")
+                                .inner_size(400.0, 320.0)
+                                .center()
+                                .visible(true)
+                                .resizable(false)
+                                .decorations(true)
+                                .always_on_top(true)
+                                .build()
+                                {
+                                    Ok(window) => {
+                                        let _ = window.set_focus();
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to create sampling approval popup: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(
+                                    "Sampling approval listener lagged, missed {} notifications",
+                                    n
+                                );
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                tracing::info!("Sampling approval broadcast channel closed");
+                                break;
+                            }
+                        }
+                    }
+                });
+                info!("Spawned sampling approval popup listener");
+
+                // Spawn elicitation form popup listener
+                let app_handle_for_elicitation = app.handle().clone();
+                let elicitation_broadcast_rx =
+                    app_state.mcp_notification_broadcast.subscribe();
+                tokio::spawn(async move {
+                    use tauri::WebviewWindowBuilder;
+                    let mut rx = elicitation_broadcast_rx;
+                    loop {
+                        match rx.recv().await {
+                            Ok((channel, notification)) => {
+                                if channel != "_elicitation" {
+                                    continue;
+                                }
+                                let request_id = notification
+                                    .params
+                                    .as_ref()
+                                    .and_then(|p| p.get("request_id"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+
+                                if request_id.is_empty() {
+                                    tracing::warn!(
+                                        "Elicitation notification missing request_id"
+                                    );
+                                    continue;
+                                }
+
+                                tracing::info!(
+                                    "Opening elicitation form popup for request {}",
+                                    request_id
+                                );
+
+                                match WebviewWindowBuilder::new(
+                                    &app_handle_for_elicitation,
+                                    format!("elicitation-form-{}", request_id),
+                                    tauri::WebviewUrl::App("index.html".into()),
+                                )
+                                .title("Input Required")
+                                .inner_size(400.0, 420.0)
+                                .center()
+                                .visible(true)
+                                .resizable(true)
+                                .decorations(true)
+                                .always_on_top(true)
+                                .build()
+                                {
+                                    Ok(window) => {
+                                        let _ = window.set_focus();
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to create elicitation form popup: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(
+                                    "Elicitation listener lagged, missed {} notifications",
+                                    n
+                                );
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                tracing::info!("Elicitation broadcast channel closed");
+                                break;
+                            }
+                        }
+                    }
+                });
+                info!("Spawned elicitation form popup listener");
             } else {
                 error!("Failed to get AppState from server manager");
             }

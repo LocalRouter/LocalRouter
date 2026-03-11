@@ -510,6 +510,12 @@ impl TrayGraphManager {
                     error!("Failed to rebuild tray menu after firewall cleanup: {}", e);
                 }
             }
+
+            // Clean up expired sampling approval requests and close their popups
+            app_state.sampling_approval_manager.cleanup_expired();
+
+            // Clean up expired elicitation requests
+            app_state.mcp_gateway.get_elicitation_manager().cleanup_expired();
         }
 
         // Determine overlay: debug override takes precedence, then normal priority
