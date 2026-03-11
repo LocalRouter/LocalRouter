@@ -5,6 +5,13 @@ use crate::types::{ContentType, MatchLayer, SearchHit, SearchResult};
 
 const SNIPPET_MAX_CHARS: usize = 300;
 
+/// Escape SQL LIKE metacharacters (`%`, `_`, `\`) so they match literally.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 // ─────────────────────────────────────────────────────────
 // Query sanitization
 // ─────────────────────────────────────────────────────────
@@ -90,47 +97,47 @@ fn search_porter(
     }
 
     let result = if let Some(src) = source {
-        let filter = format!("{}%", src);
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT c.title, c.content, c.content_type, s.label,
-                        c.line_start, c.line_end,
-                        bm25(chunks, 2.0, 1.0) AS rank,
-                        highlight(chunks, 1, char(2), char(3)) AS highlighted
-                 FROM chunks c
-                 JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
-                 WHERE chunks MATCH ?1 AND s.label LIKE ?2
-                 ORDER BY rank
-                 LIMIT ?3",
-            )
-            .ok();
-        stmt.as_mut().and_then(|s| {
-            s.query_map(params![sanitized, filter, limit as i64], map_raw_hit)
-                .ok()
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        let filter = format!("{}%", escape_like(src));
+        conn.prepare_cached(
+            "SELECT c.title, c.content, c.content_type, s.label,
+                    c.line_start, c.line_end,
+                    bm25(chunks, 2.0, 1.0) AS rank,
+                    highlight(chunks, 1, char(2), char(3)) AS highlighted
+             FROM chunks c
+             JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
+             WHERE chunks MATCH ?1 AND s.label LIKE ?2 ESCAPE '\\'
+             ORDER BY rank
+             LIMIT ?3",
+        )
+        .and_then(|mut s| {
+            let rows = s.query_map(params![sanitized, filter, limit as i64], map_raw_hit)?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
         })
     } else {
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT c.title, c.content, c.content_type, s.label,
-                        c.line_start, c.line_end,
-                        bm25(chunks, 2.0, 1.0) AS rank,
-                        highlight(chunks, 1, char(2), char(3)) AS highlighted
-                 FROM chunks c
-                 JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
-                 WHERE chunks MATCH ?1
-                 ORDER BY rank
-                 LIMIT ?2",
-            )
-            .ok();
-        stmt.as_mut().and_then(|s| {
-            s.query_map(params![sanitized, limit as i64], map_raw_hit)
-                .ok()
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        conn.prepare_cached(
+            "SELECT c.title, c.content, c.content_type, s.label,
+                    c.line_start, c.line_end,
+                    bm25(chunks, 2.0, 1.0) AS rank,
+                    highlight(chunks, 1, char(2), char(3)) AS highlighted
+             FROM chunks c
+             JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
+             WHERE chunks MATCH ?1
+             ORDER BY rank
+             LIMIT ?2",
+        )
+        .and_then(|mut s| {
+            let rows = s.query_map(params![sanitized, limit as i64], map_raw_hit)?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
         })
     };
 
-    result.unwrap_or_default()
+    match result {
+        Ok(hits) => hits,
+        Err(e) => {
+            tracing::debug!("Porter search error: {}", e);
+            Vec::new()
+        }
+    }
 }
 
 fn search_trigram(
@@ -146,47 +153,47 @@ fn search_trigram(
     };
 
     let result = if let Some(src) = source {
-        let filter = format!("{}%", src);
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT c.title, c.content, c.content_type, s.label,
-                        c.line_start, c.line_end,
-                        bm25(chunks_trigram, 2.0, 1.0) AS rank,
-                        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
-                 FROM chunks_trigram c
-                 JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
-                 WHERE chunks_trigram MATCH ?1 AND s.label LIKE ?2
-                 ORDER BY rank
-                 LIMIT ?3",
-            )
-            .ok();
-        stmt.as_mut().and_then(|s| {
-            s.query_map(params![sanitized, filter, limit as i64], map_raw_hit)
-                .ok()
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        let filter = format!("{}%", escape_like(src));
+        conn.prepare_cached(
+            "SELECT c.title, c.content, c.content_type, s.label,
+                    c.line_start, c.line_end,
+                    bm25(chunks_trigram, 2.0, 1.0) AS rank,
+                    highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+             FROM chunks_trigram c
+             JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
+             WHERE chunks_trigram MATCH ?1 AND s.label LIKE ?2 ESCAPE '\\'
+             ORDER BY rank
+             LIMIT ?3",
+        )
+        .and_then(|mut s| {
+            let rows = s.query_map(params![sanitized, filter, limit as i64], map_raw_hit)?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
         })
     } else {
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT c.title, c.content, c.content_type, s.label,
-                        c.line_start, c.line_end,
-                        bm25(chunks_trigram, 2.0, 1.0) AS rank,
-                        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
-                 FROM chunks_trigram c
-                 JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
-                 WHERE chunks_trigram MATCH ?1
-                 ORDER BY rank
-                 LIMIT ?2",
-            )
-            .ok();
-        stmt.as_mut().and_then(|s| {
-            s.query_map(params![sanitized, limit as i64], map_raw_hit)
-                .ok()
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        conn.prepare_cached(
+            "SELECT c.title, c.content, c.content_type, s.label,
+                    c.line_start, c.line_end,
+                    bm25(chunks_trigram, 2.0, 1.0) AS rank,
+                    highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+             FROM chunks_trigram c
+             JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
+             WHERE chunks_trigram MATCH ?1
+             ORDER BY rank
+             LIMIT ?2",
+        )
+        .and_then(|mut s| {
+            let rows = s.query_map(params![sanitized, limit as i64], map_raw_hit)?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
         })
     };
 
-    result.unwrap_or_default()
+    match result {
+        Ok(hits) => hits,
+        Err(e) => {
+            tracing::debug!("Trigram search error: {}", e);
+            Vec::new()
+        }
+    }
 }
 
 fn map_raw_hit(row: &rusqlite::Row) -> rusqlite::Result<RawHit> {
@@ -258,7 +265,7 @@ fn raw_hits_to_search_hits(hits: Vec<RawHit>, layer: MatchLayer) -> Vec<SearchHi
 // ─────────────────────────────────────────────────────────
 
 fn fuzzy_correct_word(conn: &Connection, word: &str) -> Option<String> {
-    if word.len() < 3 {
+    if word.chars().count() < 3 {
         return None;
     }
 

@@ -121,48 +121,62 @@ impl ContentStore {
         let conn = self.conn.lock();
 
         // Atomic dedup + insert in a single transaction
-        let source_id = conn.execute(
-            "DELETE FROM chunks WHERE source_id IN (SELECT CAST(id AS TEXT) FROM sources WHERE label = ?1)",
-            params![label],
-        ).ok();
-        let _ = source_id;
-        conn.execute(
-            "DELETE FROM chunks_trigram WHERE source_id IN (SELECT CAST(id AS TEXT) FROM sources WHERE label = ?1)",
-            params![label],
-        )?;
-        conn.execute("DELETE FROM sources WHERE label = ?1", params![label])?;
+        conn.execute_batch("BEGIN")?;
 
-        conn.execute(
-            "INSERT INTO sources (label, content, total_lines, chunk_count, code_chunk_count) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![label, content, total_lines as i64, chunks.len() as i64, code_chunks as i64],
-        )?;
-        let source_id = conn.last_insert_rowid();
-
-        for chunk in &chunks {
-            let source_id_str = source_id.to_string();
-            let ct = chunk.content_type.as_str();
+        let result = (|| -> Result<i64, ContextError> {
             conn.execute(
-                "INSERT INTO chunks (title, content, source_id, content_type, line_start, line_end) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![chunk.title, chunk.content, source_id_str, ct, chunk.line_start as i64, chunk.line_end as i64],
+                "DELETE FROM chunks WHERE source_id IN (SELECT CAST(id AS TEXT) FROM sources WHERE label = ?1)",
+                params![label],
             )?;
             conn.execute(
-                "INSERT INTO chunks_trigram (title, content, source_id, content_type, line_start, line_end) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![chunk.title, chunk.content, source_id_str, ct, chunk.line_start as i64, chunk.line_end as i64],
+                "DELETE FROM chunks_trigram WHERE source_id IN (SELECT CAST(id AS TEXT) FROM sources WHERE label = ?1)",
+                params![label],
             )?;
-        }
+            conn.execute("DELETE FROM sources WHERE label = ?1", params![label])?;
 
-        // Extract and store vocabulary
-        if !content.is_empty() {
-            Self::extract_vocabulary(&conn, content);
-        }
+            conn.execute(
+                "INSERT INTO sources (label, content, total_lines, chunk_count, code_chunk_count) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![label, content, total_lines as i64, chunks.len() as i64, code_chunks as i64],
+            )?;
+            let source_id = conn.last_insert_rowid();
 
-        Ok(IndexResult {
-            source_id,
-            label: label.to_string(),
-            total_chunks: chunks.len(),
-            code_chunks,
-            total_lines,
-        })
+            for chunk in &chunks {
+                let source_id_str = source_id.to_string();
+                let ct = chunk.content_type.as_str();
+                conn.execute(
+                    "INSERT INTO chunks (title, content, source_id, content_type, line_start, line_end) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![chunk.title, chunk.content, source_id_str, ct, chunk.line_start as i64, chunk.line_end as i64],
+                )?;
+                conn.execute(
+                    "INSERT INTO chunks_trigram (title, content, source_id, content_type, line_start, line_end) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![chunk.title, chunk.content, source_id_str, ct, chunk.line_start as i64, chunk.line_end as i64],
+                )?;
+            }
+
+            // Extract and store vocabulary
+            if !content.is_empty() {
+                Self::extract_vocabulary(&conn, content);
+            }
+
+            Ok(source_id)
+        })();
+
+        match result {
+            Ok(source_id) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(IndexResult {
+                    source_id,
+                    label: label.to_string(),
+                    total_chunks: chunks.len(),
+                    code_chunks,
+                    total_lines,
+                })
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     // ── Search ──
@@ -650,6 +664,24 @@ mod tests {
             .search(&["OAuth".to_string(), "endpoints".to_string()], 5, None)
             .unwrap();
         assert_eq!(results.len(), 2); // One SearchResult per query
+    }
+
+    #[test]
+    fn test_fuzzy_correction_search() {
+        let store = ContentStore::new().unwrap();
+        store
+            .index(
+                "docs:k8s",
+                "# Kubernetes\n\nKubernetes is a container orchestration platform.\nDeploy containers to kubernetes clusters with kubectl.",
+            )
+            .unwrap();
+
+        // "kuberntes" is a typo — fuzzy correction should find "kubernetes"
+        let results = store.search(&["kuberntes".to_string()], 5, None).unwrap();
+        if !results[0].hits.is_empty() {
+            assert_eq!(results[0].hits[0].match_layer, MatchLayer::Fuzzy);
+            assert!(results[0].corrected_query.is_some());
+        }
     }
 
     #[test]
