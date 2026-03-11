@@ -661,6 +661,9 @@ pub struct CompletionResponse {
     /// RouteLLM win rate (0.0-1.0) if RouteLLM routing was used
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routellm_win_rate: Option<f32>,
+    /// Per-iteration token usage breakdown (only present when multiple LLM calls were made)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_usage_entries: Option<Vec<TokenUsage>>,
 }
 
 /// Completion choice

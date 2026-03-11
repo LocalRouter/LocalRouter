@@ -213,6 +213,7 @@ impl McpViaLlmManager {
             &config,
             allowed_servers,
             guardrail_gate,
+            None,
         )
         .await?;
 

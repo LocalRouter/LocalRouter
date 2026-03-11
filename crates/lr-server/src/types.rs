@@ -261,6 +261,10 @@ pub struct ChatCompletionResponse {
     /// Provider-specific extensions in the response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<HashMap<String, Value>>,
+
+    /// Per-iteration token usage breakdown (only present when multiple LLM calls were made)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_usage_entries: Option<Vec<TokenUsage>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -349,6 +353,10 @@ pub struct ChatCompletionChunk {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
+
+    /// Per-iteration token usage breakdown (only present on final chunk when multiple LLM calls were made)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_usage_entries: Option<Vec<TokenUsage>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -471,6 +479,10 @@ pub struct CompletionResponse {
     pub choices: Vec<CompletionChoice>,
 
     pub usage: TokenUsage,
+
+    /// Per-iteration token usage breakdown (only present when multiple LLM calls were made)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_usage_entries: Option<Vec<TokenUsage>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

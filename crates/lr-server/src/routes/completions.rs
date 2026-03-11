@@ -278,7 +278,13 @@ async fn run_guardrails_scan(
     let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
     let config = state.config_manager.get();
 
-    if client.guardrails.category_actions.is_empty() || !config.guardrails.scan_requests {
+    // Check if guardrails are enabled (per-client override > global default)
+    let enabled = client
+        .guardrails
+        .enabled
+        .unwrap_or(config.guardrails.enabled);
+    if !enabled || client.guardrails.category_actions.is_empty() || !config.guardrails.scan_requests
+    {
         return Ok(None);
     }
 
@@ -756,6 +762,7 @@ async fn build_non_streaming_response(
             prompt_tokens_details: response.usage.prompt_tokens_details,
             completion_tokens_details: response.usage.completion_tokens_details,
         },
+        request_usage_entries: None,
     };
 
     // Track generation details

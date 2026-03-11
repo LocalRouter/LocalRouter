@@ -496,6 +496,7 @@ impl ModelProvider for CohereProvider {
             },
             extensions: None,
             routellm_win_rate: None,
+            request_usage_entries: None,
         })
     }
 

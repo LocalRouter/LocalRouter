@@ -133,6 +133,7 @@ fn test_structured_outputs_response_validation_valid() {
         },
         extensions: Some(extensions),
         routellm_win_rate: None,
+        request_usage_entries: None,
     };
 
     // Validate response
@@ -190,6 +191,7 @@ fn test_structured_outputs_response_validation_invalid() {
         },
         extensions: Some(extensions),
         routellm_win_rate: None,
+        request_usage_entries: None,
     };
 
     // Validate response - should fail
@@ -320,6 +322,7 @@ fn test_prompt_caching_cost_savings_calculation() {
         },
         extensions: Some(extensions),
         routellm_win_rate: None,
+        request_usage_entries: None,
     };
 
     // Validate response and extract cache data
@@ -459,6 +462,7 @@ fn test_logprobs_response_extraction() {
         },
         extensions: Some(extensions),
         routellm_win_rate: None,
+        request_usage_entries: None,
     };
 
     // Extract logprobs
@@ -675,6 +679,7 @@ fn test_json_mode_validation_valid() {
         },
         extensions: Some(extensions),
         routellm_win_rate: None,
+        request_usage_entries: None,
     };
 
     // Validate response
@@ -725,6 +730,7 @@ fn test_json_mode_validation_invalid() {
         },
         extensions: Some(extensions),
         routellm_win_rate: None,
+        request_usage_entries: None,
     };
 
     // Validate response - should fail

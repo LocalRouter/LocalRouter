@@ -404,6 +404,7 @@ async fn streaming_loop(
                             .collect(),
                         messages_before_mixed: request.messages.clone(),
                         started_at,
+                        accumulated_usage_entries: Vec::new(),
                     };
 
                     // Store pending execution for later resume

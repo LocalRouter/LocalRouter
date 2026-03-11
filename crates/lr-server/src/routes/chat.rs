@@ -1284,8 +1284,13 @@ async fn run_guardrails_scan(
         }
     };
 
-    // Per-client guardrails check
-    if client.guardrails.category_actions.is_empty() || !config.guardrails.scan_requests {
+    // Check if guardrails are enabled (per-client override > global default)
+    let enabled = client
+        .guardrails
+        .enabled
+        .unwrap_or(config.guardrails.enabled);
+    if !enabled || client.guardrails.category_actions.is_empty() || !config.guardrails.scan_requests
+    {
         return Ok(None);
     }
 
@@ -1995,6 +2000,7 @@ async fn handle_mcp_via_llm(
                                 choices
                             },
                             usage: None,
+                            request_usage_entries: None,
                         };
                         let json = serde_json::to_string(&api_chunk).unwrap_or_default();
                         Ok(Event::default().data(json))
@@ -2240,6 +2246,18 @@ async fn handle_mcp_via_llm(
             completion_tokens_details: response.usage.completion_tokens_details.clone(),
         },
         extensions: response.extensions.clone(),
+        request_usage_entries: response.request_usage_entries.as_ref().map(|entries| {
+            entries
+                .iter()
+                .map(|e| TokenUsage {
+                    prompt_tokens: e.prompt_tokens,
+                    completion_tokens: e.completion_tokens,
+                    total_tokens: e.total_tokens,
+                    prompt_tokens_details: e.prompt_tokens_details.clone(),
+                    completion_tokens_details: e.completion_tokens_details.clone(),
+                })
+                .collect()
+        }),
     };
 
     // Track generation details
@@ -2773,6 +2791,18 @@ async fn build_non_streaming_response(
             completion_tokens_details: response.usage.completion_tokens_details,
         },
         extensions: None, // Provider-specific extensions (Phase 1)
+        request_usage_entries: response.request_usage_entries.as_ref().map(|entries| {
+            entries
+                .iter()
+                .map(|e| TokenUsage {
+                    prompt_tokens: e.prompt_tokens,
+                    completion_tokens: e.completion_tokens,
+                    total_tokens: e.total_tokens,
+                    prompt_tokens_details: e.prompt_tokens_details.clone(),
+                    completion_tokens_details: e.completion_tokens_details.clone(),
+                })
+                .collect()
+        }),
     };
 
     // Track generation details
@@ -3040,6 +3070,7 @@ async fn handle_streaming(
                             choices
                         },
                         usage: None, // Not available in streaming chunks
+                        request_usage_entries: None,
                     };
 
                     let json = serde_json::to_string(&api_chunk).unwrap_or_default();
@@ -3479,6 +3510,7 @@ async fn handle_streaming_parallel(
                         choices
                     },
                     usage: None,
+                    request_usage_entries: None,
                 };
 
                 let json = serde_json::to_string(&api_chunk).unwrap_or_default();

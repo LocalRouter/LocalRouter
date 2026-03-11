@@ -92,6 +92,7 @@ mod session_tests {
             mcp_tools_called: vec![],
             messages_before_mixed: vec![],
             started_at: std::time::Instant::now(),
+            accumulated_usage_entries: vec![],
         };
 
         drop(pending);
@@ -129,6 +130,7 @@ mod session_tests {
             mcp_tools_called: vec![],
             messages_before_mixed: vec![],
             started_at: std::time::Instant::now(),
+            accumulated_usage_entries: vec![],
         };
 
         // Insert first pending
@@ -631,6 +633,7 @@ mod manager_tests {
             mcp_tools_called: vec![],
             messages_before_mixed: vec![],
             started_at: std::time::Instant::now(),
+            accumulated_usage_entries: vec![],
         }
     }
 

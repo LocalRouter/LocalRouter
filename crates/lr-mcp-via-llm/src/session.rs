@@ -29,6 +29,8 @@ pub struct PendingMixedExecution {
     pub messages_before_mixed: Vec<ChatMessage>,
     /// When the mixed execution started
     pub started_at: Instant,
+    /// Per-iteration token usage entries accumulated before the mixed call
+    pub accumulated_usage_entries: Vec<lr_providers::TokenUsage>,
 }
 
 impl Drop for PendingMixedExecution {

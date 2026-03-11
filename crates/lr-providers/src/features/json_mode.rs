@@ -415,6 +415,7 @@ mod tests {
             },
             extensions: Some(extensions),
             routellm_win_rate: None,
+            request_usage_entries: None,
         };
 
         let result = adapter.adapt_response(&mut response);
@@ -463,6 +464,7 @@ mod tests {
             },
             extensions: Some(extensions),
             routellm_win_rate: None,
+            request_usage_entries: None,
         };
 
         let result = adapter.adapt_response(&mut response);
@@ -493,6 +495,7 @@ mod tests {
             },
             extensions: None,
             routellm_win_rate: None,
+            request_usage_entries: None,
         };
 
         let result = adapter.adapt_response(&mut response);

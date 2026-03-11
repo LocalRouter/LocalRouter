@@ -93,6 +93,7 @@ pub async fn run_agentic_loop(
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
     mut guardrail_gate: Option<crate::manager::GuardrailGate>,
+    initial_usage_entries: Option<Vec<lr_providers::TokenUsage>>,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
     let started_at = Instant::now();
     let timeout = std::time::Duration::from_secs(config.max_loop_timeout_seconds);
@@ -201,6 +202,8 @@ pub async fn run_agentic_loop(
     let mut total_prompt_tokens: u64 = 0;
     let mut total_completion_tokens: u64 = 0;
     let mut mcp_tools_called: Vec<String> = Vec::new();
+    let mut usage_entries: Vec<lr_providers::TokenUsage> =
+        initial_usage_entries.unwrap_or_default();
 
     let mut iteration: u32 = 0;
     loop {
@@ -245,6 +248,7 @@ pub async fn run_agentic_loop(
         // Accumulate usage
         total_prompt_tokens += response.usage.prompt_tokens as u64;
         total_completion_tokens += response.usage.completion_tokens as u64;
+        usage_entries.push(response.usage.clone());
 
         // Inspect the response
         let choice = response
@@ -340,6 +344,7 @@ pub async fn run_agentic_loop(
                         mcp_tools_called: mcp_tools_called.clone(),
                         messages_before_mixed: request.messages.clone(),
                         started_at,
+                        accumulated_usage_entries: usage_entries.clone(),
                     };
 
                     // Build response with only client tool calls
@@ -354,6 +359,7 @@ pub async fn run_agentic_loop(
                         total_completion_tokens,
                         &mcp_tools_called,
                         iteration + 1,
+                        usage_entries.clone(),
                     );
 
                     return Ok(OrchestratorResult::PendingMixed {
@@ -376,6 +382,7 @@ pub async fn run_agentic_loop(
                         total_completion_tokens,
                         &mcp_tools_called,
                         iteration + 1,
+                        usage_entries,
                     )));
                 }
 
@@ -531,6 +538,7 @@ pub async fn run_agentic_loop(
             total_completion_tokens,
             &mcp_tools_called,
             iteration + 1,
+            usage_entries,
         )));
     }
 }
@@ -646,6 +654,11 @@ pub async fn resume_after_mixed(
 
     // Continue the agentic loop with the reconstructed history
     // No guardrail gate needed — guardrails already completed in the original request.
+    let initial_usage_entries = if pending.accumulated_usage_entries.is_empty() {
+        None
+    } else {
+        Some(std::mem::take(&mut pending.accumulated_usage_entries))
+    };
     run_agentic_loop(
         gateway,
         router,
@@ -655,6 +668,7 @@ pub async fn resume_after_mixed(
         config,
         allowed_servers,
         None,
+        initial_usage_entries,
     )
     .await
 }
@@ -798,6 +812,7 @@ fn build_final_response(
     total_completion_tokens: u64,
     mcp_tools_called: &[String],
     iterations: u32,
+    usage_entries: Vec<lr_providers::TokenUsage>,
 ) -> CompletionResponse {
     // Aggregate usage across all iterations
     response.usage.prompt_tokens = total_prompt_tokens as u32;
@@ -817,6 +832,11 @@ fn build_final_response(
             }),
         );
         response.extensions = Some(extensions);
+    }
+
+    // Only include per-iteration breakdown when there were multiple LLM calls
+    if usage_entries.len() > 1 {
+        response.request_usage_entries = Some(usage_entries);
     }
 
     response

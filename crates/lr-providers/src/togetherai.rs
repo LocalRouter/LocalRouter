@@ -320,6 +320,7 @@ impl ModelProvider for TogetherAIProvider {
             usage: together_response.usage,
             extensions: None,
             routellm_win_rate: None,
+            request_usage_entries: None,
         })
     }
 
