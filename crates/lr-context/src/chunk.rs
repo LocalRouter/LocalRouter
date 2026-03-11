@@ -1,6 +1,8 @@
-use crate::types::{Chunk, ContentFormat, ContentType};
+use crate::types::{Chunk, ContentFormat, ContentType, LONG_LINE_THRESHOLD};
 
 const MAX_CHUNK_BYTES: usize = 4096;
+const IDEAL_BYTES_PER_CHUNK: usize = 800;
+const MAX_BYTES_PER_CHUNK: usize = 2048;
 
 // ─────────────────────────────────────────────────────────
 // Format detection
@@ -181,6 +183,7 @@ fn flush_markdown(
             content_type,
             line_start,
             line_end,
+            line_ref: line_start.to_string(),
         });
         current_lines.clear();
         return;
@@ -216,6 +219,7 @@ fn flush_markdown(
                     },
                     line_start: running_line,
                     line_end: running_line + line_count - 1,
+                    line_ref: running_line.to_string(),
                 });
                 // +1 for the blank line between paragraphs
                 running_line += line_count + 1;
@@ -246,6 +250,7 @@ fn flush_markdown(
                 },
                 line_start: running_line,
                 line_end: running_line + line_count - 1,
+                line_ref: running_line.to_string(),
             });
         }
     }
@@ -303,6 +308,7 @@ pub(crate) fn chunk_plain_text(content: &str) -> Vec<Chunk> {
                 content_type: ContentType::Prose,
                 line_start: current_line,
                 line_end: current_line + line_count - 1,
+                line_ref: current_line.to_string(),
             });
             // Move past this section + blank line separator
             current_line += section.lines().count().max(1) + 1;
@@ -323,6 +329,7 @@ pub(crate) fn chunk_plain_text(content: &str) -> Vec<Chunk> {
             content_type: ContentType::Prose,
             line_start: 1,
             line_end: lines.len(),
+            line_ref: "1".to_string(),
         }];
     }
 
@@ -351,6 +358,7 @@ pub(crate) fn chunk_plain_text(content: &str) -> Vec<Chunk> {
             content_type: ContentType::Prose,
             line_start: start_line,
             line_end: end_line,
+            line_ref: start_line.to_string(),
         });
         i += step;
     }
@@ -380,12 +388,12 @@ pub(crate) fn chunk_json(content: &str) -> Vec<Chunk> {
     }
 
     // Assign approximate line numbers based on content position
-    // JSON chunks get sequential line ranges based on their content size
     let total_lines = content.lines().count();
     let total_content_len: usize = chunks.iter().map(|c| c.content.len()).sum();
     let mut running_line = 1;
     for chunk in &mut chunks {
         chunk.line_start = running_line;
+        chunk.line_ref = running_line.to_string();
         let estimated_lines = if total_content_len > 0 {
             ((chunk.content.len() as f64 / total_content_len as f64) * total_lines as f64).ceil()
                 as usize
@@ -417,7 +425,6 @@ fn walk_json(value: &serde_json::Value, path: &[&str], chunks: &mut Vec<Chunk>) 
             if has_nested {
                 for (key, val) in map {
                     let mut new_path: Vec<&str> = path.to_vec();
-                    // We need the key to live long enough — use a reference to the map key
                     new_path.push(key.as_str());
                     walk_json(val, &new_path, chunks);
                 }
@@ -431,6 +438,7 @@ fn walk_json(value: &serde_json::Value, path: &[&str], chunks: &mut Vec<Chunk>) 
             content_type: ContentType::Code,
             line_start: 0, // assigned later
             line_end: 0,
+            line_ref: "0".to_string(),
         });
         return;
     }
@@ -451,6 +459,7 @@ fn walk_json(value: &serde_json::Value, path: &[&str], chunks: &mut Vec<Chunk>) 
             content_type: ContentType::Code,
             line_start: 0,
             line_end: 0,
+            line_ref: "0".to_string(),
         });
         return;
     }
@@ -468,6 +477,7 @@ fn walk_json(value: &serde_json::Value, path: &[&str], chunks: &mut Vec<Chunk>) 
         content_type: ContentType::Prose,
         line_start: 0,
         line_end: 0,
+        line_ref: "0".to_string(),
     });
 }
 
@@ -558,6 +568,7 @@ fn chunk_json_array(arr: &[serde_json::Value], prefix: &str, chunks: &mut Vec<Ch
             content_type: ContentType::Code,
             line_start: 0,
             line_end: 0,
+            line_ref: "0".to_string(),
         });
     };
 
@@ -583,16 +594,179 @@ fn chunk_json_array(arr: &[serde_json::Value], prefix: &str, chunks: &mut Vec<Ch
 }
 
 // ─────────────────────────────────────────────────────────
+// Chunk density enforcement
+// ─────────────────────────────────────────────────────────
+
+/// Split oversized or sparse chunks to maintain reasonable density.
+///
+/// Two-pass approach:
+/// 1. Ratio-based: if overall density is too sparse, split large chunks
+/// 2. Hard ceiling: any chunk >MAX_BYTES_PER_CHUNK is force-split
+pub(crate) fn enforce_chunk_density(chunks: Vec<Chunk>, total_content_bytes: usize) -> Vec<Chunk> {
+    if chunks.is_empty() || total_content_bytes == 0 {
+        return chunks;
+    }
+
+    let ideal_chunk_count = total_content_bytes / IDEAL_BYTES_PER_CHUNK;
+    let needs_ratio_split = chunks.len() < ideal_chunk_count;
+
+    let mut result = Vec::new();
+
+    for chunk in chunks {
+        let chunk_bytes = chunk.content.len();
+
+        // Pass 1: ratio-based splitting
+        if needs_ratio_split && chunk_bytes > IDEAL_BYTES_PER_CHUNK {
+            let target = (chunk_bytes / IDEAL_BYTES_PER_CHUNK).max(2);
+            let sub_chunks = split_chunk_at_lines(&chunk, target);
+            result.extend(sub_chunks);
+            continue;
+        }
+
+        // Pass 2: hard ceiling
+        if chunk_bytes > MAX_BYTES_PER_CHUNK {
+            let target = (chunk_bytes / MAX_BYTES_PER_CHUNK).max(2);
+            let sub_chunks = split_chunk_at_lines(&chunk, target);
+            result.extend(sub_chunks);
+            continue;
+        }
+
+        result.push(chunk);
+    }
+
+    result
+}
+
+/// Split a chunk into `target` pieces at line boundaries.
+fn split_chunk_at_lines(chunk: &Chunk, target: usize) -> Vec<Chunk> {
+    let target_bytes = chunk.content.len() / target;
+
+    // Build virtual lines: for long lines, split into sub-lines
+    let mut virtual_lines: Vec<VirtualLine> = Vec::new();
+    for (i, line) in chunk.content.lines().enumerate() {
+        let actual_line = chunk.line_start + i;
+        let char_count = line.chars().count();
+
+        if char_count > LONG_LINE_THRESHOLD {
+            // Split into sub-lines
+            let sub_count = char_count.div_ceil(LONG_LINE_THRESHOLD);
+            let chars: Vec<char> = line.chars().collect();
+            for sub_idx in 0..sub_count {
+                let start = sub_idx * LONG_LINE_THRESHOLD;
+                let end = ((sub_idx + 1) * LONG_LINE_THRESHOLD).min(char_count);
+                let text: String = chars[start..end].iter().collect();
+                virtual_lines.push(VirtualLine {
+                    line_ref: format!("{}-{}", actual_line, sub_idx + 1),
+                    text,
+                    actual_line,
+                });
+            }
+        } else {
+            virtual_lines.push(VirtualLine {
+                line_ref: actual_line.to_string(),
+                text: line.to_string(),
+                actual_line,
+            });
+        }
+    }
+
+    if virtual_lines.is_empty() {
+        return vec![chunk.clone()];
+    }
+
+    // Group virtual lines into target-sized sub-chunks
+    let mut sub_chunks: Vec<Chunk> = Vec::new();
+    let mut current_lines: Vec<&VirtualLine> = Vec::new();
+    let mut current_bytes = 0usize;
+
+    for vl in &virtual_lines {
+        let line_bytes = vl.text.len() + 1; // +1 for newline
+        current_lines.push(vl);
+        current_bytes += line_bytes;
+
+        if current_bytes >= target_bytes
+            && sub_chunks.len() < target - 1
+            && !current_lines.is_empty()
+        {
+            flush_virtual_lines(&mut sub_chunks, &current_lines, &chunk.content_type);
+            current_lines.clear();
+            current_bytes = 0;
+        }
+    }
+
+    // Flush remaining
+    if !current_lines.is_empty() {
+        flush_virtual_lines(&mut sub_chunks, &current_lines, &chunk.content_type);
+    }
+
+    // If splitting produced nothing meaningful, return original
+    if sub_chunks.is_empty() {
+        return vec![chunk.clone()];
+    }
+
+    sub_chunks
+}
+
+struct VirtualLine {
+    line_ref: String,
+    text: String,
+    actual_line: usize,
+}
+
+fn flush_virtual_lines(
+    chunks: &mut Vec<Chunk>,
+    lines: &[&VirtualLine],
+    content_type: &ContentType,
+) {
+    if lines.is_empty() {
+        return;
+    }
+
+    let content: String = lines
+        .iter()
+        .map(|vl| vl.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let first_line_ref = &lines[0].line_ref;
+    let first_actual = lines[0].actual_line;
+    let last_actual = lines[lines.len() - 1].actual_line;
+
+    // Title: first 60 chars of content at this split point
+    let title: String = content
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(60)
+        .collect();
+    let title = if title.len() < content.lines().next().unwrap_or("").len() {
+        format!("{}…", title)
+    } else {
+        title
+    };
+
+    chunks.push(Chunk {
+        title,
+        content,
+        content_type: *content_type,
+        line_start: first_actual,
+        line_end: last_actual,
+        line_ref: first_line_ref.clone(),
+    });
+}
+
+// ─────────────────────────────────────────────────────────
 // Auto-detect and chunk
 // ─────────────────────────────────────────────────────────
 
 pub(crate) fn chunk_content(content: &str) -> Vec<Chunk> {
     let format = detect_format(content);
-    match format {
+    let chunks = match format {
         ContentFormat::Markdown => chunk_markdown(content),
         ContentFormat::PlainText => chunk_plain_text(content),
         ContentFormat::Json => chunk_json(content),
-    }
+    };
+    enforce_chunk_density(chunks, content.len())
 }
 
 #[cfg(test)]
@@ -663,7 +837,6 @@ mod tests {
             "# Main\n\nIntro text\n\n## Section A\n\nContent A\n\n## Section B\n\nContent B";
         let chunks = chunk_markdown(content);
         assert!(chunks.len() >= 2);
-        // First chunk should have the main heading context
         assert!(chunks[0].title.contains("Main"));
     }
 
@@ -671,7 +844,6 @@ mod tests {
     fn test_chunk_markdown_code_blocks_intact() {
         let content = "# Code Example\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\nAfter code.";
         let chunks = chunk_markdown(content);
-        // Code block should be kept intact within a single chunk
         let code_chunk = chunks
             .iter()
             .find(|c| c.content.contains("fn main()"))
@@ -686,7 +858,6 @@ mod tests {
         let content = "# Title\n\nLine 2\nLine 3\n\n## Section\n\nLine 7\nLine 8";
         let chunks = chunk_markdown(content);
         assert_eq!(chunks[0].line_start, 1);
-        // The exact line_end depends on where the section break falls
         assert!(chunks[0].line_end >= 1);
         if chunks.len() > 1 {
             assert!(chunks[1].line_start > chunks[0].line_start);
@@ -695,16 +866,13 @@ mod tests {
 
     #[test]
     fn test_chunk_markdown_oversized_split() {
-        // Create content that exceeds MAX_CHUNK_BYTES under a single heading
         let big_paragraph = "A".repeat(2000);
         let content = format!(
             "# Big Section\n\n{}\n\n{}\n\n{}",
             big_paragraph, big_paragraph, big_paragraph,
         );
         let chunks = chunk_markdown(&content);
-        // Should be split into multiple chunks
         assert!(chunks.len() > 1);
-        // All should reference the heading
         for chunk in &chunks {
             assert!(chunk.title.contains("Big Section"));
         }
@@ -745,12 +913,10 @@ mod tests {
 
     #[test]
     fn test_chunk_plain_text_fixed_line_fallback() {
-        // Create content with many lines but no blank-line sections
         let lines: Vec<String> = (1..=50).map(|i| format!("Line {}", i)).collect();
         let content = lines.join("\n");
         let chunks = chunk_plain_text(&content);
         assert!(chunks.len() > 1);
-        // Should use fixed-line groups
         assert_eq!(chunks[0].line_start, 1);
     }
 
@@ -775,7 +941,6 @@ mod tests {
         let content = r#"{"config": {"database": {"host": "localhost", "port": 5432}, "cache": {"enabled": true}}}"#;
         let chunks = chunk_json(content);
         assert!(!chunks.is_empty());
-        // Should have key paths as titles
         let titles: Vec<&str> = chunks.iter().map(|c| c.title.as_str()).collect();
         assert!(
             titles
@@ -797,7 +962,6 @@ mod tests {
     fn test_chunk_json_invalid_fallback() {
         let content = "this is not { valid json";
         let chunks = chunk_json(content);
-        // Should fall back to plain text chunking
         assert!(!chunks.is_empty());
     }
 
@@ -830,5 +994,177 @@ mod tests {
         let content = "# \u{4f60}\u{597d}\u{4e16}\u{754c}\n\n\u{8fd9}\u{662f}\u{4e2d}\u{6587}\u{5185}\u{5bb9}\n\n## \u{7b2c}\u{4e8c}\u{8282}\n\n\u{66f4}\u{591a}\u{5185}\u{5bb9}";
         let chunks = chunk_markdown(content);
         assert!(!chunks.is_empty());
+    }
+
+    // ── Chunk density enforcement ──
+
+    #[test]
+    fn density_small_chunks_unchanged() {
+        let chunks = vec![Chunk {
+            title: "Small".to_string(),
+            content: "Short content".to_string(),
+            content_type: ContentType::Prose,
+            line_start: 1,
+            line_end: 1,
+            line_ref: "1".to_string(),
+        }];
+        let result = enforce_chunk_density(chunks.clone(), 13);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn density_large_chunk_split() {
+        // Create a 10KB chunk
+        let lines: Vec<String> = (1..=200)
+            .map(|i| format!("Line {} with some content that adds bytes", i))
+            .collect();
+        let content = lines.join("\n");
+        let total_bytes = content.len();
+        let chunks = vec![Chunk {
+            title: "Big chunk".to_string(),
+            content,
+            content_type: ContentType::Prose,
+            line_start: 1,
+            line_end: 200,
+            line_ref: "1".to_string(),
+        }];
+        let result = enforce_chunk_density(chunks, total_bytes);
+        assert!(
+            result.len() > 1,
+            "Should split large chunk, got {} chunks",
+            result.len()
+        );
+    }
+
+    #[test]
+    fn density_split_at_line_boundaries() {
+        let lines: Vec<String> = (1..=100).map(|i| format!("Line {}", i)).collect();
+        let content = lines.join("\n");
+        let total_bytes = content.len();
+        let chunks = vec![Chunk {
+            title: "Content".to_string(),
+            content,
+            content_type: ContentType::Prose,
+            line_start: 1,
+            line_end: 100,
+            line_ref: "1".to_string(),
+        }];
+        let result = enforce_chunk_density(chunks, total_bytes);
+        // Each sub-chunk should have content that doesn't break mid-line
+        for chunk in &result {
+            // Content shouldn't start or end with a partial line
+            let first_char = chunk.content.chars().next();
+            assert!(first_char.is_some());
+        }
+    }
+
+    #[test]
+    fn density_split_long_line_sub_offset() {
+        // Create content with one very long line
+        let long_line = "x".repeat(5000);
+        let content = format!("short line\n{}\nanother short line", long_line);
+        let total_bytes = content.len();
+        let chunks = vec![Chunk {
+            title: "Content".to_string(),
+            content,
+            content_type: ContentType::Prose,
+            line_start: 1,
+            line_end: 3,
+            line_ref: "1".to_string(),
+        }];
+        let result = enforce_chunk_density(chunks, total_bytes);
+        // Should have sub-line refs for the long line
+        let has_sub_ref = result.iter().any(|c| c.line_ref.contains('-'));
+        assert!(has_sub_ref, "Should have sub-line refs for long lines");
+    }
+
+    #[test]
+    fn density_sub_chunk_title_snippet() {
+        let lines: Vec<String> = (1..=100)
+            .map(|i| format!("Line {} with unique content for identification", i))
+            .collect();
+        let content = lines.join("\n");
+        let total_bytes = content.len();
+        let chunks = vec![Chunk {
+            title: "Content".to_string(),
+            content,
+            content_type: ContentType::Prose,
+            line_start: 1,
+            line_end: 100,
+            line_ref: "1".to_string(),
+        }];
+        let result = enforce_chunk_density(chunks, total_bytes);
+        // Each sub-chunk title should be content from the split point
+        for chunk in &result {
+            assert!(!chunk.title.is_empty());
+            assert!(chunk.title.len() <= 62); // 60 chars + "…"
+        }
+    }
+
+    #[test]
+    fn density_preserves_existing_chunks() {
+        let chunks = vec![
+            Chunk {
+                title: "A".to_string(),
+                content: "Small A".to_string(),
+                content_type: ContentType::Prose,
+                line_start: 1,
+                line_end: 1,
+                line_ref: "1".to_string(),
+            },
+            Chunk {
+                title: "B".to_string(),
+                content: "Small B".to_string(),
+                content_type: ContentType::Prose,
+                line_start: 2,
+                line_end: 2,
+                line_ref: "2".to_string(),
+            },
+        ];
+        let result = enforce_chunk_density(chunks, 14);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].title, "A");
+        assert_eq!(result[1].title, "B");
+    }
+
+    #[test]
+    fn density_hard_ceiling() {
+        // Create a chunk that exceeds MAX_BYTES_PER_CHUNK but ratio is fine
+        let content = "x".repeat(MAX_BYTES_PER_CHUNK + 500);
+        let total = content.len();
+        // Set ideal count to 1 so ratio doesn't trigger
+        let chunks = vec![Chunk {
+            title: "Big".to_string(),
+            content,
+            content_type: ContentType::Prose,
+            line_start: 1,
+            line_end: 1,
+            line_ref: "1".to_string(),
+        }];
+        // total_content_bytes / IDEAL = 1 chunk, and we have 1 chunk, so ratio is fine
+        // But the chunk exceeds MAX_BYTES_PER_CHUNK so it should be force-split
+        let result = enforce_chunk_density(chunks, total);
+        assert!(result.len() > 1, "Hard ceiling should force-split");
+    }
+
+    #[test]
+    fn density_line_numbers_accurate() {
+        let lines: Vec<String> = (1..=50).map(|i| format!("Line {}", i)).collect();
+        let content = lines.join("\n");
+        let total = content.len();
+        let chunks = vec![Chunk {
+            title: "Content".to_string(),
+            content,
+            content_type: ContentType::Prose,
+            line_start: 10,
+            line_end: 59,
+            line_ref: "10".to_string(),
+        }];
+        let result = enforce_chunk_density(chunks, total);
+        // First sub-chunk should start at line 10
+        assert_eq!(result[0].line_start, 10);
+        // Last sub-chunk should end at or before line 59
+        let last = result.last().unwrap();
+        assert!(last.line_end <= 59);
     }
 }

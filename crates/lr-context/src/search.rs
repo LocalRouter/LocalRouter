@@ -3,7 +3,10 @@ use rusqlite::{params, Connection};
 use crate::fuzzy;
 use crate::types::{ContentType, MatchLayer, SearchHit, SearchResult};
 
-const SNIPPET_MAX_CHARS: usize = 300;
+const SNIPPET_WINDOW: usize = 300; // chars radius per match
+pub(crate) const SNIPPET_MAX_LEN: usize = 1500; // default per-hit max
+pub(crate) const SNIPPET_BATCH_MAX_LEN: usize = 3000; // batch mode
+const SNIPPET_LINE_MAX_CHARS: usize = 200; // max chars per line in snippet
 
 /// Escape SQL LIKE metacharacters (`%`, `_`, `\`) so they match literally.
 fn escape_like(s: &str) -> String {
@@ -210,52 +213,210 @@ fn map_raw_hit(row: &rusqlite::Row) -> rusqlite::Result<RawHit> {
 }
 
 // ─────────────────────────────────────────────────────────
-// Snippet extraction
+// Multi-match snippet extraction with line numbers
 // ─────────────────────────────────────────────────────────
 
-fn extract_snippet(highlighted: &str, content: &str) -> String {
-    let stx = '\x02';
-    let etx = '\x03';
-
-    let chars: Vec<char> = highlighted.chars().collect();
-    let first_match_pos = chars.iter().position(|c| *c == stx);
-
-    if let Some(match_pos) = first_match_pos {
-        let half = SNIPPET_MAX_CHARS / 2;
-        let start = match_pos.saturating_sub(half);
-        let end = (match_pos + half).min(chars.len());
-
-        let window: String = chars[start..end]
-            .iter()
-            .filter(|c| **c != stx && **c != etx)
-            .collect();
-
-        let prefix = if start > 0 { "..." } else { "" };
-        let suffix = if end < chars.len() { "..." } else { "" };
-
-        format!("{}{}{}", prefix, window, suffix)
-    } else {
-        // No match markers — use first N chars of content
-        let truncated: String = content.chars().take(SNIPPET_MAX_CHARS).collect();
-        if content.chars().count() > SNIPPET_MAX_CHARS {
-            format!("{}...", truncated)
-        } else {
-            truncated
+/// Find character positions (in original content, without markers) of STX match starts.
+fn find_match_positions(highlighted: &str) -> Vec<usize> {
+    let mut positions = Vec::new();
+    let mut content_pos = 0;
+    for ch in highlighted.chars() {
+        match ch {
+            '\x02' => {
+                positions.push(content_pos);
+            }
+            '\x03' => {}
+            _ => {
+                content_pos += 1;
+            }
         }
     }
+    positions
 }
 
-fn raw_hits_to_search_hits(hits: Vec<RawHit>, layer: MatchLayer) -> Vec<SearchHit> {
+/// Build a table of line start positions (in char indices) for content.
+fn build_line_starts(content_chars: &[char]) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (i, &ch) in content_chars.iter().enumerate() {
+        if ch == '\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+/// Extract multi-match snippet with line numbers.
+fn extract_multi_snippet(
+    highlighted: &str,
+    content: &str,
+    line_start: usize,
+    max_len: usize,
+) -> String {
+    let content_chars: Vec<char> = content.chars().collect();
+    let content_len = content_chars.len();
+
+    if content_len == 0 {
+        return String::new();
+    }
+
+    let match_positions = find_match_positions(highlighted);
+
+    if match_positions.is_empty() {
+        // No matches — show first N lines
+        return format_first_n_lines(content, line_start, max_len);
+    }
+
+    let line_starts = build_line_starts(&content_chars);
+
+    let char_to_line = |pos: usize| -> usize {
+        line_starts
+            .partition_point(|&ls| ls <= pos)
+            .saturating_sub(1)
+    };
+
+    // Create char-based windows around each match
+    let mut windows: Vec<(usize, usize)> = match_positions
+        .iter()
+        .map(|&pos| {
+            let start = pos.saturating_sub(SNIPPET_WINDOW);
+            let end = (pos + SNIPPET_WINDOW).min(content_len);
+            (start, end)
+        })
+        .collect();
+
+    // Sort and merge overlapping
+    windows.sort_by_key(|w| w.0);
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for w in windows {
+        if let Some(last) = merged.last_mut() {
+            if w.0 <= last.1 {
+                last.1 = last.1.max(w.1);
+                continue;
+            }
+        }
+        merged.push(w);
+    }
+
+    // Convert to line-based windows (expand to full lines) and cap
+    let content_lines: Vec<&str> = content.lines().collect();
+    let total_content_lines = content_lines.len();
+
+    let mut line_windows: Vec<(usize, usize)> = Vec::new(); // (start_line_idx, end_line_idx) inclusive
+    let mut total_chars = 0;
+
+    for &(win_start, win_end) in &merged {
+        let start_line_idx = char_to_line(win_start);
+        let end_line_idx = char_to_line(win_end.saturating_sub(1).max(win_start));
+        let end_line_idx = end_line_idx.min(total_content_lines.saturating_sub(1));
+
+        // Estimate chars for this window
+        let window_chars: usize = (start_line_idx..=end_line_idx)
+            .filter_map(|i| content_lines.get(i))
+            .map(|l| l.len().min(SNIPPET_LINE_MAX_CHARS) + 10) // +10 for label + tab + newline
+            .sum();
+
+        if total_chars + window_chars > max_len && !line_windows.is_empty() {
+            break;
+        }
+
+        line_windows.push((start_line_idx, end_line_idx));
+        total_chars += window_chars;
+    }
+
+    if line_windows.is_empty() {
+        return format_first_n_lines(content, line_start, max_len);
+    }
+
+    // Collect all labels for width calculation
+    let mut all_labels: Vec<String> = Vec::new();
+    for &(start, end) in &line_windows {
+        for i in start..=end {
+            let abs_line = line_start + i;
+            all_labels.push(format!("{}", abs_line));
+        }
+    }
+    let max_width = all_labels.iter().map(|l| l.len()).max().unwrap_or(1);
+
+    // Format output
+    let mut output = String::new();
+    let mut label_idx = 0;
+
+    for (wi, &(start, end)) in line_windows.iter().enumerate() {
+        if wi > 0 {
+            output.push_str(&format!("{:>width$}\n", "\u{2026}", width = max_width));
+        }
+
+        for (i, line) in content_lines.iter().enumerate().take(end + 1).skip(start) {
+            let _ = i; // line index, used implicitly via label_idx
+            let label = &all_labels[label_idx];
+            label_idx += 1;
+
+            // Truncate long lines
+            let display_line = if line.chars().count() > SNIPPET_LINE_MAX_CHARS {
+                let truncated: String = line.chars().take(SNIPPET_LINE_MAX_CHARS).collect();
+                format!("{}\u{2026}", truncated)
+            } else {
+                line.to_string()
+            };
+
+            output.push_str(&format!(
+                "{:>width$}\t{}\n",
+                label,
+                display_line,
+                width = max_width
+            ));
+        }
+    }
+
+    output.trim_end_matches('\n').to_string()
+}
+
+/// Format the first N lines of content with line numbers (fallback when no matches).
+fn format_first_n_lines(content: &str, line_start: usize, max_len: usize) -> String {
+    let mut output = String::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+    let max_line = line_start + total;
+    let width = max_line.to_string().len().max(1);
+
+    for (i, line) in lines.iter().enumerate() {
+        let abs_line = line_start + i;
+        let display_line = if line.chars().count() > SNIPPET_LINE_MAX_CHARS {
+            let truncated: String = line.chars().take(SNIPPET_LINE_MAX_CHARS).collect();
+            format!("{}\u{2026}", truncated)
+        } else {
+            line.to_string()
+        };
+        let formatted = format!("{:>width$}\t{}\n", abs_line, display_line, width = width);
+        if output.len() + formatted.len() > max_len && !output.is_empty() {
+            break;
+        }
+        output.push_str(&formatted);
+    }
+
+    output.trim_end_matches('\n').to_string()
+}
+
+fn raw_hits_to_search_hits(
+    hits: Vec<RawHit>,
+    layer: MatchLayer,
+    max_snippet_len: usize,
+) -> Vec<SearchHit> {
     hits.into_iter()
-        .map(|h| SearchHit {
-            title: h.title,
-            content: extract_snippet(&h.highlighted, &h.content),
-            source: h.label,
-            rank: h.rank,
-            content_type: ContentType::parse(&h.content_type),
-            match_layer: layer,
-            line_start: h.line_start.max(0) as usize,
-            line_end: h.line_end.max(0) as usize,
+        .map(|h| {
+            let line_start = h.line_start.max(1) as usize;
+            let content =
+                extract_multi_snippet(&h.highlighted, &h.content, line_start, max_snippet_len);
+            SearchHit {
+                title: h.title,
+                content,
+                source: h.label,
+                rank: h.rank,
+                content_type: ContentType::parse(&h.content_type),
+                match_layer: layer,
+                line_start,
+                line_end: h.line_end.max(0) as usize,
+            }
         })
         .collect()
 }
@@ -323,13 +484,14 @@ pub(crate) fn search_with_fallback(
     query: &str,
     limit: usize,
     source: Option<&str>,
+    max_snippet_len: usize,
 ) -> SearchResult {
     // Layer 1a: Porter AND
     let hits = search_porter(conn, query, limit, source, JoinMode::And);
     if !hits.is_empty() {
         return SearchResult {
             query: query.to_string(),
-            hits: raw_hits_to_search_hits(hits, MatchLayer::Porter),
+            hits: raw_hits_to_search_hits(hits, MatchLayer::Porter, max_snippet_len),
             corrected_query: None,
         };
     }
@@ -339,7 +501,7 @@ pub(crate) fn search_with_fallback(
     if !hits.is_empty() {
         return SearchResult {
             query: query.to_string(),
-            hits: raw_hits_to_search_hits(hits, MatchLayer::Porter),
+            hits: raw_hits_to_search_hits(hits, MatchLayer::Porter, max_snippet_len),
             corrected_query: None,
         };
     }
@@ -349,7 +511,7 @@ pub(crate) fn search_with_fallback(
     if !hits.is_empty() {
         return SearchResult {
             query: query.to_string(),
-            hits: raw_hits_to_search_hits(hits, MatchLayer::Trigram),
+            hits: raw_hits_to_search_hits(hits, MatchLayer::Trigram, max_snippet_len),
             corrected_query: None,
         };
     }
@@ -359,19 +521,18 @@ pub(crate) fn search_with_fallback(
     if !hits.is_empty() {
         return SearchResult {
             query: query.to_string(),
-            hits: raw_hits_to_search_hits(hits, MatchLayer::Trigram),
+            hits: raw_hits_to_search_hits(hits, MatchLayer::Trigram, max_snippet_len),
             corrected_query: None,
         };
     }
 
     // Layer 3: Fuzzy correction + re-search
     if let Some(corrected) = fuzzy_correct_query(conn, query) {
-        // Re-run Porter AND/OR with corrected query
         let hits = search_porter(conn, &corrected, limit, source, JoinMode::And);
         if !hits.is_empty() {
             return SearchResult {
                 query: query.to_string(),
-                hits: raw_hits_to_search_hits(hits, MatchLayer::Fuzzy),
+                hits: raw_hits_to_search_hits(hits, MatchLayer::Fuzzy, max_snippet_len),
                 corrected_query: Some(corrected),
             };
         }
@@ -379,17 +540,16 @@ pub(crate) fn search_with_fallback(
         if !hits.is_empty() {
             return SearchResult {
                 query: query.to_string(),
-                hits: raw_hits_to_search_hits(hits, MatchLayer::Fuzzy),
+                hits: raw_hits_to_search_hits(hits, MatchLayer::Fuzzy, max_snippet_len),
                 corrected_query: Some(corrected),
             };
         }
 
-        // Re-run Trigram AND/OR with corrected query
         let hits = search_trigram(conn, &corrected, limit, source, JoinMode::And);
         if !hits.is_empty() {
             return SearchResult {
                 query: query.to_string(),
-                hits: raw_hits_to_search_hits(hits, MatchLayer::Fuzzy),
+                hits: raw_hits_to_search_hits(hits, MatchLayer::Fuzzy, max_snippet_len),
                 corrected_query: Some(corrected),
             };
         }
@@ -397,7 +557,7 @@ pub(crate) fn search_with_fallback(
         if !hits.is_empty() {
             return SearchResult {
                 query: query.to_string(),
-                hits: raw_hits_to_search_hits(hits, MatchLayer::Fuzzy),
+                hits: raw_hits_to_search_hits(hits, MatchLayer::Fuzzy, max_snippet_len),
                 corrected_query: Some(corrected),
             };
         }
@@ -430,7 +590,6 @@ mod tests {
     #[test]
     fn test_sanitize_fts_query_special_chars() {
         let result = sanitize_fts_query("hello's \"world\" (test)", JoinMode::And);
-        // Special chars should be stripped
         assert!(result.contains("hello"));
         assert!(result.contains("world"));
         assert!(result.contains("test"));
@@ -439,11 +598,9 @@ mod tests {
     #[test]
     fn test_sanitize_fts_query_fts_keywords() {
         let result = sanitize_fts_query("hello AND world NOT test", JoinMode::And);
-        // AND, NOT should be filtered out
         assert!(result.contains("hello"));
         assert!(result.contains("world"));
         assert!(result.contains("test"));
-        // The words AND, NOT should not appear as search terms
         assert!(!result.contains("\"AND\""));
         assert!(!result.contains("\"NOT\""));
     }
@@ -463,7 +620,7 @@ mod tests {
     #[test]
     fn test_sanitize_trigram_query_short_words_filtered() {
         let result = sanitize_trigram_query("ab cd", JoinMode::And);
-        assert_eq!(result, None); // all words < 3 chars
+        assert_eq!(result, None);
     }
 
     #[test]
@@ -472,28 +629,121 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    // ── Multi-match snippet tests ──
+
     #[test]
-    fn test_extract_snippet_with_markers() {
-        let highlighted = "some text \x02matching\x03 content here";
-        let content = "some text matching content here";
-        let snippet = extract_snippet(highlighted, content);
-        assert!(snippet.contains("matching"));
-        assert!(!snippet.contains('\x02'));
-        assert!(!snippet.contains('\x03'));
+    fn snippet_single_match_window() {
+        let content = "line one\nline two with match_word here\nline three";
+        let highlighted = "line one\nline two with \x02match_word\x03 here\nline three";
+        let result = extract_multi_snippet(highlighted, content, 1, SNIPPET_MAX_LEN);
+        assert!(result.contains("match_word"));
+        assert!(result.contains("\t")); // has line numbers
     }
 
     #[test]
-    fn test_extract_snippet_no_markers() {
-        let content = "short content";
-        let snippet = extract_snippet(content, content);
-        assert_eq!(snippet, "short content");
+    fn snippet_multiple_matches_merged() {
+        let content = "line one\nline two match_a\nline three match_b\nline four";
+        let highlighted =
+            "line one\nline two \x02match_a\x03\nline three \x02match_b\x03\nline four";
+        let result = extract_multi_snippet(highlighted, content, 1, SNIPPET_MAX_LEN);
+        // Both matches should be in one window (they're close)
+        assert!(result.contains("match_a"));
+        assert!(result.contains("match_b"));
+        // Should NOT have separator between them
+        assert!(!result.contains("\u{2026}\n"));
     }
 
     #[test]
-    fn test_extract_snippet_long_content_truncated() {
+    fn snippet_respects_max_len() {
+        let mut content = String::new();
+        for i in 0..100 {
+            content.push_str(&format!(
+                "Line {} with some content for testing purposes\n",
+                i
+            ));
+        }
+        let highlighted = content.replace("Line 50", "\x02Line 50\x03");
+        let result = extract_multi_snippet(&highlighted, &content, 1, 500);
+        assert!(result.len() < 1000); // Should be bounded
+    }
+
+    #[test]
+    fn snippet_boundary_markers() {
+        let mut content = String::new();
+        for i in 0..50 {
+            content.push_str(&format!("Line {} of the document content\n", i));
+        }
+        let highlighted = content.replace("Line 25", "\x02Line 25\x03");
+        let result = extract_multi_snippet(&highlighted, &content, 1, SNIPPET_MAX_LEN);
+        // Should have content around line 25
+        assert!(result.contains("Line 25"));
+    }
+
+    #[test]
+    fn snippet_no_markers_full_content() {
+        let content = "small\ncontent";
+        let result = extract_multi_snippet(content, content, 1, SNIPPET_MAX_LEN);
+        // No match markers — should show first N lines
+        assert!(result.contains("small"));
+        assert!(result.contains("content"));
+    }
+
+    #[test]
+    fn snippet_stx_etx_stripped() {
+        let content = "text with keyword here";
+        let highlighted = "text with \x02keyword\x03 here";
+        let result = extract_multi_snippet(highlighted, content, 1, SNIPPET_MAX_LEN);
+        assert!(!result.contains('\x02'));
+        assert!(!result.contains('\x03'));
+    }
+
+    #[test]
+    fn snippet_fallback_no_markers() {
         let content = "a".repeat(500);
-        let snippet = extract_snippet(&content, &content);
-        assert!(snippet.len() <= SNIPPET_MAX_CHARS + 10); // +10 for "..."
-        assert!(snippet.ends_with("..."));
+        let result = extract_multi_snippet(&content, &content, 1, SNIPPET_MAX_LEN);
+        assert!(!result.is_empty());
+    }
+
+    // ── Line-numbered output tests ──
+
+    #[test]
+    fn search_display_line_numbers() {
+        let content = "first line\nsecond line\nthird line";
+        let highlighted = "first line\n\x02second\x03 line\nthird line";
+        let result = extract_multi_snippet(highlighted, content, 10, SNIPPET_MAX_LEN);
+        // Should contain tab-separated line numbers
+        assert!(result.contains("10\t"));
+        assert!(result.contains("11\t"));
+    }
+
+    #[test]
+    fn search_display_long_line_truncated() {
+        let long_line = "x".repeat(500);
+        let content = format!("short\n{}\nshort", long_line);
+        let highlighted = format!("short\n\x02{}\x03\nshort", long_line);
+        let result = extract_multi_snippet(&highlighted, &content, 1, SNIPPET_MAX_LEN);
+        // The long line should be truncated
+        assert!(result.contains("\u{2026}"));
+    }
+
+    #[test]
+    fn search_display_hit_header() {
+        let hit = SearchHit {
+            title: "Auth > OAuth".to_string(),
+            content: "  8\t### OAuth Flow".to_string(),
+            source: "docs:api".to_string(),
+            rank: -1.5,
+            content_type: ContentType::Prose,
+            match_layer: MatchLayer::Porter,
+            line_start: 8,
+            line_end: 14,
+        };
+        let result = SearchResult {
+            query: "OAuth".to_string(),
+            hits: vec![hit],
+            corrected_query: None,
+        };
+        let display = result.to_string();
+        assert!(display.contains("**[1] docs:api \u{2014} Auth > OAuth** (lines 8-14)"));
     }
 }
