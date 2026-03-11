@@ -647,80 +647,156 @@ pub async fn mcp_gateway_handler(
                 }
             }
 
-            // Convert MCP sampling request to provider completion request
-            let mut completion_req =
-                match lr_mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req) {
-                    Ok(req) => req,
-                    Err(e) => {
-                        let error = lr_mcp::protocol::JsonRpcError::custom(
-                            -32603,
-                            format!("Failed to convert sampling request: {}", e),
-                            None,
-                        );
-                        let response = lr_mcp::protocol::JsonRpcResponse::error(
-                            request.id.unwrap_or(serde_json::Value::Null),
-                            error,
-                        );
-                        return send_response(
-                            &state.sse_connection_manager,
-                            &connection_key,
-                            response,
-                        );
+            // Branch on client mode
+            match client.client_mode {
+                lr_config::ClientMode::Both | lr_config::ClientMode::McpOnly => {
+                    // Passthrough: forward sampling request to external client via SSE notification
+                    let (passthrough_id, passthrough_rx) =
+                        state.sampling_passthrough_manager.create_pending(None);
+
+                    // Send notification to external client via SSE broadcast
+                    let notification = lr_mcp::protocol::JsonRpcNotification {
+                        jsonrpc: "2.0".to_string(),
+                        method: "sampling/createMessage".to_string(),
+                        params: Some(serde_json::json!({
+                            "passthrough_request_id": passthrough_id,
+                            "request": request.params,
+                        })),
+                    };
+
+                    // Broadcast via the MCP notification channel so SSE clients receive it
+                    let _ = state
+                        .mcp_notification_broadcast
+                        .send(("_sampling_passthrough".to_string(), notification));
+
+                    tracing::info!(
+                        "Forwarding sampling request to external client (passthrough {})",
+                        passthrough_id
+                    );
+
+                    // Wait for external client response with timeout
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        passthrough_rx,
+                    )
+                    .await
+                    {
+                        Ok(Ok(response_value)) => {
+                            let response = lr_mcp::protocol::JsonRpcResponse::success(
+                                request.id.unwrap_or(serde_json::Value::Null),
+                                response_value,
+                            );
+                            return send_response(
+                                &state.sse_connection_manager,
+                                &connection_key,
+                                response,
+                            );
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            let error = lr_mcp::protocol::JsonRpcError::custom(
+                                -32603,
+                                "Sampling passthrough timed out waiting for client response"
+                                    .to_string(),
+                                None,
+                            );
+                            let response = lr_mcp::protocol::JsonRpcResponse::error(
+                                request.id.unwrap_or(serde_json::Value::Null),
+                                error,
+                            );
+                            return send_response(
+                                &state.sse_connection_manager,
+                                &connection_key,
+                                response,
+                            );
+                        }
                     }
-                };
-
-            // Default to auto-routing if no specific model requested
-            if completion_req.model.is_empty() {
-                completion_req.model = "localrouter/auto".to_string();
-            }
-
-            // Call router to execute completion
-            let completion_resp = match state.router.complete(&client_id, completion_req).await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    let error = lr_mcp::protocol::JsonRpcError::custom(
-                        -32603,
-                        format!("LLM completion failed: {}", e),
-                        None,
-                    );
-                    let response = lr_mcp::protocol::JsonRpcResponse::error(
-                        request.id.unwrap_or(serde_json::Value::Null),
-                        error,
-                    );
-                    return send_response(&state.sse_connection_manager, &connection_key, response);
                 }
-            };
 
-            // Convert provider response back to MCP sampling response
-            let sampling_resp =
-                match lr_mcp::gateway::sampling::convert_chat_to_sampling_response(completion_resp)
-                {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        let error = lr_mcp::protocol::JsonRpcError::custom(
-                            -32603,
-                            format!("Failed to convert completion response: {}", e),
-                            None,
-                        );
-                        let response = lr_mcp::protocol::JsonRpcResponse::error(
-                            request.id.unwrap_or(serde_json::Value::Null),
-                            error,
-                        );
-                        return send_response(
-                            &state.sse_connection_manager,
-                            &connection_key,
-                            response,
-                        );
+                _ => {
+                    // MCP via LLM (and fallback): route sampling to LLM provider
+                    let mut completion_req =
+                        match lr_mcp::gateway::sampling::convert_sampling_to_chat_request(
+                            sampling_req,
+                        ) {
+                            Ok(req) => req,
+                            Err(e) => {
+                                let error = lr_mcp::protocol::JsonRpcError::custom(
+                                    -32603,
+                                    format!("Failed to convert sampling request: {}", e),
+                                    None,
+                                );
+                                let response = lr_mcp::protocol::JsonRpcResponse::error(
+                                    request.id.unwrap_or(serde_json::Value::Null),
+                                    error,
+                                );
+                                return send_response(
+                                    &state.sse_connection_manager,
+                                    &connection_key,
+                                    response,
+                                );
+                            }
+                        };
+
+                    if completion_req.model.is_empty() {
+                        completion_req.model = "localrouter/auto".to_string();
                     }
-                };
 
-            // Return success response
-            let response = lr_mcp::protocol::JsonRpcResponse::success(
-                request.id.unwrap_or(serde_json::Value::Null),
-                serde_json::to_value(sampling_resp).unwrap(),
-            );
+                    let completion_resp =
+                        match state.router.complete(&client_id, completion_req).await {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                let error = lr_mcp::protocol::JsonRpcError::custom(
+                                    -32603,
+                                    format!("LLM completion failed: {}", e),
+                                    None,
+                                );
+                                let response = lr_mcp::protocol::JsonRpcResponse::error(
+                                    request.id.unwrap_or(serde_json::Value::Null),
+                                    error,
+                                );
+                                return send_response(
+                                    &state.sse_connection_manager,
+                                    &connection_key,
+                                    response,
+                                );
+                            }
+                        };
 
-            return send_response(&state.sse_connection_manager, &connection_key, response);
+                    let sampling_resp =
+                        match lr_mcp::gateway::sampling::convert_chat_to_sampling_response(
+                            completion_resp,
+                        ) {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                let error = lr_mcp::protocol::JsonRpcError::custom(
+                                    -32603,
+                                    format!("Failed to convert completion response: {}", e),
+                                    None,
+                                );
+                                let response = lr_mcp::protocol::JsonRpcResponse::error(
+                                    request.id.unwrap_or(serde_json::Value::Null),
+                                    error,
+                                );
+                                return send_response(
+                                    &state.sse_connection_manager,
+                                    &connection_key,
+                                    response,
+                                );
+                            }
+                        };
+
+                    let response = lr_mcp::protocol::JsonRpcResponse::success(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        serde_json::to_value(sampling_resp).unwrap(),
+                    );
+
+                    return send_response(
+                        &state.sse_connection_manager,
+                        &connection_key,
+                        response,
+                    );
+                }
+            }
         }
 
         _ => {
@@ -933,6 +1009,40 @@ pub async fn elicitation_response_handler(
         }
         Err(e) => {
             tracing::warn!("Failed to submit elicitation response: {}", e);
+            ApiErrorResponse::bad_request(format!("Failed to submit response: {}", e))
+                .into_response()
+        }
+    }
+}
+
+/// Handle sampling passthrough response from external client.
+/// Endpoint: POST /mcp/sampling/respond/:request_id
+pub async fn sampling_passthrough_response_handler(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    client_auth: Option<axum::Extension<ClientAuthContext>>,
+    Json(response): Json<serde_json::Value>,
+) -> Response {
+    if client_auth.is_none() {
+        return ApiErrorResponse::unauthorized("Missing authentication").into_response();
+    }
+
+    match state
+        .sampling_passthrough_manager
+        .submit_response(&request_id, response)
+    {
+        Ok(()) => {
+            tracing::info!(
+                "Sampling passthrough response submitted for request {}",
+                request_id
+            );
+            Json(crate::types::MessageResponse {
+                message: "Response submitted successfully".to_string(),
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::warn!("Failed to submit sampling passthrough response: {}", e);
             ApiErrorResponse::bad_request(format!("Failed to submit response: {}", e))
                 .into_response()
         }

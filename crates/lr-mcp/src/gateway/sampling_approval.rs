@@ -291,6 +291,136 @@ pub struct SamplingApprovalDetails {
     pub created_at_secs_ago: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Sampling passthrough for Both/McpOnly mode
+// ---------------------------------------------------------------------------
+
+/// Pending sampling passthrough session.
+/// Used when a backend server requests sampling and the client mode is Both/McpOnly.
+/// The request is forwarded to the external client, which processes it and responds.
+#[derive(Debug)]
+pub struct SamplingPassthroughSession {
+    /// Unique request ID
+    pub request_id: String,
+    /// When this request was created
+    pub created_at: Instant,
+    /// Timeout duration in seconds
+    pub timeout_seconds: u64,
+    /// Channel to receive the response
+    pub response_sender: Option<oneshot::Sender<serde_json::Value>>,
+}
+
+impl SamplingPassthroughSession {
+    pub fn is_expired(&self) -> bool {
+        self.created_at.elapsed() > Duration::from_secs(self.timeout_seconds)
+    }
+}
+
+/// Manages sampling passthrough for Both/McpOnly clients.
+/// Forwards sampling requests to external clients and waits for their responses.
+pub struct SamplingPassthroughManager {
+    pending: Arc<DashMap<String, SamplingPassthroughSession>>,
+    default_timeout_secs: u64,
+}
+
+impl SamplingPassthroughManager {
+    pub fn new(default_timeout_secs: u64) -> Self {
+        Self {
+            pending: Arc::new(DashMap::new()),
+            default_timeout_secs,
+        }
+    }
+
+    /// Create a pending passthrough session and return a receiver for the response.
+    ///
+    /// The caller should:
+    /// 1. Call this to get a (request_id, receiver)
+    /// 2. Send the sampling request to the external client via SSE notification
+    /// 3. Await the receiver for the response
+    pub fn create_pending(
+        &self,
+        timeout_secs: Option<u64>,
+    ) -> (String, tokio::sync::oneshot::Receiver<serde_json::Value>) {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
+
+        let (tx, rx) = oneshot::channel();
+
+        let session = SamplingPassthroughSession {
+            request_id: request_id.clone(),
+            created_at: Instant::now(),
+            timeout_seconds: timeout,
+            response_sender: Some(tx),
+        };
+
+        self.pending.insert(request_id.clone(), session);
+        debug!("Created sampling passthrough session {}", request_id);
+
+        (request_id, rx)
+    }
+
+    /// Submit a response from the external client
+    pub fn submit_response(
+        &self,
+        request_id: &str,
+        response: serde_json::Value,
+    ) -> lr_types::AppResult<()> {
+        match self.pending.remove(request_id) {
+            Some((_, mut session)) => {
+                if let Some(sender) = session.response_sender.take() {
+                    sender.send(response).map_err(|_| {
+                        AppError::Internal(
+                            "Failed to send sampling passthrough response".to_string(),
+                        )
+                    })?;
+                }
+                debug!("Submitted passthrough response for {}", request_id);
+                Ok(())
+            }
+            None => Err(AppError::InvalidParams(format!(
+                "Sampling passthrough request {} not found or expired",
+                request_id
+            ))),
+        }
+    }
+
+    /// Clean up expired sessions
+    pub fn cleanup_expired(&self) {
+        let expired: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|entry| entry.value().is_expired())
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for request_id in expired {
+            warn!(
+                "Cleaning up expired sampling passthrough session {}",
+                request_id
+            );
+            self.pending.remove(&request_id);
+        }
+    }
+}
+
+impl Default for SamplingPassthroughManager {
+    fn default() -> Self {
+        Self {
+            pending: Arc::new(DashMap::new()),
+            default_timeout_secs: 120,
+        }
+    }
+}
+
+impl Clone for SamplingPassthroughManager {
+    fn clone(&self) -> Self {
+        Self {
+            pending: self.pending.clone(),
+            default_timeout_secs: self.default_timeout_secs,
+        }
+    }
+}
+
 impl Default for SamplingApprovalManager {
     fn default() -> Self {
         Self {
@@ -446,6 +576,46 @@ mod tests {
         assert_eq!(manager.pending_count(), 0);
 
         let result = handle.await.unwrap();
+        assert!(result.is_err());
+    }
+
+    // --- SamplingPassthroughManager tests ---
+
+    #[tokio::test]
+    async fn test_passthrough_submit_response() {
+        let manager = SamplingPassthroughManager::new(120);
+        let (request_id, rx) = manager.create_pending(None);
+
+        let response_val = serde_json::json!({
+            "model": "gpt-4",
+            "role": "assistant",
+            "content": { "type": "text", "text": "Hello!" }
+        });
+
+        manager
+            .submit_response(&request_id, response_val.clone())
+            .unwrap();
+
+        let received = rx.await.unwrap();
+        assert_eq!(received, response_val);
+    }
+
+    #[tokio::test]
+    async fn test_passthrough_timeout() {
+        let manager = SamplingPassthroughManager::new(1);
+        let (_request_id, rx) = manager.create_pending(Some(1));
+
+        // Don't submit a response, just wait for timeout
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+        // The receiver should error because the sender was dropped during cleanup
+        // or timeout on the receiver side
+        assert!(result.is_err() || result.unwrap().is_err());
+    }
+
+    #[test]
+    fn test_passthrough_submit_unknown_id() {
+        let manager = SamplingPassthroughManager::new(120);
+        let result = manager.submit_response("nonexistent", serde_json::json!({}));
         assert!(result.is_err());
     }
 }

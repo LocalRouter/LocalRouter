@@ -737,6 +737,10 @@ pub struct AppState {
 
     /// Sampling approval manager for Ask-mode sampling requests
     pub sampling_approval_manager: Arc<lr_mcp::gateway::sampling_approval::SamplingApprovalManager>,
+
+    /// Sampling passthrough manager for Both/McpOnly mode
+    pub sampling_passthrough_manager:
+        Arc<lr_mcp::gateway::sampling_approval::SamplingPassthroughManager>,
 }
 
 impl AppState {
@@ -831,6 +835,9 @@ impl AppState {
                     120,
                     notification_broadcast.clone(),
                 ),
+            ),
+            sampling_passthrough_manager: Arc::new(
+                lr_mcp::gateway::sampling_approval::SamplingPassthroughManager::new(120),
             ),
         }
     }
