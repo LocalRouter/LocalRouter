@@ -607,12 +607,19 @@ fn migrate_to_v19(mut config: AppConfig) -> AppResult<AppConfig> {
 
     for client in &mut config.clients {
         // Migrate old boolean fields to PermissionState
-        client.mcp_sampling_permission = if !client.mcp_sampling_enabled {
-            PermissionState::Off
-        } else if client.mcp_sampling_requires_approval {
+        // Note: mcp_sampling_enabled defaults to false, requires_approval defaults to true.
+        // If both are at defaults, the client never configured sampling → default to Ask.
+        client.mcp_sampling_permission = if client.mcp_sampling_enabled
+            && !client.mcp_sampling_requires_approval
+        {
+            // Explicitly enabled without approval → Allow
+            PermissionState::Allow
+        } else if client.mcp_sampling_enabled && client.mcp_sampling_requires_approval {
+            // Explicitly enabled with approval → Ask
             PermissionState::Ask
         } else {
-            PermissionState::Allow
+            // Never configured (both defaults) → Ask
+            PermissionState::Ask
         };
 
         // Elicitation is a new feature, default to Ask
@@ -694,13 +701,14 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_sampling_disabled_to_off() {
+    fn test_migrate_sampling_defaults_to_ask() {
         use super::super::types::PermissionState;
 
         let mut config = AppConfig::default();
         config.version = 18;
         let mut client =
             super::super::Client::new_with_strategy("test".to_string(), "s".to_string());
+        // Both at defaults (enabled=false, requires_approval=true) → Ask
         client.mcp_sampling_enabled = false;
         client.mcp_sampling_requires_approval = true;
         config.clients.push(client);
@@ -708,7 +716,7 @@ mod tests {
         let migrated = migrate_config(config).unwrap();
         assert_eq!(
             migrated.clients[0].mcp_sampling_permission,
-            PermissionState::Off
+            PermissionState::Ask
         );
     }
 
