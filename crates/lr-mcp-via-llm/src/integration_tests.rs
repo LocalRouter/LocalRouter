@@ -16,23 +16,23 @@ mod helpers {
     use serde_json::{json, Value};
 
     use lr_config::{AppConfig, Client, ClientMode, ConfigManager, McpViaLlmConfig};
+    use lr_mcp::gateway::types::GatewayConfig;
     use lr_mcp::gateway::virtual_server::{
         VirtualFirewallResult, VirtualInstructions, VirtualMcpServer, VirtualSessionState,
         VirtualToolCallResult,
     };
     use lr_mcp::gateway::FirewallDecisionResult;
     use lr_mcp::McpGateway;
-    use lr_mcp::gateway::types::GatewayConfig;
     use lr_mcp::McpServerManager;
-    use lr_providers::registry::ProviderRegistry;
     use lr_providers::factory::{ProviderCategory, ProviderFactory, SetupParameter};
+    use lr_providers::registry::ProviderRegistry;
     use lr_providers::{
         Capability, ChatMessage, ChatMessageContent, CompletionChoice, CompletionRequest,
-        CompletionResponse, HealthStatus, ModelInfo, ModelProvider, ProviderHealth, TokenUsage,
-        ToolCall, FunctionCall,
+        CompletionResponse, FunctionCall, HealthStatus, ModelInfo, ModelProvider, ProviderHealth,
+        TokenUsage, ToolCall,
     };
-    use lr_router::rate_limit::RateLimiterManager;
     use lr_router::free_tier::FreeTierManager;
+    use lr_router::rate_limit::RateLimiterManager;
     use lr_router::Router;
     use lr_types::McpTool;
 
@@ -92,11 +92,10 @@ mod helpers {
             request: CompletionRequest,
         ) -> lr_types::AppResult<CompletionResponse> {
             self.requests_received.lock().push(request);
-            let response = self
-                .responses
-                .lock()
-                .pop_front()
-                .ok_or_else(|| lr_types::AppError::Provider("no more scripted responses".into()))?;
+            let response =
+                self.responses.lock().pop_front().ok_or_else(|| {
+                    lr_types::AppError::Provider("no more scripted responses".into())
+                })?;
             Ok(response)
         }
 
@@ -105,10 +104,15 @@ mod helpers {
             _request: CompletionRequest,
         ) -> lr_types::AppResult<
             std::pin::Pin<
-                Box<dyn futures::Stream<Item = lr_types::AppResult<lr_providers::CompletionChunk>> + Send>,
+                Box<
+                    dyn futures::Stream<Item = lr_types::AppResult<lr_providers::CompletionChunk>>
+                        + Send,
+                >,
             >,
         > {
-            Err(lr_types::AppError::Provider("streaming not supported in mock".into()))
+            Err(lr_types::AppError::Provider(
+                "streaming not supported in mock".into(),
+            ))
         }
     }
 
@@ -266,7 +270,10 @@ mod helpers {
             }
         }
 
-        fn build_instructions(&self, _state: &dyn VirtualSessionState) -> Option<VirtualInstructions> {
+        fn build_instructions(
+            &self,
+            _state: &dyn VirtualSessionState,
+        ) -> Option<VirtualInstructions> {
             None
         }
 
@@ -274,12 +281,7 @@ mod helpers {
             Box::new(MockSessionState)
         }
 
-        fn update_session_state(
-            &self,
-            _state: &mut dyn VirtualSessionState,
-            _client: &Client,
-        ) {
-        }
+        fn update_session_state(&self, _state: &mut dyn VirtualSessionState, _client: &Client) {}
     }
 
     // ── Test Environment ───────────────────────────────────────────────────
@@ -335,10 +337,8 @@ mod helpers {
 
         // 3. Rate limiter and metrics
         let rate_limiter = Arc::new(RateLimiterManager::new(None));
-        let temp_dir = std::env::temp_dir().join(format!(
-            "lr-test-metrics-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let temp_dir =
+            std::env::temp_dir().join(format!("lr-test-metrics-{}", uuid::Uuid::new_v4()));
         let metrics_db = Arc::new(
             lr_monitoring::storage::MetricsDatabase::new(temp_dir)
                 .expect("Failed to create metrics DB"),
@@ -375,7 +375,8 @@ mod helpers {
         }
 
         // 6. Client
-        let mut client = Client::new_with_strategy("test-client".to_string(), "default".to_string());
+        let mut client =
+            Client::new_with_strategy("test-client".to_string(), "default".to_string());
         client.id = "internal-test".to_string();
         client.client_mode = ClientMode::McpViaLlm;
 
@@ -390,7 +391,10 @@ mod helpers {
 
     // ── Helper functions ───────────────────────────────────────────────────
 
-    pub fn make_response(text: Option<&str>, tool_calls: Option<Vec<ToolCall>>) -> CompletionResponse {
+    pub fn make_response(
+        text: Option<&str>,
+        tool_calls: Option<Vec<ToolCall>>,
+    ) -> CompletionResponse {
         CompletionResponse {
             id: uuid::Uuid::new_v4().to_string(),
             object: "chat.completion".to_string(),
@@ -401,9 +405,7 @@ mod helpers {
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    content: ChatMessageContent::Text(
-                        text.unwrap_or("").to_string(),
-                    ),
+                    content: ChatMessageContent::Text(text.unwrap_or("").to_string()),
                     tool_calls,
                     tool_call_id: None,
                     name: None,
@@ -539,7 +541,9 @@ mod agentic_loop_tests {
                     "Expected passthrough response"
                 );
             }
-            OrchestratorResult::PendingMixed { .. } => panic!("Expected Complete, got PendingMixed"),
+            OrchestratorResult::PendingMixed { .. } => {
+                panic!("Expected Complete, got PendingMixed")
+            }
         }
 
         // LLM called exactly once
@@ -560,7 +564,11 @@ mod agentic_loop_tests {
                 // First LLM call: returns a tool call
                 make_response(
                     None,
-                    Some(vec![make_tool_call("call-1", "fs__read", r#"{"path":"/tmp"}"#)]),
+                    Some(vec![make_tool_call(
+                        "call-1",
+                        "fs__read",
+                        r#"{"path":"/tmp"}"#,
+                    )]),
                 ),
                 // Second LLM call: final text
                 make_response(Some("The file contains: file contents"), None),
@@ -752,7 +760,10 @@ mod agentic_loop_tests {
         // Verify the request sent to LLM includes MCP tools
         let requests = env.mock_provider.requests_received.lock();
         assert_eq!(requests.len(), 1);
-        let tools = requests[0].tools.as_ref().expect("tools should be injected");
+        let tools = requests[0]
+            .tools
+            .as_ref()
+            .expect("tools should be injected");
         let tool_names: Vec<&str> = tools.iter().map(|t| t.function.name.as_str()).collect();
         assert!(tool_names.contains(&"fs__read"));
         assert!(tool_names.contains(&"db__query"));
@@ -977,7 +988,7 @@ mod mcp_server_verification_tests {
 #[cfg(test)]
 mod mixed_tool_tests {
     use super::helpers::*;
-    use crate::orchestrator::{run_agentic_loop, resume_after_mixed, OrchestratorResult};
+    use crate::orchestrator::{resume_after_mixed, run_agentic_loop, OrchestratorResult};
     use lr_providers::{ChatMessage, ChatMessageContent};
     use std::collections::HashMap;
 
@@ -1142,8 +1153,8 @@ mod mixed_tool_tests {
 #[cfg(test)]
 mod guardrail_tests {
     use super::helpers::*;
-    use crate::orchestrator::{run_agentic_loop, OrchestratorResult};
     use crate::manager::McpViaLlmError;
+    use crate::orchestrator::{run_agentic_loop, OrchestratorResult};
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -1195,10 +1206,7 @@ mod guardrail_tests {
         let env = setup_test_env(
             vec![
                 // LLM returns a tool call, but guardrail will deny before execution
-                make_response(
-                    None,
-                    Some(vec![make_tool_call("c1", "fs__read", "{}")]),
-                ),
+                make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
             ],
             vec![tool],
             HashMap::new(),
@@ -1244,15 +1252,9 @@ mod guardrail_tests {
         let env = setup_test_env(
             vec![
                 // First call: tool call
-                make_response(
-                    None,
-                    Some(vec![make_tool_call("c1", "fs__read", "{}")]),
-                ),
+                make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
                 // Second call: another tool call (guardrail should already be consumed)
-                make_response(
-                    None,
-                    Some(vec![make_tool_call("c2", "fs__read", "{}")]),
-                ),
+                make_response(None, Some(vec![make_tool_call("c2", "fs__read", "{}")])),
                 // Third call: final response
                 make_response(Some("Done"), None),
             ],
@@ -1296,8 +1298,8 @@ mod guardrail_tests {
 #[cfg(test)]
 mod error_handling_tests {
     use super::helpers::*;
-    use crate::orchestrator::{run_agentic_loop, OrchestratorResult};
     use crate::manager::McpViaLlmError;
+    use crate::orchestrator::{run_agentic_loop, OrchestratorResult};
     use lr_config::McpViaLlmConfig;
     use std::collections::HashMap;
 
@@ -1356,20 +1358,15 @@ mod error_handling_tests {
         let tool = make_mcp_tool("fs__read", "Read a file");
 
         let mock_server = std::sync::Arc::new(
-            MockMcpVirtualServer::new("_test_server", vec![tool], HashMap::new())
-                .with_errors(HashMap::from([(
-                    "fs__read".to_string(),
-                    "disk full".to_string(),
-                )])),
+            MockMcpVirtualServer::new("_test_server", vec![tool], HashMap::new()).with_errors(
+                HashMap::from([("fs__read".to_string(), "disk full".to_string())]),
+            ),
         );
 
         let env = setup_test_env_multi_with_mock_servers(
             vec![
                 // First call: tool call
-                make_response(
-                    None,
-                    Some(vec![make_tool_call("c1", "fs__read", "{}")]),
-                ),
+                make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
                 // Second call: LLM sees the error and gives a text response
                 make_response(Some("Sorry, the disk is full"), None),
             ],
@@ -1505,10 +1502,7 @@ mod metadata_tests {
 
         let env = setup_test_env(
             vec![
-                make_response(
-                    None,
-                    Some(vec![make_tool_call("c1", "fs__read", "{}")]),
-                ),
+                make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
                 make_response(Some("Final"), None),
             ],
             vec![tool],
@@ -1551,10 +1545,7 @@ mod metadata_tests {
 
         let env = setup_test_env(
             vec![
-                make_response(
-                    None,
-                    Some(vec![make_tool_call("c1", "fs__read", "{}")]),
-                ),
+                make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
                 make_response(Some("Final"), None),
             ],
             vec![tool],
@@ -1582,7 +1573,9 @@ mod metadata_tests {
         match result {
             OrchestratorResult::Complete(resp) => {
                 let extensions = resp.extensions.expect("should have extensions");
-                let mcp_meta = extensions.get("mcp_via_llm").expect("should have mcp_via_llm");
+                let mcp_meta = extensions
+                    .get("mcp_via_llm")
+                    .expect("should have mcp_via_llm");
 
                 assert_eq!(mcp_meta["iterations"], 2);
                 let tools_called = mcp_meta["mcp_tools_called"].as_array().unwrap();
@@ -1610,10 +1603,7 @@ mod session_tests {
 
         let env = setup_test_env(
             vec![
-                make_response(
-                    None,
-                    Some(vec![make_tool_call("c1", "fs__read", "{}")]),
-                ),
+                make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
                 make_response(Some("Final"), None),
             ],
             vec![tool],

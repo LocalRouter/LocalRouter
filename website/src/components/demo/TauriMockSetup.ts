@@ -156,6 +156,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       coding_agent_type: null,
       model_permissions: { global: 'allow' as const, providers: {}, models: {} },
       marketplace_permission: 'ask' as const,
+      mcp_sampling_permission: 'ask' as const,
+      mcp_elicitation_permission: 'ask' as const,
       client_mode: 'both' as const,
       template_id: null,
       sync_config: false,
@@ -413,7 +415,22 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client && args?.state) {
       client.marketplace_permission = args.state
-      // Emit clients-changed event to trigger UI refresh
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
+    return null
+  },
+  'set_client_sampling_permission': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    if (client && args?.state) {
+      client.mcp_sampling_permission = args.state
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
+    return null
+  },
+  'set_client_elicitation_permission': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    if (client && args?.state) {
+      client.mcp_elicitation_permission = args.state
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
@@ -2020,6 +2037,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.info(`Tray overlay set to: ${args?.overlay ?? 'auto'}`)
     return null
   },
+  'debug_discover_providers': () => ({
+    discovered: [{ provider_type: 'ollama', instance_name: 'Ollama', base_url: 'http://localhost:11434' }],
+    added: ['Ollama'],
+    skipped: [],
+  }),
 
   // ============================================================================
   // Window & System

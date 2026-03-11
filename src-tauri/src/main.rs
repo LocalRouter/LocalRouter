@@ -232,8 +232,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             "lmstudio" => config::ProviderConfig::default_lmstudio(),
                             "jan" => config::ProviderConfig::default_jan(),
                             "gpt4all" => config::ProviderConfig::default_gpt4all(),
-                            "localai" => config::ProviderConfig::default_localai(),
-                            "llamacpp" => config::ProviderConfig::default_llamacpp(),
                             _ => continue,
                         };
                         info!(
@@ -1608,6 +1606,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_client_skills_permission,
             ui::commands::set_client_model_permission,
             ui::commands::set_client_marketplace_permission,
+            ui::commands::set_client_sampling_permission,
+            ui::commands::set_client_elicitation_permission,
             ui::commands::clear_client_mcp_child_permissions,
             ui::commands::clear_client_skills_child_permissions,
             ui::commands::clear_client_model_child_permissions,
@@ -1686,7 +1686,17 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_routellm::open_routellm_folder,
             // Debug commands (dev only)
             ui::commands::debug_trigger_firewall_popup,
+            ui::commands::debug_trigger_sampling_approval_popup,
+            ui::commands::debug_trigger_elicitation_form_popup,
             ui::commands::debug_set_tray_overlay,
+            ui::commands::debug_discover_providers,
+            // Sampling approval commands
+            ui::commands::get_sampling_approval_details,
+            ui::commands::submit_sampling_approval,
+            // Elicitation commands
+            ui::commands::get_elicitation_details,
+            ui::commands::submit_elicitation_response,
+            ui::commands::cancel_elicitation,
             // File system commands
             ui::commands::open_path,
             // Skills commands

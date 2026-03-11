@@ -109,6 +109,10 @@ export interface ClientInfo {
   coding_agent_type: CodingAgentType | null
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
+  /** Sampling permission (Allow/Ask/Off) */
+  mcp_sampling_permission: PermissionState
+  /** Elicitation permission (Allow/Ask/Off) */
+  mcp_elicitation_permission: PermissionState
   client_mode: ClientMode
   template_id: string | null
   sync_config: boolean
@@ -1548,6 +1552,18 @@ export interface SetClientMarketplacePermissionParams {
   state: PermissionState
 }
 
+/** Params for set_client_sampling_permission */
+export interface SetClientSamplingPermissionParams {
+  clientId: string
+  state: PermissionState
+}
+
+/** Params for set_client_elicitation_permission */
+export interface SetClientElicitationPermissionParams {
+  clientId: string
+  state: PermissionState
+}
+
 /** Params for clear_client_mcp_child_permissions */
 export interface ClearClientMcpChildPermissionsParams {
   clientId: string
@@ -2706,4 +2722,23 @@ export interface UpdateJsonRepairConfigParams {
 export interface TestJsonRepairParams {
   content: string
   schema: string | null
+}
+
+// =============================================================================
+// Local Provider Discovery Types
+// Rust: crates/lr-providers/src/factory.rs, src-tauri/src/ui/commands.rs
+// =============================================================================
+
+/** Rust: crates/lr-providers/src/factory.rs - DiscoveredProvider struct */
+export interface DiscoveredProvider {
+  provider_type: string
+  instance_name: string
+  base_url: string
+}
+
+/** Rust: src-tauri/src/ui/commands.rs - DiscoverProviderResult struct */
+export interface DiscoverProviderResult {
+  discovered: DiscoveredProvider[]
+  added: string[]
+  skipped: string[]
 }

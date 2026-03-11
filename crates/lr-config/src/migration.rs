@@ -118,6 +118,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v18(config)?;
     }
 
+    // Migrate to v19: Sampling & elicitation permissions (bool → PermissionState)
+    if config.version < 19 {
+        config = migrate_to_v19(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -591,6 +596,43 @@ fn migrate_to_v18(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
+/// Migrate to version 19: Sampling & elicitation permissions
+///
+/// Converts `mcp_sampling_enabled` + `mcp_sampling_requires_approval` booleans
+/// to unified `mcp_sampling_permission: PermissionState`.
+/// Adds `mcp_elicitation_permission` defaulting to Ask.
+fn migrate_to_v19(mut config: AppConfig) -> AppResult<AppConfig> {
+    use super::types::PermissionState;
+    info!("Migrating to version 19: Sampling & elicitation permissions");
+
+    for client in &mut config.clients {
+        // Migrate old boolean fields to PermissionState
+        client.mcp_sampling_permission = if !client.mcp_sampling_enabled {
+            PermissionState::Off
+        } else if client.mcp_sampling_requires_approval {
+            PermissionState::Ask
+        } else {
+            PermissionState::Allow
+        };
+
+        // Elicitation is a new feature, default to Ask
+        client.mcp_elicitation_permission = PermissionState::Ask;
+
+        info!(
+            "Client '{}': sampling {:?} → {:?}, elicitation → Ask",
+            client.name,
+            (
+                client.mcp_sampling_enabled,
+                client.mcp_sampling_requires_approval
+            ),
+            client.mcp_sampling_permission
+        );
+    }
+
+    config.version = 19;
+    Ok(config)
+}
+
 // Future migration functions will follow this pattern:
 //
 // fn migrate_to_v2(mut config: AppConfig) -> AppResult<AppConfig> {
@@ -649,5 +691,78 @@ mod tests {
 
         assert_eq!(migrated.version, CONFIG_VERSION);
         assert_eq!(migrated.server.host, original_host);
+    }
+
+    #[test]
+    fn test_migrate_sampling_disabled_to_off() {
+        use super::super::types::PermissionState;
+
+        let mut config = AppConfig::default();
+        config.version = 18;
+        let mut client =
+            super::super::Client::new_with_strategy("test".to_string(), "s".to_string());
+        client.mcp_sampling_enabled = false;
+        client.mcp_sampling_requires_approval = true;
+        config.clients.push(client);
+
+        let migrated = migrate_config(config).unwrap();
+        assert_eq!(
+            migrated.clients[0].mcp_sampling_permission,
+            PermissionState::Off
+        );
+    }
+
+    #[test]
+    fn test_migrate_sampling_enabled_approval_to_ask() {
+        use super::super::types::PermissionState;
+
+        let mut config = AppConfig::default();
+        config.version = 18;
+        let mut client =
+            super::super::Client::new_with_strategy("test".to_string(), "s".to_string());
+        client.mcp_sampling_enabled = true;
+        client.mcp_sampling_requires_approval = true;
+        config.clients.push(client);
+
+        let migrated = migrate_config(config).unwrap();
+        assert_eq!(
+            migrated.clients[0].mcp_sampling_permission,
+            PermissionState::Ask
+        );
+    }
+
+    #[test]
+    fn test_migrate_sampling_enabled_no_approval_to_allow() {
+        use super::super::types::PermissionState;
+
+        let mut config = AppConfig::default();
+        config.version = 18;
+        let mut client =
+            super::super::Client::new_with_strategy("test".to_string(), "s".to_string());
+        client.mcp_sampling_enabled = true;
+        client.mcp_sampling_requires_approval = false;
+        config.clients.push(client);
+
+        let migrated = migrate_config(config).unwrap();
+        assert_eq!(
+            migrated.clients[0].mcp_sampling_permission,
+            PermissionState::Allow
+        );
+    }
+
+    #[test]
+    fn test_migrate_adds_elicitation_default_ask() {
+        use super::super::types::PermissionState;
+
+        let mut config = AppConfig::default();
+        config.version = 18;
+        let client = super::super::Client::new_with_strategy("test".to_string(), "s".to_string());
+        config.clients.push(client);
+
+        let migrated = migrate_config(config).unwrap();
+        assert_eq!(
+            migrated.clients[0].mcp_elicitation_permission,
+            PermissionState::Ask
+        );
     }
 }

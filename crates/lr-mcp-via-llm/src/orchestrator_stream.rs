@@ -316,9 +316,7 @@ async fn streaming_loop(
         // This allows guardrails to run in parallel with the LLM streaming call.
         if let Some(gate) = guardrail_gate.take() {
             gate.await
-                .map_err(|e| {
-                    McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e))
-                })?
+                .map_err(|e| McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e)))?
                 .map_err(McpViaLlmError::GuardrailDenied)?;
         }
 
@@ -375,25 +373,24 @@ async fn streaming_loop(
                     for tool_call in &mcp_calls {
                         let tool_name = tool_call.function.name.clone();
                         let tool_call_id = tool_call.id.clone();
-                        let arguments: Value = match serde_json::from_str(&tool_call.function.arguments) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::warn!(
+                        let arguments: Value =
+                            match serde_json::from_str(&tool_call.function.arguments) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::warn!(
                                     "MCP via LLM streaming: malformed arguments for tool '{}': {}",
                                     tool_name, e
                                 );
-                                let err_msg = format!(
-                                    "Error: invalid JSON arguments for tool '{}': {}. Raw: {}",
-                                    tool_name, e, tool_call.function.arguments
-                                );
-                                let tc_id = tool_call_id.clone();
-                                let handle = tokio::spawn(async move {
-                                    (tc_id, Err(err_msg))
-                                });
-                                mcp_handles.push(handle);
-                                continue;
-                            }
-                        };
+                                    let err_msg = format!(
+                                        "Error: invalid JSON arguments for tool '{}': {}. Raw: {}",
+                                        tool_name, e, tool_call.function.arguments
+                                    );
+                                    let tc_id = tool_call_id.clone();
+                                    let handle = tokio::spawn(async move { (tc_id, Err(err_msg)) });
+                                    mcp_handles.push(handle);
+                                    continue;
+                                }
+                            };
 
                         let gw = gateway.clone();
                         let cid = client_id.to_string();
@@ -473,12 +470,14 @@ async fn streaming_loop(
 
                 for tool_call in &mcp_calls {
                     let tool_name = &tool_call.function.name;
-                    let arguments: Value = match serde_json::from_str(&tool_call.function.arguments) {
+                    let arguments: Value = match serde_json::from_str(&tool_call.function.arguments)
+                    {
                         Ok(v) => v,
                         Err(e) => {
                             tracing::warn!(
                                 "MCP via LLM streaming: malformed arguments for tool '{}': {}",
-                                tool_name, e
+                                tool_name,
+                                e
                             );
                             let error_content = format!(
                                 "Error: invalid JSON arguments: {}. Raw: {}",
@@ -760,6 +759,8 @@ async fn execute_resource_read_background(
             permissions.coding_agent_permission.clone(),
             permissions.coding_agent_type,
             permissions.context_management_overrides.clone(),
+            permissions.mcp_sampling_permission.clone(),
+            permissions.mcp_elicitation_permission.clone(),
             request,
         ),
     )
@@ -779,7 +780,11 @@ async fn execute_resource_read_background(
     if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
         let texts: Vec<String> = contents
             .iter()
-            .filter_map(|c| c.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+            .filter_map(|c| {
+                c.get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+            })
             .collect();
         if !texts.is_empty() {
             return Ok(texts.join("\n"));
@@ -826,14 +831,14 @@ async fn execute_prompt_get_background(
             permissions.coding_agent_permission.clone(),
             permissions.coding_agent_type,
             permissions.context_management_overrides.clone(),
+            permissions.mcp_sampling_permission.clone(),
+            permissions.mcp_elicitation_permission.clone(),
             request,
         ),
     )
     .await
     {
-        Ok(result) => {
-            result.map_err(|e| format!("prompts/get '{}' failed: {}", prompt_name, e))?
-        }
+        Ok(result) => result.map_err(|e| format!("prompts/get '{}' failed: {}", prompt_name, e))?,
         Err(_) => return Err(format!("prompts/get '{}' timed out", prompt_name)),
     };
 
@@ -853,9 +858,11 @@ async fn execute_prompt_get_background(
             .filter_map(|m| {
                 let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("system");
                 let text = m.get("content").and_then(|c| {
-                    c.as_str()
-                        .map(|s| s.to_string())
-                        .or_else(|| c.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                    c.as_str().map(|s| s.to_string()).or_else(|| {
+                        c.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                    })
                 })?;
                 if text.is_empty() {
                     None

@@ -12,8 +12,8 @@ mod orchestrator_stream;
 pub(crate) mod session;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod tests;
 
 pub use manager::{GuardrailGate, McpViaLlmError, McpViaLlmManager};

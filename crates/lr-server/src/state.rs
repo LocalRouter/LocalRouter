@@ -734,6 +734,9 @@ pub struct AppState {
 
     /// MCP via LLM agentic orchestrator (experimental)
     pub mcp_via_llm_manager: Arc<McpViaLlmManager>,
+
+    /// Sampling approval manager for Ask-mode sampling requests
+    pub sampling_approval_manager: Arc<lr_mcp::gateway::sampling_approval::SamplingApprovalManager>,
 }
 
 impl AppState {
@@ -820,6 +823,9 @@ impl AppState {
             safety_engine: Arc::new(RwLock::new(None)),
             compression_service: Arc::new(RwLock::new(None)),
             mcp_via_llm_manager: Arc::new(McpViaLlmManager::new(mcp_via_llm_config)),
+            sampling_approval_manager: Arc::new(
+                lr_mcp::gateway::sampling_approval::SamplingApprovalManager::new(120),
+            ),
         }
     }
 

@@ -558,13 +558,15 @@ pub async fn mcp_gateway_handler(
     // These are requests FROM backend servers TO gateway (gateway acts as MCP client)
     match request.method.as_str() {
         "sampling/createMessage" => {
-            // Check if sampling is enabled for this client
-            if !client.mcp_sampling_enabled {
+            // Check sampling permission (re-read current state, may have changed mid-connection)
+            let sampling_permission = &client.mcp_sampling_permission;
+
+            if matches!(sampling_permission, lr_config::PermissionState::Off) {
                 let error = lr_mcp::protocol::JsonRpcError::custom(
                     -32601,
                     "Sampling is disabled for this client".to_string(),
                     Some(serde_json::json!({
-                        "hint": "Contact administrator to enable mcp_sampling_enabled for your client"
+                        "hint": "Contact administrator to set mcp_sampling_permission to 'allow' or 'ask'"
                     })),
                 );
 
@@ -607,6 +609,43 @@ pub async fn mcp_gateway_handler(
                     return send_response(&state.sse_connection_manager, &connection_key, response);
                 }
             };
+
+            // If permission is Ask, request user approval via popup
+            if matches!(sampling_permission, lr_config::PermissionState::Ask) {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let approval_result = state
+                    .sampling_approval_manager
+                    .request_approval(
+                        request_id,
+                        "_gateway".to_string(),
+                        sampling_req.clone(),
+                        None,
+                    )
+                    .await;
+
+                match approval_result {
+                    Ok(lr_mcp::gateway::sampling_approval::SamplingApprovalAction::Allow) => {
+                        // User approved, continue
+                    }
+                    Ok(lr_mcp::gateway::sampling_approval::SamplingApprovalAction::Deny)
+                    | Err(_) => {
+                        let error = lr_mcp::protocol::JsonRpcError::custom(
+                            -32601,
+                            "Sampling request was denied by user".to_string(),
+                            None,
+                        );
+                        let response = lr_mcp::protocol::JsonRpcResponse::error(
+                            request.id.unwrap_or(serde_json::Value::Null),
+                            error,
+                        );
+                        return send_response(
+                            &state.sse_connection_manager,
+                            &connection_key,
+                            response,
+                        );
+                    }
+                }
+            }
 
             // Convert MCP sampling request to provider completion request
             let mut completion_req =
@@ -732,6 +771,8 @@ pub async fn mcp_gateway_handler(
                         indexing_tools_enabled: client.indexing_tools_enabled,
                         catalog_compression_enabled: client.catalog_compression_enabled,
                     }),
+                    client.mcp_sampling_permission.clone(),
+                    client.mcp_elicitation_permission.clone(),
                     request,
                 ),
             )
@@ -809,6 +850,8 @@ pub async fn mcp_gateway_handler(
                     indexing_tools_enabled: client.indexing_tools_enabled,
                     catalog_compression_enabled: client.catalog_compression_enabled,
                 }),
+                client.mcp_sampling_permission.clone(),
+                client.mcp_elicitation_permission.clone(),
                 request,
             )
             .await

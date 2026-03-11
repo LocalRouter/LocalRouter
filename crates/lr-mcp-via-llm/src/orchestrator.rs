@@ -39,6 +39,8 @@ pub(crate) struct GatewayPermissions {
     pub coding_agent_permission: lr_config::PermissionState,
     pub coding_agent_type: Option<lr_config::CodingAgentType>,
     pub context_management_overrides: Option<lr_config::ContextManagementOverrides>,
+    pub mcp_sampling_permission: lr_config::PermissionState,
+    pub mcp_elicitation_permission: lr_config::PermissionState,
 }
 
 impl GatewayPermissions {
@@ -56,6 +58,8 @@ impl GatewayPermissions {
                 indexing_tools_enabled: client.indexing_tools_enabled,
                 catalog_compression_enabled: client.catalog_compression_enabled,
             }),
+            mcp_sampling_permission: client.mcp_sampling_permission.clone(),
+            mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
         }
     }
 }
@@ -248,9 +252,7 @@ pub async fn run_agentic_loop(
         // This allows guardrails to run in parallel with the LLM call.
         if let Some(gate) = guardrail_gate.take() {
             gate.await
-                .map_err(|e| {
-                    McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e))
-                })?
+                .map_err(|e| McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e)))?
                 .map_err(McpViaLlmError::GuardrailDenied)?;
         }
 
@@ -303,27 +305,27 @@ pub async fn run_agentic_loop(
                     for tool_call in &mcp_calls {
                         let tool_name = tool_call.function.name.clone();
                         let tool_call_id = tool_call.id.clone();
-                        let arguments: Value = match serde_json::from_str(&tool_call.function.arguments) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::warn!(
-                                    "MCP via LLM: malformed arguments for tool '{}': {}",
-                                    tool_name, e
-                                );
-                                // Return parse error as tool result so LLM can retry
-                                let err_msg = format!(
-                                    "Error: invalid JSON arguments for tool '{}': {}. Raw: {}",
-                                    tool_name, e, tool_call.function.arguments
-                                );
-                                let tc_id = tool_call_id.clone();
-                                let handle = tokio::spawn(async move {
-                                    (tc_id, Err(err_msg))
-                                });
-                                mcp_handles.push(handle);
-                                mcp_tools_called.push(tool_name.clone());
-                                continue;
-                            }
-                        };
+                        let arguments: Value =
+                            match serde_json::from_str(&tool_call.function.arguments) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "MCP via LLM: malformed arguments for tool '{}': {}",
+                                        tool_name,
+                                        e
+                                    );
+                                    // Return parse error as tool result so LLM can retry
+                                    let err_msg = format!(
+                                        "Error: invalid JSON arguments for tool '{}': {}. Raw: {}",
+                                        tool_name, e, tool_call.function.arguments
+                                    );
+                                    let tc_id = tool_call_id.clone();
+                                    let handle = tokio::spawn(async move { (tc_id, Err(err_msg)) });
+                                    mcp_handles.push(handle);
+                                    mcp_tools_called.push(tool_name.clone());
+                                    continue;
+                                }
+                            };
 
                         let gw = gateway.clone();
                         let cid = client_id.clone();
@@ -408,12 +410,14 @@ pub async fn run_agentic_loop(
 
                 for tool_call in &mcp_calls {
                     let tool_name = &tool_call.function.name;
-                    let arguments: Value = match serde_json::from_str(&tool_call.function.arguments) {
+                    let arguments: Value = match serde_json::from_str(&tool_call.function.arguments)
+                    {
                         Ok(v) => v,
                         Err(e) => {
                             tracing::warn!(
                                 "MCP via LLM: malformed arguments for tool '{}': {}",
-                                tool_name, e
+                                tool_name,
+                                e
                             );
                             // Add parse error as tool result so LLM can retry
                             let error_content = format!(
@@ -713,6 +717,8 @@ pub async fn execute_mcp_tool_background(
             permissions.coding_agent_permission.clone(),
             permissions.coding_agent_type,
             permissions.context_management_overrides.clone(),
+            permissions.mcp_sampling_permission.clone(),
+            permissions.mcp_elicitation_permission.clone(),
             request,
         ),
     )

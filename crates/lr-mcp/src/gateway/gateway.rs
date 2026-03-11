@@ -296,6 +296,8 @@ impl McpGateway {
             lr_config::PermissionState::Off, // coding_agent_permission
             None,                            // coding_agent_type
             None,                            // context_management_overrides
+            lr_config::PermissionState::default(), // mcp_sampling_permission
+            lr_config::PermissionState::default(), // mcp_elicitation_permission
             request,
         )
         .await
@@ -320,6 +322,8 @@ impl McpGateway {
         coding_agent_permission: lr_config::PermissionState,
         coding_agent_type: Option<lr_config::CodingAgentType>,
         context_management_overrides: Option<lr_config::ContextManagementOverrides>,
+        mcp_sampling_permission: lr_config::PermissionState,
+        mcp_elicitation_permission: lr_config::PermissionState,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -374,6 +378,8 @@ impl McpGateway {
             session_write.mcp_permissions = mcp_permissions;
             session_write.skills_permissions = skills_permissions;
             session_write.client_name = client_name;
+            session_write.mcp_sampling_permission = mcp_sampling_permission;
+            session_write.mcp_elicitation_permission = mcp_elicitation_permission;
 
             // Invalidate tools cache if context management overrides changed
             if session_write.context_management_overrides != context_management_overrides {
@@ -384,8 +390,7 @@ impl McpGateway {
                     );
                     session_write.invalidate_tools_cache();
                 }
-                session_write.context_management_overrides =
-                    context_management_overrides.clone();
+                session_write.context_management_overrides = context_management_overrides.clone();
             }
 
             // Update virtual server states
@@ -1027,13 +1032,57 @@ impl McpGateway {
         // Use only the successfully started servers for broadcast
         let servers_to_initialize = started_servers;
 
+        // Filter client capabilities based on permission settings before broadcasting
+        let broadcast_request_msg = {
+            let session_read = session.read().await;
+            let sampling_perm = &session_read.mcp_sampling_permission;
+            let elicitation_perm = &session_read.mcp_elicitation_permission;
+            let mut modified_request = request.clone();
+
+            if let Some(ref mut params) = modified_request.params {
+                if let Some(caps) = params.get_mut("capabilities") {
+                    // Remove sampling capability if permission is Off
+                    if matches!(sampling_perm, lr_config::PermissionState::Off) {
+                        if let Some(obj) = caps.as_object_mut() {
+                            obj.remove("sampling");
+                        }
+                    } else if !caps
+                        .as_object()
+                        .map_or(false, |o| o.contains_key("sampling"))
+                    {
+                        // Ensure sampling capability exists if permission is Allow/Ask
+                        if let Some(obj) = caps.as_object_mut() {
+                            obj.insert("sampling".to_string(), serde_json::json!({}));
+                        }
+                    }
+
+                    // Remove elicitation capability if permission is Off
+                    if matches!(elicitation_perm, lr_config::PermissionState::Off) {
+                        if let Some(obj) = caps.as_object_mut() {
+                            obj.remove("elicitation");
+                        }
+                    } else if !caps
+                        .as_object()
+                        .map_or(false, |o| o.contains_key("elicitation"))
+                    {
+                        // Ensure elicitation capability exists if permission is Allow/Ask
+                        if let Some(obj) = caps.as_object_mut() {
+                            obj.insert("elicitation".to_string(), serde_json::json!({}));
+                        }
+                    }
+                }
+            }
+            drop(session_read);
+            modified_request
+        };
+
         // Broadcast initialize to all successfully started servers
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
         let results = broadcast_request(
             &servers_to_initialize,
-            request.clone(),
+            broadcast_request_msg,
             &self.server_manager,
             timeout,
             max_retries,
@@ -1666,6 +1715,8 @@ impl McpGateway {
             // Update stored snapshots
             session_write.mcp_permissions = new_mcp.clone();
             session_write.skills_permissions = new_skills.clone();
+            session_write.mcp_sampling_permission = client.mcp_sampling_permission.clone();
+            session_write.mcp_elicitation_permission = client.mcp_elicitation_permission.clone();
 
             // Call notify callback
             notify(
@@ -2011,8 +2062,7 @@ impl McpGateway {
             let sid = server_id.clone();
             let manager = self.server_manager.clone();
             start_futures.push(async move {
-                let result =
-                    tokio::time::timeout(start_timeout, manager.start_server(&sid)).await;
+                let result = tokio::time::timeout(start_timeout, manager.start_server(&sid)).await;
                 (sid, result)
             });
         }

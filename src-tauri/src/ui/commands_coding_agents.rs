@@ -224,10 +224,12 @@ pub async fn set_client_coding_agent_permission(
 pub async fn get_coding_agent_tool_definitions(
     agent_type: CodingAgentType,
 ) -> Result<Vec<ToolDefinition>, String> {
-    Ok(lr_coding_agents::mcp_tools::build_tools_for_agent(agent_type)
-        .into_iter()
-        .map(ToolDefinition::from)
-        .collect())
+    Ok(
+        lr_coding_agents::mcp_tools::build_tools_for_agent(agent_type)
+            .into_iter()
+            .map(ToolDefinition::from)
+            .collect(),
+    )
 }
 
 /// Get the context-mode tool definitions (ctx_search + indexing tools).
@@ -235,10 +237,12 @@ pub async fn get_coding_agent_tool_definitions(
 pub async fn get_context_mode_tool_definitions(
     indexing_tools_enabled: bool,
 ) -> Result<Vec<ToolDefinition>, String> {
-    Ok(lr_mcp::gateway::context_mode::build_fallback_tools(indexing_tools_enabled)
-        .into_iter()
-        .map(ToolDefinition::from)
-        .collect())
+    Ok(
+        lr_mcp::gateway::context_mode::build_fallback_tools(indexing_tools_enabled)
+            .into_iter()
+            .map(ToolDefinition::from)
+            .collect(),
+    )
 }
 
 /// Set client coding agent type

@@ -2,7 +2,7 @@ import { useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { Button } from "@/components/ui/Button"
 import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
-import type { DebugSetTrayOverlayParams } from "@/types/tauri-commands"
+import type { DebugSetTrayOverlayParams, DiscoverProviderResult } from "@/types/tauri-commands"
 
 interface DebugViewProps {
   activeSubTab: string | null
@@ -26,7 +26,24 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
   const [showWizard, setShowWizard] = useState(false)
   const [triggeringFirewall, setTriggeringFirewall] = useState<FirewallPopupType | null>(null)
   const [sendMultiple, setSendMultiple] = useState(false)
+  const [triggeringSampling, setTriggeringSampling] = useState(false)
+  const [triggeringElicitation, setTriggeringElicitation] = useState(false)
   const [activeTrayOverlay, setActiveTrayOverlay] = useState<TrayOverlayOption | "auto">("auto")
+  const [discovering, setDiscovering] = useState(false)
+  const [discoveryResult, setDiscoveryResult] = useState<DiscoverProviderResult | null>(null)
+
+  const handleDiscoverProviders = async () => {
+    setDiscovering(true)
+    setDiscoveryResult(null)
+    try {
+      const result = await invoke<DiscoverProviderResult>("debug_discover_providers")
+      setDiscoveryResult(result)
+    } catch (error) {
+      console.error("Failed to discover providers:", error)
+    } finally {
+      setDiscovering(false)
+    }
+  }
 
   const handleTriggerFirewall = async (popupType: FirewallPopupType) => {
     setTriggeringFirewall(popupType)
@@ -36,6 +53,28 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
       console.error("Failed to trigger firewall popup:", error)
     } finally {
       setTriggeringFirewall(null)
+    }
+  }
+
+  const handleTriggerSamplingApproval = async () => {
+    setTriggeringSampling(true)
+    try {
+      await invoke("debug_trigger_sampling_approval_popup")
+    } catch (error) {
+      console.error("Failed to trigger sampling approval popup:", error)
+    } finally {
+      setTriggeringSampling(false)
+    }
+  }
+
+  const handleTriggerElicitationForm = async () => {
+    setTriggeringElicitation(true)
+    try {
+      await invoke("debug_trigger_elicitation_form_popup")
+    } catch (error) {
+      console.error("Failed to trigger elicitation form popup:", error)
+    } finally {
+      setTriggeringElicitation(false)
     }
   }
 
@@ -159,6 +198,34 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
             </div>
           </div>
 
+          {/* Sampling & Elicitation Popups */}
+          <div className="border rounded-lg p-4 space-y-3">
+            <h2 className="text-sm font-medium">Sampling & Elicitation Popups</h2>
+            <p className="text-xs text-muted-foreground">
+              Test MCP sampling approval and elicitation form popups.
+            </p>
+
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleTriggerSamplingApproval}
+                disabled={triggeringSampling || triggeringElicitation}
+              >
+                {triggeringSampling ? "Opening..." : "Sampling Approval"}
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleTriggerElicitationForm}
+                disabled={triggeringSampling || triggeringElicitation}
+              >
+                {triggeringElicitation ? "Opening..." : "Elicitation Form"}
+              </Button>
+            </div>
+          </div>
+
           {/* Tray icon overlay */}
           <div className="border rounded-lg p-4 space-y-3">
             <h2 className="text-sm font-medium">Tray Icon Overlay</h2>
@@ -178,6 +245,39 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
                 </Button>
               ))}
             </div>
+          </div>
+
+          {/* Local Provider Discovery */}
+          <div className="border rounded-lg p-4 space-y-3">
+            <h2 className="text-sm font-medium">Local Provider Discovery</h2>
+            <p className="text-xs text-muted-foreground">
+              Scan for local LLM providers (Ollama, LM Studio, Jan, GPT4All) and
+              auto-configure any that are found running.
+            </p>
+            <Button
+              size="sm"
+              onClick={handleDiscoverProviders}
+              disabled={discovering}
+            >
+              {discovering ? "Scanning..." : "Discover Providers"}
+            </Button>
+            {discoveryResult && (
+              <div className="text-xs space-y-1 pt-1">
+                {discoveryResult.discovered.length === 0 ? (
+                  <p className="text-muted-foreground">No local providers detected.</p>
+                ) : (
+                  <>
+                    <p>Found {discoveryResult.discovered.length} provider{discoveryResult.discovered.length !== 1 ? "s" : ""}:</p>
+                    {discoveryResult.added.map((name) => (
+                      <p key={name} className="text-green-600 dark:text-green-400">+ Added: {name}</p>
+                    ))}
+                    {discoveryResult.skipped.map((name) => (
+                      <p key={name} className="text-muted-foreground">~ Already configured: {name}</p>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

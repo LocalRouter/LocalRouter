@@ -50,6 +50,10 @@ pub struct ClientInfo {
     pub model_permissions: ModelPermissions,
     /// Marketplace permission state
     pub marketplace_permission: PermissionState,
+    /// Sampling permission (Allow/Ask/Off)
+    pub mcp_sampling_permission: PermissionState,
+    /// Elicitation permission (Allow/Ask/Off)
+    pub mcp_elicitation_permission: PermissionState,
     /// Client mode (both, llm_only, mcp_only)
     pub client_mode: ClientMode,
     /// Template ID used to create this client
@@ -85,6 +89,8 @@ pub async fn list_clients(
             coding_agent_type: c.coding_agent_type,
             model_permissions: c.model_permissions.clone(),
             marketplace_permission: c.marketplace_permission.clone(),
+            mcp_sampling_permission: c.mcp_sampling_permission.clone(),
+            mcp_elicitation_permission: c.mcp_elicitation_permission.clone(),
             client_mode: c.client_mode.clone(),
             template_id: c.template_id.clone(),
             sync_config: c.sync_config,
@@ -151,6 +157,8 @@ pub async fn create_client(
         coding_agent_type: client.coding_agent_type,
         model_permissions: client.model_permissions.clone(),
         marketplace_permission: client.marketplace_permission.clone(),
+        mcp_sampling_permission: client.mcp_sampling_permission.clone(),
+        mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
         client_mode: client.client_mode.clone(),
         template_id: client.template_id.clone(),
         sync_config: client.sync_config,
@@ -2093,6 +2101,80 @@ pub async fn set_client_marketplace_permission(
                     cfg.marketplace.mcp_enabled = true;
                     cfg.marketplace.skills_enabled = true;
                 }
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Set Sampling permission for a client
+#[tauri::command]
+pub async fn set_client_sampling_permission(
+    client_id: String,
+    state: PermissionState,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting Sampling permission for client {}: state={:?}",
+        client_id,
+        state
+    );
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.mcp_sampling_permission = state.clone();
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Set Elicitation permission for a client
+#[tauri::command]
+pub async fn set_client_elicitation_permission(
+    client_id: String,
+    state: PermissionState,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting Elicitation permission for client {}: state={:?}",
+        client_id,
+        state
+    );
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.mcp_elicitation_permission = state.clone();
                 found = true;
             }
         })

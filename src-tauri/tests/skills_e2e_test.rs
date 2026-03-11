@@ -155,6 +155,8 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::Off,
             None,
             None,
+            lr_config::PermissionState::default(), // mcp_sampling_permission
+            lr_config::PermissionState::default(), // mcp_elicitation_permission
             tools_list_req,
         )
         .await
@@ -212,6 +214,8 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::Off,
             None,
             None,
+            lr_config::PermissionState::default(), // mcp_sampling_permission
+            lr_config::PermissionState::default(), // mcp_elicitation_permission
             show_req,
         )
         .await
@@ -263,6 +267,8 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::Off,
             None,
             None,
+            lr_config::PermissionState::default(), // mcp_sampling_permission
+            lr_config::PermissionState::default(), // mcp_elicitation_permission
             tools_list_req2,
         )
         .await
@@ -347,6 +353,8 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             lr_config::PermissionState::Off,
             None,
             None,
+            lr_config::PermissionState::default(), // mcp_sampling_permission
+            lr_config::PermissionState::default(), // mcp_elicitation_permission
             req,
         )
         .await
@@ -391,6 +399,8 @@ async fn test_skill_tools_present_after_cache_hit() {
             lr_config::PermissionState::Off,
             None,
             None,
+            lr_config::PermissionState::default(), // mcp_sampling_permission
+            lr_config::PermissionState::default(), // mcp_elicitation_permission
             req,
         )
         .await
@@ -418,6 +428,8 @@ async fn test_skill_tools_present_after_cache_hit() {
             lr_config::PermissionState::Off,
             None,
             None,
+            lr_config::PermissionState::default(), // mcp_sampling_permission
+            lr_config::PermissionState::default(), // mcp_elicitation_permission
             req2,
         )
         .await

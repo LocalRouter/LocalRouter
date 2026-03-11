@@ -228,6 +228,20 @@ impl ElicitationManager {
         }
     }
 
+    /// Get details of a pending elicitation request (for popup display)
+    pub fn get_details(&self, request_id: &str) -> Option<ElicitationDetails> {
+        self.pending
+            .get(request_id)
+            .map(|session| ElicitationDetails {
+                request_id: session.request_id.clone(),
+                server_id: session.server_id.clone(),
+                message: session.message.clone(),
+                schema: session.schema.clone(),
+                timeout_seconds: session.timeout_seconds,
+                created_at_secs_ago: session.created_at.elapsed().as_secs(),
+            })
+    }
+
     /// Get a list of all pending requests (for debugging/monitoring)
     pub fn list_pending(&self) -> Vec<String> {
         self.pending
@@ -255,6 +269,17 @@ impl ElicitationManager {
     pub fn pending_count(&self) -> usize {
         self.pending.len()
     }
+}
+
+/// Details of an elicitation request (for popup display)
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ElicitationDetails {
+    pub request_id: String,
+    pub server_id: String,
+    pub message: String,
+    pub schema: serde_json::Value,
+    pub timeout_seconds: u64,
+    pub created_at_secs_ago: u64,
 }
 
 impl Default for ElicitationManager {

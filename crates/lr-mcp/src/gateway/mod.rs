@@ -15,6 +15,7 @@ mod gateway_tools;
 mod merger;
 pub mod router;
 pub mod sampling;
+pub mod sampling_approval;
 pub mod session;
 pub mod streaming_notifications;
 pub mod types;
@@ -28,9 +29,9 @@ mod tests;
 
 // Re-export public API
 pub use gateway::{ActiveSessionInfo, CatalogSourceEntry, McpGateway};
+pub use gateway_tools::FirewallDecisionResult;
 pub use merger::{
     build_gateway_instructions, build_preview_instructions_context, build_preview_mock_realistic,
     compute_catalog_compression_plan, InstructionsContext,
 };
-pub use gateway_tools::FirewallDecisionResult;
 pub use types::GatewayConfig;

@@ -68,6 +68,8 @@ pub struct GatewayClient<'a> {
     coding_agent_permission: lr_config::PermissionState,
     coding_agent_type: Option<lr_config::CodingAgentType>,
     context_management_overrides: Option<lr_config::ContextManagementOverrides>,
+    mcp_sampling_permission: lr_config::PermissionState,
+    mcp_elicitation_permission: lr_config::PermissionState,
 }
 
 impl<'a> GatewayClient<'a> {
@@ -118,6 +120,8 @@ impl<'a> GatewayClient<'a> {
                 indexing_tools_enabled: client.indexing_tools_enabled,
                 catalog_compression_enabled: client.catalog_compression_enabled,
             }),
+            mcp_sampling_permission: client.mcp_sampling_permission.clone(),
+            mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
         }
     }
 
@@ -131,10 +135,7 @@ impl<'a> GatewayClient<'a> {
     }
 
     /// Send a request through the gateway with full virtual server permissions
-    async fn send_request(
-        &self,
-        request: JsonRpcRequest,
-    ) -> lr_types::AppResult<JsonRpcResponse> {
+    async fn send_request(&self, request: JsonRpcRequest) -> lr_types::AppResult<JsonRpcResponse> {
         self.gateway
             .handle_request_with_skills(
                 &self.client_id,
@@ -148,6 +149,8 @@ impl<'a> GatewayClient<'a> {
                 self.coding_agent_permission.clone(),
                 self.coding_agent_type,
                 self.context_management_overrides.clone(),
+                self.mcp_sampling_permission.clone(),
+                self.mcp_elicitation_permission.clone(),
                 request,
             )
             .await
@@ -155,14 +158,27 @@ impl<'a> GatewayClient<'a> {
 
     /// Initialize the gateway session (creates server connections)
     pub async fn initialize(&self) -> Result<(), McpViaLlmError> {
+        let mut capabilities = json!({
+            "roots": { "listChanged": false }
+        });
+        if !matches!(
+            self.mcp_sampling_permission,
+            lr_config::PermissionState::Off
+        ) {
+            capabilities["sampling"] = json!({});
+        }
+        if !matches!(
+            self.mcp_elicitation_permission,
+            lr_config::PermissionState::Off
+        ) {
+            capabilities["elicitation"] = json!({});
+        }
+
         let request = self.make_request(
             "initialize",
             Some(json!({
                 "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "roots": { "listChanged": false },
-                    "sampling": {}
-                },
+                "capabilities": capabilities,
                 "clientInfo": {
                     "name": "LocalRouter MCP-via-LLM",
                     "version": "1.0.0"
@@ -247,12 +263,9 @@ impl<'a> GatewayClient<'a> {
             })),
         );
 
-        let response = self
-            .send_request(request)
-            .await
-            .map_err(|e| {
-                McpViaLlmError::ToolExecution(format!("tools/call '{}' failed: {}", tool_name, e))
-            })?;
+        let response = self.send_request(request).await.map_err(|e| {
+            McpViaLlmError::ToolExecution(format!("tools/call '{}' failed: {}", tool_name, e))
+        })?;
 
         if let Some(error) = response.error {
             return Err(McpViaLlmError::ToolExecution(format!(
@@ -352,12 +365,9 @@ impl<'a> GatewayClient<'a> {
             })),
         );
 
-        let response = self
-            .send_request(request)
-            .await
-            .map_err(|e| {
-                McpViaLlmError::ToolExecution(format!("resources/read '{}' failed: {}", uri, e))
-            })?;
+        let response = self.send_request(request).await.map_err(|e| {
+            McpViaLlmError::ToolExecution(format!("resources/read '{}' failed: {}", uri, e))
+        })?;
 
         if let Some(error) = response.error {
             return Err(McpViaLlmError::ToolExecution(format!(
@@ -462,15 +472,9 @@ impl<'a> GatewayClient<'a> {
             })),
         );
 
-        let response = self
-            .send_request(request)
-            .await
-            .map_err(|e| {
-                McpViaLlmError::ToolExecution(format!(
-                    "prompts/get '{}' failed: {}",
-                    prompt_name, e
-                ))
-            })?;
+        let response = self.send_request(request).await.map_err(|e| {
+            McpViaLlmError::ToolExecution(format!("prompts/get '{}' failed: {}", prompt_name, e))
+        })?;
 
         if let Some(error) = response.error {
             return Err(McpViaLlmError::ToolExecution(format!(

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 18;
+pub(crate) const CONFIG_VERSION: u32 = 19;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -2140,25 +2140,29 @@ pub struct Client {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roots: Option<Vec<RootConfig>>,
 
-    /// Enable MCP sampling (backend servers can request LLM completions)
-    /// Default: false (sampling disabled for security)
-    #[serde(default)]
-    pub mcp_sampling_enabled: bool,
+    /// Sampling permission (Allow/Ask/Off, default: Ask)
+    #[serde(default = "default_ask")]
+    pub mcp_sampling_permission: PermissionState,
 
-    /// Require user approval for each sampling request
-    /// Default: true (when sampling is enabled)
-    #[serde(default = "default_true")]
-    pub mcp_sampling_requires_approval: bool,
+    /// Elicitation permission (Allow/Ask/Off, default: Ask)
+    #[serde(default = "default_ask")]
+    pub mcp_elicitation_permission: PermissionState,
 
-    /// Maximum tokens per sampling request
-    /// None = unlimited (uses provider defaults)
+    /// Maximum tokens per sampling request (None = unlimited)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_sampling_max_tokens: Option<u32>,
 
-    /// Maximum sampling requests per hour
-    /// None = unlimited
+    /// Maximum sampling requests per hour (None = unlimited)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_sampling_rate_limit: Option<u32>,
+
+    /// Migration shim: old sampling enabled flag (deserialize only)
+    #[serde(default, skip_serializing)]
+    pub mcp_sampling_enabled: bool,
+
+    /// Migration shim: old sampling requires approval flag (deserialize only)
+    #[serde(default = "default_true", skip_serializing)]
+    pub mcp_sampling_requires_approval: bool,
 
     /// Firewall rules for MCP tool/skill access control
     /// Controls per-tool Allow/Ask/Deny policies
@@ -2805,6 +2809,10 @@ pub(crate) fn default_true() -> bool {
     true
 }
 
+fn default_ask() -> PermissionState {
+    PermissionState::Ask
+}
+
 fn default_log_retention() -> u32 {
     31
 }
@@ -3077,10 +3085,12 @@ impl Client {
             last_used: None,
             strategy_id,
             roots: None,
-            mcp_sampling_enabled: false,
-            mcp_sampling_requires_approval: true,
+            mcp_sampling_permission: PermissionState::Ask,
+            mcp_elicitation_permission: PermissionState::Ask,
             mcp_sampling_max_tokens: None,
             mcp_sampling_rate_limit: None,
+            mcp_sampling_enabled: false,
+            mcp_sampling_requires_approval: true,
             firewall: FirewallRules::default(),
             marketplace_enabled: false,
             mcp_permissions: McpPermissions::default(),
@@ -3276,11 +3286,11 @@ mod tests {
         let client =
             Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
 
-        // Sampling disabled by default
-        assert!(!client.mcp_sampling_enabled);
+        // Sampling defaults to Ask
+        assert_eq!(client.mcp_sampling_permission, PermissionState::Ask);
 
-        // But requires approval when enabled
-        assert!(client.mcp_sampling_requires_approval);
+        // Elicitation defaults to Ask
+        assert_eq!(client.mcp_elicitation_permission, PermissionState::Ask);
 
         // No limits by default
         assert!(client.mcp_sampling_max_tokens.is_none());
@@ -3288,11 +3298,11 @@ mod tests {
     }
 
     #[test]
-    fn test_client_with_sampling_enabled() {
+    fn test_client_with_sampling_permission() {
         let mut client =
             Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
-        client.mcp_sampling_enabled = true;
-        client.mcp_sampling_requires_approval = false;
+        client.mcp_sampling_permission = PermissionState::Allow;
+        client.mcp_elicitation_permission = PermissionState::Off;
         client.mcp_sampling_max_tokens = Some(2000);
         client.mcp_sampling_rate_limit = Some(100);
 
@@ -3300,8 +3310,11 @@ mod tests {
         let yaml = serde_yaml::to_string(&client).unwrap();
         let deserialized: Client = serde_yaml::from_str(&yaml).unwrap();
 
-        assert!(deserialized.mcp_sampling_enabled);
-        assert!(!deserialized.mcp_sampling_requires_approval);
+        assert_eq!(deserialized.mcp_sampling_permission, PermissionState::Allow);
+        assert_eq!(
+            deserialized.mcp_elicitation_permission,
+            PermissionState::Off
+        );
         assert_eq!(deserialized.mcp_sampling_max_tokens, Some(2000));
         assert_eq!(deserialized.mcp_sampling_rate_limit, Some(100));
     }

@@ -1912,17 +1912,14 @@ pub async fn preview_catalog_compression(
                 .filter(|s| s.enabled)
                 .map(|s| s.id.clone())
                 .collect();
-            let allowed_server_ids: Vec<String> =
-                if client.mcp_permissions.global.is_enabled() {
-                    all_server_ids
-                } else {
-                    all_server_ids
-                        .into_iter()
-                        .filter(|sid| {
-                            client.mcp_permissions.has_any_enabled_for_server(sid)
-                        })
-                        .collect()
-                };
+            let allowed_server_ids: Vec<String> = if client.mcp_permissions.global.is_enabled() {
+                all_server_ids
+            } else {
+                all_server_ids
+                    .into_iter()
+                    .filter(|sid| client.mcp_permissions.has_any_enabled_for_server(sid))
+                    .collect()
+            };
             // Start servers on demand if needed
             state
                 .mcp_gateway
@@ -2840,6 +2837,124 @@ pub async fn debug_set_tray_overlay(
 }
 
 // ============================================================================
+// Local Provider Discovery Commands
+// ============================================================================
+
+/// Result of local provider discovery scan
+#[derive(Serialize)]
+pub struct DiscoverProviderResult {
+    /// All providers detected as running
+    pub discovered: Vec<lr_providers::factory::DiscoveredProvider>,
+    /// Names of providers that were newly added
+    pub added: Vec<String>,
+    /// Names of providers already configured (skipped)
+    pub skipped: Vec<String>,
+}
+
+/// Discover local LLM providers and add any new ones to the configuration.
+///
+/// Scans default ports for known local providers (Ollama, LM Studio, Jan, GPT4All).
+/// Providers that are already configured are skipped.
+#[tauri::command]
+pub async fn debug_discover_providers(
+    registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
+    app: AppHandle,
+) -> Result<DiscoverProviderResult, String> {
+    let discovered = lr_providers::factory::discover_local_providers().await;
+
+    let mut added = Vec::new();
+    let mut skipped = Vec::new();
+
+    // Check which providers are already configured
+    let existing_providers: Vec<String> = config_manager
+        .get()
+        .providers
+        .iter()
+        .map(|p| format!("{:?}", p.provider_type).to_lowercase())
+        .collect();
+
+    for provider in &discovered {
+        if existing_providers.contains(&provider.provider_type) {
+            skipped.push(provider.instance_name.clone());
+            continue;
+        }
+
+        // Get the default config for this provider type
+        let provider_config = match provider.provider_type.as_str() {
+            "ollama" => lr_config::ProviderConfig::default_ollama(),
+            "lmstudio" => lr_config::ProviderConfig::default_lmstudio(),
+            "jan" => lr_config::ProviderConfig::default_jan(),
+            "gpt4all" => lr_config::ProviderConfig::default_gpt4all(),
+            _ => {
+                tracing::warn!(
+                    "Unknown discovered provider type: {}",
+                    provider.provider_type
+                );
+                continue;
+            }
+        };
+
+        // Create in registry
+        let mut config_map = std::collections::HashMap::new();
+        if let Some(ref cfg) = provider_config.provider_config {
+            if let Some(obj) = cfg.as_object() {
+                for (key, value) in obj {
+                    if let Some(value_str) = value.as_str() {
+                        config_map.insert(key.clone(), value_str.to_string());
+                    } else {
+                        config_map.insert(key.clone(), value.to_string());
+                    }
+                }
+            }
+        }
+
+        if let Err(e) = registry
+            .create_provider(
+                provider_config.name.clone(),
+                provider.provider_type.clone(),
+                config_map,
+            )
+            .await
+        {
+            tracing::warn!(
+                "Failed to create provider '{}': {}",
+                provider.instance_name,
+                e
+            );
+            continue;
+        }
+
+        // Add to config
+        let name = provider_config.name.clone();
+        let config_clone = provider_config.clone();
+        if let Err(e) = config_manager.update(|cfg| {
+            cfg.providers.push(config_clone.clone());
+        }) {
+            tracing::warn!("Failed to save provider config for '{}': {}", name, e);
+            continue;
+        }
+
+        added.push(provider.instance_name.clone());
+    }
+
+    // Save config and emit events if any providers were added
+    if !added.is_empty() {
+        if let Err(e) = config_manager.save().await {
+            tracing::warn!("Failed to persist config after discovery: {}", e);
+        }
+        let _ = app.emit("providers-changed", ());
+        let _ = app.emit("models-changed", ());
+    }
+
+    Ok(DiscoverProviderResult {
+        discovered,
+        added,
+        skipped,
+    })
+}
+
+// ============================================================================
 // GuardRails Configuration Commands
 // ============================================================================
 
@@ -3402,7 +3517,10 @@ pub async fn test_compression(
         svc.compress_text(&text, rate, preserve_quoted).await?;
 
     let (compressed_text, compressed_tokens) = if compression_notice {
-        (format!("[abridged] {}", compressed_text), compressed_tokens + 1)
+        (
+            format!("[abridged] {}", compressed_text),
+            compressed_tokens + 1,
+        )
     } else {
         (compressed_text, compressed_tokens)
     };
@@ -3499,4 +3617,240 @@ pub async fn test_json_repair(
     let result = lr_json_repair::repair_content(&content, schema_value.as_ref(), &options);
 
     serde_json::to_value(&result).map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Sampling Approval Commands
+// ============================================================================
+
+/// Get details of a pending sampling approval request (for popup display)
+#[tauri::command]
+pub async fn get_sampling_approval_details(
+    request_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    match state.sampling_approval_manager.get_details(&request_id) {
+        Some(details) => serde_json::to_value(&details).map_err(|e| e.to_string()),
+        None => Err(format!(
+            "Sampling approval request {} not found",
+            request_id
+        )),
+    }
+}
+
+/// Submit an approval decision for a sampling request
+#[tauri::command]
+pub async fn submit_sampling_approval(
+    request_id: String,
+    action: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let approval_action = match action.as_str() {
+        "allow" => lr_mcp::gateway::sampling_approval::SamplingApprovalAction::Allow,
+        "deny" => lr_mcp::gateway::sampling_approval::SamplingApprovalAction::Deny,
+        _ => return Err(format!("Invalid action: {}", action)),
+    };
+
+    state
+        .sampling_approval_manager
+        .submit_approval(&request_id, approval_action)
+        .map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Elicitation Commands
+// ============================================================================
+
+/// Get details of a pending elicitation request (for popup display)
+#[tauri::command]
+pub async fn get_elicitation_details(
+    request_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let manager = state.mcp_gateway.get_elicitation_manager();
+
+    match manager.get_details(&request_id) {
+        Some(details) => serde_json::to_value(&details).map_err(|e| e.to_string()),
+        None => Err(format!("Elicitation request {} not found", request_id)),
+    }
+}
+
+/// Submit a response to a pending elicitation request
+#[tauri::command]
+pub async fn submit_elicitation_response(
+    request_id: String,
+    data: serde_json::Value,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let response = lr_mcp::protocol::ElicitationResponse { data };
+
+    state
+        .mcp_gateway
+        .get_elicitation_manager()
+        .submit_response(&request_id, response)
+        .map_err(|e| e.to_string())
+}
+
+/// Cancel a pending elicitation request
+#[tauri::command]
+pub async fn cancel_elicitation(
+    request_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    state
+        .mcp_gateway
+        .get_elicitation_manager()
+        .cancel_request(&request_id)
+        .map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Debug: Sampling & Elicitation Popup Triggers
+// ============================================================================
+
+/// Debug: trigger a sampling approval popup with fake data
+#[tauri::command]
+pub async fn debug_trigger_sampling_approval_popup(
+    app: AppHandle,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    use lr_mcp::protocol::{SamplingContent, SamplingMessage, SamplingRequest};
+
+    let request_id = uuid::Uuid::new_v4().to_string();
+
+    let sampling_request = SamplingRequest {
+        messages: vec![SamplingMessage {
+            role: "user".to_string(),
+            content: SamplingContent::Text("What is the capital of France?".to_string()),
+        }],
+        model_preferences: None,
+        system_prompt: Some("You are a helpful geography assistant.".to_string()),
+        temperature: Some(0.7),
+        max_tokens: Some(500),
+        stop_sequences: None,
+        metadata: None,
+    };
+
+    // Create the pending approval session
+    let manager = state.sampling_approval_manager.clone();
+    let rid = request_id.clone();
+    tokio::spawn(async move {
+        let _ = manager
+            .request_approval(rid, "debug-server".to_string(), sampling_request, None)
+            .await;
+    });
+
+    // Small delay to let the session be created
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Open the popup window
+    use tauri::WebviewWindowBuilder;
+    match WebviewWindowBuilder::new(
+        &app,
+        format!("sampling-approval-{}", request_id),
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Sampling Approval")
+    .inner_size(400.0, 320.0)
+    .center()
+    .visible(false)
+    .resizable(false)
+    .decorations(true)
+    .always_on_top(true)
+    .build()
+    {
+        Ok(window) => {
+            let _ = window.set_focus();
+            tracing::info!("Debug sampling approval popup opened: {}", request_id);
+        }
+        Err(e) => {
+            tracing::error!("Failed to create sampling approval popup: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Debug: trigger an elicitation form popup with fake data
+#[tauri::command]
+pub async fn debug_trigger_elicitation_form_popup(
+    app: AppHandle,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    use lr_mcp::protocol::ElicitationRequest;
+
+    let request_id = uuid::Uuid::new_v4().to_string();
+
+    let elicitation_request = ElicitationRequest {
+        message: "Please provide your deployment configuration:".to_string(),
+        schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "environment": {
+                    "type": "string",
+                    "title": "Environment",
+                    "description": "Target environment",
+                    "enum": ["development", "staging", "production"]
+                },
+                "confirm_deploy": {
+                    "type": "boolean",
+                    "title": "Confirm deployment",
+                    "default": false
+                },
+                "max_instances": {
+                    "type": "number",
+                    "title": "Max instances",
+                    "description": "Maximum number of instances",
+                    "default": 3
+                },
+                "notes": {
+                    "type": "string",
+                    "title": "Notes",
+                    "description": "Any additional notes"
+                }
+            }
+        }),
+    };
+
+    // Create the pending elicitation session
+    let manager = state.mcp_gateway.get_elicitation_manager().clone();
+    tokio::spawn(async move {
+        let _ = manager
+            .request_input("debug-server".to_string(), elicitation_request, None)
+            .await;
+    });
+
+    // Small delay to let the session be created
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Get the actual request_id from the pending list
+    let pending = state.mcp_gateway.get_elicitation_manager().list_pending();
+    let actual_request_id = pending.last().cloned().unwrap_or(request_id.clone());
+
+    // Open the popup window
+    use tauri::WebviewWindowBuilder;
+    match WebviewWindowBuilder::new(
+        &app,
+        format!("elicitation-form-{}", actual_request_id),
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Input Required")
+    .inner_size(400.0, 420.0)
+    .center()
+    .visible(false)
+    .resizable(true)
+    .decorations(true)
+    .always_on_top(true)
+    .build()
+    {
+        Ok(window) => {
+            let _ = window.set_focus();
+            tracing::info!("Debug elicitation form popup opened: {}", request_id);
+        }
+        Err(e) => {
+            tracing::error!("Failed to create elicitation form popup: {}", e);
+        }
+    }
+
+    Ok(())
 }

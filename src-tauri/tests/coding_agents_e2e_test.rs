@@ -72,6 +72,8 @@ async fn gateway_request(
             PermissionState::Allow,
             Some(agent_type),
             None,
+            lr_config::PermissionState::default(), // mcp_sampling_permission
+            lr_config::PermissionState::default(), // mcp_elicitation_permission
             request,
         )
         .await

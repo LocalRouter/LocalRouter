@@ -101,6 +101,12 @@ pub struct GatewaySession {
     /// Instructions context snapshot (without compression plan) from initialization.
     /// Used by the compression preview UI to re-compute plans at different thresholds.
     pub instructions_context: Option<super::merger::InstructionsContext>,
+
+    /// Sampling permission for this client session (Allow/Ask/Off)
+    pub mcp_sampling_permission: lr_config::PermissionState,
+
+    /// Elicitation permission for this client session (Allow/Ask/Off)
+    pub mcp_elicitation_permission: lr_config::PermissionState,
 }
 
 impl GatewaySession {
@@ -150,6 +156,8 @@ impl GatewaySession {
             context_management_overrides: None,
             catalog_compression: None,
             instructions_context: None,
+            mcp_sampling_permission: lr_config::PermissionState::default(),
+            mcp_elicitation_permission: lr_config::PermissionState::default(),
         }
     }
 
