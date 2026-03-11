@@ -515,7 +515,10 @@ impl TrayGraphManager {
             app_state.sampling_approval_manager.cleanup_expired();
 
             // Clean up expired elicitation requests
-            app_state.mcp_gateway.get_elicitation_manager().cleanup_expired();
+            app_state
+                .mcp_gateway
+                .get_elicitation_manager()
+                .cleanup_expired();
         }
 
         // Determine overlay: debug override takes precedence, then normal priority

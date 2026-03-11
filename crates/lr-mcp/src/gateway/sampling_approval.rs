@@ -135,9 +135,7 @@ impl SamplingApprovalManager {
                 })),
             };
 
-            if let Err(e) =
-                broadcast.send(("_sampling_approval".to_string(), notification))
-            {
+            if let Err(e) = broadcast.send(("_sampling_approval".to_string(), notification)) {
                 error!("Failed to broadcast sampling approval request: {}", e);
             } else {
                 debug!(

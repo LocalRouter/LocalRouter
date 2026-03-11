@@ -675,11 +675,8 @@ pub async fn mcp_gateway_handler(
                     );
 
                     // Wait for external client response with timeout
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(120),
-                        passthrough_rx,
-                    )
-                    .await
+                    match tokio::time::timeout(std::time::Duration::from_secs(120), passthrough_rx)
+                        .await
                     {
                         Ok(Ok(response_value)) => {
                             let response = lr_mcp::protocol::JsonRpcResponse::success(
@@ -790,11 +787,7 @@ pub async fn mcp_gateway_handler(
                         serde_json::to_value(sampling_resp).unwrap(),
                     );
 
-                    return send_response(
-                        &state.sse_connection_manager,
-                        &connection_key,
-                        response,
-                    );
+                    return send_response(&state.sse_connection_manager, &connection_key, response);
                 }
             }
         }
