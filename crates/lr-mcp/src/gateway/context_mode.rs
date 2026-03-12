@@ -10,7 +10,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use lr_context::{format_search_results, ContentStore, SearchResult, SEARCH_OUTPUT_CAP};
+use lr_context::{
+    format_search_results, ContentStore, SearchResult, READ_DEFAULT_LIMIT, SEARCH_OUTPUT_CAP,
+};
 
 use super::gateway_tools::FirewallDecisionResult;
 use super::types::NamespacedTool;
@@ -155,6 +157,10 @@ fn build_native_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "A single search query string."
+                    },
                     "queries": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -190,7 +196,7 @@ fn build_native_tools() -> Vec<McpTool> {
                     },
                     "limit": {
                         "type": "number",
-                        "description": "Number of lines to return (default: ~100)"
+                        "description": format!("Number of lines to return (default: {})", READ_DEFAULT_LIMIT)
                     }
                 },
                 "required": ["label"]
@@ -272,10 +278,34 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             );
         }
 
-        match tool_name {
-            CTX_SEARCH => self.handle_ctx_search(state, arguments),
-            INDEX_READ => self.handle_index_read(state, arguments),
+        // ContentStore uses parking_lot::Mutex internally — run blocking calls
+        // off the async executor to avoid stalling the tokio runtime.
+        let store = state.store.clone();
+        let catalog_sources = state.catalog_sources.clone();
+        let activated_tools = state.activated_tools.clone();
+        let activated_resources = state.activated_resources.clone();
+        let activated_prompts = state.activated_prompts.clone();
+        let tool = tool_name.to_string();
+
+        let result = tokio::task::spawn_blocking(move || match tool.as_str() {
+            CTX_SEARCH => handle_ctx_search_blocking(
+                &store,
+                arguments,
+                &catalog_sources,
+                &activated_tools,
+                &activated_resources,
+                &activated_prompts,
+            ),
+            INDEX_READ => handle_index_read_blocking(&store, arguments),
             _ => VirtualToolCallResult::NotHandled,
+        })
+        .await;
+
+        match result {
+            Ok(r) => r,
+            Err(e) => {
+                VirtualToolCallResult::ToolError(format!("Tool call panicked: {}", e))
+            }
         }
     }
 
@@ -343,142 +373,142 @@ impl VirtualMcpServer for ContextModeVirtualServer {
     }
 }
 
-impl ContextModeVirtualServer {
-    /// Handle ctx_search tool call using native ContentStore.
-    fn handle_ctx_search(
-        &self,
-        state: &ContextModeSessionState,
-        arguments: Value,
-    ) -> VirtualToolCallResult {
-        // Parse arguments
-        let queries: Vec<String> = arguments
-            .get("queries")
-            .and_then(|q| serde_json::from_value(q.clone()).ok())
-            .unwrap_or_default();
+/// Handle ctx_search tool call using native ContentStore (runs on blocking thread).
+fn handle_ctx_search_blocking(
+    store: &ContentStore,
+    arguments: Value,
+    catalog_sources: &HashMap<String, CatalogItemType>,
+    activated_tools: &HashSet<String>,
+    activated_resources: &HashSet<String>,
+    activated_prompts: &HashSet<String>,
+) -> VirtualToolCallResult {
+    // Parse arguments — accept both `query` (string) and `queries` (array), both optional
+    let query = arguments
+        .get("query")
+        .and_then(|q| q.as_str())
+        .map(|s| s.to_string());
 
-        if queries.is_empty() {
-            return VirtualToolCallResult::ToolError(
-                "Missing required parameter: queries (array of search strings)".to_string(),
-            );
+    let queries: Option<Vec<String>> = arguments
+        .get("queries")
+        .and_then(|q| serde_json::from_value(q.clone()).ok());
+
+    let source = arguments
+        .get("source")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+
+    let limit = arguments
+        .get("limit")
+        .and_then(|l| l.as_u64())
+        .unwrap_or(3) as usize;
+
+    // Execute search using search_combined (handles both query + queries)
+    let results = match store.search_combined(
+        query.as_deref(),
+        queries.as_deref(),
+        limit,
+        source.as_deref(),
+    ) {
+        Ok(results) => results,
+        Err(e) => {
+            return VirtualToolCallResult::ToolError(format!("Search failed: {}", e));
         }
+    };
 
-        let source = arguments
-            .get("source")
-            .and_then(|s| s.as_str())
-            .map(|s| s.to_string());
+    // Format results
+    let formatted = format_search_results(&results, SEARCH_OUTPUT_CAP);
+    let result = json!({
+        "content": [{
+            "type": "text",
+            "text": formatted,
+        }]
+    });
 
-        let limit = arguments
-            .get("limit")
-            .and_then(|l| l.as_u64())
-            .unwrap_or(3) as usize;
+    // Extract catalog activations from search results
+    let activated = extract_catalog_activations_from_results(
+        &results,
+        catalog_sources,
+        activated_tools,
+        activated_resources,
+        activated_prompts,
+    );
 
-        // Execute search using native store
-        let results = match state.store.search(&queries, limit, source.as_deref()) {
-            Ok(results) => results,
-            Err(e) => {
-                return VirtualToolCallResult::ToolError(format!("Search failed: {}", e));
-            }
-        };
-
-        // Format results
-        let formatted = format_search_results(&results, SEARCH_OUTPUT_CAP);
-        let result = json!({
-            "content": [{
-                "type": "text",
-                "text": formatted,
-            }]
-        });
-
-        // Extract catalog activations from search results
-        let activated = extract_catalog_activations_from_results(
-            &results,
-            &state.catalog_sources,
-            &state.activated_tools,
-            &state.activated_resources,
-            &state.activated_prompts,
+    if activated.is_empty() {
+        VirtualToolCallResult::Success(result)
+    } else {
+        // Append activation message to result
+        let mut modified_result = result;
+        let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
+        let activation_msg = format!(
+            "\n\n---\nActivated: {}\nThese items are now available for use.",
+            names.join(", ")
         );
+        append_text_to_mcp_result(&mut modified_result, &activation_msg);
 
-        if activated.is_empty() {
-            VirtualToolCallResult::Success(result)
-        } else {
-            // Append activation message to result
-            let mut modified_result = result;
-            let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
-            let activation_msg = format!(
-                "\n\n---\nActivated: {}\nThese items are now available for use.",
-                names.join(", ")
-            );
-            append_text_to_mcp_result(&mut modified_result, &activation_msg);
-
-            // Build state updater to mark items as activated by their correct type
-            let activated_clone = activated.clone();
-            let state_update: Box<
-                dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send,
-            > = Box::new(move |s| {
-                if let Some(cm) = s.as_any_mut().downcast_mut::<ContextModeSessionState>() {
-                    for (name, item_type) in &activated_clone {
-                        match item_type {
-                            CatalogItemType::Tool => {
-                                cm.activated_tools.insert(name.clone());
-                            }
-                            CatalogItemType::Resource => {
-                                cm.activated_resources.insert(name.clone());
-                            }
-                            CatalogItemType::Prompt => {
-                                cm.activated_prompts.insert(name.clone());
-                            }
-                            CatalogItemType::ServerWelcome => {} // No activation needed
+        // Build state updater to mark items as activated by their correct type
+        let activated_clone = activated.clone();
+        let state_update: Box<
+            dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send,
+        > = Box::new(move |s| {
+            if let Some(cm) = s.as_any_mut().downcast_mut::<ContextModeSessionState>() {
+                for (name, item_type) in &activated_clone {
+                    match item_type {
+                        CatalogItemType::Tool => {
+                            cm.activated_tools.insert(name.clone());
                         }
+                        CatalogItemType::Resource => {
+                            cm.activated_resources.insert(name.clone());
+                        }
+                        CatalogItemType::Prompt => {
+                            cm.activated_prompts.insert(name.clone());
+                        }
+                        CatalogItemType::ServerWelcome => {} // No activation needed
                     }
                 }
-            });
-
-            VirtualToolCallResult::SuccessWithSideEffects {
-                response: modified_result,
-                invalidate_cache: true,
-                send_list_changed: true,
-                state_update: Some(state_update),
             }
+        });
+
+        VirtualToolCallResult::SuccessWithSideEffects {
+            response: modified_result,
+            invalidate_cache: true,
+            send_list_changed: true,
+            state_update: Some(state_update),
         }
     }
+}
 
-    /// Handle ctx_read tool call using native ContentStore.
-    fn handle_index_read(
-        &self,
-        state: &ContextModeSessionState,
-        arguments: Value,
-    ) -> VirtualToolCallResult {
-        let label = match arguments.get("label").and_then(|l| l.as_str()) {
-            Some(l) => l.to_string(),
-            None => {
-                return VirtualToolCallResult::ToolError(
-                    "Missing required parameter: label".to_string(),
-                );
-            }
-        };
-
-        let offset = arguments
-            .get("offset")
-            .and_then(|o| o.as_str())
-            .map(|s| s.to_string());
-
-        let limit = arguments
-            .get("limit")
-            .and_then(|l| l.as_u64())
-            .map(|l| l as usize);
-
-        match state.store.read(&label, offset.as_deref(), limit) {
-            Ok(read_result) => {
-                let formatted = read_result.to_string();
-                VirtualToolCallResult::Success(json!({
-                    "content": [{
-                        "type": "text",
-                        "text": formatted,
-                    }]
-                }))
-            }
-            Err(e) => VirtualToolCallResult::ToolError(format!("Read failed: {}", e)),
+/// Handle ctx_read tool call using native ContentStore (runs on blocking thread).
+fn handle_index_read_blocking(store: &ContentStore, arguments: Value) -> VirtualToolCallResult {
+    let label = match arguments.get("label").and_then(|l| l.as_str()) {
+        Some(l) => l.to_string(),
+        None => {
+            return VirtualToolCallResult::ToolError(
+                "Missing required parameter: label".to_string(),
+            );
         }
+    };
+
+    let offset = arguments
+        .get("offset")
+        .and_then(|o| o.as_str())
+        .map(|s| s.to_string());
+
+    let limit = arguments
+        .get("limit")
+        .and_then(|l| l.as_u64())
+        .map(|l| l as usize);
+
+    match store.read(&label, offset.as_deref(), limit) {
+        Ok(read_result) => {
+            let formatted = read_result.to_string();
+            VirtualToolCallResult::Success(json!({
+                "content": [{
+                    "type": "text",
+                    "text": formatted,
+                }]
+            }))
+        }
+        Err(e) => VirtualToolCallResult::ToolError(format!("Read failed: {}", e)),
     }
 }
 
@@ -932,5 +962,386 @@ mod tests {
         assert_eq!(tools.len(), 2);
         assert!(tools.iter().any(|t| t.name == "ctx_search"));
         assert!(tools.iter().any(|t| t.name == "ctx_read"));
+    }
+
+    // ── ctx_search schema tests ─────────────────────────────────────
+
+    #[test]
+    fn test_ctx_search_schema_has_both_query_and_queries() {
+        let tools = build_native_tools();
+        let search_tool = tools.iter().find(|t| t.name == "ctx_search").unwrap();
+        let props = &search_tool.input_schema["properties"];
+        assert!(props["query"]["type"].as_str() == Some("string"), "ctx_search should have a 'query' string parameter");
+        assert!(props["queries"]["type"].as_str() == Some("array"), "ctx_search should have a 'queries' array parameter");
+        // Neither is required — both are optional
+        assert!(search_tool.input_schema.get("required").is_none(), "ctx_search should not have required fields");
+    }
+
+    #[test]
+    fn test_ctx_read_schema_uses_read_default_limit_constant() {
+        let tools = build_native_tools();
+        let read_tool = tools.iter().find(|t| t.name == "ctx_read").unwrap();
+        let limit_desc = read_tool.input_schema["properties"]["limit"]["description"]
+            .as_str()
+            .unwrap();
+        let expected = format!("(default: {})", lr_context::READ_DEFAULT_LIMIT);
+        assert!(
+            limit_desc.contains(&expected),
+            "ctx_read limit description should reference READ_DEFAULT_LIMIT ({}), got: {}",
+            lr_context::READ_DEFAULT_LIMIT,
+            limit_desc,
+        );
+    }
+
+    // ── handle_ctx_search_blocking tests ────────────────────────────
+
+    fn make_store_with_content() -> Arc<ContentStore> {
+        let store = Arc::new(ContentStore::new().unwrap());
+        store
+            .index("catalog:filesystem__read_file", "Read file from disk with path parameter")
+            .unwrap();
+        store
+            .index("catalog:filesystem__write_file", "Write content to a file on disk")
+            .unwrap();
+        store
+            .index("catalog:db__users", "Database users table resource")
+            .unwrap();
+        store
+            .index("response:tool1:1", "The quick brown fox jumps over the lazy dog")
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn test_ctx_search_with_queries_array() {
+        let store = make_store_with_content();
+        let result = handle_ctx_search_blocking(
+            &store,
+            json!({"queries": ["read file"]}),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::Success(v) => {
+                let text = v["content"][0]["text"].as_str().unwrap();
+                assert!(!text.is_empty(), "Search should return results");
+            }
+            VirtualToolCallResult::SuccessWithSideEffects { response, .. } => {
+                let text = response["content"][0]["text"].as_str().unwrap();
+                assert!(!text.is_empty(), "Search should return results");
+            }
+            other => panic!("Expected Success, got: {:?}", format!("{:?}", std::mem::discriminant(&other))),
+        }
+    }
+
+    #[test]
+    fn test_ctx_search_with_single_query_string() {
+        let store = make_store_with_content();
+        let result = handle_ctx_search_blocking(
+            &store,
+            json!({"query": "read file"}),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::Success(v) | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
+                let text = v["content"][0]["text"].as_str().unwrap();
+                assert!(!text.is_empty(), "Single query search should return results");
+            }
+            other => panic!("Expected Success, got: {:?}", format!("{:?}", std::mem::discriminant(&other))),
+        }
+    }
+
+    #[test]
+    fn test_ctx_search_with_both_query_and_queries() {
+        let store = make_store_with_content();
+        let result = handle_ctx_search_blocking(
+            &store,
+            json!({"query": "read file", "queries": ["write content"]}),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::Success(v) | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
+                let text = v["content"][0]["text"].as_str().unwrap();
+                assert!(!text.is_empty(), "Combined search should return results");
+            }
+            other => panic!("Expected Success, got: {:?}", format!("{:?}", std::mem::discriminant(&other))),
+        }
+    }
+
+    #[test]
+    fn test_ctx_search_no_query_or_queries_returns_error() {
+        let store = make_store_with_content();
+        let result = handle_ctx_search_blocking(
+            &store,
+            json!({}),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::ToolError(msg) => {
+                assert!(msg.contains("query"), "Error should mention missing query: {}", msg);
+            }
+            _ => panic!("Expected ToolError for empty arguments"),
+        }
+    }
+
+    #[test]
+    fn test_ctx_search_with_source_filter() {
+        let store = make_store_with_content();
+        let result = handle_ctx_search_blocking(
+            &store,
+            json!({"queries": ["content"], "source": "response:"}),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::Success(v) | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
+                let text = v["content"][0]["text"].as_str().unwrap();
+                // Source filter "response:" should only match the response:tool1:1 entry
+                assert!(text.contains("response:tool1:1") || text.contains("brown fox") || text.contains("No results"),
+                    "Source filter should scope results to response: entries");
+            }
+            other => panic!("Expected Success, got: {:?}", format!("{:?}", std::mem::discriminant(&other))),
+        }
+    }
+
+    #[test]
+    fn test_ctx_search_activates_catalog_items() {
+        let store = make_store_with_content();
+        let result = handle_ctx_search_blocking(
+            &store,
+            json!({"queries": ["read file disk"]}),
+            &make_catalog_sources(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::SuccessWithSideEffects { response, state_update, .. } => {
+                let text = response["content"].as_array().unwrap();
+                assert!(text.len() >= 2, "Should have results + activation message");
+                let activation_text = text.last().unwrap()["text"].as_str().unwrap();
+                assert!(activation_text.contains("Activated"), "Should show activation: {}", activation_text);
+                assert!(state_update.is_some(), "Should have state updater");
+            }
+            _ => panic!("Expected SuccessWithSideEffects with catalog activation"),
+        }
+    }
+
+    // ── handle_index_read_blocking tests ────────────────────────────
+
+    #[test]
+    fn test_ctx_read_returns_indexed_content() {
+        let store = make_store_with_content();
+        let result = handle_index_read_blocking(
+            &store,
+            json!({"label": "response:tool1:1"}),
+        );
+
+        match result {
+            VirtualToolCallResult::Success(v) => {
+                let text = v["content"][0]["text"].as_str().unwrap();
+                assert!(text.contains("brown fox"), "Should return the indexed content");
+            }
+            _ => panic!("Expected Success for read"),
+        }
+    }
+
+    #[test]
+    fn test_ctx_read_missing_label_returns_error() {
+        let store = make_store_with_content();
+        let result = handle_index_read_blocking(&store, json!({}));
+
+        match result {
+            VirtualToolCallResult::ToolError(msg) => {
+                assert!(msg.contains("label"), "Error should mention missing label: {}", msg);
+            }
+            _ => panic!("Expected ToolError for missing label"),
+        }
+    }
+
+    #[test]
+    fn test_ctx_read_nonexistent_label_returns_error() {
+        let store = make_store_with_content();
+        let result = handle_index_read_blocking(
+            &store,
+            json!({"label": "nonexistent:label"}),
+        );
+
+        match result {
+            VirtualToolCallResult::ToolError(msg) => {
+                assert!(msg.contains("Read failed"), "Should report read failure: {}", msg);
+            }
+            _ => panic!("Expected ToolError for nonexistent label"),
+        }
+    }
+
+    #[test]
+    fn test_ctx_read_with_offset_and_limit() {
+        let store = Arc::new(ContentStore::new().unwrap());
+        store
+            .index("multiline", "line one\nline two\nline three\nline four\nline five")
+            .unwrap();
+
+        let result = handle_index_read_blocking(
+            &store,
+            json!({"label": "multiline", "offset": "2", "limit": 2}),
+        );
+
+        match result {
+            VirtualToolCallResult::Success(v) => {
+                let text = v["content"][0]["text"].as_str().unwrap();
+                assert!(text.contains("line two"), "Should start from offset 2: {}", text);
+            }
+            _ => panic!("Expected Success for read with offset"),
+        }
+    }
+
+    // ── handle_tool_call async integration tests ────────────────────
+
+    #[tokio::test]
+    async fn test_handle_tool_call_ctx_search_via_spawn_blocking() {
+        let config = lr_config::ContextManagementConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let vs = ContextModeVirtualServer::new(config);
+        let client =
+            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
+        let state = vs.create_session_state(&client);
+
+        // Index some content first
+        let cm = state
+            .as_any()
+            .downcast_ref::<ContextModeSessionState>()
+            .unwrap();
+        cm.store.index("test:doc", "Rust programming language features").unwrap();
+
+        let result = vs
+            .handle_tool_call(
+                state,
+                "ctx_search",
+                json!({"queries": ["Rust programming"]}),
+                "test-client",
+                "Test Client",
+            )
+            .await;
+
+        match result {
+            VirtualToolCallResult::Success(v) | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
+                let text = v["content"][0]["text"].as_str().unwrap();
+                assert!(!text.is_empty(), "Async search should return results");
+            }
+            VirtualToolCallResult::ToolError(e) => panic!("Unexpected error: {}", e),
+            _ => panic!("Unexpected result type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_tool_call_ctx_read_via_spawn_blocking() {
+        let config = lr_config::ContextManagementConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let vs = ContextModeVirtualServer::new(config);
+        let client =
+            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
+        let state = vs.create_session_state(&client);
+
+        let cm = state
+            .as_any()
+            .downcast_ref::<ContextModeSessionState>()
+            .unwrap();
+        cm.store.index("test:doc", "Hello world content").unwrap();
+
+        let result = vs
+            .handle_tool_call(
+                state,
+                "ctx_read",
+                json!({"label": "test:doc"}),
+                "test-client",
+                "Test Client",
+            )
+            .await;
+
+        match result {
+            VirtualToolCallResult::Success(v) => {
+                let text = v["content"][0]["text"].as_str().unwrap();
+                assert!(text.contains("Hello world"), "Async read should return content: {}", text);
+            }
+            VirtualToolCallResult::ToolError(e) => panic!("Unexpected error: {}", e),
+            _ => panic!("Unexpected result type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_tool_call_disabled_returns_error() {
+        let config = lr_config::ContextManagementConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let vs = ContextModeVirtualServer::new(config);
+        let client =
+            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
+        let state = vs.create_session_state(&client);
+
+        let result = vs
+            .handle_tool_call(
+                state,
+                "ctx_search",
+                json!({"queries": ["test"]}),
+                "test-client",
+                "Test Client",
+            )
+            .await;
+
+        match result {
+            VirtualToolCallResult::ToolError(msg) => {
+                assert!(msg.contains("not enabled"), "Should report not enabled: {}", msg);
+            }
+            _ => panic!("Expected ToolError for disabled client"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_tool_call_unknown_tool_returns_not_handled() {
+        let config = lr_config::ContextManagementConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let vs = ContextModeVirtualServer::new(config);
+        let client =
+            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
+        let state = vs.create_session_state(&client);
+
+        let result = vs
+            .handle_tool_call(
+                state,
+                "unknown_tool",
+                json!({}),
+                "test-client",
+                "Test Client",
+            )
+            .await;
+
+        matches!(result, VirtualToolCallResult::NotHandled);
     }
 }

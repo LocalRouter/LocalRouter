@@ -1892,7 +1892,7 @@ impl McpGateway {
         Ok(entries)
     }
 
-    /// Get context stats for a specific session by calling ctx_stats on its context-mode process.
+    /// Get context stats for a specific session from the native ContentStore.
     pub async fn get_session_context_stats(
         &self,
         session_key: &str,
@@ -1942,25 +1942,38 @@ impl McpGateway {
             .get(session_key)
             .ok_or_else(|| format!("Session not found: {session_key}"))?
             .clone();
-        let session = session_arc.read().await;
 
-        let state = session
-            .virtual_server_state
-            .get("_context_mode")
-            .ok_or("Context management not available for this session")?;
-        let cm = state
-            .as_any()
-            .downcast_ref::<super::context_mode::ContextModeSessionState>()
-            .ok_or("Invalid context mode state")?;
+        // Extract the Arc<ContentStore> under a brief async lock, then release it
+        // before performing the blocking search.
+        let store = {
+            let session = session_arc.read().await;
+            let state = session
+                .virtual_server_state
+                .get("_context_mode")
+                .ok_or("Context management not available for this session")?;
+            let cm = state
+                .as_any()
+                .downcast_ref::<super::context_mode::ContextModeSessionState>()
+                .ok_or("Invalid context mode state")?;
+            if !cm.enabled {
+                return Err("Context management is not enabled for this session".to_string());
+            }
+            cm.store.clone()
+        };
 
-        if !cm.enabled {
-            return Err("Context management is not enabled for this session".to_string());
-        }
-
+        // Run the blocking FTS5 search off the async executor
         let queries = vec![query.to_string()];
-        match cm.store.search(&queries, 5, source) {
+        let source_owned = source.map(|s| s.to_string());
+        let result = tokio::task::spawn_blocking(move || {
+            store.search(&queries, 5, source_owned.as_deref())
+        })
+        .await
+        .map_err(|e| format!("Search task panicked: {}", e))?;
+
+        match result {
             Ok(results) => {
-                let formatted = lr_context::format_search_results(&results, lr_context::SEARCH_OUTPUT_CAP);
+                let formatted =
+                    lr_context::format_search_results(&results, lr_context::SEARCH_OUTPUT_CAP);
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",

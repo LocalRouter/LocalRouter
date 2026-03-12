@@ -31,6 +31,9 @@ use types::{ChunkToc as ChunkTocType, LineOffset, LONG_LINE_THRESHOLD};
 /// Max bytes for read() output.
 const READ_OUTPUT_CAP: usize = 40 * 1024;
 
+/// Default number of lines returned by `read()` when no limit is specified.
+pub const READ_DEFAULT_LIMIT: usize = 2000;
+
 // ─────────────────────────────────────────────────────────
 // Stopwords (ported from context-mode/src/store.ts)
 // ─────────────────────────────────────────────────────────
@@ -281,7 +284,7 @@ impl ContentStore {
             })?;
 
         let total_lines = total_lines as usize;
-        let limit = limit.unwrap_or(2000);
+        let limit = limit.unwrap_or(READ_DEFAULT_LIMIT);
 
         // Parse offset
         let parsed_offset = match offset {

@@ -737,8 +737,8 @@ impl McpGateway {
             return response;
         }
 
-        // Check context management state
-        let (cm_enabled, threshold, run_id) = {
+        // Check context management state and extract store in a single lock acquisition
+        let (threshold, run_id, store) = {
             let mut session_write = session.write().await;
             if let Some(state) = session_write.virtual_server_state.get_mut("_context_mode") {
                 if let Some(cm_state) = state
@@ -749,7 +749,7 @@ impl McpGateway {
                         return response;
                     }
                     let run_id = cm_state.next_run_id(tool_name);
-                    (true, cm_state.response_threshold_bytes, run_id)
+                    (cm_state.response_threshold_bytes, run_id, cm_state.store.clone())
                 } else {
                     return response;
                 }
@@ -758,33 +758,21 @@ impl McpGateway {
             }
         };
 
-        if !cm_enabled {
-            return response;
-        }
-
         let source = format!("{}:{}", tool_name, run_id);
         let byte_size = full_text.len();
 
-        // Index full content into native ContentStore
-        let index_result = {
-            let session_read = session.read().await;
-            if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
-                if let Some(cm_state) = state
-                    .as_any()
-                    .downcast_ref::<super::context_mode::ContextModeSessionState>()
-                {
-                    cm_state
-                        .store
-                        .index(&source, &full_text)
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
-                } else {
-                    Err("CM state not found".to_string())
-                }
-            } else {
-                Err("CM state not found".to_string())
-            }
-        };
+        // Index full content into native ContentStore.
+        // Use spawn_blocking since ContentStore uses parking_lot::Mutex.
+        let source_idx = source.clone();
+        let full_text_for_index = full_text.clone();
+        let index_result = tokio::task::spawn_blocking(move || {
+            store
+                .index(&source_idx, &full_text_for_index)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("Index task panicked: {}", e)));
 
         if let Err(e) = index_result {
             tracing::warn!(
