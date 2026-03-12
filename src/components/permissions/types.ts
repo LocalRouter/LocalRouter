@@ -34,6 +34,8 @@ export interface TreeNode {
   depth?: number
   /** Show a loading indicator for this node (e.g. capabilities still loading) */
   loading?: boolean
+  /** Disable permission toggling for this node (e.g. non-indexable tools) */
+  disabled?: boolean
 }
 
 export interface PermissionTreeProps {

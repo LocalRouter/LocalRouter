@@ -431,6 +431,8 @@ pub async fn set_client_tools_indexing(
     key: Option<String>,
     state: Option<String>,
     config_manager: State<'_, ConfigManager>,
+    context_mode_vs: State<'_, Arc<lr_mcp::gateway::context_mode::ContextModeVirtualServer>>,
+    mcp_via_llm_manager: State<'_, Arc<lr_mcp_via_llm::McpViaLlmManager>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     config_manager
@@ -481,6 +483,11 @@ pub async fn set_client_tools_indexing(
             }
         })
         .map_err(|e| e.to_string())?;
+
+    // Propagate updated config to runtime state managers
+    let new_config = config_manager.get().context_management.clone();
+    context_mode_vs.update_config(new_config.clone());
+    mcp_via_llm_manager.update_context_management_config(new_config);
 
     config_manager.save().await.map_err(|e| e.to_string())?;
 

@@ -75,13 +75,14 @@ export function ClientToolsIndexingTree({
       id: name,
       label: name,
       description: !isIndexable ? "Action tool — not indexable" : undefined,
+      disabled: !isIndexable,
     }
   })
 
   // Build flat permissions from the per-client overrides
   const flatPermissions: Record<string, IndexingState> = {}
   if (permissions) {
-    for (const [key, value] of Object.entries(permissions.tools)) {
+    for (const [key, value] of Object.entries(permissions.tools ?? {})) {
       flatPermissions[key] = value
     }
   }

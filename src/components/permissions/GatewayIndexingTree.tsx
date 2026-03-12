@@ -24,6 +24,23 @@ interface GatewayIndexingTreeProps {
   onUpdate: () => void
 }
 
+/** Replicate backend slugify: lowercase, non-alphanumeric → dash, trim trailing dash */
+function slugify(name: string): string {
+  let slug = ""
+  let lastWasSep = true
+  for (const ch of name) {
+    if (/[a-zA-Z0-9]/.test(ch)) {
+      slug += ch.toLowerCase()
+      lastWasSep = false
+    } else if (!lastWasSep) {
+      slug += "-"
+      lastWasSep = true
+    }
+  }
+  if (slug.endsWith("-")) slug = slug.slice(0, -1)
+  return slug
+}
+
 export function GatewayIndexingTree({ permissions, onUpdate }: GatewayIndexingTreeProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [capabilities, setCapabilities] = useState<Record<string, McpServerCapabilities>>({})
@@ -69,16 +86,18 @@ export function GatewayIndexingTree({ permissions, onUpdate }: GatewayIndexingTr
   }, [loadServers])
 
   // Build tree nodes: server → tools
+  // Use slugified server names as IDs to match backend key format
   const nodes: TreeNode[] = servers.map((server) => {
+    const slug = slugify(server.name)
     const caps = capabilities[server.id]
     const toolChildren: TreeNode[] = (caps?.tools || []).map((tool) => ({
-      id: `${server.id}__${tool.name}`,
+      id: `${slug}__${tool.name}`,
       label: tool.name,
       description: tool.description || undefined,
     }))
 
     return {
-      id: server.id,
+      id: slug,
       label: server.name,
       children: toolChildren.length > 0 ? toolChildren : undefined,
     }
@@ -87,10 +106,10 @@ export function GatewayIndexingTree({ permissions, onUpdate }: GatewayIndexingTr
   // Build flat permissions map for the tree selector
   // The tree uses server IDs at top level and "server_id__tool_name" at tool level
   const flatPermissions: Record<string, IndexingState> = {}
-  for (const [key, value] of Object.entries(permissions.servers)) {
+  for (const [key, value] of Object.entries(permissions.servers ?? {})) {
     flatPermissions[key] = value
   }
-  for (const [key, value] of Object.entries(permissions.tools)) {
+  for (const [key, value] of Object.entries(permissions.tools ?? {})) {
     flatPermissions[key] = value
   }
 

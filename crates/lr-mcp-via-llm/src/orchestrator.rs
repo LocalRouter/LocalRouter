@@ -627,6 +627,7 @@ pub async fn resume_after_mixed(
     };
 
     // Add tool results in the order of the original tool_calls
+    let mut client_tool_run_counter: u32 = 0;
     if let Some(ref tool_calls) = full_assistant_message.tool_calls {
         for tc in tool_calls {
             // Check if this is an MCP result
@@ -656,14 +657,9 @@ pub async fn resume_after_mixed(
                             .is_client_tool_indexing_eligible(&tc.function.name, context_management_config)
                     {
                         if let ChatMessageContent::Text(ref text) = client_result.content {
-                            // Use a simple incrementing run_id based on tool call position
-                            let run_id = tc
-                                .id
-                                .chars()
-                                .filter(|c| c.is_ascii_digit())
-                                .collect::<String>()
-                                .parse::<u32>()
-                                .unwrap_or(1);
+                            // Use a stable incrementing counter keyed by tool name
+                            client_tool_run_counter += 1;
+                            let run_id = client_tool_run_counter;
                             if let Some(compressed) =
                                 lr_mcp::gateway::context_mode::compress_client_tool_response(
                                     store,

@@ -220,7 +220,7 @@ export function PermissionTreeSelector<S extends string>({
           {!node.isGroup && <div className="shrink-0">{renderButton({
             value: effectivePermission,
             onChange: (state) => onPermissionChange(node.id, state, parentPermission),
-            disabled,
+            disabled: disabled || !!node.disabled,
             size: "sm",
             inherited,
             childRollupStates,
@@ -247,14 +247,6 @@ export function PermissionTreeSelector<S extends string>({
     )
   }
 
-  if (nodes.length === 0) {
-    return (
-      <div className="p-8 text-center text-muted-foreground text-sm">
-        {emptyMessage}
-      </div>
-    )
-  }
-
   return (
     <div className="border rounded-lg overflow-x-auto">
       <div className="max-h-[500px] overflow-y-auto min-w-0">
@@ -272,8 +264,14 @@ export function PermissionTreeSelector<S extends string>({
           })}</div>
         </div>
 
-        {/* Tree nodes */}
-        {nodes.map((node) => renderNode(node, globalPermission, 0))}
+        {/* Tree nodes or empty message */}
+        {nodes.length === 0 ? (
+          <div className="px-3 py-4 text-center text-muted-foreground text-sm">
+            {emptyMessage}
+          </div>
+        ) : (
+          nodes.map((node) => renderNode(node, globalPermission, 0))
+        )}
       </div>
     </div>
   )
