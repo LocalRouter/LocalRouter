@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Shield, Info } from "lucide-react"
+import { Shield } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { CategoryActionButton, type CategoryActionState } from "@/components/permissions/CategoryActionButton"
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
 import type { TreeNode } from "@/components/permissions/types"
-import { SafetyModelList } from "@/components/guardrails/SafetyModelList"
 import type {
   ClientGuardrailsConfig,
   GuardrailsConfig,
@@ -28,9 +29,9 @@ interface ClientGuardrailsTabProps {
   onViewChange?: (view: string, subTab?: string | null) => void
 }
 
-export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGuardrailsTabProps) {
+export function ClientGuardrailsTab({ client, onUpdate }: ClientGuardrailsTabProps) {
   const [guardrailsConfig, setGuardrailsConfig] = useState<ClientGuardrailsConfig>({
-    category_actions: [],
+    category_actions: null,
   })
   const [globalConfig, setGlobalConfig] = useState<GuardrailsConfig | null>(null)
   const [categories, setCategories] = useState<SafetyCategoryInfo[]>([])
@@ -74,12 +75,29 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
     }
   }
 
+  const hasOverride = guardrailsConfig.category_actions !== null
+
+  const handleOverrideToggle = (enabled: boolean) => {
+    if (enabled) {
+      // Initialize with a copy of the global category actions
+      saveConfig({
+        ...guardrailsConfig,
+        category_actions: globalConfig?.category_actions ? [...globalConfig.category_actions] : [],
+      })
+    } else {
+      // Clear per-client overrides → inherit global
+      saveConfig({ ...guardrailsConfig, category_actions: null })
+    }
+  }
+
+  // Use per-client actions when overriding, otherwise show global for read-only display
+  const displayActions = guardrailsConfig.category_actions
+    ?? (globalConfig?.category_actions ?? [])
 
   // Build category tree nodes (grouped by model type)
   const categoryTreeNodes = useMemo((): TreeNode[] => {
     if (!globalConfig || categories.length === 0) return []
 
-    // Group categories by the model types that support them
     const modelTypeGroups: Record<string, TreeNode[]> = {}
 
     for (const cat of categories) {
@@ -109,30 +127,30 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
     }))
   }, [globalConfig, categories])
 
-  // Build permissions map from category_actions
+  // Build permissions map from the displayed actions
   const categoryPermissionsMap = useMemo((): Record<string, CategoryActionState> => {
     const map: Record<string, CategoryActionState> = {}
-    for (const entry of guardrailsConfig.category_actions) {
+    for (const entry of displayActions) {
       if (entry.category !== "__global" && entry.action !== "allow") {
         map[entry.category] = entry.action as CategoryActionState
       }
     }
     return map
-  }, [guardrailsConfig.category_actions])
+  }, [displayActions])
 
   const globalCategoryAction = useMemo((): CategoryActionState => {
-    const global = guardrailsConfig.category_actions.find(e => e.category === "__global")
+    const global = displayActions.find(e => e.category === "__global")
     return (global?.action as CategoryActionState) || "allow"
-  }, [guardrailsConfig.category_actions])
+  }, [displayActions])
 
   const handleCategoryActionChange = (id: string, action: CategoryActionState) => {
-    const actions = guardrailsConfig.category_actions.filter(a => a.category !== id)
+    const actions = (guardrailsConfig.category_actions ?? []).filter(a => a.category !== id)
     actions.push({ category: id, action })
     saveConfig({ ...guardrailsConfig, category_actions: actions })
   }
 
   const handleGlobalCategoryActionChange = (action: CategoryActionState) => {
-    const actions = guardrailsConfig.category_actions.filter(a => a.category !== "__global")
+    const actions = (guardrailsConfig.category_actions ?? []).filter(a => a.category !== "__global")
     actions.push({ category: "__global", action })
     saveConfig({ ...guardrailsConfig, category_actions: actions })
   }
@@ -146,93 +164,63 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
   }
 
   return (
-    <div className="space-y-4">
-      {/* Header Card */}
-      <Card>
-        <CardHeader>
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Shield className="h-5 w-5 text-red-500" />
             <CardTitle>GuardRails</CardTitle>
           </div>
-          <CardDescription>
-            Safety scanning for this client's requests. Flagged content is handled based on
-            your category action settings below.
-            {onViewChange && (
-              <button
-                className="text-blue-500 hover:underline ml-1"
-                onClick={() => onViewChange("guardrails", "try-it-out")}
-              >
-                Test in Try It Out
-              </button>
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-sm font-medium">Approval Popup Preview</span>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Preview the popup shown when a guardrail flags content with an &ldquo;Ask&rdquo; action
-              </p>
-            </div>
-            <SamplePopupButton popupType="guardrail" />
+          <div className="flex items-center gap-2">
+            <Label className="text-xs text-muted-foreground">Override</Label>
+            <Switch
+              checked={hasOverride}
+              onCheckedChange={handleOverrideToggle}
+            />
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Available Models */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Available Models</CardTitle>
-              <CardDescription className="flex items-start gap-1.5">
-                <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                <span>
-                  Models are managed in{" "}
-                  {onViewChange ? (
-                    <button
-                      className="text-blue-500 hover:underline"
-                      onClick={() => onViewChange("guardrails", "models")}
-                    >
-                      GuardRails &rarr; Models
-                    </button>
-                  ) : (
-                    "GuardRails"
-                  )}.
-                </span>
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <SafetyModelList
-                models={globalConfig?.safety_models || []}
-                readOnly
-              />
-            </CardContent>
-          </Card>
-
-          {/* Category Actions */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Category Actions</CardTitle>
-              <CardDescription>
-                Configure the action for each safety category. Selecting categories for a model type
-                means that model will run for this client.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <PermissionTreeSelector<CategoryActionState>
-                nodes={categoryTreeNodes}
-                permissions={categoryPermissionsMap}
-                globalPermission={globalCategoryAction}
-                onPermissionChange={handleCategoryActionChange}
-                onGlobalChange={handleGlobalCategoryActionChange}
-                renderButton={(props) => <CategoryActionButton {...props} />}
-                globalLabel="All Categories"
-                emptyMessage="No categories available. Download safety models in Settings first."
-                defaultExpanded
-              />
-            </CardContent>
-          </Card>
-
-    </div>
+        </div>
+        <CardDescription>
+          {hasOverride
+            ? "Custom category actions for this client. Disable the override to revert to global defaults."
+            : "Using global default category actions. Enable the override to customize for this client."}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {hasOverride ? (
+          <PermissionTreeSelector<CategoryActionState>
+            nodes={categoryTreeNodes}
+            permissions={categoryPermissionsMap}
+            globalPermission={globalCategoryAction}
+            onPermissionChange={handleCategoryActionChange}
+            onGlobalChange={handleGlobalCategoryActionChange}
+            renderButton={(props) => <CategoryActionButton {...props} />}
+            globalLabel="All Categories"
+            emptyMessage="No categories available. Add safety models in GuardRails first."
+            defaultExpanded
+          />
+        ) : (
+          <PermissionTreeSelector<CategoryActionState>
+            nodes={categoryTreeNodes}
+            permissions={categoryPermissionsMap}
+            globalPermission={globalCategoryAction}
+            onPermissionChange={() => {}}
+            onGlobalChange={() => {}}
+            renderButton={(props) => <CategoryActionButton {...props} disabled />}
+            globalLabel="All Categories"
+            emptyMessage="No categories available. Add safety models in GuardRails first."
+            defaultExpanded
+          />
+        )}
+        <div className="flex items-center justify-between border-t pt-4">
+          <div>
+            <span className="text-sm font-medium">Approval Popup Preview</span>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Preview the popup shown when a guardrail flags content with an &ldquo;Ask&rdquo; action
+            </p>
+          </div>
+          <SamplePopupButton popupType="guardrail" />
+        </div>
+      </CardContent>
+    </Card>
   )
 }

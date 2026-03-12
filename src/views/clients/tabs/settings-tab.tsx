@@ -18,11 +18,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { CLIENT_TEMPLATES } from "@/components/client/ClientTemplates"
-import { ClientModeSelector } from "@/components/client/ClientModeSelector"
 import { PermissionStateButton } from "@/components/permissions/PermissionStateButton"
 import ServiceIcon from "@/components/ServiceIcon"
 import type { PermissionState } from "@/components/permissions"
-import type { ClientMode, SetClientModeParams, SetClientTemplateParams, SetClientSamplingPermissionParams, SetClientElicitationPermissionParams } from "@/types/tauri-commands"
+import type { ClientMode, SetClientTemplateParams, SetClientSamplingPermissionParams, SetClientElicitationPermissionParams } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -112,20 +111,6 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
     } catch (error) {
       console.error("Failed to toggle client:", error)
       toast.error("Failed to update client")
-    }
-  }
-
-  const handleModeChange = async (mode: ClientMode) => {
-    try {
-      await invoke("set_client_mode", {
-        clientId: client.client_id,
-        mode,
-      } satisfies SetClientModeParams)
-      toast.success("Client mode updated")
-      onUpdate()
-    } catch (error) {
-      console.error("Failed to update client mode:", error)
-      toast.error("Failed to update client mode")
     }
   }
 
@@ -262,19 +247,6 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
           </CardContent>
         </Card>
       )}
-
-      {/* Client Mode */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Client Mode</CardTitle>
-          <CardDescription>
-            Controls which features are available to this client
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ClientModeSelector mode={clientMode} onModeChange={handleModeChange} template={template} />
-        </CardContent>
-      </Card>
 
       {/* MCP Capabilities - visible when mode uses MCP */}
       {clientMode !== "llm_only" && (

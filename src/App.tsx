@@ -18,6 +18,8 @@ import { ContextManagementView } from './views/context-management'
 import { CompressionView } from './views/compression'
 import { JsonRepairView } from './views/json-repair'
 import { MarketplaceView } from './views/marketplace'
+import { LlmOptimizationView } from './views/llm-optimization'
+import { McpOptimizationView } from './views/mcp-optimization'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
 
 const DebugView = import.meta.env.DEV
@@ -321,6 +323,20 @@ function App() {
       case 'json-repair':
         return (
           <JsonRepairView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'llm-optimization':
+        return (
+          <LlmOptimizationView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'mcp-optimization':
+        return (
+          <McpOptimizationView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

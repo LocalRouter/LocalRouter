@@ -8,12 +8,8 @@ import { ClientInfoTab } from "./tabs/info-tab"
 import { ClientConfigTab } from "./tabs/config-tab"
 import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
-import { ClientSkillsTab } from "./tabs/skills-tab"
-import { ClientCodingAgentsTab } from "./tabs/coding-agents-tab"
-import { ClientMarketplaceTab } from "./tabs/marketplace-tab"
 import { ClientContextTab } from "./tabs/context-tab"
-import { ClientGuardrailsTab } from "./tabs/guardrails-tab"
-import { ClientCompressionTab } from "./tabs/compression-tab"
+import { ClientLlmOptimizeTab } from "./tabs/llm-optimize-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
@@ -69,9 +65,7 @@ export function ClientDetail({
   const clientMode = client?.client_mode || "both"
   const showModelsTab = clientMode !== "mcp_only"
   const showMcpTab = clientMode !== "llm_only"
-  const showSkillsTab = clientMode !== "llm_only"
-  const showCodingAgentsTab = clientMode !== "llm_only"
-  const showGuardrailsTab = clientMode !== "mcp_only"
+  const showLlmOptimizeTab = clientMode !== "mcp_only"
   const showTryItOutLlm = clientMode !== "mcp_only"
   // MCP via LLM clients speak only OpenAI protocol — no direct MCP try-it-out
   const showTryItOutMcp = clientMode !== "llm_only" && clientMode !== "mcp_via_llm"
@@ -109,15 +103,11 @@ export function ClientDetail({
   useEffect(() => {
     if (activeTab === "models" && !showModelsTab) setActiveTab("info")
     if (activeTab === "mcp" && !showMcpTab) setActiveTab("info")
-    if (activeTab === "skills" && !showSkillsTab) setActiveTab("info")
-    if (activeTab === "coding-agents" && !showCodingAgentsTab) setActiveTab("info")
-    if (activeTab === "marketplace" && !showMcpTab) setActiveTab("info")
-    if (activeTab === "context" && !showMcpTab) setActiveTab("info")
-    if (activeTab === "guardrails" && !showGuardrailsTab) setActiveTab("info")
-    if (activeTab === "compression" && !showModelsTab) setActiveTab("info")
+    if (activeTab === "optimize" && !showMcpTab) setActiveTab("info")
+    if (activeTab === "llm-optimize" && !showLlmOptimizeTab) setActiveTab("info")
     if (activeTab === "try-llm" && !showTryItOutLlm) setActiveTab("info")
     if (activeTab === "try-mcp" && !showTryItOutMcp) setActiveTab("info")
-  }, [clientMode, activeTab, showModelsTab, showMcpTab, showSkillsTab, showCodingAgentsTab, showGuardrailsTab, showTryItOutLlm, showTryItOutMcp])
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showLlmOptimizeTab, showTryItOutLlm, showTryItOutMcp])
 
   const loadClient = async () => {
     try {
@@ -164,7 +154,7 @@ export function ClientDetail({
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="bg-transparent h-auto gap-2 p-0 items-end flex-wrap">
             <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
-              <TabsTrigger value="info">Info</TabsTrigger>
+              <TabsTrigger value="info">Overview</TabsTrigger>
               <TabsTrigger value="connect">Connect</TabsTrigger>
             </div>
 
@@ -183,8 +173,7 @@ export function ClientDetail({
                 <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">LLM</div>
                 <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
                   <TabsTrigger value="models">Providers</TabsTrigger>
-                  <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
-                  <TabsTrigger value="compression">Compression</TabsTrigger>
+                  <TabsTrigger value="llm-optimize">Optimize</TabsTrigger>
                 </div>
               </div>
             )}
@@ -194,10 +183,7 @@ export function ClientDetail({
                 <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">MCP</div>
                 <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
                   <TabsTrigger value="mcp">Servers</TabsTrigger>
-                  <TabsTrigger value="skills">Skills</TabsTrigger>
-                  <TabsTrigger value="coding-agents">Coding Agents</TabsTrigger>
-                  <TabsTrigger value="marketplace">Marketplace</TabsTrigger>
-                  <TabsTrigger value="context">Context</TabsTrigger>
+                  <TabsTrigger value="optimize">Optimize</TabsTrigger>
                 </div>
               </div>
             )}
@@ -208,7 +194,7 @@ export function ClientDetail({
           </TabsList>
 
           <TabsContent value="info">
-            <ClientInfoTab client={client} />
+            <ClientInfoTab client={client} onUpdate={loadClient} />
           </TabsContent>
 
           <TabsContent value="connect">
@@ -254,43 +240,15 @@ export function ClientDetail({
             </TabsContent>
           )}
 
-          {showSkillsTab && (
-            <TabsContent value="skills">
-              <ClientSkillsTab client={client} onUpdate={loadClient} />
-            </TabsContent>
-          )}
-
-          {showCodingAgentsTab && (
-            <TabsContent value="coding-agents">
-              <ClientCodingAgentsTab client={client} onUpdate={loadClient} />
-            </TabsContent>
-          )}
-
           {showMcpTab && (
-            <TabsContent value="marketplace">
-              <ClientMarketplaceTab client={client} onUpdate={loadClient} />
-            </TabsContent>
-          )}
-
-          {showMcpTab && (
-            <TabsContent value="context">
+            <TabsContent value="optimize">
               <ClientContextTab client={client} onUpdate={loadClient} onViewChange={onViewChange} />
             </TabsContent>
           )}
 
-          {showGuardrailsTab && (
-            <TabsContent value="guardrails">
-              <ClientGuardrailsTab
-                client={client}
-                onUpdate={loadClient}
-                onViewChange={onViewChange}
-              />
-            </TabsContent>
-          )}
-
-          {showModelsTab && (
-            <TabsContent value="compression">
-              <ClientCompressionTab
+          {showLlmOptimizeTab && (
+            <TabsContent value="llm-optimize">
+              <ClientLlmOptimizeTab
                 client={client}
                 onUpdate={loadClient}
                 onViewChange={onViewChange}

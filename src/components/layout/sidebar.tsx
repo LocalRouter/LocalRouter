@@ -13,6 +13,9 @@ import {
   BookText,
   Minimize2,
   Wrench,
+  ChevronDown,
+  ChevronRight,
+  Zap,
 } from "lucide-react"
 import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
@@ -47,7 +50,8 @@ interface HealthCacheState {
 }
 
 export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'context-management' | 'skills'
-  | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair' | 'settings' | 'debug'
+  | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair'
+  | 'llm-optimization' | 'mcp-optimization' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -65,10 +69,21 @@ interface NavHeading {
   heading: string
 }
 
-type NavEntry = NavItem | NavHeading
+interface NavCollapsible {
+  id: View
+  icon: React.ElementType
+  label: string
+  children: NavItem[]
+}
+
+type NavEntry = NavItem | NavHeading | NavCollapsible
 
 function isNavHeading(entry: NavEntry): entry is NavHeading {
   return 'heading' in entry
+}
+
+function isNavCollapsible(entry: NavEntry): entry is NavCollapsible {
+  return 'children' in entry
 }
 
 const clientNavItems: NavItem[] = [
@@ -78,16 +93,26 @@ const clientNavItems: NavItem[] = [
 const resourceNavEntries: NavEntry[] = [
   { heading: 'LLM' },
   { id: 'resources', icon: ProvidersIcon, label: 'Providers', shortcut: '⌘3' },
-  { id: 'guardrails', icon: Shield, label: 'GuardRails', shortcut: '⌘7' },
-  { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak', shortcut: '⌘8' },
-  { id: 'compression', icon: Minimize2, label: 'Compression' },
-  { id: 'json-repair', icon: Wrench, label: 'JSON Repair' },
+  {
+    id: 'llm-optimization', icon: Zap, label: 'Optimize',
+    children: [
+      { id: 'guardrails', icon: Shield, label: 'GuardRails', shortcut: '⌘7' },
+      { id: 'json-repair', icon: Wrench, label: 'JSON Repair' },
+      { id: 'compression', icon: Minimize2, label: 'Compression' },
+      { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak', shortcut: '⌘8' },
+    ],
+  },
   { heading: 'MCP' },
   { id: 'mcp-servers', icon: McpIcon, label: 'Servers', shortcut: '⌘4' },
   { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5' },
   { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6' },
-  { id: 'context-management', icon: BookText, label: 'Context' },
   { id: 'marketplace', icon: StoreIcon, label: 'Marketplace', shortcut: '⌘9' },
+  {
+    id: 'mcp-optimization', icon: Zap, label: 'Optimize',
+    children: [
+      { id: 'context-management', icon: BookText, label: 'Context' },
+    ],
+  },
 ]
 
 const bottomNavItems: NavItem[] = [
@@ -99,6 +124,19 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
   const [healthState, setHealthState] = React.useState<HealthCacheState | null>(null)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
   const [expanded, setExpanded] = React.useState(true) // default expanded, will load from config
+  const [collapsibleOpen, setCollapsibleOpen] = React.useState<Record<string, boolean>>({})
+
+  // Auto-expand collapsible when a child view is active
+  React.useEffect(() => {
+    for (const entry of resourceNavEntries) {
+      if (isNavCollapsible(entry)) {
+        const hasActiveChild = entry.children.some(child => child.id === activeView)
+        if (hasActiveChild) {
+          setCollapsibleOpen(prev => ({ ...prev, [entry.id]: true }))
+        }
+      }
+    }
+  }, [activeView])
 
   // Load sidebar expanded state from config
   React.useEffect(() => {
@@ -277,7 +315,100 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         </div>
       )
     }
+    if (isNavCollapsible(entry)) {
+      return renderNavCollapsible(entry)
+    }
     return renderNavItem(entry)
+  }
+
+  const renderNavCollapsible = (group: NavCollapsible) => {
+    const isOpen = collapsibleOpen[group.id] ?? false
+    const isGroupActive = activeView === group.id
+    const hasActiveChild = group.children.some(child => child.id === activeView)
+    const Icon = group.icon
+
+    const toggleOpen = () => {
+      setCollapsibleOpen(prev => ({ ...prev, [group.id]: !prev[group.id] }))
+    }
+
+    const parentButton = (
+      <div
+        role="button"
+        tabIndex={0}
+        className={cn(
+          "flex items-center rounded-md transition-colors h-8 w-full gap-2 whitespace-nowrap px-2 cursor-pointer",
+          isGroupActive
+            ? "bg-accent text-accent-foreground"
+            : hasActiveChild
+              ? "text-accent-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        )}
+        onClick={() => {
+          onViewChange(group.id)
+          if (!isOpen) {
+            setCollapsibleOpen(prev => ({ ...prev, [group.id]: true }))
+          }
+        }}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onViewChange(group.id) } }}
+      >
+        <Icon className="h-4 w-4 shrink-0" />
+        <span className="truncate text-left text-sm flex-1">{group.label}</span>
+        <button
+          className="shrink-0 p-0.5 rounded hover:bg-accent-foreground/10"
+          onClick={(e) => {
+            e.stopPropagation()
+            toggleOpen()
+          }}
+        >
+          {isOpen
+            ? <ChevronDown className="h-3 w-3" />
+            : <ChevronRight className="h-3 w-3" />
+          }
+        </button>
+      </div>
+    )
+
+    if (!expanded) {
+      // Collapsed sidebar: just show the parent icon
+      return (
+        <Tooltip key={group.id}>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => onViewChange(group.id)}
+              className={cn(
+                "flex items-center rounded-md transition-colors h-8 w-full gap-2 whitespace-nowrap px-2",
+                (isGroupActive || hasActiveChild)
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              )}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={8}>
+            <span>{group.label}</span>
+          </TooltipContent>
+        </Tooltip>
+      )
+    }
+
+    return (
+      <div key={group.id}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            {parentButton}
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={8}>
+            <span>{group.label}</span>
+          </TooltipContent>
+        </Tooltip>
+        {isOpen && (
+          <div className="ml-3 border-l border-border/50 pl-1 mt-0.5 space-y-0.5">
+            {group.children.map(renderNavItem)}
+          </div>
+        )}
+      </div>
+    )
   }
 
   const renderNavItem = (item: NavItem) => {
@@ -362,10 +493,11 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
 
           {/* Resources section */}
           {resourceNavEntries.map(renderNavEntry)}
-        </nav>
 
-        {/* Bottom Navigation */}
-        <nav className="flex flex-col gap-1 p-2">
+          {/* Spacer to push bottom items down */}
+          <div className="flex-1" />
+
+          {/* Bottom Navigation */}
           {bottomNavItems.map(renderNavItem)}
         </nav>
 

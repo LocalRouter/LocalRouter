@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import { toast } from "sonner"
 import ReactFlow, {
   Background,
   Controls,
@@ -11,6 +12,9 @@ import ReactFlow, {
 } from "reactflow"
 import "reactflow/dist/style.css"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
+import { ClientModeSelector } from "@/components/client/ClientModeSelector"
+import { CLIENT_TEMPLATES } from "@/components/client/ClientTemplates"
 import { useGraphData } from "@/components/connection-graph/hooks/useGraphData"
 import { buildGraph } from "@/components/connection-graph/utils/buildGraph"
 import { AccessKeyNode } from "@/components/connection-graph/nodes/AccessKeyNode"
@@ -22,7 +26,7 @@ import { MarketplaceNode } from "@/components/connection-graph/nodes/Marketplace
 import type { GraphNodeData } from "@/components/connection-graph/types"
 import type {
   ClientMode, CodingAgentType, ClientEffectiveConfig,
-  GetClientEffectiveConfigParams, Strategy,
+  GetClientEffectiveConfigParams, Strategy, SetClientModeParams,
 } from "@/types/tauri-commands"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 
@@ -59,6 +63,7 @@ interface Client {
 
 interface InfoTabProps {
   client: Client
+  onUpdate: () => void
 }
 
 function formatModelName(fullName: string): string {
@@ -66,7 +71,7 @@ function formatModelName(fullName: string): string {
   return parts.length > 1 ? parts.slice(1).join("/") : fullName
 }
 
-export function ClientInfoTab({ client }: InfoTabProps) {
+export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
   const [effectiveConfig, setEffectiveConfig] = useState<ClientEffectiveConfig | null>(null)
   const [strategy, setStrategy] = useState<Strategy | null>(null)
 
@@ -75,6 +80,24 @@ export function ClientInfoTab({ client }: InfoTabProps) {
   const clientMode = client.client_mode || "both"
   const showLlm = clientMode !== "mcp_only"
   const showMcp = clientMode !== "llm_only"
+
+  const template = client.template_id
+    ? CLIENT_TEMPLATES.find(t => t.id === client.template_id) || null
+    : null
+
+  const handleModeChange = async (mode: ClientMode) => {
+    try {
+      await invoke("set_client_mode", {
+        clientId: client.client_id,
+        mode,
+      } satisfies SetClientModeParams)
+      toast.success("Client mode updated")
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to update client mode:", error)
+      toast.error("Failed to update client mode")
+    }
+  }
 
   useEffect(() => {
     invoke<ClientEffectiveConfig>("get_client_effective_config", {
@@ -170,6 +193,19 @@ export function ClientInfoTab({ client }: InfoTabProps) {
 
   return (
     <div className="space-y-4">
+      {/* Client Mode */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Client Mode</CardTitle>
+          <CardDescription>
+            Controls which features are available to this client
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ClientModeSelector mode={clientMode} onModeChange={handleModeChange} template={template} />
+        </CardContent>
+      </Card>
+
       {/* Connection Graph */}
       {loading ? (
         <Skeleton className="w-full h-[150px] rounded-lg" />
