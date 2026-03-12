@@ -186,31 +186,17 @@ export function ClientGuardrailsTab({ client, onUpdate }: ClientGuardrailsTabPro
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {hasOverride ? (
-          <PermissionTreeSelector<CategoryActionState>
-            nodes={categoryTreeNodes}
-            permissions={categoryPermissionsMap}
-            globalPermission={globalCategoryAction}
-            onPermissionChange={handleCategoryActionChange}
-            onGlobalChange={handleGlobalCategoryActionChange}
-            renderButton={(props) => <CategoryActionButton {...props} />}
-            globalLabel="All Categories"
-            emptyMessage="No categories available. Add safety models in GuardRails first."
-            defaultExpanded
-          />
-        ) : (
-          <PermissionTreeSelector<CategoryActionState>
-            nodes={categoryTreeNodes}
-            permissions={categoryPermissionsMap}
-            globalPermission={globalCategoryAction}
-            onPermissionChange={() => {}}
-            onGlobalChange={() => {}}
-            renderButton={(props) => <CategoryActionButton {...props} disabled />}
-            globalLabel="All Categories"
-            emptyMessage="No categories available. Add safety models in GuardRails first."
-            defaultExpanded
-          />
-        )}
+        <PermissionTreeSelector<CategoryActionState>
+          nodes={categoryTreeNodes}
+          permissions={categoryPermissionsMap}
+          globalPermission={globalCategoryAction}
+          onPermissionChange={handleCategoryActionChange}
+          onGlobalChange={handleGlobalCategoryActionChange}
+          renderButton={(props) => <CategoryActionButton {...props} />}
+          globalLabel="All Categories"
+          emptyMessage="No categories available. Add safety models in GuardRails first."
+          disabled={!hasOverride}
+        />
         <div className="flex items-center justify-between border-t pt-4">
           <div>
             <span className="text-sm font-medium">Approval Popup Preview</span>
