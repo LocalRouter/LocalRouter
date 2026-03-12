@@ -243,7 +243,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_client_guardrails_config': (args) => {
     const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
     const guardrails = client ? (client as Record<string, unknown>).guardrails : undefined
-    return guardrails || { category_actions: [] }
+    return guardrails || { category_actions: null }
   },
   'update_client_guardrails_config': (args) => {
     const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
@@ -1706,6 +1706,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       { id: 'llama_guard', label: 'Llama Guard 3 1B via Ollama', model_type: 'llama_guard', provider_id: 'ollama', model_name: 'llama-guard3:1b', confidence_threshold: null, enabled_categories: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
       { id: 'granite_guardian', label: 'Granite Guardian 3.0 2B via Ollama', model_type: 'granite_guardian', provider_id: 'ollama', model_name: 'granite3-guardian:2b', confidence_threshold: null, enabled_categories: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
     ],
+    category_actions: [
+      { category: '__global', action: 'ask' },
+    ],
     default_confidence_threshold: 0.5,
     parallel_guardrails: true,
   }),
@@ -1886,10 +1889,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'get_client_compression_config': () => ({
     enabled: null,
-    min_messages: null,
-    preserve_recent: null,
-    rate: null,
-    compress_system_prompt: null,
   }),
   'update_client_compression_config': () => {
     toast.success('Client compression configuration saved (demo)')
