@@ -19,9 +19,9 @@ use super::types::NamespacedTool;
 use super::virtual_server::*;
 use crate::protocol::McpTool;
 
-/// Tool names owned by the context-mode virtual server.
-const CTX_SEARCH: &str = "ctx_search";
-const INDEX_READ: &str = "ctx_read";
+/// Legacy tool name constants — used as fallbacks when no config is available.
+const CTX_SEARCH_DEFAULT: &str = "IndexSearch";
+const INDEX_READ_DEFAULT: &str = "IndexRead";
 
 /// MCP Gateway source label guide appended to ctx_search description.
 const CTX_SEARCH_SOURCE_GUIDE: &str = r#"
@@ -96,6 +96,16 @@ pub struct ContextModeSessionState {
     pub catalog_threshold_bytes: usize,
     /// Response threshold in bytes.
     pub response_threshold_bytes: usize,
+    /// Snapshotted search tool name (e.g. "IndexSearch").
+    pub search_tool_name: String,
+    /// Snapshotted read tool name (e.g. "IndexRead").
+    pub read_tool_name: String,
+    /// Snapshotted gateway indexing permissions.
+    pub gateway_indexing: lr_config::GatewayIndexingPermissions,
+    /// Snapshotted client tools indexing default.
+    pub client_tools_indexing_default: lr_config::IndexingState,
+    /// Snapshotted per-client tools indexing overrides.
+    pub client_tools_indexing: Option<lr_config::ClientToolsIndexingPermissions>,
 }
 
 impl ContextModeSessionState {
@@ -126,6 +136,11 @@ impl Clone for ContextModeSessionState {
             activated_prompts: self.activated_prompts.clone(),
             catalog_threshold_bytes: self.catalog_threshold_bytes,
             response_threshold_bytes: self.response_threshold_bytes,
+            search_tool_name: self.search_tool_name.clone(),
+            read_tool_name: self.read_tool_name.clone(),
+            gateway_indexing: self.gateway_indexing.clone(),
+            client_tools_indexing_default: self.client_tools_indexing_default.clone(),
+            client_tools_indexing: self.client_tools_indexing.clone(),
         }
     }
 }
@@ -142,9 +157,9 @@ impl VirtualSessionState for ContextModeSessionState {
     }
 }
 
-/// Build the static tool definitions for the native context-mode server.
-fn build_native_tools() -> Vec<McpTool> {
-    let mut search_desc = "Search indexed content. Pass ALL search questions as queries array in ONE call.\n\nTIPS: 2-4 specific terms per query. Use 'source' to scope results.".to_string();
+/// Build the tool definitions for the native context-mode server using configured names.
+fn build_native_tools_with_names(search_name: &str, read_name: &str) -> Vec<McpTool> {
+    let mut search_desc = format!("Search indexed content. Pass ALL search questions as queries array in ONE call.\n\nTIPS: 2-4 specific terms per query. Use 'source' to scope results.");
     search_desc.push_str(CTX_SEARCH_SOURCE_GUIDE);
 
     let mut source_desc = "Filter to a specific indexed source (partial match).".to_string();
@@ -152,7 +167,7 @@ fn build_native_tools() -> Vec<McpTool> {
 
     vec![
         McpTool {
-            name: CTX_SEARCH.to_string(),
+            name: search_name.to_string(),
             description: Some(search_desc),
             input_schema: json!({
                 "type": "object",
@@ -178,10 +193,9 @@ fn build_native_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
-            name: INDEX_READ.to_string(),
+            name: read_name.to_string(),
             description: Some(
-                "Read the full content of an indexed source. Use after ctx_search to get complete context around a search hit."
-                    .to_string(),
+                format!("Read the full content of an indexed source. Use after {} to get complete context around a search hit.", search_name),
             ),
             input_schema: json!({
                 "type": "object",
@@ -205,6 +219,11 @@ fn build_native_tools() -> Vec<McpTool> {
     ]
 }
 
+/// Build the tool definitions using default names.
+fn build_native_tools() -> Vec<McpTool> {
+    build_native_tools_with_names(CTX_SEARCH_DEFAULT, INDEX_READ_DEFAULT)
+}
+
 /// Build a fallback ctx_search tool definition (public for coding agents UI).
 pub fn build_fallback_ctx_search_tool() -> McpTool {
     build_native_tools().into_iter().next().unwrap()
@@ -213,6 +232,11 @@ pub fn build_fallback_ctx_search_tool() -> McpTool {
 /// Build all native tool definitions (public for coding agents UI).
 pub fn build_native_tool_definitions() -> Vec<McpTool> {
     build_native_tools()
+}
+
+/// Build native tool definitions with configured names.
+pub fn build_native_tool_definitions_with_names(search_name: &str, read_name: &str) -> Vec<McpTool> {
+    build_native_tools_with_names(search_name, read_name)
 }
 
 #[async_trait]
@@ -226,7 +250,8 @@ impl VirtualMcpServer for ContextModeVirtualServer {
     }
 
     fn owns_tool(&self, tool_name: &str) -> bool {
-        tool_name == CTX_SEARCH || tool_name == INDEX_READ
+        let config = self.config.read().unwrap();
+        tool_name == config.search_tool_name || tool_name == config.read_tool_name
     }
 
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
@@ -244,7 +269,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             return Vec::new();
         }
 
-        build_native_tools()
+        build_native_tools_with_names(&state.search_tool_name, &state.read_tool_name)
     }
 
     fn check_permissions(
@@ -286,18 +311,24 @@ impl VirtualMcpServer for ContextModeVirtualServer {
         let activated_resources = state.activated_resources.clone();
         let activated_prompts = state.activated_prompts.clone();
         let tool = tool_name.to_string();
+        let search_name = state.search_tool_name.clone();
+        let read_name = state.read_tool_name.clone();
 
-        let result = tokio::task::spawn_blocking(move || match tool.as_str() {
-            CTX_SEARCH => handle_ctx_search_blocking(
-                &store,
-                arguments,
-                &catalog_sources,
-                &activated_tools,
-                &activated_resources,
-                &activated_prompts,
-            ),
-            INDEX_READ => handle_index_read_blocking(&store, arguments),
-            _ => VirtualToolCallResult::NotHandled,
+        let result = tokio::task::spawn_blocking(move || {
+            if tool == search_name {
+                handle_ctx_search_blocking(
+                    &store,
+                    arguments,
+                    &catalog_sources,
+                    &activated_tools,
+                    &activated_resources,
+                    &activated_prompts,
+                )
+            } else if tool == read_name {
+                handle_index_read_blocking(&store, arguments)
+            } else {
+                VirtualToolCallResult::NotHandled
+            }
         })
         .await;
 
@@ -321,9 +352,10 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 
         Some(VirtualInstructions {
             section_title: "Context Management".to_string(),
-            content:
-                "Use ctx_search to discover MCP capabilities and retrieve compressed content. Use ctx_read to read full indexed sources."
-                    .to_string(),
+            content: format!(
+                "Use {} to discover MCP capabilities and retrieve compressed content. Use {} to read full indexed sources.",
+                state.search_tool_name, state.read_tool_name
+            ),
             tool_names: Vec::new(), // populated by gateway
             priority: 0,
         })
@@ -351,6 +383,11 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             activated_prompts: HashSet::new(),
             catalog_threshold_bytes: config.catalog_threshold_bytes,
             response_threshold_bytes: config.response_threshold_bytes,
+            search_tool_name: config.search_tool_name.clone(),
+            read_tool_name: config.read_tool_name.clone(),
+            gateway_indexing: config.gateway_indexing.clone(),
+            client_tools_indexing_default: config.client_tools_indexing_default.clone(),
+            client_tools_indexing: client.client_tools_indexing.clone(),
         })
     }
 
@@ -370,6 +407,16 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             state.enabled && client.is_catalog_compression_enabled(&config);
         state.catalog_threshold_bytes = config.catalog_threshold_bytes;
         state.response_threshold_bytes = config.response_threshold_bytes;
+        state.search_tool_name = config.search_tool_name.clone();
+        state.read_tool_name = config.read_tool_name.clone();
+        state.gateway_indexing = config.gateway_indexing.clone();
+        state.client_tools_indexing_default = config.client_tools_indexing_default.clone();
+        state.client_tools_indexing = client.client_tools_indexing.clone();
+    }
+
+    fn is_tool_indexable(&self, _tool_name: &str) -> bool {
+        // Search/read tools are the indexing system itself — never index their responses
+        false
     }
 }
 
@@ -552,6 +599,61 @@ fn extract_catalog_activations_from_results(
     }
 
     newly_activated
+}
+
+/// Compress and index a client tool response into the session's ContentStore.
+///
+/// Used by MCP via LLM orchestrator to index eligible client tool results.
+/// Returns the compressed text if indexing was performed, or None if skipped.
+pub fn compress_client_tool_response(
+    store: &ContentStore,
+    tool_name: &str,
+    run_id: u32,
+    full_text: &str,
+    response_threshold_bytes: usize,
+    search_tool_name: &str,
+) -> Option<String> {
+    if full_text.len() <= response_threshold_bytes {
+        return None;
+    }
+
+    let source = format!("__client__{}:{}", tool_name, run_id);
+    let byte_size = full_text.len();
+
+    if let Err(e) = store.index(&source, full_text) {
+        tracing::warn!(
+            "Failed to index client tool response for {} ({}): {}",
+            tool_name,
+            source,
+            e
+        );
+        return None;
+    }
+
+    let preview_bytes = (response_threshold_bytes / 8).clamp(200, 500);
+    let preview = &full_text[..full_text
+        .char_indices()
+        .take_while(|(i, _)| *i < preview_bytes)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(full_text.len())
+        .min(full_text.len())];
+
+    let compressed = format!(
+        "[Response compressed — {} bytes indexed as {}]\n\n{}\n\nFull output indexed. \
+         Use {}(queries=[\"your search terms\"], source=\"{}\") to retrieve specific sections.",
+        byte_size, source, preview, search_tool_name, source
+    );
+
+    tracing::info!(
+        "Compressed client tool response for {} ({} bytes → {} bytes, source={})",
+        tool_name,
+        byte_size,
+        compressed.len(),
+        source
+    );
+
+    Some(compressed)
 }
 
 /// Append text to an MCP tool result's content array.
@@ -778,8 +880,8 @@ mod tests {
     fn test_native_tool_definitions() {
         let tools = build_native_tools();
         assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].name, "ctx_search");
-        assert_eq!(tools[1].name, "ctx_read");
+        assert_eq!(tools[0].name, "IndexSearch");
+        assert_eq!(tools[1].name, "IndexRead");
 
         let search_desc = tools[0].description.as_ref().unwrap();
         assert!(search_desc.contains("Search indexed content"));
@@ -808,6 +910,11 @@ mod tests {
             activated_prompts: HashSet::new(),
             catalog_threshold_bytes: 8192,
             response_threshold_bytes: 4096,
+            search_tool_name: "IndexSearch".to_string(),
+            read_tool_name: "IndexRead".to_string(),
+            gateway_indexing: lr_config::GatewayIndexingPermissions::default(),
+            client_tools_indexing_default: lr_config::IndexingState::Enable,
+            client_tools_indexing: None,
         };
 
         assert_eq!(state.next_run_id("fs__read_file"), 1);
@@ -960,8 +1067,8 @@ mod tests {
         let state = vs.create_session_state(&client);
         let tools = vs.list_tools(state.as_ref());
         assert_eq!(tools.len(), 2);
-        assert!(tools.iter().any(|t| t.name == "ctx_search"));
-        assert!(tools.iter().any(|t| t.name == "ctx_read"));
+        assert!(tools.iter().any(|t| t.name == "IndexSearch"));
+        assert!(tools.iter().any(|t| t.name == "IndexRead"));
     }
 
     // ── ctx_search schema tests ─────────────────────────────────────
@@ -969,25 +1076,25 @@ mod tests {
     #[test]
     fn test_ctx_search_schema_has_both_query_and_queries() {
         let tools = build_native_tools();
-        let search_tool = tools.iter().find(|t| t.name == "ctx_search").unwrap();
+        let search_tool = tools.iter().find(|t| t.name == "IndexSearch").unwrap();
         let props = &search_tool.input_schema["properties"];
-        assert!(props["query"]["type"].as_str() == Some("string"), "ctx_search should have a 'query' string parameter");
-        assert!(props["queries"]["type"].as_str() == Some("array"), "ctx_search should have a 'queries' array parameter");
+        assert!(props["query"]["type"].as_str() == Some("string"), "IndexSearch should have a 'query' string parameter");
+        assert!(props["queries"]["type"].as_str() == Some("array"), "IndexSearch should have a 'queries' array parameter");
         // Neither is required — both are optional
-        assert!(search_tool.input_schema.get("required").is_none(), "ctx_search should not have required fields");
+        assert!(search_tool.input_schema.get("required").is_none(), "IndexSearch should not have required fields");
     }
 
     #[test]
     fn test_ctx_read_schema_uses_read_default_limit_constant() {
         let tools = build_native_tools();
-        let read_tool = tools.iter().find(|t| t.name == "ctx_read").unwrap();
+        let read_tool = tools.iter().find(|t| t.name == "IndexRead").unwrap();
         let limit_desc = read_tool.input_schema["properties"]["limit"]["description"]
             .as_str()
             .unwrap();
         let expected = format!("(default: {})", lr_context::READ_DEFAULT_LIMIT);
         assert!(
             limit_desc.contains(&expected),
-            "ctx_read limit description should reference READ_DEFAULT_LIMIT ({}), got: {}",
+            "IndexRead limit description should reference READ_DEFAULT_LIMIT ({}), got: {}",
             lr_context::READ_DEFAULT_LIMIT,
             limit_desc,
         );
@@ -1238,7 +1345,7 @@ mod tests {
         let result = vs
             .handle_tool_call(
                 state,
-                "ctx_search",
+                "IndexSearch",
                 json!({"queries": ["Rust programming"]}),
                 "test-client",
                 "Test Client",
@@ -1275,7 +1382,7 @@ mod tests {
         let result = vs
             .handle_tool_call(
                 state,
-                "ctx_read",
+                "IndexRead",
                 json!({"label": "test:doc"}),
                 "test-client",
                 "Test Client",
@@ -1306,7 +1413,7 @@ mod tests {
         let result = vs
             .handle_tool_call(
                 state,
-                "ctx_search",
+                "IndexSearch",
                 json!({"queries": ["test"]}),
                 "test-client",
                 "Test Client",

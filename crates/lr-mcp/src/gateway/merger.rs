@@ -42,6 +42,21 @@ pub struct InstructionsContext {
     pub catalog_compression: Option<CatalogCompressionPlan>,
     /// Instructions from virtual servers
     pub virtual_instructions: Vec<super::virtual_server::VirtualInstructions>,
+    /// Configured search tool name (for search hints in instructions)
+    pub search_tool_name: String,
+}
+
+impl Default for InstructionsContext {
+    fn default() -> Self {
+        Self {
+            servers: Vec::new(),
+            unavailable_servers: Vec::new(),
+            context_management_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: Vec::new(),
+            search_tool_name: "IndexSearch".to_string(),
+        }
+    }
 }
 
 /// Merge initialize results from multiple servers
@@ -310,9 +325,10 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
              with a `servername__` prefix.\n",
         );
         if server_count > 0 {
-            inst.push_str(
-                "Use ctx_search to discover capabilities and retrieve compressed content.\n",
-            );
+            inst.push_str(&format!(
+                "Use {} to discover capabilities and retrieve compressed content.\n",
+                ctx.search_tool_name
+            ));
         }
         inst.push('\n');
     }
@@ -391,9 +407,10 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
                 parts.push(format!("{} prompts", server.prompt_names.len()));
             }
             inst.push_str(&format!(
-                "<{}>\n{} — ctx_search(source=\"catalog:{}\") to explore\n</{}>\n\n",
+                "<{}>\n{} — {}(source=\"catalog:{}\") to explore\n</{}>\n\n",
                 server_slug,
                 parts.join(", "),
+                ctx.search_tool_name,
                 server_slug,
                 server_slug
             ));
@@ -410,16 +427,16 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
                     inst.push_str(&format!("- {}\n", name));
                 }
                 inst.push_str(&format!(
-                    "\n[deferred] ctx_search(source=\"catalog:{}\") to activate tools and view docs\n",
-                    server_slug
+                    "\n[deferred] {}(source=\"catalog:{}\") to activate tools and view docs\n",
+                    ctx.search_tool_name, server_slug
                 ));
             }
         } else {
             for name in &server.tool_names {
                 if compressed_names.contains(name.as_str()) {
                     inst.push_str(&format!(
-                        "- {} — [compressed] ctx_search(source=\"catalog:{}\")\n",
-                        name, name
+                        "- {} — [compressed] {}(source=\"catalog:{}\")\n",
+                        name, ctx.search_tool_name, name
                     ));
                 } else {
                     inst.push_str(&format!("- `{}` (tool)\n", name));
@@ -439,8 +456,8 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
             for name in &server.resource_names {
                 if compressed_names.contains(name.as_str()) {
                     inst.push_str(&format!(
-                        "- {} — [compressed] ctx_search(source=\"catalog:{}\")\n",
-                        name, name
+                        "- {} — [compressed] {}(source=\"catalog:{}\")\n",
+                        name, ctx.search_tool_name, name
                     ));
                 } else {
                     inst.push_str(&format!("- `{}` (resource)\n", name));
@@ -460,8 +477,8 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
             for name in &server.prompt_names {
                 if compressed_names.contains(name.as_str()) {
                     inst.push_str(&format!(
-                        "- {} — [compressed] ctx_search(source=\"catalog:{}\")\n",
-                        name, name
+                        "- {} — [compressed] {}(source=\"catalog:{}\")\n",
+                        name, ctx.search_tool_name, name
                     ));
                 } else {
                     inst.push_str(&format!("- `{}` (prompt)\n", name));
@@ -473,8 +490,8 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
         let welcome_compressed = compressed_names.contains(server_slug.as_str());
         if welcome_compressed {
             inst.push_str(&format!(
-                "\n[compressed] ctx_search(source=\"catalog:{}\") for instructions\n",
-                server_slug
+                "\n[compressed] {}(source=\"catalog:{}\") for instructions\n",
+                ctx.search_tool_name, server_slug
             ));
         } else {
             let has_content = server.instructions.is_some() || server.description.is_some();
@@ -618,9 +635,9 @@ pub fn build_preview_instructions_context() -> InstructionsContext {
         virtual_instructions: vec![
             VirtualInstructions {
                 section_title: "Context Management".to_string(),
-                content: "Use ctx_search to discover MCP capabilities and retrieve compressed content.".to_string(),
+                content: "Use IndexSearch to discover MCP capabilities and retrieve compressed content.".to_string(),
                 tool_names: vec![
-                    "ctx_search".to_string(),
+                    "IndexSearch".to_string(),
                     "ctx_execute".to_string(),
                     "ctx_execute_file".to_string(),
                     "ctx_batch_execute".to_string(),
@@ -660,6 +677,7 @@ pub fn build_preview_instructions_context() -> InstructionsContext {
                 priority: 30,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -669,9 +687,9 @@ fn preview_virtual_instructions() -> Vec<super::virtual_server::VirtualInstructi
     vec![
         VirtualInstructions {
             section_title: "Context Management".to_string(),
-            content: "Use ctx_search to discover MCP capabilities and retrieve compressed content.".to_string(),
+            content: "Use IndexSearch to discover MCP capabilities and retrieve compressed content.".to_string(),
             tool_names: vec![
-                "ctx_search".to_string(),
+                "IndexSearch".to_string(),
                 "ctx_execute".to_string(),
                 "ctx_execute_file".to_string(),
                 "ctx_batch_execute".to_string(),
@@ -996,6 +1014,7 @@ pub fn build_preview_mock_realistic() -> InstructionsContext {
         context_management_enabled: true,
         catalog_compression: None,
         virtual_instructions: preview_virtual_instructions(),
+        ..Default::default()
     }
 }
 
@@ -1590,6 +1609,7 @@ mod tests {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1623,6 +1643,7 @@ mod tests {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1646,6 +1667,7 @@ mod tests {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1671,6 +1693,7 @@ mod tests {
                 tool_names: vec!["skill_get_info".to_string()],
                 priority: 30,
             }],
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1703,6 +1726,7 @@ mod tests {
                 tool_names: vec!["skill_get_info".to_string()],
                 priority: 30,
             }],
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1730,6 +1754,7 @@ mod tests {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
+            ..Default::default()
         };
 
         assert!(build_gateway_instructions(&ctx).is_none());
@@ -1746,6 +1771,7 @@ mod tests {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1769,6 +1795,7 @@ mod tests {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1792,6 +1819,7 @@ mod tests {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1816,6 +1844,7 @@ mod tests {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1883,6 +1912,7 @@ mod tests {
                     priority: 20,
                 },
             ],
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -1936,6 +1966,7 @@ mod tests {
                 tool_names: vec!["skill_get_info".to_string()],
                 priority: 30,
             }],
+            ..Default::default()
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
@@ -2021,6 +2052,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
         // Only header overhead (100)
         assert_eq!(estimate_catalog_size(&ctx), 100);
@@ -2041,6 +2073,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
         let size = estimate_catalog_size(&ctx);
         // 100 + server header + tool lines + resource line + description + XML tags
@@ -2077,6 +2110,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         let plan = compute_catalog_compression_plan(&ctx, 100_000, true, true, true);
@@ -2093,6 +2127,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         // Set threshold low enough to trigger phase 1 but not phase 2
@@ -2128,6 +2163,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         // Set threshold very low to force phase 2
@@ -2158,6 +2194,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         // Only supports tools list_changed — not resources or prompts
@@ -2186,6 +2223,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         // Threshold of 10 is impossibly low — should trigger all 3 phases
@@ -2217,6 +2255,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: Some(CatalogCompressionPlan::default()),
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
@@ -2260,6 +2299,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: Some(plan),
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
@@ -2269,7 +2309,7 @@ mod tests {
             "Compressed tool should show [compressed] marker. Got:\n{}",
             inst
         );
-        assert!(inst.contains("ctx_search"));
+        assert!(inst.contains("IndexSearch"));
         // Non-compressed tool should show backtick notation
         assert!(inst.contains("`filesystem__write_file` (tool)"));
     }
@@ -2295,6 +2335,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: Some(plan),
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
@@ -2305,7 +2346,7 @@ mod tests {
             inst
         );
         assert!(inst.contains("1 resources"));
-        assert!(inst.contains("ctx_search"));
+        assert!(inst.contains("IndexSearch"));
         // Individual tools should NOT be listed
         assert!(!inst.contains("big-server__tool_0"));
         // Server instructions should NOT be shown
@@ -2339,13 +2380,14 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: Some(plan),
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
         // Server instructions should be [compressed] inside XML block
         assert!(
             inst.contains(
-                "[compressed] ctx_search(source=\"catalog:filesystem\") for instructions"
+                "[compressed] IndexSearch(source=\"catalog:filesystem\") for instructions"
             ),
             "Server welcome should be compressed. Got:\n{}",
             inst
@@ -2370,18 +2412,19 @@ mod tests {
             catalog_compression: Some(plan),
             virtual_instructions: vec![crate::gateway::virtual_server::VirtualInstructions {
                 section_title: "Context Management".to_string(),
-                content: "Use ctx_search to find things".to_string(),
-                tool_names: vec!["ctx_search".to_string(), "ctx_execute".to_string()],
+                content: "Use IndexSearch to find things".to_string(),
+                tool_names: vec!["IndexSearch".to_string(), "ctx_execute".to_string()],
                 priority: 0,
             }],
+            ..Default::default()
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
-        assert!(inst.contains("`ctx_search` (tool)"));
+        assert!(inst.contains("`IndexSearch` (tool)"));
         assert!(inst.contains("`ctx_execute` (tool)"));
         // Virtual instructions always inline
         assert!(inst.contains("<context-management>"));
-        assert!(inst.contains("Use ctx_search to find things"));
+        assert!(inst.contains("Use IndexSearch to find things"));
     }
 
     #[test]
@@ -2417,6 +2460,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: Some(plan),
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
@@ -2427,7 +2471,7 @@ mod tests {
             inst
         );
         assert!(
-            inst.contains("[deferred] ctx_search"),
+            inst.contains("[deferred] IndexSearch"),
             "Should show deferred activation hint. Got:\n{}",
             inst
         );
@@ -2456,6 +2500,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: Some(CatalogCompressionPlan::default()),
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
@@ -2495,6 +2540,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         // Step 1: Compute compression with a moderate threshold
@@ -2521,6 +2567,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: Some(plan.clone()),
             virtual_instructions: vec![],
+            ..Default::default()
         };
         ctx_with_plan.catalog_compression = Some(plan.clone());
 
@@ -2536,10 +2583,10 @@ mod tests {
         let has_compressed = inst.contains("[compressed]");
         assert!(has_compressed, "Output should contain [compressed] markers");
 
-        // Verify: ctx_search mentioned for discovering content
+        // Verify: IndexSearch mentioned for discovering content
         assert!(
-            inst.contains("ctx_search"),
-            "Should reference ctx_search for discovery"
+            inst.contains("IndexSearch"),
+            "Should reference IndexSearch for discovery"
         );
 
         // Verify: the output is smaller than uncompressed version
@@ -2549,6 +2596,7 @@ mod tests {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
         let uncompressed = build_gateway_instructions(&uncompressed_ctx).unwrap();
         assert!(
@@ -2574,6 +2622,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         let plan = compute_catalog_compression_plan(&ctx, 100_000, true, true, true);
@@ -2616,6 +2665,7 @@ mod tests {
             context_management_enabled: true,
             catalog_compression: None,
             virtual_instructions: vec![],
+            ..Default::default()
         };
 
         let full_size = estimate_catalog_size(&ctx);

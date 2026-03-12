@@ -16,6 +16,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
+pub mod known_client_tools;
 mod migration;
 mod storage;
 pub mod types;
@@ -293,6 +294,7 @@ impl ConfigManager {
             mcp_server_access: McpServerAccess::None,
             context_management_enabled: None,
             catalog_compression_enabled: None,
+            client_tools_indexing: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),
             last_used: None,

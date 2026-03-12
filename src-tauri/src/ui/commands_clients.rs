@@ -407,6 +407,90 @@ pub async fn toggle_client_context_management(
     Ok(())
 }
 
+/// Get client tools indexing permissions for a client.
+#[tauri::command]
+pub async fn get_client_tools_indexing(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<Option<lr_config::ClientToolsIndexingPermissions>, String> {
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+    Ok(client.client_tools_indexing.clone())
+}
+
+/// Set client tools indexing permission at global or tool level.
+/// Pass state=None to clear an override (revert to inherit).
+#[tauri::command]
+pub async fn set_client_tools_indexing(
+    client_id: String,
+    level: String,
+    key: Option<String>,
+    state: Option<String>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                let perms = client
+                    .client_tools_indexing
+                    .get_or_insert_with(Default::default);
+
+                match level.as_str() {
+                    "global" => {
+                        perms.global = state.as_ref().map(|s| match s.as_str() {
+                            "disable" => lr_config::IndexingState::Disable,
+                            _ => lr_config::IndexingState::Enable,
+                        });
+                    }
+                    "global_clear" => {
+                        perms.global = None;
+                    }
+                    "tool" => {
+                        if let Some(ref k) = key {
+                            if let Some(ref s) = state {
+                                let indexing_state = match s.as_str() {
+                                    "disable" => lr_config::IndexingState::Disable,
+                                    _ => lr_config::IndexingState::Enable,
+                                };
+                                perms.tools.insert(k.clone(), indexing_state);
+                            }
+                        }
+                    }
+                    "tool_clear" => {
+                        if let Some(ref k) = key {
+                            perms.tools.remove(k);
+                        }
+                    }
+                    "clear_all" => {
+                        client.client_tools_indexing = None;
+                    }
+                    _ => {}
+                }
+
+                // Clean up: if perms are now empty, set to None
+                if let Some(ref p) = client.client_tools_indexing {
+                    if p.global.is_none() && p.tools.is_empty() {
+                        client.client_tools_indexing = None;
+                    }
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
 /// Get the client bearer token value (secret)
 ///
 /// For clients, the secret is stored in the keychain, just like API keys.

@@ -73,6 +73,16 @@ pub trait VirtualMcpServer: Send + Sync {
     fn deferrable_tools(&self, _state: &dyn VirtualSessionState) -> Vec<String> {
         Vec::new()
     }
+
+    /// Whether a tool's output is worth indexing into FTS5.
+    ///
+    /// Returns false for action-only tools (e.g., install, start, interrupt)
+    /// whose responses don't contain useful searchable content.
+    /// Non-indexable tools are shown disabled in the indexing picker.
+    /// By default all tools are indexable.
+    fn is_tool_indexable(&self, _tool_name: &str) -> bool {
+        true
+    }
 }
 
 /// Per-session state for a virtual server. Stored in a HashMap on GatewaySession,

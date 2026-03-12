@@ -225,4 +225,12 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
             s.agent_type = client.coding_agent_type;
         }
     }
+
+    fn is_tool_indexable(&self, tool_name: &str) -> bool {
+        match tool_name {
+            "coding_agent_status" => true, // Status output useful
+            "coding_agent_list" => true,   // List output useful
+            _ => false,                     // start, say, respond, interrupt are actions
+        }
+    }
 }

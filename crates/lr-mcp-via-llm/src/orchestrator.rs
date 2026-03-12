@@ -561,6 +561,7 @@ pub async fn resume_after_mixed(
     client_tool_results: Vec<ChatMessage>,
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
+    context_management_config: &lr_config::ContextManagementConfig,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
     // Take handles out before awaiting (pending has Drop impl that aborts them)
     let mcp_handles = std::mem::take(&mut pending.mcp_handles);
@@ -600,6 +601,31 @@ pub async fn resume_after_mixed(
     let mut messages = std::mem::take(&mut pending.messages_before_mixed);
     messages.push(full_assistant_message.clone());
 
+    // Get context-mode state for client tool indexing (if available)
+    let cm_state_for_indexing = {
+        let gw_session_key = session.read().gateway_session_key.clone();
+        if let Some(gw_session) = gateway.get_session(&gw_session_key) {
+            let gw_read = gw_session.read().await;
+            gw_read
+                .virtual_server_state
+                .get("_context_mode")
+                .and_then(|s| {
+                    s.as_any()
+                        .downcast_ref::<lr_mcp::gateway::context_mode::ContextModeSessionState>()
+                        .map(|cm| {
+                            (
+                                cm.enabled,
+                                cm.store.clone(),
+                                cm.response_threshold_bytes,
+                                cm.search_tool_name.clone(),
+                            )
+                        })
+                })
+        } else {
+            None
+        }
+    };
+
     // Add tool results in the order of the original tool_calls
     if let Some(ref tool_calls) = full_assistant_message.tool_calls {
         for tc in tool_calls {
@@ -620,7 +646,43 @@ pub async fn resume_after_mixed(
                 .iter()
                 .find(|m| m.tool_call_id.as_ref() == Some(&tc.id))
             {
-                messages.push(client_result.clone());
+                // Check if we should index this client tool result
+                let mut result_to_push = client_result.clone();
+                if let Some((cm_enabled, ref store, threshold, ref search_name)) =
+                    cm_state_for_indexing
+                {
+                    if cm_enabled
+                        && client
+                            .is_client_tool_indexing_eligible(&tc.function.name, context_management_config)
+                    {
+                        if let ChatMessageContent::Text(ref text) = client_result.content {
+                            // Use a simple incrementing run_id based on tool call position
+                            let run_id = tc
+                                .id
+                                .chars()
+                                .filter(|c| c.is_ascii_digit())
+                                .collect::<String>()
+                                .parse::<u32>()
+                                .unwrap_or(1);
+                            if let Some(compressed) =
+                                lr_mcp::gateway::context_mode::compress_client_tool_response(
+                                    store,
+                                    &tc.function.name,
+                                    run_id,
+                                    text,
+                                    threshold,
+                                    search_name,
+                                )
+                            {
+                                result_to_push = ChatMessage {
+                                    content: ChatMessageContent::Text(compressed),
+                                    ..client_result.clone()
+                                };
+                            }
+                        }
+                    }
+                }
+                messages.push(result_to_push);
             } else {
                 // Missing result — add error placeholder and log warning
                 tracing::warn!(

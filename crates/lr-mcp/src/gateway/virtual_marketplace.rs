@@ -185,4 +185,12 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
             s.permission = client.marketplace_permission.clone();
         }
     }
+
+    fn is_tool_indexable(&self, tool_name: &str) -> bool {
+        match tool_name {
+            "marketplace__search" => true,  // Search results are valuable
+            "marketplace__install" => false, // Action tool
+            _ => false,
+        }
+    }
 }

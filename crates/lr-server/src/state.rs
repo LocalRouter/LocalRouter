@@ -796,6 +796,7 @@ impl AppState {
 
         // Read config before moving config_manager into struct
         let mcp_via_llm_config = config_manager.get().mcp_via_llm.clone();
+        let context_management_config = config_manager.get().context_management.clone();
 
         // Wrap notification_tx in Arc before struct init so it can be shared
         let notification_broadcast = Arc::new(notification_tx);
@@ -829,7 +830,11 @@ impl AppState {
             auto_router_approval_tracker: Arc::new(AutoRouterApprovalTracker::new()),
             safety_engine: Arc::new(RwLock::new(None)),
             compression_service: Arc::new(RwLock::new(None)),
-            mcp_via_llm_manager: Arc::new(McpViaLlmManager::new(mcp_via_llm_config)),
+            mcp_via_llm_manager: {
+                let manager = McpViaLlmManager::new(mcp_via_llm_config);
+                manager.update_context_management_config(context_management_config);
+                Arc::new(manager)
+            },
             sampling_approval_manager: Arc::new(
                 lr_mcp::gateway::sampling_approval::SamplingApprovalManager::new_with_broadcast(
                     120,

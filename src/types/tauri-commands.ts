@@ -75,6 +75,77 @@ export interface ModelPermissions {
 }
 
 // =============================================================================
+// Indexing Eligibility Types
+// Rust: crates/lr-config/src/types.rs
+// =============================================================================
+
+/**
+ * Indexing state for gateway and client tools.
+ * Rust: crates/lr-config/src/types.rs - IndexingState enum
+ */
+export type IndexingState = 'enable' | 'disable'
+
+/**
+ * Unified MCP Gateway indexing permissions (GLOBAL only).
+ * Hierarchy: global → server → tool.
+ * Rust: crates/lr-config/src/types.rs - GatewayIndexingPermissions struct
+ */
+export interface GatewayIndexingPermissions {
+  global: IndexingState
+  servers: Record<string, IndexingState>
+  tools: Record<string, IndexingState>
+}
+
+/**
+ * Client Tools indexing permissions — global default + per-tool overrides.
+ * Rust: crates/lr-config/src/types.rs - ClientToolsIndexingPermissions struct
+ */
+export interface ClientToolsIndexingPermissions {
+  global: IndexingState | null
+  tools: Record<string, IndexingState>
+}
+
+/**
+ * Known client tool entry from the built-in registry.
+ * Rust: crates/lr-config/src/known_client_tools.rs - KnownToolEntry struct
+ */
+export interface KnownToolEntry {
+  name: string
+  default_state: IndexingState
+  indexable: boolean
+}
+
+/** Params for set_gateway_indexing_permission */
+export interface SetGatewayIndexingPermissionParams {
+  level: string
+  key?: string | null
+  state: string
+}
+
+/** Params for get_known_client_tools */
+export interface GetKnownClientToolsParams {
+  templateId: string
+}
+
+/** Params for get_seen_client_tools */
+export interface GetSeenClientToolsParams {
+  clientId: string
+}
+
+/** Params for get_client_tools_indexing */
+export interface GetClientToolsIndexingParams {
+  clientId: string
+}
+
+/** Params for set_client_tools_indexing */
+export interface SetClientToolsIndexingParams {
+  clientId: string
+  level: string
+  key?: string | null
+  state?: string | null
+}
+
+// =============================================================================
 // Client Types
 // Rust: src-tauri/src/ui/commands_clients.rs
 // =============================================================================
@@ -603,6 +674,10 @@ export interface ContextManagementConfig {
   catalog_compression: boolean
   catalog_threshold_bytes: number
   response_threshold_bytes: number
+  gateway_indexing: GatewayIndexingPermissions
+  client_tools_indexing_default: IndexingState
+  search_tool_name: string
+  read_tool_name: string
 }
 
 /** Params for update_context_management_config */
@@ -611,6 +686,9 @@ export interface UpdateContextManagementConfigParams {
   catalogCompression?: boolean
   catalogThresholdBytes?: number
   responseThresholdBytes?: number
+  searchToolName?: string
+  readToolName?: string
+  clientToolsIndexingDefault?: string
 }
 
 /** Rust: src-tauri/src/ui/commands.rs - CatalogCompressionPreview */

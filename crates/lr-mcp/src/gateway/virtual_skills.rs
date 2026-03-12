@@ -216,4 +216,11 @@ impl VirtualMcpServer for SkillsVirtualServer {
             s.context_management_enabled = client.context_management_enabled.unwrap_or(false);
         }
     }
+
+    fn is_tool_indexable(&self, tool_name: &str) -> bool {
+        match tool_name {
+            "skill_read" => true, // Skill content useful
+            _ => false,
+        }
+    }
 }

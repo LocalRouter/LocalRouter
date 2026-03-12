@@ -78,6 +78,7 @@ fn create_test_config(
         json_repair: lr_config::ClientJsonRepairConfig::default(),
         mcp_sampling_permission: lr_config::PermissionState::Ask,
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
+        client_tools_indexing: None,
     };
 
     AppConfig {
@@ -524,6 +525,7 @@ async fn test_disabled_client_returns_unauthorized() {
         json_repair: lr_config::ClientJsonRepairConfig::default(),
         mcp_sampling_permission: lr_config::PermissionState::Ask,
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
+        client_tools_indexing: None,
     };
 
     let config = AppConfig {
@@ -581,6 +583,7 @@ async fn test_client_with_missing_strategy() {
         json_repair: lr_config::ClientJsonRepairConfig::default(),
         mcp_sampling_permission: lr_config::PermissionState::Ask,
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
+        client_tools_indexing: None,
     };
 
     let config = AppConfig {
@@ -1177,6 +1180,7 @@ fn create_free_tier_config(
         json_repair: lr_config::ClientJsonRepairConfig::default(),
         mcp_sampling_permission: lr_config::PermissionState::Ask,
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
+        client_tools_indexing: None,
     };
 
     AppConfig {

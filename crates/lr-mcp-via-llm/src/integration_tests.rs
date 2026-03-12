@@ -1129,6 +1129,7 @@ mod mixed_tool_tests {
             name: None,
         }];
 
+        let cm_config = lr_config::ContextManagementConfig::default();
         let resume_result = resume_after_mixed(
             env.gateway.clone(),
             &env.router,
@@ -1139,6 +1140,7 @@ mod mixed_tool_tests {
             client_tool_results,
             &config,
             vec![],
+            &cm_config,
         )
         .await
         .expect("resume should succeed");

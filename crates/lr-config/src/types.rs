@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 20;
+pub(crate) const CONFIG_VERSION: u32 = 21;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -1293,6 +1294,125 @@ fn default_output_buffer_size() -> usize {
     1000
 }
 
+/// Whether indexing is enabled or disabled for a given scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexingState {
+    Enable,
+    Disable,
+}
+
+impl Default for IndexingState {
+    fn default() -> Self {
+        IndexingState::Enable
+    }
+}
+
+impl IndexingState {
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, IndexingState::Enable)
+    }
+}
+
+/// Unified MCP Gateway indexing permissions (GLOBAL only).
+///
+/// Hierarchy: global → server → tool. Absent keys inherit from parent.
+/// Controls which gateway tools get their catalog entries and responses indexed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct GatewayIndexingPermissions {
+    /// Global default for all gateway tools
+    #[serde(default)]
+    pub global: IndexingState,
+    /// Per-server overrides: server_slug → state
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub servers: HashMap<String, IndexingState>,
+    /// Per-tool overrides: "server_slug__tool_name" → state
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tools: HashMap<String, IndexingState>,
+}
+
+impl GatewayIndexingPermissions {
+    /// Resolve the indexing state for a specific tool.
+    /// Checks: tool override → server override → global default.
+    pub fn resolve_tool(&self, server_slug: &str, tool_name: &str) -> &IndexingState {
+        // Check tool-level override (namespaced as "server_slug__tool_name")
+        let tool_key = format!("{}__{}", server_slug, tool_name);
+        if let Some(state) = self.tools.get(&tool_key) {
+            return state;
+        }
+        // Check server-level override
+        if let Some(state) = self.servers.get(server_slug) {
+            return state;
+        }
+        // Fall back to global
+        &self.global
+    }
+
+    /// Resolve the indexing state for a server (used for server welcome text).
+    /// Checks: server override → global default.
+    pub fn resolve_server(&self, server_slug: &str) -> &IndexingState {
+        if let Some(state) = self.servers.get(server_slug) {
+            return state;
+        }
+        &self.global
+    }
+
+    /// Whether a tool's output should be indexed.
+    pub fn is_tool_eligible(&self, server_slug: &str, tool_name: &str) -> bool {
+        self.resolve_tool(server_slug, tool_name).is_enabled()
+    }
+
+    /// Whether a server's welcome content should be indexed.
+    pub fn is_server_eligible(&self, server_slug: &str) -> bool {
+        self.resolve_server(server_slug).is_enabled()
+    }
+}
+
+/// Client Tools indexing permissions — global default + per-tool overrides.
+///
+/// Used both in global config (just `global`) and per-client (global override + tools).
+/// Absent keys inherit: tool → client global → config global.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ClientToolsIndexingPermissions {
+    /// Client-level override. None = inherit from global config default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global: Option<IndexingState>,
+    /// Per-tool overrides: tool_name → state
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tools: HashMap<String, IndexingState>,
+}
+
+impl ClientToolsIndexingPermissions {
+    /// Resolve the indexing state for a specific client tool.
+    /// Checks: tool override → self.global → global_default.
+    pub fn resolve_tool<'a>(
+        &'a self,
+        tool_name: &str,
+        global_default: &'a IndexingState,
+    ) -> &'a IndexingState {
+        if let Some(state) = self.tools.get(tool_name) {
+            return state;
+        }
+        if let Some(ref state) = self.global {
+            return state;
+        }
+        global_default
+    }
+
+    /// Whether a client tool's output should be indexed.
+    pub fn is_tool_eligible(&self, tool_name: &str, global_default: &IndexingState) -> bool {
+        self.resolve_tool(tool_name, global_default).is_enabled()
+    }
+}
+
+fn default_search_tool_name() -> String {
+    "IndexSearch".to_string()
+}
+
+fn default_read_tool_name() -> String {
+    "IndexRead".to_string()
+}
+
 /// Context management configuration (native FTS5 search & catalog compression).
 ///
 /// When enabled, uses a per-session native ContentStore for FTS5 search,
@@ -1315,6 +1435,22 @@ pub struct ContextManagementConfig {
     /// Compress individual tool/resource/prompt responses above this byte threshold
     #[serde(default = "default_response_threshold_bytes")]
     pub response_threshold_bytes: usize,
+
+    /// Unified MCP Gateway indexing permissions (GLOBAL only)
+    #[serde(default)]
+    pub gateway_indexing: GatewayIndexingPermissions,
+
+    /// Default On/Off for client tool indexing (all clients)
+    #[serde(default)]
+    pub client_tools_indexing_default: IndexingState,
+
+    /// Search tool name (default: "IndexSearch")
+    #[serde(default = "default_search_tool_name")]
+    pub search_tool_name: String,
+
+    /// Read tool name (default: "IndexRead")
+    #[serde(default = "default_read_tool_name")]
+    pub read_tool_name: String,
 }
 
 /// Per-client context management overrides passed through the gateway API.
@@ -1332,6 +1468,10 @@ impl Default for ContextManagementConfig {
             catalog_compression: true,
             catalog_threshold_bytes: default_catalog_threshold_bytes(),
             response_threshold_bytes: default_response_threshold_bytes(),
+            gateway_indexing: GatewayIndexingPermissions::default(),
+            client_tools_indexing_default: IndexingState::default(),
+            search_tool_name: default_search_tool_name(),
+            read_tool_name: default_read_tool_name(),
         }
     }
 }
@@ -2083,6 +2223,11 @@ pub struct Client {
     /// Some(false) = disabled regardless of global.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_compression_enabled: Option<bool>,
+
+    /// Per-client client tools indexing overrides (MCP via LLM only).
+    /// None = no overrides, inherit global default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_tools_indexing: Option<ClientToolsIndexingPermissions>,
 
     /// Migration shim: old skills access (deserialize only)
     /// Use skills_permissions instead
@@ -3048,6 +3193,7 @@ impl Client {
             mcp_server_access: McpServerAccess::None,
             context_management_enabled: None,
             catalog_compression_enabled: None,
+            client_tools_indexing: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),
             last_used: None,
@@ -3097,6 +3243,29 @@ impl Client {
             return enabled;
         }
         global.catalog_compression
+    }
+
+    /// Resolve the indexing state for a specific client tool.
+    /// Checks per-client overrides first, then falls back to global default.
+    pub fn resolve_client_tool_indexing<'a>(
+        &'a self,
+        tool_name: &str,
+        global: &'a ContextManagementConfig,
+    ) -> &'a IndexingState {
+        if let Some(ref perms) = self.client_tools_indexing {
+            return perms.resolve_tool(tool_name, &global.client_tools_indexing_default);
+        }
+        &global.client_tools_indexing_default
+    }
+
+    /// Whether a client tool's output should be indexed.
+    pub fn is_client_tool_indexing_eligible(
+        &self,
+        tool_name: &str,
+        global: &ContextManagementConfig,
+    ) -> bool {
+        self.resolve_client_tool_indexing(tool_name, global)
+            .is_enabled()
     }
 
     /// Update last used timestamp
@@ -3432,6 +3601,7 @@ mod tests {
             catalog_compression: false,
             catalog_threshold_bytes: 2000,
             response_threshold_bytes: 500,
+            ..Default::default()
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         let deserialized: ContextManagementConfig = serde_yaml::from_str(&yaml).unwrap();
@@ -3446,5 +3616,143 @@ mod tests {
         let yaml = "enabled: true\n";
         let config: ContextManagementConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.catalog_compression);
+    }
+
+    // --- Gateway Indexing Permission Resolution Tests ---
+
+    #[test]
+    fn test_gateway_indexing_global_enable_no_overrides() {
+        let perms = GatewayIndexingPermissions::default(); // global=Enable
+        assert!(perms.is_tool_eligible("filesystem", "read_file"));
+        assert!(perms.is_server_eligible("filesystem"));
+    }
+
+    #[test]
+    fn test_gateway_indexing_server_disable_overrides_global() {
+        let mut perms = GatewayIndexingPermissions::default();
+        perms
+            .servers
+            .insert("filesystem".to_string(), IndexingState::Disable);
+        assert!(!perms.is_tool_eligible("filesystem", "read_file"));
+        assert!(!perms.is_server_eligible("filesystem"));
+        // Other servers still inherit global
+        assert!(perms.is_tool_eligible("github", "search"));
+    }
+
+    #[test]
+    fn test_gateway_indexing_tool_overrides_server() {
+        let mut perms = GatewayIndexingPermissions::default();
+        perms
+            .servers
+            .insert("filesystem".to_string(), IndexingState::Disable);
+        perms.tools.insert(
+            "filesystem__read_file".to_string(),
+            IndexingState::Enable,
+        );
+        // Tool override wins over server
+        assert!(perms.is_tool_eligible("filesystem", "read_file"));
+        // Other tools in server still disabled
+        assert!(!perms.is_tool_eligible("filesystem", "write_file"));
+    }
+
+    #[test]
+    fn test_gateway_indexing_global_disable() {
+        let perms = GatewayIndexingPermissions {
+            global: IndexingState::Disable,
+            ..Default::default()
+        };
+        assert!(!perms.is_tool_eligible("any_server", "any_tool"));
+        assert!(!perms.is_server_eligible("any_server"));
+    }
+
+    #[test]
+    fn test_gateway_indexing_tool_not_in_map_inherits() {
+        let mut perms = GatewayIndexingPermissions::default();
+        perms
+            .servers
+            .insert("filesystem".to_string(), IndexingState::Disable);
+        // Tool not in map → inherits from server → Disable
+        assert!(!perms.is_tool_eligible("filesystem", "unknown_tool"));
+        // Tool in different server not in map → inherits from global → Enable
+        assert!(perms.is_tool_eligible("other", "some_tool"));
+    }
+
+    // --- Client Tools Indexing Permission Resolution Tests ---
+
+    #[test]
+    fn test_client_tools_global_default_enable_no_override() {
+        let config = ContextManagementConfig::default(); // client_tools_indexing_default=Enable
+        let client = Client::new_with_strategy("test".to_string(), "s".to_string());
+        assert!(client.is_client_tool_indexing_eligible("Read", &config));
+    }
+
+    #[test]
+    fn test_client_tools_client_global_override_disable() {
+        let config = ContextManagementConfig::default();
+        let mut client = Client::new_with_strategy("test".to_string(), "s".to_string());
+        client.client_tools_indexing = Some(ClientToolsIndexingPermissions {
+            global: Some(IndexingState::Disable),
+            ..Default::default()
+        });
+        assert!(!client.is_client_tool_indexing_eligible("Read", &config));
+    }
+
+    #[test]
+    fn test_client_tools_per_tool_disable() {
+        let config = ContextManagementConfig::default();
+        let mut client = Client::new_with_strategy("test".to_string(), "s".to_string());
+        let mut tools = HashMap::new();
+        tools.insert("Write".to_string(), IndexingState::Disable);
+        client.client_tools_indexing = Some(ClientToolsIndexingPermissions {
+            global: None,
+            tools,
+        });
+        assert!(!client.is_client_tool_indexing_eligible("Write", &config));
+        // Other tools inherit global default
+        assert!(client.is_client_tool_indexing_eligible("Read", &config));
+    }
+
+    #[test]
+    fn test_client_tools_per_tool_enable_overrides_global_disable() {
+        let mut config = ContextManagementConfig::default();
+        config.client_tools_indexing_default = IndexingState::Disable;
+        let mut client = Client::new_with_strategy("test".to_string(), "s".to_string());
+        let mut tools = HashMap::new();
+        tools.insert("Read".to_string(), IndexingState::Enable);
+        client.client_tools_indexing = Some(ClientToolsIndexingPermissions {
+            global: None,
+            tools,
+        });
+        assert!(client.is_client_tool_indexing_eligible("Read", &config));
+        // Other tools inherit global default → Disable
+        assert!(!client.is_client_tool_indexing_eligible("Write", &config));
+    }
+
+    #[test]
+    fn test_client_tools_no_client_override_inherits_global() {
+        let mut config = ContextManagementConfig::default();
+        config.client_tools_indexing_default = IndexingState::Disable;
+        let client = Client::new_with_strategy("test".to_string(), "s".to_string());
+        // No client_tools_indexing → inherits global default
+        assert!(!client.is_client_tool_indexing_eligible("Read", &config));
+    }
+
+    #[test]
+    fn test_context_management_config_tool_name_defaults() {
+        let config = ContextManagementConfig::default();
+        assert_eq!(config.search_tool_name, "IndexSearch");
+        assert_eq!(config.read_tool_name, "IndexRead");
+    }
+
+    #[test]
+    fn test_context_management_config_tool_names_deserialize() {
+        let yaml = r#"
+enabled: true
+search_tool_name: "ctx_search"
+read_tool_name: "ctx_read"
+"#;
+        let config: ContextManagementConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.search_tool_name, "ctx_search");
+        assert_eq!(config.read_tool_name, "ctx_read");
     }
 }

@@ -128,6 +128,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v20(config)?;
     }
 
+    // Migrate to v21: Indexing eligibility + configurable tool names (defaults preserve behavior)
+    if config.version < 21 {
+        config = migrate_to_v21(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -660,6 +665,15 @@ fn migrate_to_v19(mut config: AppConfig) -> AppResult<AppConfig> {
 /// removed fields during deserialization, so this is a version-bump-only migration.
 fn migrate_to_v20(config: AppConfig) -> AppResult<AppConfig> {
     info!("Migrating to version 20: Remove indexing_tools config (native context mode)");
+    Ok(config)
+}
+
+/// Migrate to version 21: Indexing eligibility + configurable tool names
+///
+/// New fields with defaults — no-op migration. Tool names change from
+/// ctx_search/ctx_read to IndexSearch/IndexRead for new sessions.
+fn migrate_to_v21(config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 21: Indexing eligibility + configurable tool names");
     Ok(config)
 }
 

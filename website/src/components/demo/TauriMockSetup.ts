@@ -948,6 +948,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     catalog_compression: true,
     catalog_threshold_bytes: 50000,
     response_threshold_bytes: 10000,
+    gateway_indexing: {
+      global: 'enable',
+      servers: {},
+      tools: {},
+    },
+    client_tools_indexing_default: 'enable',
+    search_tool_name: 'IndexSearch',
+    read_tool_name: 'IndexRead',
   }),
   'list_active_sessions': () => ([
     {
@@ -981,6 +989,34 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   ]),
   'update_context_management_config': (args) => {
     toast.success('Context management config updated (demo)')
+    return null
+  },
+  'set_gateway_indexing_permission': (args) => {
+    toast.success('Gateway indexing permission updated (demo)')
+    return null
+  },
+  'get_known_client_tools': (args) => {
+    const templateId = args?.templateId || ''
+    if (templateId === 'claude-code') {
+      return [
+        { name: 'Read', default_state: 'enable', indexable: true },
+        { name: 'Glob', default_state: 'enable', indexable: true },
+        { name: 'Grep', default_state: 'enable', indexable: true },
+        { name: 'WebFetch', default_state: 'enable', indexable: true },
+        { name: 'WebSearch', default_state: 'enable', indexable: true },
+        { name: 'LSP', default_state: 'enable', indexable: true },
+        { name: 'Write', default_state: 'disable', indexable: false },
+        { name: 'Edit', default_state: 'disable', indexable: false },
+        { name: 'Bash', default_state: 'disable', indexable: false },
+        { name: 'Agent', default_state: 'disable', indexable: false },
+      ]
+    }
+    return []
+  },
+  'get_seen_client_tools': () => [],
+  'get_client_tools_indexing': () => null,
+  'set_client_tools_indexing': (args) => {
+    toast.success('Client tools indexing updated (demo)')
     return null
   },
   'preview_catalog_compression': (args) => {

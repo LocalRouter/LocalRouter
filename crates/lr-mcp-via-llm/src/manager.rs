@@ -27,6 +27,10 @@ pub struct McpViaLlmManager {
     pub(crate) pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
     /// Configuration
     config: RwLock<McpViaLlmConfig>,
+    /// Context management configuration (for client tool indexing)
+    context_management_config: RwLock<lr_config::ContextManagementConfig>,
+    /// Seen client tools per client (client_id → tool_names)
+    seen_client_tools: DashMap<String, std::collections::HashSet<String>>,
 }
 
 impl McpViaLlmManager {
@@ -35,6 +39,8 @@ impl McpViaLlmManager {
             sessions_by_client: DashMap::new(),
             pending_executions: Arc::new(DashMap::new()),
             config: RwLock::new(config),
+            context_management_config: RwLock::new(lr_config::ContextManagementConfig::default()),
+            seen_client_tools: DashMap::new(),
         }
     }
 
@@ -42,8 +48,32 @@ impl McpViaLlmManager {
         *self.config.write() = config;
     }
 
+    pub fn update_context_management_config(&self, config: lr_config::ContextManagementConfig) {
+        *self.context_management_config.write() = config;
+    }
+
+    pub fn context_management_config(&self) -> lr_config::ContextManagementConfig {
+        self.context_management_config.read().clone()
+    }
+
     pub fn config(&self) -> McpViaLlmConfig {
         self.config.read().clone()
+    }
+
+    /// Record a seen client tool for a given client.
+    pub fn record_seen_client_tool(&self, client_id: &str, tool_name: &str) {
+        self.seen_client_tools
+            .entry(client_id.to_string())
+            .or_default()
+            .insert(tool_name.to_string());
+    }
+
+    /// Get all seen client tools for a given client.
+    pub fn get_seen_client_tools(&self, client_id: &str) -> Vec<String> {
+        self.seen_client_tools
+            .get(client_id)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Get an existing session or create a new one for this client.
@@ -187,6 +217,7 @@ impl McpViaLlmManager {
                 client_tool_results.len()
             );
 
+            let cm_config = self.context_management_config();
             let result = orchestrator::resume_after_mixed(
                 gateway,
                 router,
@@ -197,6 +228,7 @@ impl McpViaLlmManager {
                 client_tool_results,
                 &config,
                 allowed_servers,
+                &cm_config,
             )
             .await?;
 
@@ -290,6 +322,7 @@ impl McpViaLlmManager {
             );
 
             // Resume: await MCP handles, reconstruct history, then stream
+            let cm_config = self.context_management_config();
             let result = orchestrator::resume_after_mixed(
                 gateway.clone(),
                 &router,
@@ -300,6 +333,7 @@ impl McpViaLlmManager {
                 client_tool_results,
                 &config,
                 allowed_servers.clone(),
+                &cm_config,
             )
             .await?;
 

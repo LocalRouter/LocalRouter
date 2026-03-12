@@ -18,7 +18,9 @@ import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { ToolList } from "@/components/shared/ToolList"
 import type { ToolListItem } from "@/components/shared/ToolList"
-import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo } from "@/types/tauri-commands"
+import { GatewayIndexingTree } from "@/components/permissions/GatewayIndexingTree"
+import { IndexingStateButton } from "@/components/permissions/IndexingStateButton"
+import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo, IndexingState } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
 const DEFAULT_CATALOG_THRESHOLD_BYTES = 1000
@@ -216,8 +218,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                   <CardDescription>
                     Uses deferred loading of tools, prompts, and resources combined with
                     FTS5 search indexing of welcome messages and tool descriptions. When catalogs exceed the
-                    configured threshold, capabilities are hidden and a{" "}
-                    <code className="px-1 py-0.5 rounded bg-muted text-xs">ctx_search</code>{" "}
+                    configured threshold, capabilities are hidden and a search
                     tool lets the AI discover and unhide them on demand.
                   </CardDescription>
                   <p className="text-xs text-muted-foreground mt-1">
@@ -229,7 +230,8 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                 <CardContent>
                   <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
                   <div className="flex flex-wrap gap-1.5">
-                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_search</code>
+                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">{config.search_tool_name}</code>
+                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">{config.read_tool_name}</code>
                   </div>
                 </CardContent>
               </Card>
@@ -704,6 +706,95 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                     Default: {DEFAULT_RESPONSE_THRESHOLD_BYTES.toLocaleString()} bytes. Set higher to compress fewer responses. Set to 0 to always compress.
                   </p>
                 </CardContent>
+              </Card>
+
+              {/* Tool Names */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Tool Names</CardTitle>
+                  <CardDescription>
+                    Configurable names for the injected context management tools.
+                    Change to avoid clashing with client tools (e.g. Claude Code&apos;s Read).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex gap-4 items-center">
+                    <label className="text-sm text-muted-foreground w-24">Search tool:</label>
+                    <Input
+                      defaultValue={config.search_tool_name}
+                      key={`search-name-${config.search_tool_name}`}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim()
+                        if (v && v !== config.search_tool_name) {
+                          updateField("searchToolName", v)
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.target as HTMLInputElement).blur()
+                      }}
+                      className="w-48"
+                    />
+                  </div>
+                  <div className="flex gap-4 items-center">
+                    <label className="text-sm text-muted-foreground w-24">Read tool:</label>
+                    <Input
+                      defaultValue={config.read_tool_name}
+                      key={`read-name-${config.read_tool_name}`}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim()
+                        if (v && v !== config.read_tool_name) {
+                          updateField("readToolName", v)
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.target as HTMLInputElement).blur()
+                      }}
+                      className="w-48"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Changes apply to new sessions only. Active sessions keep the names they started with.
+                  </p>
+                </CardContent>
+              </Card>
+
+              {/* Gateway Indexing Picker */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Gateway Tool Indexing</CardTitle>
+                  <CardDescription>
+                    Control which gateway tools get their responses indexed into FTS5.
+                    Applies to all clients in any mode.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <GatewayIndexingTree
+                    permissions={config.gateway_indexing}
+                    onUpdate={async () => {
+                      const updated = await invoke<ContextManagementConfig>("get_context_management_config")
+                      setConfig(updated)
+                    }}
+                  />
+                </CardContent>
+              </Card>
+
+              {/* Client Tools Indexing Default */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-base">Client Tools Indexing</CardTitle>
+                      <CardDescription className="mt-1.5">
+                        Default for client tool response indexing across all MCP via LLM clients.
+                        Per-client overrides in client settings.
+                      </CardDescription>
+                    </div>
+                    <IndexingStateButton
+                      value={config.client_tools_indexing_default}
+                      onChange={(state: IndexingState) => updateField("clientToolsIndexingDefault", state)}
+                    />
+                  </div>
+                </CardHeader>
               </Card>
 
             </div>

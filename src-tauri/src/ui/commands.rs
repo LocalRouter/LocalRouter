@@ -1655,8 +1655,12 @@ pub async fn update_context_management_config(
     catalog_compression: Option<bool>,
     catalog_threshold_bytes: Option<usize>,
     response_threshold_bytes: Option<usize>,
+    search_tool_name: Option<String>,
+    read_tool_name: Option<String>,
+    client_tools_indexing_default: Option<String>,
     config_manager: State<'_, ConfigManager>,
     context_mode_vs: State<'_, Arc<lr_mcp::gateway::context_mode::ContextModeVirtualServer>>,
+    mcp_via_llm_manager: State<'_, Arc<lr_mcp_via_llm::McpViaLlmManager>>,
 ) -> Result<(), String> {
     config_manager
         .update(|cfg| {
@@ -1672,15 +1676,111 @@ pub async fn update_context_management_config(
             if let Some(v) = response_threshold_bytes {
                 cfg.context_management.response_threshold_bytes = v;
             }
+            if let Some(v) = search_tool_name {
+                if !v.is_empty() {
+                    cfg.context_management.search_tool_name = v;
+                }
+            }
+            if let Some(v) = read_tool_name {
+                if !v.is_empty() {
+                    cfg.context_management.read_tool_name = v;
+                }
+            }
+            if let Some(v) = &client_tools_indexing_default {
+                cfg.context_management.client_tools_indexing_default = match v.as_str() {
+                    "disable" => lr_config::IndexingState::Disable,
+                    _ => lr_config::IndexingState::Enable,
+                };
+            }
         })
         .map_err(|e| e.to_string())?;
 
-    // Propagate updated config to the in-memory virtual server
+    // Propagate updated config to the in-memory virtual server + MCP via LLM manager
     let new_config = config_manager.get().context_management.clone();
-    context_mode_vs.update_config(new_config);
+    context_mode_vs.update_config(new_config.clone());
+    mcp_via_llm_manager.update_context_management_config(new_config);
 
     config_manager.save().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Set a gateway indexing permission at global, server, or tool level.
+#[tauri::command]
+pub async fn set_gateway_indexing_permission(
+    level: String,
+    key: Option<String>,
+    state: String,
+    config_manager: State<'_, ConfigManager>,
+    context_mode_vs: State<'_, Arc<lr_mcp::gateway::context_mode::ContextModeVirtualServer>>,
+    mcp_via_llm_manager: State<'_, Arc<lr_mcp_via_llm::McpViaLlmManager>>,
+) -> Result<(), String> {
+    let indexing_state = match state.as_str() {
+        "disable" => lr_config::IndexingState::Disable,
+        _ => lr_config::IndexingState::Enable,
+    };
+
+    config_manager
+        .update(|cfg| {
+            match level.as_str() {
+                "global" => {
+                    cfg.context_management.gateway_indexing.global = indexing_state.clone();
+                }
+                "server" => {
+                    if let Some(ref k) = key {
+                        cfg.context_management
+                            .gateway_indexing
+                            .servers
+                            .insert(k.clone(), indexing_state.clone());
+                    }
+                }
+                "tool" => {
+                    if let Some(ref k) = key {
+                        cfg.context_management
+                            .gateway_indexing
+                            .tools
+                            .insert(k.clone(), indexing_state.clone());
+                    }
+                }
+                "server_clear" => {
+                    if let Some(ref k) = key {
+                        cfg.context_management.gateway_indexing.servers.remove(k);
+                    }
+                }
+                "tool_clear" => {
+                    if let Some(ref k) = key {
+                        cfg.context_management.gateway_indexing.tools.remove(k);
+                    }
+                }
+                _ => {}
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    let new_config = config_manager.get().context_management.clone();
+    context_mode_vs.update_config(new_config.clone());
+    mcp_via_llm_manager.update_context_management_config(new_config);
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Get known client tools for a given template ID.
+#[tauri::command]
+pub async fn get_known_client_tools(
+    template_id: String,
+) -> Result<Vec<lr_config::known_client_tools::KnownToolEntry>, String> {
+    Ok(lr_config::known_client_tools::known_tools_for_template(
+        &template_id,
+    ))
+}
+
+/// Get seen client tools for a given client (auto-discovered at runtime).
+#[tauri::command]
+pub async fn get_seen_client_tools(
+    client_id: String,
+    mcp_via_llm_manager: State<'_, Arc<lr_mcp_via_llm::McpViaLlmManager>>,
+) -> Result<Vec<String>, String> {
+    Ok(mcp_via_llm_manager.get_seen_client_tools(&client_id))
 }
 
 /// Preview catalog compression at a given threshold.

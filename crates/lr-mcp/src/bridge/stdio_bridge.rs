@@ -421,6 +421,7 @@ mod tests {
                 json_repair: lr_config::ClientJsonRepairConfig::default(),
                 mcp_sampling_permission: PermissionState::Ask,
                 mcp_elicitation_permission: PermissionState::Ask,
+                client_tools_indexing: None,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -457,6 +458,7 @@ mod tests {
                 json_repair: lr_config::ClientJsonRepairConfig::default(),
                 mcp_sampling_permission: PermissionState::Ask,
                 mcp_elicitation_permission: PermissionState::Ask,
+                client_tools_indexing: None,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -493,6 +495,7 @@ mod tests {
                 json_repair: lr_config::ClientJsonRepairConfig::default(),
                 mcp_sampling_permission: PermissionState::Ask,
                 mcp_elicitation_permission: PermissionState::Ask,
+                client_tools_indexing: None,
             },
         ];
         config

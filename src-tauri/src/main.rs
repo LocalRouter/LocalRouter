@@ -710,6 +710,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 // Set app handle on AppState for event emission
                 app_state.set_app_handle(app.handle().clone());
 
+                // Manage the MCP via LLM manager separately for Tauri command access
+                app.manage(app_state.mcp_via_llm_manager.clone());
+
                 let app_state = Arc::new(app_state);
                 app.manage(app_state.clone());
 
@@ -1849,6 +1852,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_skill,
             ui::commands::get_context_management_config,
             ui::commands::update_context_management_config,
+            ui::commands::set_gateway_indexing_permission,
+            ui::commands::get_known_client_tools,
+            ui::commands::get_seen_client_tools,
+            ui::commands::get_client_tools_indexing,
+            ui::commands::set_client_tools_indexing,
             ui::commands::preview_catalog_compression,
             ui::commands::list_active_sessions,
             ui::commands::terminate_session,

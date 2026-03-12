@@ -978,6 +978,7 @@ impl McpGateway {
                 context_management_enabled: false,
                 catalog_compression: None,
                 virtual_instructions,
+                ..Default::default()
             });
 
             let merged = MergedCapabilities {
@@ -1134,6 +1135,7 @@ impl McpGateway {
                     context_management_enabled: false,
                     catalog_compression: None,
                     virtual_instructions,
+                    ..Default::default()
                 });
 
                 let merged = MergedCapabilities {
@@ -1215,19 +1217,19 @@ impl McpGateway {
         let virtual_instructions = self.collect_virtual_instructions(&session).await;
 
         // Check if context management is enabled for this session
-        let (cm_enabled, cm_catalog_threshold) = {
+        let (cm_enabled, cm_catalog_threshold, cm_search_tool_name) = {
             let session_read = session.read().await;
             if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
                 if let Some(cm_state) = state
                     .as_any()
                     .downcast_ref::<super::context_mode::ContextModeSessionState>()
                 {
-                    (cm_state.enabled, cm_state.catalog_threshold_bytes)
+                    (cm_state.enabled, cm_state.catalog_threshold_bytes, cm_state.search_tool_name.clone())
                 } else {
-                    (false, 0)
+                    (false, 0, "IndexSearch".to_string())
                 }
             } else {
-                (false, 0)
+                (false, 0, "IndexSearch".to_string())
             }
         };
 
@@ -1290,18 +1292,22 @@ impl McpGateway {
             let client_id_bg = client_id_for_log.clone();
 
             tokio::spawn(async move {
-                // Get a reference to the ContentStore (Arc clone)
-                let store = {
+                // Get a reference to the ContentStore and gateway indexing permissions (Arc clone)
+                let (store, gateway_indexing) = {
                     let session_read = session_bg.read().await;
                     if let Some(state) =
                         session_read.virtual_server_state.get("_context_mode")
                     {
-                        state
+                        if let Some(cm) = state
                             .as_any()
                             .downcast_ref::<super::context_mode::ContextModeSessionState>()
-                            .map(|cm| cm.store.clone())
+                        {
+                            (Some(cm.store.clone()), cm.gateway_indexing.clone())
+                        } else {
+                            (None, lr_config::GatewayIndexingPermissions::default())
+                        }
                     } else {
-                        None
+                        (None, lr_config::GatewayIndexingPermissions::default())
                     }
                 };
 
@@ -1319,19 +1325,37 @@ impl McpGateway {
                 let store_idx = store.clone();
                 let client_id_idx = client_id_bg.clone();
 
+                let gateway_perms = gateway_indexing.clone();
                 let indexing_result = tokio::task::spawn_blocking(move || {
+                    let mut indexed_count = 0u32;
+                    let mut skipped_count = 0u32;
+
                     for info in &server_infos_idx {
-                        let content = build_full_server_content(info);
                         let slug = super::types::slugify(&info.name);
+                        if !gateway_perms.is_server_eligible(&slug) {
+                            skipped_count += 1;
+                            continue;
+                        }
+                        let content = build_full_server_content(info);
                         if let Err(e) = store_idx.index(&format!("catalog:{}", slug), &content) {
                             tracing::warn!(
                                 "Failed to index catalog for server {}: {}",
                                 slug, e
                             );
                         }
+                        indexed_count += 1;
                     }
 
                     for tool in &tools_idx {
+                        // Parse server_slug and original_name from namespaced name "server__tool"
+                        let (server_slug, original_name) = match tool.name.split_once("__") {
+                            Some((s, t)) => (s, t),
+                            None => (tool.name.as_str(), tool.name.as_str()),
+                        };
+                        if !gateway_perms.is_tool_eligible(server_slug, original_name) {
+                            skipped_count += 1;
+                            continue;
+                        }
                         let content = format!(
                             "{}: {}\nInput: {}",
                             tool.name,
@@ -1343,6 +1367,7 @@ impl McpGateway {
                         {
                             tracing::warn!("Failed to index tool {}: {}", tool.name, e);
                         }
+                        indexed_count += 1;
                     }
 
                     for resource in &resources_idx {
@@ -1360,6 +1385,7 @@ impl McpGateway {
                                 resource.name, e
                             );
                         }
+                        indexed_count += 1;
                     }
 
                     for prompt in &prompts_idx {
@@ -1376,12 +1402,14 @@ impl McpGateway {
                                 prompt.name, e
                             );
                         }
+                        indexed_count += 1;
                     }
 
                     tracing::info!(
-                        "Context management catalog indexed for client {}: {} servers",
+                        "Context management catalog indexed for client {}: {} indexed, {} skipped",
                         &client_id_idx[..8.min(client_id_idx.len())],
-                        server_infos_idx.len(),
+                        indexed_count,
+                        skipped_count,
                     );
                 })
                 .await;
@@ -1446,6 +1474,7 @@ impl McpGateway {
             context_management_enabled: cm_enabled,
             catalog_compression: None,
             virtual_instructions,
+            search_tool_name: cm_search_tool_name,
         };
 
         // Context management: compute compression plan
@@ -2195,6 +2224,7 @@ impl McpGateway {
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
+            ..Default::default()
         })
     }
 

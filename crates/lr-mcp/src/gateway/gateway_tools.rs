@@ -738,7 +738,7 @@ impl McpGateway {
         }
 
         // Check context management state and extract store in a single lock acquisition
-        let (threshold, run_id, store) = {
+        let (threshold, run_id, store, search_tool_name) = {
             let mut session_write = session.write().await;
             if let Some(state) = session_write.virtual_server_state.get_mut("_context_mode") {
                 if let Some(cm_state) = state
@@ -748,8 +748,20 @@ impl McpGateway {
                     if !cm_state.enabled || full_text.len() <= cm_state.response_threshold_bytes {
                         return response;
                     }
+                    // Skip compression for our own search/read tools
+                    if tool_name == cm_state.search_tool_name || tool_name == cm_state.read_tool_name {
+                        return response;
+                    }
+                    // Check gateway indexing eligibility
+                    let (server_slug, original_name) = match tool_name.split_once("__") {
+                        Some((s, t)) => (s, t),
+                        None => (tool_name, tool_name),
+                    };
+                    if !cm_state.gateway_indexing.is_tool_eligible(server_slug, original_name) {
+                        return response;
+                    }
                     let run_id = cm_state.next_run_id(tool_name);
-                    (cm_state.response_threshold_bytes, run_id, cm_state.store.clone())
+                    (cm_state.response_threshold_bytes, run_id, cm_state.store.clone(), cm_state.search_tool_name.clone())
                 } else {
                     return response;
                 }
@@ -789,8 +801,8 @@ impl McpGateway {
         let preview = truncate_to_char_boundary(&full_text, preview_bytes);
         let compressed_text = format!(
             "[Response compressed — {} bytes indexed as {}]\n\n{}\n\nFull output indexed. \
-             Use ctx_search(queries=[\"your search terms\"], source=\"{}\") to retrieve specific sections.",
-            byte_size, source, preview, source
+             Use {}(queries=[\"your search terms\"], source=\"{}\") to retrieve specific sections.",
+            byte_size, source, preview, search_tool_name, source
         );
 
         // Build new response with compressed content
