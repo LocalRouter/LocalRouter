@@ -1165,52 +1165,25 @@ async fn run_prompt_compression(
         return Ok(None);
     }
 
-    // Resolve per-client settings (client overrides > global defaults)
-    let (
-        enabled,
-        min_messages,
-        preserve_recent,
-        rate,
-        compress_system,
-        min_message_words,
-        preserve_quoted,
-        compression_notice,
-    ) = if let Some(client_ctx) = client_context {
+    // Check per-client enabled override (None=inherit global, Some(false)=off)
+    if let Some(client_ctx) = client_context {
         if let Some(client) = state.client_manager.get_client(&client_ctx.client_id) {
-            let pc = &client.prompt_compression;
-            (
-                pc.enabled.unwrap_or(true), // inherit global (enabled)
-                pc.min_messages
-                    .unwrap_or(config.prompt_compression.min_messages),
-                pc.preserve_recent
-                    .unwrap_or(config.prompt_compression.preserve_recent),
-                pc.rate.unwrap_or(config.prompt_compression.default_rate),
-                pc.compress_system_prompt
-                    .unwrap_or(config.prompt_compression.compress_system_prompt),
-                config.prompt_compression.min_message_words,
-                config.prompt_compression.preserve_quoted_text,
-                config.prompt_compression.compression_notice,
-            )
+            if let Some(false) = client.prompt_compression.enabled {
+                return Ok(None); // Client explicitly disabled compression
+            }
         } else {
             return Ok(None); // Unknown client
         }
-    } else {
-        // No client context — use global defaults
-        (
-            true,
-            config.prompt_compression.min_messages,
-            config.prompt_compression.preserve_recent,
-            config.prompt_compression.default_rate,
-            config.prompt_compression.compress_system_prompt,
-            config.prompt_compression.min_message_words,
-            config.prompt_compression.preserve_quoted_text,
-            config.prompt_compression.compression_notice,
-        )
-    };
-
-    if !enabled {
-        return Ok(None);
     }
+
+    // Use global settings for all compression parameters
+    let min_messages = config.prompt_compression.min_messages;
+    let preserve_recent = config.prompt_compression.preserve_recent;
+    let rate = config.prompt_compression.default_rate;
+    let compress_system = config.prompt_compression.compress_system_prompt;
+    let min_message_words = config.prompt_compression.min_message_words;
+    let preserve_quoted = config.prompt_compression.preserve_quoted_text;
+    let compression_notice = config.prompt_compression.compression_notice;
 
     // Check minimum message count
     if request.messages.len() < min_messages as usize {
@@ -1284,13 +1257,15 @@ async fn run_guardrails_scan(
         }
     };
 
-    // Check if guardrails are enabled (per-client override > global default)
-    let enabled = client
-        .guardrails
-        .enabled
-        .unwrap_or(config.guardrails.enabled);
-    if !enabled || client.guardrails.category_actions.is_empty() || !config.guardrails.scan_requests
-    {
+    if !config.guardrails.scan_requests {
+        return Ok(None);
+    }
+
+    // Resolve effective category actions: per-client override > global default
+    let effective_category_actions = client.guardrails.category_actions.as_deref()
+        .unwrap_or(&config.guardrails.category_actions);
+
+    if effective_category_actions.is_empty() {
         return Ok(None);
     }
 
@@ -1313,26 +1288,19 @@ async fn run_guardrails_scan(
         return Ok(None);
     }
 
-    // Apply per-client category overrides (if configured)
-    let result = if !client.guardrails.category_actions.is_empty() {
-        let overrides: Vec<(String, lr_guardrails::CategoryAction)> = client
-            .guardrails
-            .category_actions
-            .iter()
-            .filter_map(|entry| {
-                let action: lr_guardrails::CategoryAction =
-                    serde_json::from_value(serde_json::Value::String(entry.action.clone())).ok()?;
-                Some((entry.category.clone(), action))
-            })
-            .collect();
-        let result = result.apply_client_category_overrides(&overrides);
-        if result.is_safe {
-            return Ok(None);
-        }
-        result
-    } else {
-        result
-    };
+    // Apply category action overrides
+    let overrides: Vec<(String, lr_guardrails::CategoryAction)> = effective_category_actions
+        .iter()
+        .filter_map(|entry| {
+            let action: lr_guardrails::CategoryAction =
+                serde_json::from_value(serde_json::Value::String(entry.action.clone())).ok()?;
+            Some((entry.category.clone(), action))
+        })
+        .collect();
+    let result = result.apply_client_category_overrides(&overrides);
+    if result.is_safe {
+        return Ok(None);
+    }
 
     tracing::info!(
         "Safety check: {} flagged categories for client {} (model: {})",
@@ -1391,7 +1359,10 @@ async fn handle_guardrail_approval(
             .has_valid_denial(&client_ctx.client_id),
         category_actions_empty: client
             .as_ref()
-            .map(|c| c.guardrails.category_actions.is_empty())
+            .map(|c| {
+                c.guardrails.category_actions.as_ref().map_or(true, |a| a.is_empty())
+                    && state.config_manager.get().guardrails.category_actions.is_empty()
+            })
             .unwrap_or(true),
     };
 

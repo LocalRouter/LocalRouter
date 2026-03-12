@@ -2290,13 +2290,14 @@ export interface CreateTestClientForStrategyParams {
 export interface GuardrailsConfig {
   scan_requests: boolean
   safety_models: SafetyModelConfig[]
+  category_actions: CategoryActionEntry[]
   default_confidence_threshold: number
   parallel_guardrails: boolean
 }
 
 /** Per-client guardrails configuration */
 export interface ClientGuardrailsConfig {
-  category_actions: CategoryActionEntry[]
+  category_actions: CategoryActionEntry[] | null
 }
 
 /** Configuration for a safety model */
@@ -2626,10 +2627,6 @@ export interface PromptCompressionConfig {
 /** Per-client prompt compression configuration */
 export interface ClientPromptCompressionConfig {
   enabled: boolean | null
-  min_messages: number | null
-  preserve_recent: number | null
-  rate: number | null
-  compress_system_prompt: boolean | null
 }
 
 /** Compression model status */

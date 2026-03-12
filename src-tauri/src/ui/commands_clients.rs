@@ -68,7 +68,9 @@ pub struct ClientInfo {
 #[tauri::command]
 pub async fn list_clients(
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<Vec<ClientInfo>, String> {
+    let config = config_manager.get();
     let clients = client_manager.list_clients();
     Ok(clients
         .into_iter()
@@ -94,11 +96,11 @@ pub async fn list_clients(
             client_mode: c.client_mode.clone(),
             template_id: c.template_id.clone(),
             sync_config: c.sync_config,
-            guardrails_active: c
-                .guardrails
-                .category_actions
-                .iter()
-                .any(|a| a.action != "allow"),
+            guardrails_active: {
+                let effective_actions = c.guardrails.category_actions.as_deref()
+                    .unwrap_or(&config.guardrails.category_actions);
+                effective_actions.iter().any(|a| a.action != "allow")
+            },
         })
         .collect())
 }
@@ -162,11 +164,12 @@ pub async fn create_client(
         client_mode: client.client_mode.clone(),
         template_id: client.template_id.clone(),
         sync_config: client.sync_config,
-        guardrails_active: client
-            .guardrails
-            .category_actions
-            .iter()
-            .any(|a| a.action != "allow"),
+        guardrails_active: {
+            let cfg = config_manager.get();
+            let effective_actions = client.guardrails.category_actions.as_deref()
+                .unwrap_or(&cfg.guardrails.category_actions);
+            effective_actions.iter().any(|a| a.action != "allow")
+        },
     };
 
     Ok((secret, client_info))
@@ -823,7 +826,7 @@ pub async fn submit_firewall_approval(
                             if let Some(client) =
                                 cfg.clients.iter_mut().find(|c| c.id == info.client_id)
                             {
-                                client.guardrails.category_actions.clear();
+                                client.guardrails.category_actions = None;
                             }
                         })
                         .map_err(|e| e.to_string())?;
@@ -972,7 +975,7 @@ pub async fn submit_firewall_approval(
                             if let Some(client) =
                                 cfg.clients.iter_mut().find(|c| c.id == info.client_id)
                             {
-                                client.guardrails.category_actions.clear();
+                                client.guardrails.category_actions = None;
                             }
                         })
                         .map_err(|e| e.to_string())?;
@@ -1035,15 +1038,14 @@ pub async fn submit_firewall_approval(
                                 {
                                     for category in &flagged_categories {
                                         // Update or add the category action to "block"
-                                        if let Some(existing) = client
-                                            .guardrails
-                                            .category_actions
+                                        let actions = client.guardrails.category_actions.get_or_insert_with(Vec::new);
+                                        if let Some(existing) = actions
                                             .iter_mut()
                                             .find(|a| a.category == *category)
                                         {
                                             existing.action = "block".to_string();
                                         } else {
-                                            client.guardrails.category_actions.push(
+                                            actions.push(
                                                 lr_config::CategoryActionEntry {
                                                     category: category.clone(),
                                                     action: "block".to_string(),
@@ -1085,15 +1087,14 @@ pub async fn submit_firewall_approval(
                                 {
                                     for category in &flagged_categories {
                                         // Update or add the category action to "allow"
-                                        if let Some(existing) = client
-                                            .guardrails
-                                            .category_actions
+                                        let actions = client.guardrails.category_actions.get_or_insert_with(Vec::new);
+                                        if let Some(existing) = actions
                                             .iter_mut()
                                             .find(|a| a.category == *category)
                                         {
                                             existing.action = "allow".to_string();
                                         } else {
-                                            client.guardrails.category_actions.push(
+                                            actions.push(
                                                 lr_config::CategoryActionEntry {
                                                     category: category.clone(),
                                                     action: "allow".to_string(),
@@ -1244,7 +1245,7 @@ pub(crate) fn reevaluate_pending_approvals(
             FirewallCheckContext::Guardrail {
                 has_time_based_bypass: guardrail_approval_tracker.has_valid_bypass(&info.client_id),
                 has_time_based_denial: guardrail_denial_tracker.has_valid_denial(&info.client_id),
-                category_actions_empty: client.guardrails.category_actions.is_empty(),
+                category_actions_empty: client.guardrails.category_actions.as_ref().map_or(true, |a| a.is_empty()),
             }
         } else if info.is_model_request {
             FirewallCheckContext::Model {

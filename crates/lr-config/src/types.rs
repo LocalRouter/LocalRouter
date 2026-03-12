@@ -1657,7 +1657,6 @@ fn default_main_branch() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GuardrailsConfig {
     /// Migration shim: old master toggle (deserialize only, not serialized)
-    /// Use per-client guardrails.enabled instead
     #[serde(default, skip_serializing)]
     pub enabled: bool,
 
@@ -1673,9 +1672,8 @@ pub struct GuardrailsConfig {
     #[serde(default = "default_safety_models")]
     pub safety_models: Vec<SafetyModelConfig>,
 
-    /// Migration shim: old global category_actions (deserialize only, not serialized)
-    /// Use per-client guardrails.category_actions instead
-    #[serde(default, skip_serializing)]
+    /// Default category actions for all clients. Per-client overrides take precedence.
+    #[serde(default)]
     pub category_actions: Vec<CategoryActionEntry>,
 
     /// Default confidence threshold for flagging (0.0-1.0)
@@ -1711,13 +1709,11 @@ impl Default for GuardrailsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ClientGuardrailsConfig {
     /// Migration shim: old enabled flag (deserialize only, not serialized).
-    /// Having non-allow category_actions means guardrails are active.
     #[serde(default, skip_serializing)]
     pub enabled: bool,
-    /// Per-category actions: allow/notify/ask/block
-    /// Categories are selected here; which models run is derived from which categories are selected
+    /// Per-category actions override: None = inherit global defaults, Some = client-specific.
     #[serde(default)]
-    pub category_actions: Vec<CategoryActionEntry>,
+    pub category_actions: Option<Vec<CategoryActionEntry>>,
 }
 
 /// Configuration for a single safety model
@@ -1870,22 +1866,6 @@ pub struct ClientPromptCompressionConfig {
     /// Enable compression for this client (None=inherit global, Some(bool)=override)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-
-    /// Minimum messages before compression activates (overrides global)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_messages: Option<u32>,
-
-    /// Keep last N messages uncompressed (overrides global)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preserve_recent: Option<u32>,
-
-    /// Compression rate override (0.0-1.0)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rate: Option<f32>,
-
-    /// Override global compress_system_prompt setting
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compress_system_prompt: Option<bool>,
 }
 
 /// JSON repair configuration (automatic JSON healing for LLM responses)

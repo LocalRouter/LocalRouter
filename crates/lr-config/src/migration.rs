@@ -483,28 +483,18 @@ fn migrate_to_v12(mut config: AppConfig) -> AppResult<AppConfig> {
 /// Migrate to version 13: Per-client guardrails configuration
 ///
 /// Moves guardrails from global config to per-client:
-/// - Old `guardrails_enabled: Some(true)` → `guardrails.enabled = true`
-/// - Global `category_actions` are dropped (users reconfigure per-client)
-/// - Global `enabled` and `scan_responses` become migration shims (not serialized)
+/// - Global `category_actions` are preserved as defaults
+/// - Global `enabled` reflects whether guardrails were previously active
 fn migrate_to_v13(mut config: AppConfig) -> AppResult<AppConfig> {
     info!("Migrating to version 13: Per-client guardrails configuration");
 
-    let global_enabled = config.guardrails.enabled;
-
     for client in &mut config.clients {
-        // Migrate old guardrails_enabled override
-        let was_enabled = client.guardrails_enabled.unwrap_or(global_enabled);
-        if was_enabled {
-            client.guardrails.enabled = true;
-        }
         // Clear old field
         client.guardrails_enabled = None;
     }
 
-    // Clear global fields that are no longer used
-    config.guardrails.enabled = false;
+    // Clear scan_responses migration shim
     config.guardrails.scan_responses = false;
-    config.guardrails.category_actions = vec![];
 
     config.version = 13;
     Ok(config)

@@ -278,13 +278,15 @@ async fn run_guardrails_scan(
     let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
     let config = state.config_manager.get();
 
-    // Check if guardrails are enabled (per-client override > global default)
-    let enabled = client
-        .guardrails
-        .enabled
-        .unwrap_or(config.guardrails.enabled);
-    if !enabled || client.guardrails.category_actions.is_empty() || !config.guardrails.scan_requests
-    {
+    if !config.guardrails.scan_requests {
+        return Ok(None);
+    }
+
+    // Resolve effective category actions: per-client override > global default
+    let effective_category_actions = client.guardrails.category_actions.as_deref()
+        .unwrap_or(&config.guardrails.category_actions);
+
+    if effective_category_actions.is_empty() {
         return Ok(None);
     }
 
@@ -302,26 +304,19 @@ async fn run_guardrails_scan(
         return Ok(None);
     }
 
-    // Apply per-client category overrides (if configured)
-    let result = if !client.guardrails.category_actions.is_empty() {
-        let overrides: Vec<(String, lr_guardrails::CategoryAction)> = client
-            .guardrails
-            .category_actions
-            .iter()
-            .filter_map(|entry| {
-                let action: lr_guardrails::CategoryAction =
-                    serde_json::from_value(serde_json::Value::String(entry.action.clone())).ok()?;
-                Some((entry.category.clone(), action))
-            })
-            .collect();
-        let result = result.apply_client_category_overrides(&overrides);
-        if result.is_safe {
-            return Ok(None);
-        }
-        result
-    } else {
-        result
-    };
+    // Apply category action overrides
+    let overrides: Vec<(String, lr_guardrails::CategoryAction)> = effective_category_actions
+        .iter()
+        .filter_map(|entry| {
+            let action: lr_guardrails::CategoryAction =
+                serde_json::from_value(serde_json::Value::String(entry.action.clone())).ok()?;
+            Some((entry.category.clone(), action))
+        })
+        .collect();
+    let result = result.apply_client_category_overrides(&overrides);
+    if result.is_safe {
+        return Ok(None);
+    }
 
     tracing::info!(
         "Safety check: {} flagged categories for client {} (model: {})",

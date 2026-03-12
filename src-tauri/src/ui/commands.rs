@@ -3107,6 +3107,8 @@ pub async fn test_safety_check(
             let overrides: Vec<(String, lr_guardrails::CategoryAction)> = client
                 .guardrails
                 .category_actions
+                .as_deref()
+                .unwrap_or_default()
                 .iter()
                 .filter_map(|entry| {
                     let action: lr_guardrails::CategoryAction =
@@ -3711,7 +3713,6 @@ pub async fn cancel_elicitation(
 /// Debug: trigger a sampling approval popup with fake data
 #[tauri::command]
 pub async fn debug_trigger_sampling_approval_popup(
-    app: AppHandle,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
     use lr_mcp::protocol::{SamplingContent, SamplingMessage, SamplingRequest};
@@ -3740,33 +3741,8 @@ pub async fn debug_trigger_sampling_approval_popup(
             .await;
     });
 
-    // Small delay to let the session be created
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    // Open the popup window
-    use tauri::WebviewWindowBuilder;
-    match WebviewWindowBuilder::new(
-        &app,
-        format!("sampling-approval-{}", request_id),
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Sampling Approval")
-    .inner_size(400.0, 320.0)
-    .center()
-    .visible(false)
-    .resizable(false)
-    .decorations(true)
-    .always_on_top(true)
-    .build()
-    {
-        Ok(window) => {
-            let _ = window.set_focus();
-            tracing::info!("Debug sampling approval popup opened: {}", request_id);
-        }
-        Err(e) => {
-            tracing::error!("Failed to create sampling approval popup: {}", e);
-        }
-    }
+    // The broadcast listener in main.rs will create the popup window
+    tracing::info!("Debug sampling approval request created: {}", request_id);
 
     Ok(())
 }
@@ -3774,7 +3750,6 @@ pub async fn debug_trigger_sampling_approval_popup(
 /// Debug: trigger an elicitation form popup with fake data
 #[tauri::command]
 pub async fn debug_trigger_elicitation_form_popup(
-    app: AppHandle,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
     use lr_mcp::protocol::ElicitationRequest;
@@ -3820,37 +3795,8 @@ pub async fn debug_trigger_elicitation_form_popup(
             .await;
     });
 
-    // Small delay to let the session be created
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    // Get the actual request_id from the pending list
-    let pending = state.mcp_gateway.get_elicitation_manager().list_pending();
-    let actual_request_id = pending.last().cloned().unwrap_or(request_id.clone());
-
-    // Open the popup window
-    use tauri::WebviewWindowBuilder;
-    match WebviewWindowBuilder::new(
-        &app,
-        format!("elicitation-form-{}", actual_request_id),
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Input Required")
-    .inner_size(400.0, 420.0)
-    .center()
-    .visible(false)
-    .resizable(true)
-    .decorations(true)
-    .always_on_top(true)
-    .build()
-    {
-        Ok(window) => {
-            let _ = window.set_focus();
-            tracing::info!("Debug elicitation form popup opened: {}", request_id);
-        }
-        Err(e) => {
-            tracing::error!("Failed to create elicitation form popup: {}", e);
-        }
-    }
+    // The broadcast listener in main.rs will create the popup window
+    tracing::info!("Debug elicitation form request created: {}", request_id);
 
     Ok(())
 }
