@@ -9,6 +9,8 @@
  *   - MCP Only: single arrow with server node
  */
 
+import { open } from "@tauri-apps/plugin-shell"
+
 import type { ClientMode } from "@/types/tauri-commands"
 import type { ClientTemplate } from "@/components/client/ClientTemplates"
 
@@ -147,6 +149,20 @@ export function ClientModeSelector({ mode, onModeChange, template }: ClientModeS
                 {option.description}
                 {!allowed && template && ` (not supported by ${template.name})`}
               </p>
+              {option.value === "mcp_via_llm" && selected && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1.5 leading-relaxed">
+                  This mode modifies requests and may cause unexpected responses. Legacy Completions API is not supported.{" "}
+                  <span
+                    role="link"
+                    tabIndex={0}
+                    className="underline cursor-pointer hover:text-amber-700 dark:hover:text-amber-300"
+                    onClick={(e) => { e.stopPropagation(); open("https://localrouter.ai/docs/mcp-via-llm") }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); open("https://localrouter.ai/docs/mcp-via-llm") } }}
+                  >
+                    Learn more
+                  </span>
+                </p>
+              )}
             </div>
           </button>
         )

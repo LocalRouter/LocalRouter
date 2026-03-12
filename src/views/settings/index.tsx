@@ -18,7 +18,7 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 max-w-5xl">
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><SettingsIcon className="h-6 w-6" />Settings</h1>
         <p className="text-sm text-muted-foreground">

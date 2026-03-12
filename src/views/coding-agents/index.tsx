@@ -98,6 +98,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
 
   // Tool definitions state
   const [agentTools, setAgentTools] = useState<ToolListItem[]>([])
+  const [infoTools, setInfoTools] = useState<ToolListItem[]>([])
 
   // Session detail state
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
@@ -202,6 +203,25 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
       .catch(() => setAgentVersion(null))
       .finally(() => setVersionLoading(false))
   }, [selectedAgent, agents])
+
+  // Load tool definitions for the Info tab (unified tools, same for all agents)
+  useEffect(() => {
+    if (agents.length === 0) return
+    const firstAgent = agents[0]
+    invoke<ToolDefinition[]>("get_coding_agent_tool_definitions", {
+      agentType: firstAgent.agentType,
+    } satisfies GetCodingAgentToolDefinitionsParams as Record<string, unknown>)
+      .then((defs) =>
+        setInfoTools(
+          defs.map((d): ToolListItem => ({
+            name: d.name,
+            description: d.description,
+            inputSchema: d.input_schema,
+          }))
+        )
+      )
+      .catch(() => setInfoTools([]))
+  }, [agents])
 
   // Load tool definitions when selecting an agent
   useEffect(() => {
@@ -319,7 +339,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
 
   if (loading) {
     return (
-      <div className="flex flex-col h-full min-h-0">
+      <div className="flex flex-col h-full min-h-0 max-w-5xl">
         <div className="flex-shrink-0 pb-4">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <CodingAgentsIcon className="h-6 w-6" />
@@ -332,7 +352,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 max-w-5xl">
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <CodingAgentsIcon className="h-6 w-6" />
@@ -349,6 +369,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
+          <TabsTrigger value="info">Info</TabsTrigger>
           <TabsTrigger value="agents">Agents</TabsTrigger>
           <TabsTrigger value="sessions">
             Sessions
@@ -360,6 +381,71 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
           </TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
+
+        {/* Info Tab */}
+        <TabsContent value="info" className="flex-1 min-h-0 mt-4">
+          <ScrollArea className="h-full">
+            <div className="space-y-6 max-w-2xl">
+              <Card>
+                <CardHeader>
+                  <CardTitle>What are Coding Agents?</CardTitle>
+                  <CardDescription>
+                    LocalRouter can orchestrate AI coding agents as MCP tools through the Unified MCP Gateway.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4 text-sm text-muted-foreground">
+                  <p>
+                    Any MCP client can spawn, interact with, and manage coding agent sessions &mdash; turning LocalRouter into a multi-agent orchestration hub.
+                    Supported agents include Claude Code, Gemini CLI, Codex, Amp, Aider, and more.
+                  </p>
+                  <p>
+                    Coding agents are <strong className="text-foreground">implicitly available</strong> when their binary is found on the system PATH.
+                    No manual installation through LocalRouter is required &mdash; install a supported agent and it appears automatically.
+                  </p>
+                  <p>
+                    Sessions are strictly tied to the creating client. No cross-client session visibility or sharing.
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Enabling for a Client</CardTitle>
+                  <CardDescription>
+                    Coding agent access is configured per-client.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm text-muted-foreground">
+                  <p>
+                    To enable coding agents for a client, go to the client's <strong className="text-foreground">Coding Agents</strong> tab and configure:
+                  </p>
+                  <ul className="list-disc list-inside space-y-1.5 ml-1">
+                    <li><strong className="text-foreground">Permission</strong> &mdash; Allow, Ask (requires approval on session start), or Off</li>
+                    <li><strong className="text-foreground">Agent type</strong> &mdash; Select which installed coding agent the client uses</li>
+                  </ul>
+                  <p>
+                    Each client can be assigned one coding agent type. The selected agent determines which binary is spawned and what capabilities are available.
+                  </p>
+                </CardContent>
+              </Card>
+
+              {infoTools.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>MCP Tools</CardTitle>
+                    <CardDescription>
+                      When enabled, the client gets access to {infoTools.length} unified coding agent tools.
+                      The same tools are used regardless of which agent is assigned &mdash; the gateway routes to the correct agent automatically.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <ToolList tools={infoTools} />
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </ScrollArea>
+        </TabsContent>
 
         {/* Agents Tab */}
         <TabsContent value="agents" className="flex-1 min-h-0 mt-4">

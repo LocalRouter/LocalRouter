@@ -277,6 +277,7 @@ export function StepExtensions({
               value={localMarketplace}
               onChange={handleMarketplacePermissionChange}
               disabled={saving}
+              allowedStates={["ask", "off"]}
             />
           </div>
         </div>

@@ -10,6 +10,8 @@ interface PermissionStateButtonProps {
   inherited?: boolean
   /** States that children have explicitly set (shown as transparent indicators) */
   childRollupStates?: Set<PermissionState>
+  /** Restrict which states are available (defaults to all three) */
+  allowedStates?: PermissionState[]
 }
 
 const stateConfig: Record<PermissionState, { label: string; activeClass: string; rollupClass: string }> = {
@@ -37,7 +39,9 @@ export function PermissionStateButton({
   size = "md",
   inherited = false,
   childRollupStates,
+  allowedStates,
 }: PermissionStateButtonProps) {
+  const states = allowedStates ?? (["allow", "ask", "off"] as PermissionState[])
   return (
     <div
       className={cn(
@@ -45,7 +49,7 @@ export function PermissionStateButton({
         disabled && "opacity-50 pointer-events-none"
       )}
     >
-      {(["allow", "ask", "off"] as PermissionState[]).map((state) => {
+      {states.map((state) => {
         const config = stateConfig[state]
         const isActive = value === state
         const isChildRollup = childRollupStates?.has(state) && !isActive
@@ -79,8 +83,8 @@ export function PermissionStateButton({
               "transition-colors font-medium",
               size === "sm" ? "px-2 py-0.5 text-xs" : "px-3 py-1 text-sm",
               getButtonClass(),
-              state === "allow" && "rounded-l-md",
-              state === "off" && "rounded-r-md"
+              state === states[0] && "rounded-l-md",
+              state === states[states.length - 1] && "rounded-r-md"
             )}
           >
             {config.label}

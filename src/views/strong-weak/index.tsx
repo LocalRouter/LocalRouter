@@ -156,7 +156,7 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 max-w-5xl">
       <div className="flex-shrink-0 pb-4">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
@@ -183,7 +183,7 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
 
         {/* Model Tab */}
         <TabsContent value="model" className="flex-1 min-h-0 mt-4">
-          <div className="space-y-4">
+          <div className="space-y-4 max-w-2xl">
             {/* Resource Requirements */}
             <Card className="border-yellow-600/50 bg-yellow-500/5">
               <CardHeader className="pb-3">
@@ -260,31 +260,33 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
 
         {/* Try It Out Tab */}
         <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
-          {!isReady ? (
-            <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground text-center py-4">
-                  Download the model first to use Try It Out
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            <Card>
-              <CardContent className="pt-6">
-                <ThresholdSelector
-                  value={testThreshold}
-                  onChange={setTestThreshold}
-                  showTryItOut
-                  disabled={!isReady}
-                />
-              </CardContent>
-            </Card>
-          )}
+          <div className="max-w-2xl">
+            {!isReady ? (
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    Download the model first to use Try It Out
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <CardContent className="pt-6">
+                  <ThresholdSelector
+                    value={testThreshold}
+                    onChange={setTestThreshold}
+                    showTryItOut
+                    disabled={!isReady}
+                  />
+                </CardContent>
+              </Card>
+            )}
+          </div>
         </TabsContent>
 
         {/* Settings Tab */}
         <TabsContent value="settings" className="flex-1 min-h-0 mt-4">
-          <div className="space-y-4">
+          <div className="space-y-4 max-w-2xl">
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm">Memory Management</CardTitle>

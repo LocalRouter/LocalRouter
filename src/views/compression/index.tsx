@@ -133,7 +133,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
   const inputWords = useMemo(() => testInput.split(/\s+/).filter(Boolean), [testInput])
 
   return (
-    <div className="flex flex-col h-full p-6 gap-4">
+    <div className="flex flex-col h-full min-h-0 gap-4 max-w-5xl">
       <div className="flex-shrink-0">
         <div className="flex items-center gap-3 mb-1">
           <h1 className="text-xl font-semibold flex items-center gap-2">
@@ -243,7 +243,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Global Enable Prompt Compression</CardTitle>
+                    <CardTitle className="text-base">Default: Prompt Compression</CardTitle>
                     <Switch
                       checked={config.enabled}
                       onCheckedChange={(enabled) => updateConfig({ enabled })}

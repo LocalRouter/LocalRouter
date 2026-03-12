@@ -286,7 +286,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
     .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 max-w-5xl">
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <SkillsIcon className="h-6 w-6" />

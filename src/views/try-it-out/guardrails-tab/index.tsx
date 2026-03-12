@@ -88,7 +88,7 @@ export function GuardrailsTab({ initialClientId, forcedMode, hideModeSwitcher, f
       invoke<ClientGuardrailsConfig>("get_client_guardrails_config", {
         clientId: selectedClientId,
       } as Record<string, unknown>)
-        .then((config) => setClientCategories(config.category_actions))
+        .then((config) => setClientCategories(config.category_actions ?? []))
         .catch(() => setClientCategories([]))
     } else {
       setClientCategories([])

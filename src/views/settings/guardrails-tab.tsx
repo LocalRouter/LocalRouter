@@ -29,6 +29,7 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
   const [config, setConfig] = useState<GuardrailsConfig>({
     scan_requests: true,
     safety_models: [],
+    category_actions: [],
     default_confidence_threshold: 0.5,
     parallel_guardrails: true,
   })
@@ -168,7 +169,7 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 max-w-2xl">
       {/* Card: GuardRails */}
       <Card>
         <CardHeader>

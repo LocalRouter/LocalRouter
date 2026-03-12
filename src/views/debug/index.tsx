@@ -94,7 +94,7 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 max-w-5xl">
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight">Debug</h1>
         <p className="text-sm text-muted-foreground">

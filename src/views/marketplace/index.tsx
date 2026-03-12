@@ -43,10 +43,13 @@ import {
   DialogDescription,
 } from "@/components/ui/Modal"
 import { DisabledOverlay } from "@/components/add-resource/DisabledOverlay"
+import { ToolList } from "@/components/shared/ToolList"
+import type { ToolListItem } from "@/components/shared/ToolList"
 import { isValidHttpUrl } from "@/utils/url"
 import { cn } from "@/lib/utils"
 
 import type { McpServerListing, SkillListing } from "@/components/add-resource"
+import type { ToolDefinition } from "@/types/tauri-commands"
 
 interface MarketplaceConfig {
   mcp_enabled: boolean
@@ -75,7 +78,7 @@ interface MarketplaceViewProps {
 }
 
 export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewProps) {
-  const topTab = activeSubTab === "settings" ? "settings" : "browse"
+  const topTab = activeSubTab === "settings" ? "settings" : activeSubTab === "via-mcp" ? "via-mcp" : "browse"
 
   // Config
   const [config, setConfig] = useState<MarketplaceConfig | null>(null)
@@ -110,6 +113,9 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
   const [newSourceLabel, setNewSourceLabel] = useState("")
   const [addingSource, setAddingSource] = useState(false)
   const [addingDefaultSources, setAddingDefaultSources] = useState(false)
+
+  // Via MCP tools state
+  const [marketplaceTools, setMarketplaceTools] = useState<ToolListItem[]>([])
 
   // Skill install dialog state
   const [showInstallDialog, setShowInstallDialog] = useState(false)
@@ -149,6 +155,21 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
     loadConfig()
     loadInstalledSkills()
   }, [loadConfig, loadInstalledSkills])
+
+  // Load marketplace tool definitions for Via MCP tab
+  useEffect(() => {
+    invoke<ToolDefinition[]>("get_marketplace_tool_definitions")
+      .then((defs) =>
+        setMarketplaceTools(
+          defs.map((d): ToolListItem => ({
+            name: d.name,
+            description: d.description,
+            inputSchema: d.input_schema,
+          }))
+        )
+      )
+      .catch(() => setMarketplaceTools([]))
+  }, [])
 
   // Search functions
   const searchMcp = useCallback(async (query: string) => {
@@ -442,7 +463,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 max-w-5xl">
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <StoreIcon className="h-6 w-6" />
@@ -460,6 +481,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="browse">Browse</TabsTrigger>
+          <TabsTrigger value="via-mcp">Via MCP</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
@@ -695,6 +717,62 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
               </div>
             </div>
           )}
+        </TabsContent>
+
+        {/* Via MCP Tab */}
+        <TabsContent value="via-mcp" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+          <div className="space-y-6 max-w-2xl">
+            <Card>
+              <CardHeader>
+                <CardTitle>Marketplace via MCP</CardTitle>
+                <CardDescription>
+                  The marketplace can be accessed programmatically through MCP tools in the Unified MCP Gateway.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4 text-sm text-muted-foreground">
+                <p>
+                  MCP clients can search for and install MCP servers and skills directly through tool calls &mdash;
+                  no UI interaction required. This enables AI agents to discover and install capabilities on demand.
+                </p>
+                <p>
+                  Search is always permitted. Installation requires user approval via a popup
+                  when the permission is set to <strong className="text-foreground">Ask</strong>.
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Enabling for a Client</CardTitle>
+                <CardDescription>
+                  Marketplace access via MCP is configured per-client.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm text-muted-foreground">
+                <p>
+                  To enable marketplace tools for a client, go to the client's <strong className="text-foreground">Marketplace</strong> tab and set the permission:
+                </p>
+                <ul className="list-disc list-inside space-y-1.5 ml-1">
+                  <li><strong className="text-foreground">Ask</strong> &mdash; Search is always permitted, installation requires user approval via popup</li>
+                  <li><strong className="text-foreground">Off</strong> &mdash; Client has no access to marketplace tools</li>
+                </ul>
+              </CardContent>
+            </Card>
+
+            {marketplaceTools.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>MCP Tools</CardTitle>
+                  <CardDescription>
+                    When enabled, the client gets access to {marketplaceTools.length} marketplace tools.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ToolList tools={marketplaceTools} />
+                </CardContent>
+              </Card>
+            )}
+          </div>
         </TabsContent>
 
         {/* Settings Tab */}

@@ -259,7 +259,7 @@ export function UpdatesTab() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-2xl">
       {/* Version Info & Updates */}
       <Card>
         <CardHeader className="pb-3">
