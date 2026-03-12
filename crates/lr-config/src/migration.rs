@@ -123,6 +123,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v19(config)?;
     }
 
+    // Migrate to v20: Remove indexing_tools config (serde ignores removed fields)
+    if config.version < 20 {
+        config = migrate_to_v20(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -647,6 +652,16 @@ fn migrate_to_v19(mut config: AppConfig) -> AppResult<AppConfig> {
 //     config.version = 2;
 //     Ok(config)
 // }
+
+/// Migrate to version 20: Remove indexing_tools config
+///
+/// The `indexing_tools` field was removed from ContextManagementConfig and
+/// `indexing_tools_enabled` was removed from Client. Serde silently ignores
+/// removed fields during deserialization, so this is a version-bump-only migration.
+fn migrate_to_v20(config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 20: Remove indexing_tools config (native context mode)");
+    Ok(config)
+}
 
 #[cfg(test)]
 mod tests {

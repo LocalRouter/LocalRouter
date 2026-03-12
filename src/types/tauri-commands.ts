@@ -97,8 +97,6 @@ export interface ClientInfo {
   strategy_id: string
   /** Per-client context management override (null = inherit global, false = disabled) */
   context_management_enabled: boolean | null
-  /** Per-client indexing tools override (null = inherit global) */
-  indexing_tools_enabled: boolean | null
   /** Per-client catalog compression override (null = inherit global) */
   catalog_compression_enabled: boolean | null
   created_at: string
@@ -127,8 +125,6 @@ export interface ClientEffectiveConfig {
   strategy_name: string
   context_management_effective: boolean
   context_management_source: 'client' | 'global'
-  indexing_tools_effective: boolean
-  indexing_tools_source: 'client' | 'global'
   catalog_compression_effective: boolean
   catalog_compression_source: 'client' | 'global'
 }
@@ -599,23 +595,11 @@ export interface SkillsConfig {
 }
 
 /**
- * Context-mode tool installation info.
- * Rust: src-tauri/src/ui/commands.rs - ContextModeInfo struct
- */
-export interface ContextModeInfo {
-  nodeAvailable: boolean
-  nodePath: string | null
-  nodeVersion: string | null
-  contextModeVersion: string | null
-}
-
-/**
  * Context management configuration.
  * Rust: crates/lr-config/src/types.rs - ContextManagementConfig struct
  */
 export interface ContextManagementConfig {
   enabled: boolean
-  indexing_tools: boolean
   catalog_compression: boolean
   catalog_threshold_bytes: number
   response_threshold_bytes: number
@@ -624,7 +608,6 @@ export interface ContextManagementConfig {
 /** Params for update_context_management_config */
 export interface UpdateContextManagementConfigParams {
   enabled?: boolean
-  indexingTools?: boolean
   catalogCompression?: boolean
   catalogThresholdBytes?: number
   responseThresholdBytes?: number
@@ -690,12 +673,6 @@ export interface ToggleClientContextManagementParams {
   enabled: boolean | null
 }
 
-/** Params for toggle_client_indexing_tools */
-export interface ToggleClientIndexingToolsParams {
-  clientId: string
-  enabled: boolean | null
-}
-
 /**
  * A catalog source entry from a context management session.
  * Rust: crates/lr-mcp/src/gateway/gateway.rs - CatalogSourceEntry struct
@@ -745,7 +722,6 @@ export interface ActiveSessionInfo {
   cm_activated_tools: number
   cm_total_tools: number
   cm_catalog_threshold_bytes: number
-  cm_indexing_tools_enabled: boolean
 }
 
 // =============================================================================
@@ -2525,7 +2501,7 @@ export interface GetCodingAgentVersionParams {
 }
 
 /**
- * Tool definition returned from get_coding_agent_tool_definitions / get_context_mode_tool_definitions.
+ * Tool definition returned from get_coding_agent_tool_definitions.
  * Rust: src-tauri/src/ui/commands_coding_agents.rs - ToolDefinition struct
  */
 export interface ToolDefinition {
@@ -2537,11 +2513,6 @@ export interface ToolDefinition {
 /** Params for get_coding_agent_tool_definitions */
 export interface GetCodingAgentToolDefinitionsParams {
   agentType: CodingAgentType
-}
-
-/** Params for get_context_mode_tool_definitions */
-export interface GetContextModeToolDefinitionsParams {
-  indexingToolsEnabled: boolean
 }
 
 /**

@@ -36,9 +36,6 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
-        // Eagerly initialize context-mode transport so list_tools() returns all tools
-        self.ensure_context_mode_tools_cached(&session).await;
-
         let session_read = session.read().await;
 
         // Check cache
@@ -507,47 +504,6 @@ impl McpGateway {
         }
     }
 
-    /// Ensure context-mode tools are cached by eagerly initializing the transport if needed.
-    /// Must be called before `append_virtual_server_tools` so `list_tools()` returns the full set.
-    async fn ensure_context_mode_tools_cached(&self, session: &Arc<RwLock<GatewaySession>>) {
-        let session_read = session.read().await;
-        if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
-            if let Some(cm_state) = state
-                .as_any()
-                .downcast_ref::<super::context_mode::ContextModeSessionState>()
-            {
-                if !cm_state.enabled {
-                    return;
-                }
-                // Check if tools are already cached
-                if cm_state.has_cached_tools() {
-                    return;
-                }
-                // Need to spawn transport and fetch tools — this is async
-                // Drop the session read lock first to avoid deadlock
-                drop(session_read);
-
-                // Re-acquire read lock and trigger transport initialization
-                let session_read = session.read().await;
-                if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
-                    if let Some(cm_state) = state
-                        .as_any()
-                        .downcast_ref::<super::context_mode::ContextModeSessionState>(
-                    ) {
-                        match cm_state.get_transport().await {
-                            Ok(_) => {
-                                tracing::info!("Context-mode transport initialized and tools cached for tools/list");
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to initialize context-mode transport for tools/list: {}", e);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// Append tools from all registered virtual servers to the tools list.
     fn append_virtual_server_tools(
         &self,
@@ -809,7 +765,7 @@ impl McpGateway {
         let source = format!("{}:{}", tool_name, run_id);
         let byte_size = full_text.len();
 
-        // Index full content into context-mode
+        // Index full content into native ContentStore
         let index_result = {
             let session_read = session.read().await;
             if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
@@ -818,14 +774,10 @@ impl McpGateway {
                     .downcast_ref::<super::context_mode::ContextModeSessionState>()
                 {
                     cm_state
-                        .call_tool(
-                            "ctx_index",
-                            json!({
-                                "source": &source,
-                                "content": &full_text,
-                            }),
-                        )
-                        .await
+                        .store
+                        .index(&source, &full_text)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
                 } else {
                     Err("CM state not found".to_string())
                 }

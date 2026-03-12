@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 19;
+pub(crate) const CONFIG_VERSION: u32 = 20;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -1293,20 +1293,16 @@ fn default_output_buffer_size() -> usize {
     1000
 }
 
-/// Context management configuration (context-mode integration).
+/// Context management configuration (native FTS5 search & catalog compression).
 ///
-/// When enabled, spawns a per-client context-mode STDIO process that provides
-/// FTS5 search, content indexing, and progressive catalog compression to reduce
+/// When enabled, uses a per-session native ContentStore for FTS5 search,
+/// content indexing, and progressive catalog compression to reduce
 /// context window consumption.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextManagementConfig {
     /// Master toggle — enables context management for all clients (unless overridden)
     #[serde(default)]
     pub enabled: bool,
-
-    /// Expose indexing tools (ctx_execute, ctx_execute_file, ctx_batch_execute, ctx_index, ctx_fetch_and_index)
-    #[serde(default = "default_true")]
-    pub indexing_tools: bool,
 
     /// Enable catalog compression (defer tools/resources/prompts behind ctx_search)
     #[serde(default = "default_true")]
@@ -1326,7 +1322,6 @@ pub struct ContextManagementConfig {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ContextManagementOverrides {
     pub context_management_enabled: Option<bool>,
-    pub indexing_tools_enabled: Option<bool>,
     pub catalog_compression_enabled: Option<bool>,
 }
 
@@ -1334,7 +1329,6 @@ impl Default for ContextManagementConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            indexing_tools: true,
             catalog_compression: true,
             catalog_threshold_bytes: default_catalog_threshold_bytes(),
             response_threshold_bytes: default_response_threshold_bytes(),
@@ -2083,11 +2077,6 @@ pub struct Client {
     /// None = inherit global setting, Some(false) = disabled regardless of global.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_management_enabled: Option<bool>,
-
-    /// Enable indexing tools for this client.
-    /// None = inherit global setting, Some(true) = enabled regardless of global.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub indexing_tools_enabled: Option<bool>,
 
     /// Enable catalog compression for this client.
     /// None = inherit global setting (enabled when context management is on),
@@ -3058,7 +3047,6 @@ impl Client {
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
             context_management_enabled: None,
-            indexing_tools_enabled: None,
             catalog_compression_enabled: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),
@@ -3099,16 +3087,6 @@ impl Client {
         }
         // Fall back to global setting
         global.enabled
-    }
-
-    /// Resolve whether indexing tools are enabled for this client.
-    /// Checks per-client override first, then falls back to global config.
-    /// Only effective when context management is also enabled.
-    pub fn is_indexing_tools_enabled(&self, global: &ContextManagementConfig) -> bool {
-        if let Some(enabled) = self.indexing_tools_enabled {
-            return enabled;
-        }
-        global.indexing_tools
     }
 
     /// Resolve whether catalog compression is enabled for this client.
@@ -3359,12 +3337,10 @@ mod tests {
 
     fn make_client_with_overrides(
         cm: Option<bool>,
-        idx: Option<bool>,
         compression: Option<bool>,
     ) -> Client {
         let mut client = Client::new_with_strategy("test".to_string(), "strat-1".to_string());
         client.context_management_enabled = cm;
-        client.indexing_tools_enabled = idx;
         client.catalog_compression_enabled = compression;
         client
     }
@@ -3375,7 +3351,7 @@ mod tests {
             enabled: true,
             ..Default::default()
         };
-        let client = make_client_with_overrides(None, None, None);
+        let client = make_client_with_overrides(None, None);
         assert!(client.is_context_management_enabled(&global));
 
         let global_off = ContextManagementConfig::default(); // enabled: false
@@ -3389,50 +3365,13 @@ mod tests {
             ..Default::default()
         };
         // Client explicitly disables
-        let client = make_client_with_overrides(Some(false), None, None);
+        let client = make_client_with_overrides(Some(false), None);
         assert!(!client.is_context_management_enabled(&global));
 
         // Client explicitly enables even when global is off
         let global_off = ContextManagementConfig::default();
-        let client = make_client_with_overrides(Some(true), None, None);
+        let client = make_client_with_overrides(Some(true), None);
         assert!(client.is_context_management_enabled(&global_off));
-    }
-
-    #[test]
-    fn test_indexing_tools_falls_back_to_global() {
-        let global = ContextManagementConfig {
-            enabled: true,
-            indexing_tools: true,
-            ..Default::default()
-        };
-        let client = make_client_with_overrides(None, None, None);
-        assert!(client.is_indexing_tools_enabled(&global));
-
-        let global_no_idx = ContextManagementConfig {
-            enabled: true,
-            indexing_tools: false,
-            ..Default::default()
-        };
-        assert!(!client.is_indexing_tools_enabled(&global_no_idx));
-    }
-
-    #[test]
-    fn test_indexing_tools_client_override_wins() {
-        let global = ContextManagementConfig {
-            enabled: true,
-            indexing_tools: true,
-            ..Default::default()
-        };
-        let client = make_client_with_overrides(None, Some(false), None);
-        assert!(!client.is_indexing_tools_enabled(&global));
-
-        let global_no_idx = ContextManagementConfig {
-            enabled: true,
-            indexing_tools: false,
-            ..Default::default()
-        };
-        let client = make_client_with_overrides(None, Some(true), None);
-        assert!(client.is_indexing_tools_enabled(&global_no_idx));
     }
 
     #[test]
@@ -3442,7 +3381,7 @@ mod tests {
             catalog_compression: true,
             ..Default::default()
         };
-        let client = make_client_with_overrides(None, None, None);
+        let client = make_client_with_overrides(None, None);
         assert!(client.is_catalog_compression_enabled(&global));
 
         let global_no_comp = ContextManagementConfig {
@@ -3461,7 +3400,7 @@ mod tests {
             ..Default::default()
         };
         // Client explicitly disables
-        let client = make_client_with_overrides(None, None, Some(false));
+        let client = make_client_with_overrides(None, Some(false));
         assert!(!client.is_catalog_compression_enabled(&global));
 
         // Client explicitly enables even when global is off
@@ -3470,7 +3409,7 @@ mod tests {
             catalog_compression: false,
             ..Default::default()
         };
-        let client = make_client_with_overrides(None, None, Some(true));
+        let client = make_client_with_overrides(None, Some(true));
         assert!(client.is_catalog_compression_enabled(&global_no_comp));
     }
 
@@ -3478,13 +3417,11 @@ mod tests {
     fn test_all_features_disabled_globally() {
         let global = ContextManagementConfig {
             enabled: true,
-            indexing_tools: false,
             catalog_compression: false,
             ..Default::default()
         };
-        let client = make_client_with_overrides(None, None, None);
+        let client = make_client_with_overrides(None, None);
         assert!(client.is_context_management_enabled(&global));
-        assert!(!client.is_indexing_tools_enabled(&global));
         assert!(!client.is_catalog_compression_enabled(&global));
     }
 
@@ -3492,7 +3429,6 @@ mod tests {
     fn test_context_management_config_serialization_with_catalog_compression() {
         let config = ContextManagementConfig {
             enabled: true,
-            indexing_tools: true,
             catalog_compression: false,
             catalog_threshold_bytes: 2000,
             response_threshold_bytes: 500,
@@ -3510,6 +3446,5 @@ mod tests {
         let yaml = "enabled: true\n";
         let config: ContextManagementConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.catalog_compression);
-        assert!(config.indexing_tools);
     }
 }

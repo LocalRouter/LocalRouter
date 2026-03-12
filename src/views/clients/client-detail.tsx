@@ -24,7 +24,6 @@ interface Client {
   enabled: boolean
   strategy_id: string
   context_management_enabled: boolean | null
-  indexing_tools_enabled: boolean | null
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
   coding_agent_permission: PermissionState

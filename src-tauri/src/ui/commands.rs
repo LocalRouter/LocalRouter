@@ -1640,137 +1640,6 @@ pub async fn get_skill(
         .ok_or_else(|| format!("Skill '{}' not found", skill_name))
 }
 
-/// Get context-mode tool installation info (node availability, version).
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContextModeInfo {
-    pub node_available: bool,
-    pub node_path: Option<String>,
-    pub node_version: Option<String>,
-    pub context_mode_version: Option<String>,
-}
-
-#[tauri::command]
-pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
-    let env = lr_mcp::manager::shell_env();
-    let shell_path = env.get("PATH").cloned().unwrap_or_default();
-
-    // Check for node using shell_env PATH (resolves nvm/fnm/homebrew on macOS)
-    let node_path = which::which_in("node", Some(&shell_path), "/").ok();
-    let node_available = node_path.is_some();
-
-    let node_version = if node_available {
-        tokio::process::Command::new("node")
-            .arg("--version")
-            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .await
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    String::from_utf8(o.stdout)
-                        .ok()
-                        .map(|s| s.trim().trim_start_matches('v').to_string())
-                } else {
-                    None
-                }
-            })
-    } else {
-        None
-    };
-
-    // Check for context-mode version via `npm list -g context-mode --json --depth=0`.
-    // This avoids spawning the full MCP server process (which is flaky with stdin=null).
-    let context_mode_version = if node_available {
-        let output = tokio::process::Command::new("npm")
-            .args(["list", "-g", "context-mode", "--json", "--depth=0"])
-            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .await
-            .ok();
-
-        output.and_then(|o| {
-            let json: serde_json::Value = serde_json::from_slice(&o.stdout).ok()?;
-            json.get("dependencies")
-                .and_then(|d| d.get("context-mode"))
-                .and_then(|cm| cm.get("version"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-    } else {
-        None
-    };
-
-    Ok(ContextModeInfo {
-        node_available,
-        node_path: node_path.map(|p| p.display().to_string()),
-        node_version,
-        context_mode_version,
-    })
-}
-
-/// Install context-mode via npm install -g and return the installed version.
-#[tauri::command]
-pub async fn install_context_mode() -> Result<String, String> {
-    // Install globally so it's available via npx
-    let output = tokio::process::Command::new("npm")
-        .args(["install", "-g", "context-mode"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run npm: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Installation failed: {stderr}"));
-    }
-
-    // Verify by spawning context-mode and reading version from stderr
-    // (stdout is reserved for MCP protocol, version banner goes to stderr)
-    let child = tokio::process::Command::new("npx")
-        .arg("context-mode")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-
-    if let Ok(mut child) = child {
-        let version = if let Some(stderr) = child.stderr.take() {
-            use tokio::io::{AsyncBufReadExt, BufReader};
-            let mut reader = BufReader::new(stderr);
-            let mut first_line = String::new();
-            let read_result = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                reader.read_line(&mut first_line),
-            )
-            .await;
-            match read_result {
-                Ok(Ok(_)) => first_line
-                    .split(" v")
-                    .nth(1)
-                    .and_then(|s| s.split_whitespace().next())
-                    .map(|s| s.to_string()),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let _ = child.kill().await;
-        version.ok_or_else(|| "Installed but could not determine version".to_string())
-    } else {
-        // Install succeeded but can't verify version
-        Ok("unknown".to_string())
-    }
-}
-
 /// Get context management configuration
 #[tauri::command]
 pub async fn get_context_management_config(
@@ -1783,7 +1652,6 @@ pub async fn get_context_management_config(
 #[tauri::command]
 pub async fn update_context_management_config(
     enabled: Option<bool>,
-    indexing_tools: Option<bool>,
     catalog_compression: Option<bool>,
     catalog_threshold_bytes: Option<usize>,
     response_threshold_bytes: Option<usize>,
@@ -1794,9 +1662,6 @@ pub async fn update_context_management_config(
         .update(|cfg| {
             if let Some(v) = enabled {
                 cfg.context_management.enabled = v;
-            }
-            if let Some(v) = indexing_tools {
-                cfg.context_management.indexing_tools = v;
             }
             if let Some(v) = catalog_compression {
                 cfg.context_management.catalog_compression = v;

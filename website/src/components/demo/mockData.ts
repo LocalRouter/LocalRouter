@@ -37,7 +37,6 @@ export const mockData = {
       strategy_id: "strategy-default",
 
       context_management_enabled: null,
-      indexing_tools_enabled: null,
       catalog_compression_enabled: null,
       created_at: "2025-01-15T10:00:00Z",
       last_used: "2025-02-03T14:30:00Z",
@@ -62,7 +61,6 @@ export const mockData = {
       strategy_id: "strategy-default",
 
       context_management_enabled: true,
-      indexing_tools_enabled: null,
       catalog_compression_enabled: null,
       created_at: "2025-01-20T08:00:00Z",
       last_used: "2025-02-03T15:45:00Z",
@@ -87,7 +85,6 @@ export const mockData = {
       strategy_id: "strategy-quality",
 
       context_management_enabled: null,
-      indexing_tools_enabled: null,
       catalog_compression_enabled: null,
       created_at: "2025-01-28T14:00:00Z",
       last_used: null,

@@ -292,7 +292,6 @@ impl ConfigManager {
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
             context_management_enabled: None,
-            indexing_tools_enabled: None,
             catalog_compression_enabled: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),

@@ -366,7 +366,6 @@ impl McpGateway {
             c.coding_agent_type = coding_agent_type;
             if let Some(ref overrides) = context_management_overrides {
                 c.context_management_enabled = overrides.context_management_enabled;
-                c.indexing_tools_enabled = overrides.indexing_tools_enabled;
                 c.catalog_compression_enabled = overrides.catalog_compression_enabled;
             }
             c
@@ -977,7 +976,6 @@ impl McpGateway {
                 servers: Vec::new(),
                 unavailable_servers: unavailable,
                 context_management_enabled: false,
-                indexing_tools_enabled: false,
                 catalog_compression: None,
                 virtual_instructions,
             });
@@ -1134,7 +1132,6 @@ impl McpGateway {
                     servers: Vec::new(),
                     unavailable_servers: unavailable,
                     context_management_enabled: false,
-                    indexing_tools_enabled: false,
                     catalog_compression: None,
                     virtual_instructions,
                 });
@@ -1218,23 +1215,19 @@ impl McpGateway {
         let virtual_instructions = self.collect_virtual_instructions(&session).await;
 
         // Check if context management is enabled for this session
-        let (cm_enabled, cm_indexing_tools, cm_catalog_threshold) = {
+        let (cm_enabled, cm_catalog_threshold) = {
             let session_read = session.read().await;
             if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
                 if let Some(cm_state) = state
                     .as_any()
                     .downcast_ref::<super::context_mode::ContextModeSessionState>()
                 {
-                    (
-                        cm_state.enabled,
-                        cm_state.indexing_tools_enabled,
-                        cm_state.catalog_threshold_bytes,
-                    )
+                    (cm_state.enabled, cm_state.catalog_threshold_bytes)
                 } else {
-                    (false, false, 0)
+                    (false, 0)
                 }
             } else {
-                (false, false, 0)
+                (false, 0)
             }
         };
 
@@ -1286,7 +1279,7 @@ impl McpGateway {
         );
         let unavailable = self.build_unavailable_server_infos(&merged.failures);
 
-        // Context management: index catalog into FTS5 and store activation state.
+        // Context management: index catalog into native FTS5 store and store activation state.
         // Run in background so it doesn't block the initialize response.
         if cm_enabled {
             let session_bg = session.clone();
@@ -1297,123 +1290,117 @@ impl McpGateway {
             let client_id_bg = client_id_for_log.clone();
 
             tokio::spawn(async move {
-                // Timeout the entire indexing task to prevent hangs
-                // if the context-mode subprocess is unresponsive
-                let indexing_result =
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(30),
-                        async {
-                            // Index catalog content into context-mode
-                            {
-                                let session_read = session_bg.read().await;
-                                if let Some(state) =
-                                    session_read.virtual_server_state.get("_context_mode")
-                                {
-                                    if let Some(cm_state) = state
+                // Get a reference to the ContentStore (Arc clone)
+                let store = {
+                    let session_read = session_bg.read().await;
+                    if let Some(state) =
+                        session_read.virtual_server_state.get("_context_mode")
+                    {
+                        state
                             .as_any()
                             .downcast_ref::<super::context_mode::ContextModeSessionState>()
-                        {
-                            for info in &server_infos_bg {
-                                let content = build_full_server_content(info);
-                                let slug = super::types::slugify(&info.name);
-                                if let Err(e) = cm_state
-                                    .call_tool(
-                                        "ctx_index",
-                                        json!({
-                                            "source": format!("catalog:{}", slug),
-                                            "content": content,
-                                        }),
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "Failed to index catalog for server {}: {}",
-                                        slug, e
-                                    );
-                                }
-                            }
+                            .map(|cm| cm.store.clone())
+                    } else {
+                        None
+                    }
+                };
 
-                            for tool in &tools_catalog_bg {
-                                let content = format!(
-                                    "{}: {}\nInput: {}",
-                                    tool.name,
-                                    tool.description.as_deref().unwrap_or(""),
-                                    serde_json::to_string(&tool.input_schema)
-                                        .unwrap_or_default()
-                                );
-                                if let Err(e) = cm_state
-                                    .call_tool(
-                                        "ctx_index",
-                                        json!({
-                                            "source": format!("catalog:{}", tool.name),
-                                            "content": content,
-                                        }),
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "Failed to index tool {}: {}", tool.name, e
-                                    );
-                                }
-                            }
+                let store = match store {
+                    Some(s) => s,
+                    None => return,
+                };
 
-                            for resource in &resources_catalog_bg {
-                                let content = format!(
-                                    "{} ({}): {}",
-                                    resource.name,
-                                    resource.uri,
-                                    resource.description.as_deref().unwrap_or("")
-                                );
-                                if let Err(e) = cm_state
-                                    .call_tool(
-                                        "ctx_index",
-                                        json!({
-                                            "source": format!("catalog:{}", resource.name),
-                                            "content": content,
-                                        }),
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "Failed to index resource {}: {}",
-                                        resource.name, e
-                                    );
-                                }
-                            }
+                // Index catalog content using native ContentStore.
+                // Use spawn_blocking since ContentStore uses parking_lot::Mutex
+                let server_infos_idx = server_infos_bg.clone();
+                let tools_idx = tools_catalog_bg.clone();
+                let resources_idx = resources_catalog_bg.clone();
+                let prompts_idx = prompts_catalog_bg.clone();
+                let store_idx = store.clone();
+                let client_id_idx = client_id_bg.clone();
 
-                            for prompt in &prompts_catalog_bg {
-                                let content = format!(
-                                    "{}: {}",
-                                    prompt.name,
-                                    prompt.description.as_deref().unwrap_or("")
-                                );
-                                if let Err(e) = cm_state
-                                    .call_tool(
-                                        "ctx_index",
-                                        json!({
-                                            "source": format!("catalog:{}", prompt.name),
-                                            "content": content,
-                                        }),
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "Failed to index prompt {}: {}",
-                                        prompt.name, e
-                                    );
-                                }
-                            }
+                let indexing_result = tokio::task::spawn_blocking(move || {
+                    for info in &server_infos_idx {
+                        let content = build_full_server_content(info);
+                        let slug = super::types::slugify(&info.name);
+                        if let Err(e) = store_idx.index(&format!("catalog:{}", slug), &content) {
+                            tracing::warn!(
+                                "Failed to index catalog for server {}: {}",
+                                slug, e
+                            );
                         }
-                                }
-                            }
+                    }
 
-                            // Store catalog state for activation tracking
-                            {
-                                let mut session_write = session_bg.write().await;
-                                if let Some(state) =
-                                    session_write.virtual_server_state.get_mut("_context_mode")
-                                {
-                                    if let Some(cm_state) = state
+                    for tool in &tools_idx {
+                        let content = format!(
+                            "{}: {}\nInput: {}",
+                            tool.name,
+                            tool.description.as_deref().unwrap_or(""),
+                            serde_json::to_string(&tool.input_schema).unwrap_or_default()
+                        );
+                        if let Err(e) =
+                            store_idx.index(&format!("catalog:{}", tool.name), &content)
+                        {
+                            tracing::warn!("Failed to index tool {}: {}", tool.name, e);
+                        }
+                    }
+
+                    for resource in &resources_idx {
+                        let content = format!(
+                            "{} ({}): {}",
+                            resource.name,
+                            resource.uri,
+                            resource.description.as_deref().unwrap_or("")
+                        );
+                        if let Err(e) =
+                            store_idx.index(&format!("catalog:{}", resource.name), &content)
+                        {
+                            tracing::warn!(
+                                "Failed to index resource {}: {}",
+                                resource.name, e
+                            );
+                        }
+                    }
+
+                    for prompt in &prompts_idx {
+                        let content = format!(
+                            "{}: {}",
+                            prompt.name,
+                            prompt.description.as_deref().unwrap_or("")
+                        );
+                        if let Err(e) =
+                            store_idx.index(&format!("catalog:{}", prompt.name), &content)
+                        {
+                            tracing::warn!(
+                                "Failed to index prompt {}: {}",
+                                prompt.name, e
+                            );
+                        }
+                    }
+
+                    tracing::info!(
+                        "Context management catalog indexed for client {}: {} servers",
+                        &client_id_idx[..8.min(client_id_idx.len())],
+                        server_infos_idx.len(),
+                    );
+                })
+                .await;
+
+                if let Err(e) = indexing_result {
+                    tracing::warn!(
+                        "Context management catalog indexing panicked for client {}: {}",
+                        &client_id_bg[..8.min(client_id_bg.len())],
+                        e,
+                    );
+                }
+
+                // Store catalog state for activation tracking
+                {
+                    let mut session_write = session_bg.write().await;
+                    if let Some(state) =
+                        session_write.virtual_server_state.get_mut("_context_mode")
+                    {
+                        if let Some(cm_state) = state
                             .as_any_mut()
                             .downcast_mut::<super::context_mode::ContextModeSessionState>()
                         {
@@ -1447,25 +1434,6 @@ impl McpGateway {
                             cm_state.full_resource_catalog = resources_catalog_bg;
                             cm_state.full_prompt_catalog = prompts_catalog_bg;
                         }
-                                }
-                            }
-                        }, // end async block for timeout
-                    )
-                    .await; // end tokio::time::timeout
-
-                match indexing_result {
-                    Ok(()) => {
-                        tracing::info!(
-                            "Context management catalog indexed for client {}: {} servers",
-                            &client_id_bg[..8.min(client_id_bg.len())],
-                            server_infos_bg.len(),
-                        );
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            "Context management catalog indexing timed out for client {}",
-                            &client_id_bg[..8.min(client_id_bg.len())],
-                        );
                     }
                 }
             });
@@ -1476,7 +1444,6 @@ impl McpGateway {
             servers: server_infos,
             unavailable_servers: unavailable,
             context_management_enabled: cm_enabled,
-            indexing_tools_enabled: cm_indexing_tools,
             catalog_compression: None,
             virtual_instructions,
         };
@@ -1789,7 +1756,6 @@ impl McpGateway {
                 cm_activated_tools,
                 cm_total_tools,
                 cm_catalog_threshold_bytes,
-                cm_indexing_tools_enabled,
             ) = {
                 if let Some(state) = session.virtual_server_state.get("_context_mode") {
                     if let Some(cm) = state
@@ -1802,13 +1768,12 @@ impl McpGateway {
                             cm.activated_tools.len(),
                             cm.full_tool_catalog.len(),
                             cm.catalog_threshold_bytes,
-                            cm.indexing_tools_enabled,
                         )
                     } else {
-                        (false, 0, 0, 0, 0, false)
+                        (false, 0, 0, 0, 0)
                     }
                 } else {
-                    (false, 0, 0, 0, 0, false)
+                    (false, 0, 0, 0, 0)
                 }
             };
 
@@ -1829,7 +1794,6 @@ impl McpGateway {
                 cm_activated_tools,
                 cm_total_tools,
                 cm_catalog_threshold_bytes,
-                cm_indexing_tools_enabled,
             });
         }
         sessions
@@ -1953,16 +1917,25 @@ impl McpGateway {
             return Err("Context management is not enabled for this session".to_string());
         }
 
-        cm.call_tool("ctx_stats", serde_json::json!({})).await
+        // Return basic stats from the native ContentStore
+        Ok(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "Context store active. Indexed sources: {}, Activated tools: {}",
+                    cm.catalog_sources.len(),
+                    cm.activated_tools.len(),
+                ),
+            }]
+        }))
     }
 
-    /// Query the context index for a specific session using ctx_batch_execute.
-    /// Uses batch_execute instead of ctx_search to avoid the search rate limiter.
+    /// Query the context index for a specific session using native search.
     pub async fn query_session_context_index(
         &self,
         session_key: &str,
         query: &str,
-        _source: Option<&str>,
+        source: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         let session_arc = self
             .sessions
@@ -1984,12 +1957,19 @@ impl McpGateway {
             return Err("Context management is not enabled for this session".to_string());
         }
 
-        let args = serde_json::json!({
-            "commands": [{"label": "search", "command": "true"}],
-            "queries": [query],
-        });
-
-        cm.call_tool("ctx_batch_execute", args).await
+        let queries = vec![query.to_string()];
+        match cm.store.search(&queries, 5, source) {
+            Ok(results) => {
+                let formatted = lr_context::format_search_results(&results, lr_context::SEARCH_OUTPUT_CAP);
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": formatted,
+                    }]
+                }))
+            }
+            Err(e) => Err(format!("Search failed: {}", e)),
+        }
     }
 
     /// Get the instructions context snapshot for a session (for compression preview UI).
@@ -2200,7 +2180,6 @@ impl McpGateway {
             servers: server_infos,
             unavailable_servers: unavailable,
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
         })
@@ -2284,7 +2263,6 @@ pub struct ActiveSessionInfo {
     pub cm_activated_tools: usize,
     pub cm_total_tools: usize,
     pub cm_catalog_threshold_bytes: usize,
-    pub cm_indexing_tools_enabled: bool,
 }
 
 /// A single catalog source entry (for UI display).

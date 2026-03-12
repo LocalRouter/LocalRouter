@@ -146,7 +146,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       enabled: true,
       strategy_id: 'strategy-default',
       context_management_enabled: null,
-      indexing_tools_enabled: null,
       catalog_compression_enabled: null,
       created_at: new Date().toISOString(),
       last_used: null,
@@ -195,14 +194,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
-  'toggle_client_indexing_tools': (args) => {
-    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
-    if (client) {
-      client.indexing_tools_enabled = args?.enabled ?? null
-      setTimeout(() => emit('clients-changed', {}), 10)
-    }
-    return null
-  },
   'toggle_client_catalog_compression': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
     if (client) {
@@ -218,8 +209,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       strategy_name: strategy?.name || 'Unknown',
       context_management_effective: client?.context_management_enabled ?? false,
       context_management_source: client?.context_management_enabled !== null && client?.context_management_enabled !== undefined ? 'client' : 'global',
-      indexing_tools_effective: client?.indexing_tools_enabled ?? false,
-      indexing_tools_source: client?.indexing_tools_enabled !== null && client?.indexing_tools_enabled !== undefined ? 'client' : 'global',
       catalog_compression_effective: client?.catalog_compression_enabled ?? false,
       catalog_compression_source: client?.catalog_compression_enabled !== null && client?.catalog_compression_enabled !== undefined ? 'client' : 'global',
     }
@@ -954,16 +943,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       { name: `${skill?.name || 'skill'}_execute`, description: 'Execute the skill' },
     ]
   },
-  'get_context_mode_info': () => ({
-    nodeAvailable: true,
-    nodePath: '/usr/local/bin/node',
-    nodeVersion: '22.12.0',
-    contextModeVersion: '1.2.0',
-  }),
-  'install_context_mode': () => '1.2.0',
   'get_context_management_config': () => ({
     enabled: true,
-    indexing_tools: true,
     catalog_compression: true,
     catalog_threshold_bytes: 50000,
     response_threshold_bytes: 10000,
@@ -982,7 +963,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       cm_activated_tools: 0,
       cm_total_tools: 0,
       cm_catalog_threshold_bytes: 50000,
-      cm_indexing_tools_enabled: false,
     },
     {
       session_id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
@@ -997,7 +977,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       cm_activated_tools: 8,
       cm_total_tools: 24,
       cm_catalog_threshold_bytes: 50000,
-      cm_indexing_tools_enabled: true,
     },
   ]),
   'update_context_management_config': (args) => {
@@ -1243,14 +1222,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     { name: 'coding_agent_respond', description: 'Respond to a pending question in a coding session', input_schema: { type: 'object', properties: { sessionId: { type: 'string', description: 'The session ID' }, id: { type: 'string', description: 'Question ID' }, answers: { type: 'array', items: { type: 'string' }, description: 'Answers' } }, required: ['sessionId', 'id', 'answers'] } },
     { name: 'coding_agent_interrupt', description: 'Interrupt a running coding session', input_schema: { type: 'object', properties: { sessionId: { type: 'string', description: 'The session ID' } }, required: ['sessionId'] } },
     { name: 'coding_agent_list', description: 'List all coding sessions for this client', input_schema: { type: 'object', properties: { limit: { type: 'number', description: 'Max sessions to return' } } } },
-  ],
-  'get_context_mode_tool_definitions': () => [
-    { name: 'ctx_search', description: 'Search indexed content', input_schema: { type: 'object', properties: { queries: { type: 'array', items: { type: 'string' }, description: 'Search queries' }, source: { type: 'string', description: 'Filter source' }, limit: { type: 'number', description: 'Results per query' } } } },
-    { name: 'ctx_execute', description: 'Execute code in a sandboxed environment', input_schema: { type: 'object', properties: { language: { type: 'string', enum: ['shell', 'python'], description: 'Language' }, code: { type: 'string', description: 'Code to execute' } }, required: ['language', 'code'] } },
-    { name: 'ctx_execute_file', description: 'Execute a script file in a sandbox', input_schema: { type: 'object', properties: { path: { type: 'string', description: 'Script path' } }, required: ['path'] } },
-    { name: 'ctx_batch_execute', description: 'Execute multiple commands in one call', input_schema: { type: 'object', properties: { commands: { type: 'array', items: { type: 'string' }, description: 'Commands' } } } },
-    { name: 'ctx_index', description: 'Index content for later search', input_schema: { type: 'object', properties: { content: { type: 'string', description: 'Content' } }, required: ['content'] } },
-    { name: 'ctx_fetch_and_index', description: 'Fetch a URL and index its content', input_schema: { type: 'object', properties: { url: { type: 'string', description: 'URL to fetch' } }, required: ['url'] } },
   ],
   'get_marketplace_tool_definitions': () => [
     { name: 'marketplace__search', description: 'Search the marketplace for MCP servers and skills', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, type: { type: 'string', enum: ['mcp', 'skill', 'all'], description: 'Item type' } }, required: ['query'] } },

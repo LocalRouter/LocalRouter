@@ -1,42 +1,25 @@
 //! Context Management virtual MCP server.
 //!
-//! Spawns a per-session context-mode STDIO process (via `npx -y context-mode`)
-//! that provides FTS5 search, content indexing, and progressive catalog compression
-//! to reduce context window consumption.
+//! Uses the native `lr-context` ContentStore for FTS5 search, content indexing,
+//! and progressive catalog compression to reduce context window consumption.
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+
+use lr_context::{format_search_results, ContentStore, SearchResult, SEARCH_OUTPUT_CAP};
 
 use super::gateway_tools::FirewallDecisionResult;
 use super::types::NamespacedTool;
 use super::virtual_server::*;
-use crate::protocol::{JsonRpcRequest, McpTool};
-use crate::transport::{StdioTransport, Transport};
+use crate::protocol::McpTool;
 
 /// Tool names owned by the context-mode virtual server.
 const CTX_SEARCH: &str = "ctx_search";
-const CTX_EXECUTE: &str = "ctx_execute";
-const CTX_EXECUTE_FILE: &str = "ctx_execute_file";
-const CTX_BATCH_EXECUTE: &str = "ctx_batch_execute";
-const CTX_INDEX: &str = "ctx_index";
-const CTX_FETCH_AND_INDEX: &str = "ctx_fetch_and_index";
-
-/// Tools exposed only when indexing tools are enabled.
-const INDEXING_TOOLS: &[&str] = &[
-    CTX_EXECUTE,
-    CTX_EXECUTE_FILE,
-    CTX_BATCH_EXECUTE,
-    CTX_INDEX,
-    CTX_FETCH_AND_INDEX,
-];
-
-/// Tools filtered from context-mode's tools/list (managed via UI, not AI).
-const FILTERED_TOOLS: &[&str] = &["ctx_stats", "ctx_doctor", "ctx_upgrade"];
+const INDEX_READ: &str = "ctx_read";
 
 /// MCP Gateway source label guide appended to ctx_search description.
 const CTX_SEARCH_SOURCE_GUIDE: &str = r#"
@@ -50,23 +33,8 @@ MCP Gateway source labels (use with 'source' parameter):
 
 Searching catalog entries automatically activates matching tools/resources/prompts for use."#;
 
-/// Additional source guide appended when indexing tools are enabled.
-const CTX_SEARCH_INDEXING_SOURCE_GUIDE: &str = r#"
-
-Other indexed content (from ctx_execute, ctx_index, etc.):
-  source="execute:"     — find auto-indexed output from ctx_execute
-  source="batch:"       — find auto-indexed output from ctx_batch_execute
-  (omit source to search everything)"#;
-
 /// Additional source guide appended to ctx_search's `source` parameter description.
 const CTX_SEARCH_SOURCE_PARAM_GUIDE: &str = r#" MCP examples: "catalog:" for all MCP entries, "catalog:filesystem" for one server, "filesystem__read_file:" for a tool's responses."#;
-
-/// Atomic counter for generating unique JSON-RPC request IDs.
-static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
-
-fn next_request_id() -> Value {
-    Value::Number(REQUEST_ID.fetch_add(1, Ordering::Relaxed).into())
-}
 
 /// The type of catalog item associated with a source label.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,14 +70,10 @@ impl ContextModeVirtualServer {
 pub struct ContextModeSessionState {
     /// Whether this client has context management enabled.
     pub enabled: bool,
-    /// Whether indexing tools are exposed.
-    pub indexing_tools_enabled: bool,
     /// Whether catalog compression (deferral) is enabled.
     pub catalog_compression_enabled: bool,
-    /// Lazy STDIO transport — spawned on first use.
-    transport: Mutex<Option<StdioTransport>>,
-    /// Cached tool definitions from the context-mode process.
-    cached_tools: Mutex<Option<Vec<McpTool>>>,
+    /// Native content store (shared via Arc for cheap cloning).
+    pub store: Arc<ContentStore>,
     /// Catalog source labels → item type (for activation on ctx_search).
     pub catalog_sources: HashMap<String, CatalogItemType>,
     /// Per-tool/resource/prompt response run ID counters.
@@ -133,107 +97,6 @@ pub struct ContextModeSessionState {
 }
 
 impl ContextModeSessionState {
-    /// Get or spawn the STDIO transport for this session.
-    pub async fn get_transport(
-        &self,
-    ) -> Result<tokio::sync::MutexGuard<'_, Option<StdioTransport>>, String> {
-        let mut guard = self.transport.lock().await;
-        if guard.is_none() {
-            let transport = spawn_context_mode_process().await?;
-            // Initialize the MCP connection
-            initialize_context_mode(&transport).await?;
-
-            // Eagerly fetch and cache tool definitions so list_tools() returns the full set
-            if let Ok(tools) = fetch_tools_from_transport(&transport).await {
-                *self.cached_tools.lock().await = Some(tools);
-            }
-
-            *guard = Some(transport);
-        }
-        Ok(guard)
-    }
-
-    /// Send a tools/call request to the context-mode process.
-    pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<Value, String> {
-        let guard = self.get_transport().await?;
-        let transport = guard.as_ref().ok_or("Transport not available")?;
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some(next_request_id()),
-            method: "tools/call".to_string(),
-            params: Some(json!({
-                "name": tool_name,
-                "arguments": arguments,
-            })),
-        };
-
-        let response = transport
-            .send_request(request)
-            .await
-            .map_err(|e| format!("context-mode tools/call failed: {e}"))?;
-
-        if let Some(error) = response.error {
-            return Err(format!(
-                "context-mode error: {} (code: {})",
-                error.message, error.code
-            ));
-        }
-
-        Ok(response.result.unwrap_or(Value::Null))
-    }
-
-    /// Send a tools/list request to get tool definitions from context-mode.
-    pub async fn list_remote_tools(&self) -> Result<Vec<McpTool>, String> {
-        // Return cached tools if available
-        {
-            let cached = self.cached_tools.lock().await;
-            if let Some(tools) = cached.as_ref() {
-                return Ok(tools.clone());
-            }
-        }
-
-        let guard = self.get_transport().await?;
-        let transport = guard.as_ref().ok_or("Transport not available")?;
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some(next_request_id()),
-            method: "tools/list".to_string(),
-            params: None,
-        };
-
-        let response = transport
-            .send_request(request)
-            .await
-            .map_err(|e| format!("context-mode tools/list failed: {e}"))?;
-
-        if let Some(error) = response.error {
-            return Err(format!(
-                "context-mode tools/list error: {} (code: {})",
-                error.message, error.code
-            ));
-        }
-
-        let result = response.result.unwrap_or(Value::Null);
-        let tools_value = result.get("tools").cloned().unwrap_or(Value::Array(vec![]));
-        let tools: Vec<McpTool> = serde_json::from_value(tools_value)
-            .map_err(|e| format!("Failed to parse tools: {e}"))?;
-
-        // Cache the tools
-        *self.cached_tools.lock().await = Some(tools.clone());
-
-        Ok(tools)
-    }
-
-    /// Check if tool definitions have been cached from the context-mode process.
-    pub fn has_cached_tools(&self) -> bool {
-        self.cached_tools
-            .try_lock()
-            .map(|guard| guard.is_some())
-            .unwrap_or(true) // If locked, assume another task is fetching
-    }
-
     /// Get the next run ID for a given namespaced name (tool/resource/prompt).
     pub fn next_run_id(&mut self, namespaced_name: &str) -> u32 {
         let counter = self
@@ -249,10 +112,8 @@ impl Clone for ContextModeSessionState {
     fn clone(&self) -> Self {
         Self {
             enabled: self.enabled,
-            indexing_tools_enabled: self.indexing_tools_enabled,
             catalog_compression_enabled: self.catalog_compression_enabled,
-            transport: Mutex::new(None), // Transport is not cloned — new session gets fresh transport
-            cached_tools: Mutex::new(None),
+            store: self.store.clone(), // Arc clone — shares same ContentStore
             catalog_sources: self.catalog_sources.clone(),
             run_counters: self.run_counters.clone(),
             full_tool_catalog: self.full_tool_catalog.clone(),
@@ -279,184 +140,73 @@ impl VirtualSessionState for ContextModeSessionState {
     }
 }
 
-/// Spawn a context-mode STDIO process.
-///
-/// Resolution order (fastest to slowest):
-/// 1. Global install (`context-mode` binary in PATH) — no npx overhead
-/// 2. npx cache (`npx --no-install`) — no network, but npx resolution overhead
-/// 3. Global install (`npm install -g`) — downloads from npm, then spawns directly
-async fn spawn_context_mode_process() -> Result<StdioTransport, String> {
-    let env = crate::manager::shell_env();
+/// Build the static tool definitions for the native context-mode server.
+fn build_native_tools() -> Vec<McpTool> {
+    let mut search_desc = "Search indexed content. Pass ALL search questions as queries array in ONE call.\n\nTIPS: 2-4 specific terms per query. Use 'source' to scope results.".to_string();
+    search_desc.push_str(CTX_SEARCH_SOURCE_GUIDE);
 
-    // 1. Try global install first (fastest — no npx overhead)
-    // Use `which` to check PATH without spawning context-mode itself
-    // (context-mode starts a server and doesn't exit on --version)
-    let has_global = tokio::process::Command::new("which")
-        .arg("context-mode")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let mut source_desc = "Filter to a specific indexed source (partial match).".to_string();
+    source_desc.push_str(CTX_SEARCH_SOURCE_PARAM_GUIDE);
 
-    if has_global {
-        tracing::debug!("Spawning context-mode process (global)");
-        return StdioTransport::spawn("context-mode".to_string(), vec![], env)
-            .await
-            .map_err(|e| format!("Failed to spawn context-mode: {e}"));
-    }
-
-    // 2. Try npx cache (no network, but has npx resolution overhead)
-    let is_cached = tokio::process::Command::new("npx")
-        .args(["--no-install", "context-mode", "--version"])
-        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if is_cached {
-        tracing::debug!("Spawning context-mode process (npx cached)");
-        return StdioTransport::spawn(
-            "npx".to_string(),
-            vec!["--no-install".to_string(), "context-mode".to_string()],
-            env,
-        )
-        .await
-        .map_err(|e| format!("Failed to spawn context-mode: {e}"));
-    }
-
-    // 3. Last resort: install globally and spawn
-    tracing::info!("context-mode not found, installing globally via npm");
-    let install = tokio::process::Command::new("npm")
-        .args(["install", "-g", "context-mode"])
-        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map_err(|e| format!("Failed to run npm install: {e}"))?;
-
-    if !install.success() {
-        return Err("npm install -g context-mode failed".to_string());
-    }
-
-    tracing::info!("Spawning context-mode STDIO process (freshly installed)");
-    StdioTransport::spawn("context-mode".to_string(), vec![], env)
-        .await
-        .map_err(|e| format!("Failed to spawn context-mode: {e}"))
-}
-
-/// Fetch tool definitions from an already-initialized context-mode transport.
-async fn fetch_tools_from_transport(transport: &StdioTransport) -> Result<Vec<McpTool>, String> {
-    let request = JsonRpcRequest {
-        jsonrpc: "2.0".to_string(),
-        id: Some(next_request_id()),
-        method: "tools/list".to_string(),
-        params: None,
-    };
-
-    let response = transport
-        .send_request(request)
-        .await
-        .map_err(|e| format!("context-mode tools/list failed: {e}"))?;
-
-    if let Some(error) = response.error {
-        return Err(format!(
-            "context-mode tools/list error: {} (code: {})",
-            error.message, error.code
-        ));
-    }
-
-    let result = response.result.unwrap_or(Value::Null);
-    let tools_value = result.get("tools").cloned().unwrap_or(Value::Array(vec![]));
-    serde_json::from_value(tools_value).map_err(|e| format!("Failed to parse tools: {e}"))
-}
-
-/// Initialize the MCP connection with the context-mode process.
-async fn initialize_context_mode(transport: &StdioTransport) -> Result<(), String> {
-    let request = JsonRpcRequest {
-        jsonrpc: "2.0".to_string(),
-        id: Some(next_request_id()),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "protocolVersion": "2025-03-26",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "localrouter-context-mode",
-                "version": "1.0.0"
-            }
-        })),
-    };
-
-    let response = transport
-        .send_request(request)
-        .await
-        .map_err(|e| format!("context-mode initialize failed: {e}"))?;
-
-    if let Some(error) = response.error {
-        return Err(format!(
-            "context-mode initialize error: {} (code: {})",
-            error.message, error.code
-        ));
-    }
-
-    tracing::debug!("context-mode initialized successfully");
-    Ok(())
-}
-
-/// Build the list of tools to expose from context-mode, applying filtering and description injection.
-fn build_context_mode_tools(
-    remote_tools: &[McpTool],
-    indexing_tools_enabled: bool,
-) -> Vec<McpTool> {
-    let mut tools = Vec::new();
-
-    for tool in remote_tools {
-        // Filter out stats/doctor/upgrade tools
-        if FILTERED_TOOLS.contains(&tool.name.as_str()) {
-            continue;
-        }
-
-        // Filter out indexing tools if not enabled
-        if !indexing_tools_enabled && INDEXING_TOOLS.contains(&tool.name.as_str()) {
-            continue;
-        }
-
-        let mut tool = tool.clone();
-
-        // Inject MCP source label guide into ctx_search description
-        if tool.name == CTX_SEARCH {
-            if let Some(ref desc) = tool.description {
-                let mut new_desc = desc.clone();
-                new_desc.push_str(CTX_SEARCH_SOURCE_GUIDE);
-                if indexing_tools_enabled {
-                    new_desc.push_str(CTX_SEARCH_INDEXING_SOURCE_GUIDE);
-                }
-                tool.description = Some(new_desc);
-            }
-
-            // Inject source parameter description
-            if let Some(properties) = tool.input_schema.get_mut("properties") {
-                if let Some(source) = properties.get_mut("source") {
-                    if let Some(desc) = source.get("description").and_then(|d| d.as_str()) {
-                        let new_desc = format!("{desc}{CTX_SEARCH_SOURCE_PARAM_GUIDE}");
-                        source["description"] = Value::String(new_desc);
+    vec![
+        McpTool {
+            name: CTX_SEARCH.to_string(),
+            description: Some(search_desc),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "queries": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Array of search queries. Batch ALL questions in one call."
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": source_desc
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Results per query (default: 3)"
                     }
                 }
-            }
-        }
+            }),
+        },
+        McpTool {
+            name: INDEX_READ.to_string(),
+            description: Some(
+                "Read the full content of an indexed source. Use after ctx_search to get complete context around a search hit."
+                    .to_string(),
+            ),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Source label to read (from search results)"
+                    },
+                    "offset": {
+                        "type": "string",
+                        "description": "Line offset to start from (e.g. \"5\" or \"5-2\" for sub-line). Default: start of content."
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Number of lines to return (default: ~100)"
+                    }
+                },
+                "required": ["label"]
+            }),
+        },
+    ]
+}
 
-        tools.push(tool);
-    }
+/// Build a fallback ctx_search tool definition (public for coding agents UI).
+pub fn build_fallback_ctx_search_tool() -> McpTool {
+    build_native_tools().into_iter().next().unwrap()
+}
 
-    // Ensure ctx_search is listed first
-    tools.sort_by_key(|t| if t.name == CTX_SEARCH { 0 } else { 1 });
-
-    tools
+/// Build all native tool definitions (public for coding agents UI).
+pub fn build_native_tool_definitions() -> Vec<McpTool> {
+    build_native_tools()
 }
 
 #[async_trait]
@@ -470,7 +220,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
     }
 
     fn owns_tool(&self, tool_name: &str) -> bool {
-        tool_name == CTX_SEARCH || INDEXING_TOOLS.contains(&tool_name)
+        tool_name == CTX_SEARCH || tool_name == INDEX_READ
     }
 
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
@@ -488,16 +238,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             return Vec::new();
         }
 
-        // Try to use cached tools; if not yet available, return a minimal ctx_search definition
-        let cached = state.cached_tools.try_lock();
-        if let Ok(guard) = cached {
-            if let Some(ref tools) = *guard {
-                return build_context_mode_tools(tools, state.indexing_tools_enabled);
-            }
-        }
-
-        // Fallback: return static tool definitions before transport is initialized
-        build_fallback_tools(state.indexing_tools_enabled)
+        build_native_tools()
     }
 
     fn check_permissions(
@@ -531,73 +272,10 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             );
         }
 
-        // Block indexing tools when disabled
-        if !state.indexing_tools_enabled && INDEXING_TOOLS.contains(&tool_name) {
-            return VirtualToolCallResult::ToolError("Indexing tools are disabled".to_string());
-        }
-
-        // Forward the tool call to the context-mode STDIO process
-        match state.call_tool(tool_name, arguments).await {
-            Ok(result) => {
-                if tool_name == CTX_SEARCH {
-                    // Post-process search results for catalog activation
-                    let activated = extract_catalog_activations(
-                        &result,
-                        &state.catalog_sources,
-                        &state.activated_tools,
-                        &state.activated_resources,
-                        &state.activated_prompts,
-                    );
-
-                    if activated.is_empty() {
-                        VirtualToolCallResult::Success(result)
-                    } else {
-                        // Append activation message to result
-                        let mut modified_result = result.clone();
-                        let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
-                        let activation_msg = format!(
-                            "\n\n---\nActivated: {}\nThese items are now available for use.",
-                            names.join(", ")
-                        );
-                        append_text_to_mcp_result(&mut modified_result, &activation_msg);
-
-                        // Build state updater to mark items as activated by their correct type
-                        let activated_clone = activated.clone();
-                        let state_update: Box<
-                            dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send,
-                        > = Box::new(move |s| {
-                            if let Some(cm) =
-                                s.as_any_mut().downcast_mut::<ContextModeSessionState>()
-                            {
-                                for (name, item_type) in &activated_clone {
-                                    match item_type {
-                                        CatalogItemType::Tool => {
-                                            cm.activated_tools.insert(name.clone());
-                                        }
-                                        CatalogItemType::Resource => {
-                                            cm.activated_resources.insert(name.clone());
-                                        }
-                                        CatalogItemType::Prompt => {
-                                            cm.activated_prompts.insert(name.clone());
-                                        }
-                                        CatalogItemType::ServerWelcome => {} // No activation needed
-                                    }
-                                }
-                            }
-                        });
-
-                        VirtualToolCallResult::SuccessWithSideEffects {
-                            response: modified_result,
-                            invalidate_cache: true,
-                            send_list_changed: true,
-                            state_update: Some(state_update),
-                        }
-                    }
-                } else {
-                    VirtualToolCallResult::Success(result)
-                }
-            }
-            Err(e) => VirtualToolCallResult::ToolError(e),
+        match tool_name {
+            CTX_SEARCH => self.handle_ctx_search(state, arguments),
+            INDEX_READ => self.handle_index_read(state, arguments),
+            _ => VirtualToolCallResult::NotHandled,
         }
     }
 
@@ -613,8 +291,9 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 
         Some(VirtualInstructions {
             section_title: "Context Management".to_string(),
-            content: "Use ctx_search to discover MCP capabilities and retrieve compressed content."
-                .to_string(),
+            content:
+                "Use ctx_search to discover MCP capabilities and retrieve compressed content. Use ctx_read to read full indexed sources."
+                    .to_string(),
             tool_names: Vec::new(), // populated by gateway
             priority: 0,
         })
@@ -624,12 +303,14 @@ impl VirtualMcpServer for ContextModeVirtualServer {
         let config = self.config.read().unwrap();
         let enabled = client.is_context_management_enabled(&config);
 
+        let store = Arc::new(
+            ContentStore::new().expect("Failed to create in-memory ContentStore"),
+        );
+
         Box::new(ContextModeSessionState {
             enabled,
-            indexing_tools_enabled: enabled && client.is_indexing_tools_enabled(&config),
             catalog_compression_enabled: enabled && client.is_catalog_compression_enabled(&config),
-            transport: Mutex::new(None),
-            cached_tools: Mutex::new(None),
+            store,
             catalog_sources: HashMap::new(),
             run_counters: HashMap::new(),
             full_tool_catalog: Vec::new(),
@@ -655,7 +336,6 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             .expect("wrong state type for ContextModeVirtualServer");
 
         state.enabled = client.is_context_management_enabled(&config);
-        state.indexing_tools_enabled = state.enabled && client.is_indexing_tools_enabled(&config);
         state.catalog_compression_enabled =
             state.enabled && client.is_catalog_compression_enabled(&config);
         state.catalog_threshold_bytes = config.catalog_threshold_bytes;
@@ -663,41 +343,171 @@ impl VirtualMcpServer for ContextModeVirtualServer {
     }
 }
 
-/// Extract catalog items that should be activated based on ctx_search results.
-/// Parses source labels from the result text and identifies newly activatable items.
-/// Returns (name, type) pairs so the caller can update the correct activation set.
-fn extract_catalog_activations(
-    result: &Value,
+impl ContextModeVirtualServer {
+    /// Handle ctx_search tool call using native ContentStore.
+    fn handle_ctx_search(
+        &self,
+        state: &ContextModeSessionState,
+        arguments: Value,
+    ) -> VirtualToolCallResult {
+        // Parse arguments
+        let queries: Vec<String> = arguments
+            .get("queries")
+            .and_then(|q| serde_json::from_value(q.clone()).ok())
+            .unwrap_or_default();
+
+        if queries.is_empty() {
+            return VirtualToolCallResult::ToolError(
+                "Missing required parameter: queries (array of search strings)".to_string(),
+            );
+        }
+
+        let source = arguments
+            .get("source")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+
+        let limit = arguments
+            .get("limit")
+            .and_then(|l| l.as_u64())
+            .unwrap_or(3) as usize;
+
+        // Execute search using native store
+        let results = match state.store.search(&queries, limit, source.as_deref()) {
+            Ok(results) => results,
+            Err(e) => {
+                return VirtualToolCallResult::ToolError(format!("Search failed: {}", e));
+            }
+        };
+
+        // Format results
+        let formatted = format_search_results(&results, SEARCH_OUTPUT_CAP);
+        let result = json!({
+            "content": [{
+                "type": "text",
+                "text": formatted,
+            }]
+        });
+
+        // Extract catalog activations from search results
+        let activated = extract_catalog_activations_from_results(
+            &results,
+            &state.catalog_sources,
+            &state.activated_tools,
+            &state.activated_resources,
+            &state.activated_prompts,
+        );
+
+        if activated.is_empty() {
+            VirtualToolCallResult::Success(result)
+        } else {
+            // Append activation message to result
+            let mut modified_result = result;
+            let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
+            let activation_msg = format!(
+                "\n\n---\nActivated: {}\nThese items are now available for use.",
+                names.join(", ")
+            );
+            append_text_to_mcp_result(&mut modified_result, &activation_msg);
+
+            // Build state updater to mark items as activated by their correct type
+            let activated_clone = activated.clone();
+            let state_update: Box<
+                dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send,
+            > = Box::new(move |s| {
+                if let Some(cm) = s.as_any_mut().downcast_mut::<ContextModeSessionState>() {
+                    for (name, item_type) in &activated_clone {
+                        match item_type {
+                            CatalogItemType::Tool => {
+                                cm.activated_tools.insert(name.clone());
+                            }
+                            CatalogItemType::Resource => {
+                                cm.activated_resources.insert(name.clone());
+                            }
+                            CatalogItemType::Prompt => {
+                                cm.activated_prompts.insert(name.clone());
+                            }
+                            CatalogItemType::ServerWelcome => {} // No activation needed
+                        }
+                    }
+                }
+            });
+
+            VirtualToolCallResult::SuccessWithSideEffects {
+                response: modified_result,
+                invalidate_cache: true,
+                send_list_changed: true,
+                state_update: Some(state_update),
+            }
+        }
+    }
+
+    /// Handle ctx_read tool call using native ContentStore.
+    fn handle_index_read(
+        &self,
+        state: &ContextModeSessionState,
+        arguments: Value,
+    ) -> VirtualToolCallResult {
+        let label = match arguments.get("label").and_then(|l| l.as_str()) {
+            Some(l) => l.to_string(),
+            None => {
+                return VirtualToolCallResult::ToolError(
+                    "Missing required parameter: label".to_string(),
+                );
+            }
+        };
+
+        let offset = arguments
+            .get("offset")
+            .and_then(|o| o.as_str())
+            .map(|s| s.to_string());
+
+        let limit = arguments
+            .get("limit")
+            .and_then(|l| l.as_u64())
+            .map(|l| l as usize);
+
+        match state.store.read(&label, offset.as_deref(), limit) {
+            Ok(read_result) => {
+                let formatted = read_result.to_string();
+                VirtualToolCallResult::Success(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": formatted,
+                    }]
+                }))
+            }
+            Err(e) => VirtualToolCallResult::ToolError(format!("Read failed: {}", e)),
+        }
+    }
+}
+
+/// Extract catalog items that should be activated based on search results.
+/// Uses direct access to SearchResult/SearchHit structs rather than text parsing.
+fn extract_catalog_activations_from_results(
+    results: &[SearchResult],
     catalog_sources: &HashMap<String, CatalogItemType>,
     activated_tools: &HashSet<String>,
     activated_resources: &HashSet<String>,
     activated_prompts: &HashSet<String>,
 ) -> Vec<(String, CatalogItemType)> {
     let mut newly_activated = Vec::new();
+    let mut seen = HashSet::new();
 
-    // Extract text content from MCP result
-    let text = result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default();
+    for result in results {
+        for hit in &result.hits {
+            // The hit.source contains the source label (e.g. "catalog:filesystem__read_file")
+            let source_label = &hit.source;
 
-    // Parse source labels from result text: --- [source_label] ---
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some(label) = trimmed
-            .strip_prefix("--- [")
-            .and_then(|s| s.strip_suffix("] ---"))
-        {
-            // Check if this is a catalog source that needs activation
-            if let Some(item_type) = catalog_sources.get(label) {
+            if let Some(item_type) = catalog_sources.get(source_label) {
                 // Extract the namespaced name from the source label (strip "catalog:" prefix)
-                let name = label.strip_prefix("catalog:").unwrap_or(label);
+                let name = source_label.strip_prefix("catalog:").unwrap_or(source_label);
+
+                if seen.contains(name) {
+                    continue;
+                }
+                seen.insert(name.to_string());
+
                 let already_active = match item_type {
                     CatalogItemType::Tool => activated_tools.contains(name),
                     CatalogItemType::Resource => activated_resources.contains(name),
@@ -724,278 +534,11 @@ fn append_text_to_mcp_result(result: &mut Value, text: &str) {
     }
 }
 
-/// Build a fallback ctx_search tool definition for use before the transport is initialized.
-pub fn build_fallback_ctx_search_tool(indexing_tools_enabled: bool) -> McpTool {
-    let mut description = "Search indexed content. Pass ALL search questions as queries array in ONE call.\n\nTIPS: 2-4 specific terms per query. Use 'source' to scope results.".to_string();
-    description.push_str(CTX_SEARCH_SOURCE_GUIDE);
-    if indexing_tools_enabled {
-        description.push_str(CTX_SEARCH_INDEXING_SOURCE_GUIDE);
-    }
-
-    let mut source_desc = "Filter to a specific indexed source (partial match).".to_string();
-    source_desc.push_str(CTX_SEARCH_SOURCE_PARAM_GUIDE);
-
-    McpTool {
-        name: CTX_SEARCH.to_string(),
-        description: Some(description),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "queries": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Array of search queries. Batch ALL questions in one call."
-                },
-                "source": {
-                    "type": "string",
-                    "description": source_desc
-                },
-                "limit": {
-                    "type": "number",
-                    "description": "Results per query (default: 3)"
-                }
-            }
-        }),
-    }
-}
-
-/// Build fallback tool definitions for all context-mode tools before transport is initialized.
-/// Returns all tools (filtered by `indexing_tools_enabled`) with hardcoded schemas that match
-/// the actual context-mode MCP server definitions.
-pub fn build_fallback_tools(indexing_tools_enabled: bool) -> Vec<McpTool> {
-    let mut tools = vec![build_fallback_ctx_search_tool(indexing_tools_enabled)];
-
-    if indexing_tools_enabled {
-        tools.push(McpTool {
-            name: CTX_EXECUTE.to_string(),
-            description: Some("Execute code in a sandboxed environment. Supports shell and Python. Output is indexed for later search.".to_string()),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "language": {
-                        "type": "string",
-                        "enum": ["shell", "python"],
-                        "description": "Language to execute"
-                    },
-                    "code": {
-                        "type": "string",
-                        "description": "Code to execute"
-                    }
-                },
-                "required": ["language", "code"]
-            }),
-        });
-
-        tools.push(McpTool {
-            name: CTX_EXECUTE_FILE.to_string(),
-            description: Some("Execute a script file in a sandboxed environment. Output is indexed for later search.".to_string()),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Absolute path to the script file"
-                    },
-                    "language": {
-                        "type": "string",
-                        "enum": ["shell", "python"],
-                        "description": "Language of the script"
-                    },
-                    "code": {
-                        "type": "string",
-                        "description": "Optional inline code to append to the file"
-                    }
-                },
-                "required": ["path"]
-            }),
-        });
-
-        tools.push(McpTool {
-            name: CTX_BATCH_EXECUTE.to_string(),
-            description: Some("Execute multiple commands and search queries in a single call. Results are indexed for later search.".to_string()),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "commands": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Shell commands to execute"
-                    },
-                    "queries": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Search queries to run after commands"
-                    }
-                }
-            }),
-        });
-
-        tools.push(McpTool {
-            name: CTX_INDEX.to_string(),
-            description: Some("Index content for later retrieval via ctx_search.".to_string()),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "Content to index"
-                    },
-                    "source": {
-                        "type": "string",
-                        "description": "Source label for filtering"
-                    }
-                },
-                "required": ["content"]
-            }),
-        });
-
-        tools.push(McpTool {
-            name: CTX_FETCH_AND_INDEX.to_string(),
-            description: Some("Fetch a URL and index its content for later search.".to_string()),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "URL to fetch"
-                    },
-                    "source": {
-                        "type": "string",
-                        "description": "Source label for filtering"
-                    }
-                },
-                "required": ["url"]
-            }),
-        });
-    }
-
-    tools
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_mcp_tool(name: &str, desc: &str) -> McpTool {
-        McpTool {
-            name: name.to_string(),
-            description: Some(desc.to_string()),
-            input_schema: json!({"type": "object"}),
-        }
-    }
-
-    // ── build_context_mode_tools tests ──────────────────────────────
-
-    #[test]
-    fn test_filters_stats_doctor_upgrade() {
-        let tools = vec![
-            make_mcp_tool("ctx_search", "Search"),
-            make_mcp_tool("ctx_execute", "Execute"),
-            make_mcp_tool("ctx_stats", "Stats"),
-            make_mcp_tool("ctx_doctor", "Doctor"),
-            make_mcp_tool("ctx_upgrade", "Upgrade"),
-        ];
-
-        let result = build_context_mode_tools(&tools, true);
-        let names: Vec<&str> = result.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"ctx_search"));
-        assert!(names.contains(&"ctx_execute"));
-        assert!(!names.contains(&"ctx_stats"));
-        assert!(!names.contains(&"ctx_doctor"));
-        assert!(!names.contains(&"ctx_upgrade"));
-    }
-
-    #[test]
-    fn test_filters_indexing_tools_when_disabled() {
-        let tools = vec![
-            make_mcp_tool("ctx_search", "Search"),
-            make_mcp_tool("ctx_execute", "Execute"),
-            make_mcp_tool("ctx_execute_file", "Execute file"),
-            make_mcp_tool("ctx_batch_execute", "Batch"),
-            make_mcp_tool("ctx_index", "Index"),
-            make_mcp_tool("ctx_fetch_and_index", "Fetch"),
-        ];
-
-        let result = build_context_mode_tools(&tools, false);
-        let names: Vec<&str> = result.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"ctx_search"));
-        assert!(!names.contains(&"ctx_execute"));
-        assert!(!names.contains(&"ctx_execute_file"));
-        assert!(!names.contains(&"ctx_batch_execute"));
-        assert!(!names.contains(&"ctx_index"));
-        assert!(!names.contains(&"ctx_fetch_and_index"));
-    }
-
-    #[test]
-    fn test_shows_indexing_tools_when_enabled() {
-        let tools = vec![
-            make_mcp_tool("ctx_search", "Search"),
-            make_mcp_tool("ctx_execute", "Execute"),
-            make_mcp_tool("ctx_execute_file", "Execute file"),
-            make_mcp_tool("ctx_batch_execute", "Batch"),
-            make_mcp_tool("ctx_index", "Index"),
-            make_mcp_tool("ctx_fetch_and_index", "Fetch"),
-        ];
-
-        let result = build_context_mode_tools(&tools, true);
-        assert_eq!(result.len(), 6);
-    }
-
-    #[test]
-    fn test_injects_source_guide_into_ctx_search() {
-        let tools = vec![McpTool {
-            name: "ctx_search".to_string(),
-            description: Some("Base description".to_string()),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "source": {
-                        "type": "string",
-                        "description": "Source filter"
-                    }
-                }
-            }),
-        }];
-
-        let result = build_context_mode_tools(&tools, false);
-        let search = &result[0];
-        let desc = search.description.as_ref().unwrap();
-        assert!(desc.contains("MCP Gateway source labels"));
-        assert!(desc.contains("catalog:"));
-        // Should NOT have indexing guide when disabled
-        assert!(!desc.contains("ctx_execute"));
-
-        // With indexing enabled
-        let result = build_context_mode_tools(&tools, true);
-        let search = &result[0];
-        let desc = search.description.as_ref().unwrap();
-        assert!(desc.contains("ctx_execute"));
-    }
-
-    #[test]
-    fn test_injects_source_param_description() {
-        let tools = vec![McpTool {
-            name: "ctx_search".to_string(),
-            description: Some("Search".to_string()),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "source": {
-                        "type": "string",
-                        "description": "Filter to source"
-                    }
-                }
-            }),
-        }];
-
-        let result = build_context_mode_tools(&tools, false);
-        let source_desc = result[0].input_schema["properties"]["source"]["description"]
-            .as_str()
-            .unwrap();
-        assert!(source_desc.contains("MCP examples:"));
-    }
-
-    // ── extract_catalog_activations tests ───────────────────────────
+    // ── extract_catalog_activations_from_results tests ────────────────
 
     fn make_catalog_sources() -> HashMap<String, CatalogItemType> {
         let mut sources = HashMap::new();
@@ -1016,18 +559,37 @@ mod tests {
         sources
     }
 
+    fn make_search_result(hits: Vec<(&str, &str)>) -> SearchResult {
+        use lr_context::{ContentType, MatchLayer, SearchHit};
+        SearchResult {
+            query: "test".to_string(),
+            hits: hits
+                .into_iter()
+                .map(|(source, title)| SearchHit {
+                    title: title.to_string(),
+                    content: "test content".to_string(),
+                    source: source.to_string(),
+                    rank: -1.0,
+                    content_type: ContentType::Prose,
+                    match_layer: MatchLayer::Porter,
+                    line_start: 1,
+                    line_end: 10,
+                })
+                .collect(),
+            corrected_query: None,
+        }
+    }
+
     #[test]
     fn test_activates_tools_from_search_results() {
         let sources = make_catalog_sources();
-        let result = json!({
-            "content": [{
-                "type": "text",
-                "text": "Results:\n--- [catalog:filesystem__read_file] ---\nRead file content\n--- [catalog:filesystem__write_file] ---\nWrite file content"
-            }]
-        });
+        let results = vec![make_search_result(vec![
+            ("catalog:filesystem__read_file", "Read File"),
+            ("catalog:filesystem__write_file", "Write File"),
+        ])];
 
-        let activated = extract_catalog_activations(
-            &result,
+        let activated = extract_catalog_activations_from_results(
+            &results,
             &sources,
             &HashSet::new(),
             &HashSet::new(),
@@ -1038,7 +600,6 @@ mod tests {
         let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"filesystem__read_file"));
         assert!(names.contains(&"filesystem__write_file"));
-        // Both should be Tool type
         for (_, item_type) in &activated {
             assert_eq!(*item_type, CatalogItemType::Tool);
         }
@@ -1047,18 +608,16 @@ mod tests {
     #[test]
     fn test_skips_already_activated_tools() {
         let sources = make_catalog_sources();
-        let result = json!({
-            "content": [{
-                "type": "text",
-                "text": "--- [catalog:filesystem__read_file] ---\nContent"
-            }]
-        });
+        let results = vec![make_search_result(vec![(
+            "catalog:filesystem__read_file",
+            "Read File",
+        )])];
 
         let mut activated_tools = HashSet::new();
         activated_tools.insert("filesystem__read_file".to_string());
 
-        let activated = extract_catalog_activations(
-            &result,
+        let activated = extract_catalog_activations_from_results(
+            &results,
             &sources,
             &activated_tools,
             &HashSet::new(),
@@ -1071,15 +630,13 @@ mod tests {
     #[test]
     fn test_activates_resources_and_prompts() {
         let sources = make_catalog_sources();
-        let result = json!({
-            "content": [{
-                "type": "text",
-                "text": "--- [catalog:db__users] ---\nUser table\n--- [catalog:db__query] ---\nQuery prompt"
-            }]
-        });
+        let results = vec![make_search_result(vec![
+            ("catalog:db__users", "Users"),
+            ("catalog:db__query", "Query"),
+        ])];
 
-        let activated = extract_catalog_activations(
-            &result,
+        let activated = extract_catalog_activations_from_results(
+            &results,
             &sources,
             &HashSet::new(),
             &HashSet::new(),
@@ -1087,10 +644,6 @@ mod tests {
         );
 
         assert_eq!(activated.len(), 2);
-        let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"db__users"));
-        assert!(names.contains(&"db__query"));
-        // Check correct types
         let resource = activated.iter().find(|(n, _)| n == "db__users").unwrap();
         assert_eq!(resource.1, CatalogItemType::Resource);
         let prompt = activated.iter().find(|(n, _)| n == "db__query").unwrap();
@@ -1100,37 +653,13 @@ mod tests {
     #[test]
     fn test_server_welcome_not_activated() {
         let sources = make_catalog_sources();
-        let result = json!({
-            "content": [{
-                "type": "text",
-                "text": "--- [catalog:filesystem] ---\nServer docs"
-            }]
-        });
+        let results = vec![make_search_result(vec![(
+            "catalog:filesystem",
+            "Filesystem",
+        )])];
 
-        let activated = extract_catalog_activations(
-            &result,
-            &sources,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-        );
-
-        // ServerWelcome items should not be activated (always_active = true in logic)
-        assert!(activated.is_empty());
-    }
-
-    #[test]
-    fn test_ignores_non_catalog_labels() {
-        let sources = make_catalog_sources();
-        let result = json!({
-            "content": [{
-                "type": "text",
-                "text": "--- [execute:abc123] ---\nSome output\n--- [unknown_label] ---\nOther"
-            }]
-        });
-
-        let activated = extract_catalog_activations(
-            &result,
+        let activated = extract_catalog_activations_from_results(
+            &results,
             &sources,
             &HashSet::new(),
             &HashSet::new(),
@@ -1141,12 +670,15 @@ mod tests {
     }
 
     #[test]
-    fn test_handles_empty_result() {
+    fn test_ignores_non_catalog_sources() {
         let sources = make_catalog_sources();
-        let result = json!({"content": []});
+        let results = vec![make_search_result(vec![
+            ("execute:abc123", "Exec Output"),
+            ("unknown_label", "Unknown"),
+        ])];
 
-        let activated = extract_catalog_activations(
-            &result,
+        let activated = extract_catalog_activations_from_results(
+            &results,
             &sources,
             &HashSet::new(),
             &HashSet::new(),
@@ -1157,12 +689,10 @@ mod tests {
     }
 
     #[test]
-    fn test_handles_missing_content() {
+    fn test_handles_empty_results() {
         let sources = make_catalog_sources();
-        let result = json!({});
-
-        let activated = extract_catalog_activations(
-            &result,
+        let activated = extract_catalog_activations_from_results(
+            &[],
             &sources,
             &HashSet::new(),
             &HashSet::new(),
@@ -1170,6 +700,25 @@ mod tests {
         );
 
         assert!(activated.is_empty());
+    }
+
+    #[test]
+    fn test_deduplicates_across_results() {
+        let sources = make_catalog_sources();
+        let results = vec![
+            make_search_result(vec![("catalog:filesystem__read_file", "Read File")]),
+            make_search_result(vec![("catalog:filesystem__read_file", "Read File Again")]),
+        ];
+
+        let activated = extract_catalog_activations_from_results(
+            &results,
+            &sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(activated.len(), 1);
     }
 
     // ── append_text_to_mcp_result tests ─────────────────────────────
@@ -1190,39 +739,25 @@ mod tests {
     fn test_append_no_content_is_noop() {
         let mut result = json!({"other": "field"});
         append_text_to_mcp_result(&mut result, "text");
-        // Should not crash, result unchanged
         assert!(result.get("content").is_none());
     }
 
-    // ── build_fallback_ctx_search_tool tests ────────────────────────
+    // ── tool definition tests ────────────────────────────────────────
 
     #[test]
-    fn test_fallback_tool_structure() {
-        let tool = build_fallback_ctx_search_tool(false);
-        assert_eq!(tool.name, "ctx_search");
-        assert!(tool
-            .description
-            .as_ref()
-            .unwrap()
-            .contains("Search indexed content"));
-        assert!(tool.input_schema["properties"]["queries"].is_object());
-        assert!(tool.input_schema["properties"]["source"].is_object());
-        assert!(tool.input_schema["properties"]["limit"].is_object());
-    }
+    fn test_native_tool_definitions() {
+        let tools = build_native_tools();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].name, "ctx_search");
+        assert_eq!(tools[1].name, "ctx_read");
 
-    #[test]
-    fn test_fallback_tool_with_indexing() {
-        let tool = build_fallback_ctx_search_tool(true);
-        let desc = tool.description.as_ref().unwrap();
-        assert!(desc.contains("ctx_execute"));
-        assert!(desc.contains("batch:"));
-    }
+        let search_desc = tools[0].description.as_ref().unwrap();
+        assert!(search_desc.contains("Search indexed content"));
+        assert!(search_desc.contains("MCP Gateway source labels"));
+        assert!(search_desc.contains("catalog:"));
 
-    #[test]
-    fn test_fallback_tool_without_indexing() {
-        let tool = build_fallback_ctx_search_tool(false);
-        let desc = tool.description.as_ref().unwrap();
-        assert!(!desc.contains("ctx_execute"));
+        let read_desc = tools[1].description.as_ref().unwrap();
+        assert!(read_desc.contains("Read the full content"));
     }
 
     // ── ContextModeSessionState tests ───────────────────────────────
@@ -1231,10 +766,8 @@ mod tests {
     fn test_next_run_id_increments() {
         let mut state = ContextModeSessionState {
             enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression_enabled: true,
-            transport: Mutex::new(None),
-            cached_tools: Mutex::new(None),
+            store: Arc::new(ContentStore::new().unwrap()),
             catalog_sources: HashMap::new(),
             run_counters: HashMap::new(),
             full_tool_catalog: Vec::new(),
@@ -1257,14 +790,12 @@ mod tests {
     fn test_session_state_cm_enabled_compression_disabled() {
         let config = lr_config::ContextManagementConfig {
             enabled: true,
-            indexing_tools: true,
             catalog_compression: false,
             ..Default::default()
         };
         let vs = ContextModeVirtualServer::new(config);
         let mut client =
             lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
-        // Client inherits global settings
         client.context_management_enabled = None;
         client.catalog_compression_enabled = None;
 
@@ -1274,7 +805,6 @@ mod tests {
             .downcast_ref::<ContextModeSessionState>()
             .unwrap();
         assert!(cm.enabled);
-        assert!(cm.indexing_tools_enabled);
         assert!(!cm.catalog_compression_enabled);
     }
 
@@ -1282,7 +812,6 @@ mod tests {
     fn test_session_state_client_override_disables_compression() {
         let config = lr_config::ContextManagementConfig {
             enabled: true,
-            indexing_tools: true,
             catalog_compression: true,
             ..Default::default()
         };
@@ -1327,14 +856,12 @@ mod tests {
     fn test_session_state_cm_disabled_disables_all() {
         let config = lr_config::ContextManagementConfig {
             enabled: true,
-            indexing_tools: true,
             catalog_compression: true,
             ..Default::default()
         };
         let vs = ContextModeVirtualServer::new(config);
         let mut client =
             lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
-        // Client overrides CM to off
         client.context_management_enabled = Some(false);
 
         let state = vs.create_session_state(&client);
@@ -1343,37 +870,13 @@ mod tests {
             .downcast_ref::<ContextModeSessionState>()
             .unwrap();
         assert!(!cm.enabled);
-        assert!(!cm.indexing_tools_enabled);
         assert!(!cm.catalog_compression_enabled);
-    }
-
-    #[test]
-    fn test_session_state_indexing_disabled_compression_enabled() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            indexing_tools: false,
-            catalog_compression: true,
-            ..Default::default()
-        };
-        let vs = ContextModeVirtualServer::new(config);
-        let client =
-            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
-
-        let state = vs.create_session_state(&client);
-        let cm = state
-            .as_any()
-            .downcast_ref::<ContextModeSessionState>()
-            .unwrap();
-        assert!(cm.enabled);
-        assert!(!cm.indexing_tools_enabled);
-        assert!(cm.catalog_compression_enabled);
     }
 
     #[test]
     fn test_update_session_state_reflects_config_change() {
         let config = lr_config::ContextManagementConfig {
             enabled: true,
-            indexing_tools: true,
             catalog_compression: true,
             ..Default::default()
         };
@@ -1388,7 +891,6 @@ mod tests {
             .unwrap();
         assert!(cm.catalog_compression_enabled);
 
-        // Simulate client toggling compression off
         client.catalog_compression_enabled = Some(false);
         vs.update_session_state(state.as_mut(), &client);
 
@@ -1415,10 +917,9 @@ mod tests {
     }
 
     #[test]
-    fn test_list_tools_enabled_returns_ctx_search() {
+    fn test_list_tools_enabled_returns_search_and_read() {
         let config = lr_config::ContextManagementConfig {
             enabled: true,
-            indexing_tools: false,
             catalog_compression: false,
             ..Default::default()
         };
@@ -1428,11 +929,8 @@ mod tests {
 
         let state = vs.create_session_state(&client);
         let tools = vs.list_tools(state.as_ref());
-        // Should have at least the fallback ctx_search tool
-        assert!(!tools.is_empty());
+        assert_eq!(tools.len(), 2);
         assert!(tools.iter().any(|t| t.name == "ctx_search"));
-        // Should NOT have indexing tools
-        assert!(!tools.iter().any(|t| t.name == "ctx_execute"));
-        assert!(!tools.iter().any(|t| t.name == "ctx_batch_execute"));
+        assert!(tools.iter().any(|t| t.name == "ctx_read"));
     }
 }

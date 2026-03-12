@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { Zap, BookText, ArrowRight, CheckCircle2, XCircle } from "lucide-react"
+import { Zap, BookText, ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
-import type { ContextManagementConfig, ContextModeInfo } from "@/types/tauri-commands"
+import type { ContextManagementConfig } from "@/types/tauri-commands"
 
 interface McpOptimizationViewProps {
   activeSubTab?: string | null
@@ -14,7 +14,6 @@ interface McpOptimizationViewProps {
 
 export function McpOptimizationView({ onTabChange }: McpOptimizationViewProps) {
   const [config, setConfig] = useState<ContextManagementConfig | null>(null)
-  const [modeInfo, setModeInfo] = useState<ContextModeInfo | null>(null)
   const [saving, setSaving] = useState(false)
 
   const loadConfig = useCallback(async () => {
@@ -26,18 +25,8 @@ export function McpOptimizationView({ onTabChange }: McpOptimizationViewProps) {
     }
   }, [])
 
-  const loadModeInfo = useCallback(async () => {
-    try {
-      const info = await invoke<ContextModeInfo>("get_context_mode_info")
-      setModeInfo(info)
-    } catch (err) {
-      console.error("Failed to load context mode info:", err)
-    }
-  }, [])
-
   useEffect(() => {
     loadConfig()
-    loadModeInfo()
 
     const unlistenConfig = listen('config-changed', () => {
       loadConfig()
@@ -46,7 +35,7 @@ export function McpOptimizationView({ onTabChange }: McpOptimizationViewProps) {
     return () => {
       unlistenConfig.then(fn => fn())
     }
-  }, [loadConfig, loadModeInfo])
+  }, [loadConfig])
 
   const updateField = async (field: string, value: boolean) => {
     setSaving(true)
@@ -74,7 +63,7 @@ export function McpOptimizationView({ onTabChange }: McpOptimizationViewProps) {
           </h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Optimize MCP gateway context with catalog compression and indexing tools
+          Optimize MCP gateway context with catalog compression
         </p>
       </div>
 
@@ -103,54 +92,7 @@ export function McpOptimizationView({ onTabChange }: McpOptimizationViewProps) {
             </CardDescription>
           </CardHeader>
           <CardContent className="pt-0">
-            <div className="flex items-center justify-between">
-              <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("context-management")}>
-                Configure
-                <ArrowRight className="h-3 w-3" />
-              </Button>
-              {modeInfo && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  {modeInfo.contextModeVersion ? (
-                    <>
-                      <CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" />
-                      context-mode v{modeInfo.contextModeVersion}
-                    </>
-                  ) : (
-                    <>
-                      <XCircle className="h-3 w-3" />
-                      context-mode not installed
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Indexing Tools Section */}
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <BookText className="h-4 w-4 text-muted-foreground" />
-                <CardTitle className="text-base">Default: Indexing Tools</CardTitle>
-              </div>
-              {config && (
-                <Switch
-                  checked={config.indexing_tools}
-                  onCheckedChange={(v) => updateField("indexingTools", v)}
-                  disabled={saving}
-                />
-              )}
-            </div>
-            <CardDescription>
-              Enables indexing tools that reduce context window usage for Bash, Read, WebFetch, Grep,
-              and Task calls. Tool outputs are indexed and searchable rather than returned directly
-              into the context window.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("context-management", "settings")}>
+            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("context-management")}>
               Configure
               <ArrowRight className="h-3 w-3" />
             </Button>

@@ -232,13 +232,11 @@ pub async fn get_coding_agent_tool_definitions(
     )
 }
 
-/// Get the context-mode tool definitions (ctx_search + indexing tools).
+/// Get the context-mode tool definitions (ctx_search native tools).
 #[tauri::command]
-pub async fn get_context_mode_tool_definitions(
-    indexing_tools_enabled: bool,
-) -> Result<Vec<ToolDefinition>, String> {
+pub async fn get_context_mode_tool_definitions() -> Result<Vec<ToolDefinition>, String> {
     Ok(
-        lr_mcp::gateway::context_mode::build_fallback_tools(indexing_tools_enabled)
+        lr_mcp::gateway::context_mode::build_native_tool_definitions()
             .into_iter()
             .map(ToolDefinition::from)
             .collect(),

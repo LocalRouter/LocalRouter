@@ -289,7 +289,6 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
                   renderButton={(props) => <CategoryActionButton {...props} />}
                   globalLabel="All Categories"
                   emptyMessage="No categories available. Add safety models in the Models tab first."
-                  defaultExpanded
                 />
               </CardContent>
             </Card>

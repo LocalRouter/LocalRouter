@@ -153,17 +153,6 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
               })()}
             />
 
-            {/* Indexing Tools toggle (per-client override) */}
-            <MenuItem
-              label={(() => {
-                const isInherited = client.indexing_tools_enabled == null
-                const effective = client.indexing_tools_enabled ?? true
-                const suffix = isInherited ? ' (default)' : ''
-                return effective
-                  ? `✓  Indexing Tools${suffix}`
-                  : `${TRAY_INDENT}Indexing Tools${suffix}`
-              })()}
-            />
           </>
         )
       })()}

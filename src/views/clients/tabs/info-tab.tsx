@@ -46,7 +46,6 @@ interface Client {
   enabled: boolean
   strategy_id: string
   context_management_enabled: boolean | null
-  indexing_tools_enabled: boolean | null
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
   coding_agent_permission: PermissionState
@@ -107,7 +106,7 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
     invoke<Strategy>("get_strategy", {
       strategyId: client.strategy_id,
     }).then(setStrategy).catch(console.error)
-  }, [client.client_id, client.strategy_id, client.context_management_enabled, client.indexing_tools_enabled])
+  }, [client.client_id, client.strategy_id, client.context_management_enabled])
 
   // Build graph filtered to just this client
   const { graphNodes, graphEdges, graphBounds } = useMemo(() => {
@@ -173,12 +172,6 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
       pills.push({
         label: "Catalog Compression",
         source: effectiveConfig.context_management_source,
-      })
-    }
-    if (effectiveConfig.indexing_tools_effective) {
-      pills.push({
-        label: "Indexing Tools",
-        source: effectiveConfig.indexing_tools_source,
       })
     }
     if (effectiveConfig.catalog_compression_effective) {

@@ -390,24 +390,6 @@ impl ClientManager {
         Ok(())
     }
 
-    /// Set indexing tools enabled for a client (None = inherit global, Some(true) = enabled)
-    pub fn set_indexing_tools_enabled(
-        &self,
-        client_id: &str,
-        enabled: Option<bool>,
-    ) -> AppResult<()> {
-        let mut clients = self.clients.write();
-
-        let client = clients
-            .iter_mut()
-            .find(|c| c.id == client_id)
-            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
-
-        client.indexing_tools_enabled = enabled;
-
-        Ok(())
-    }
-
     /// Enable a client
     pub fn enable_client(&self, client_id: &str) -> AppResult<()> {
         let mut clients = self.clients.write();

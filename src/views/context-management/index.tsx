@@ -1,11 +1,10 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { BookText, Info, RefreshCw, CheckCircle2, XCircle, Loader2, Download, Search, Database, BarChart3, AlertTriangle } from "lucide-react"
+import { BookText, Info, RefreshCw, Loader2, Search, Database, BarChart3, AlertTriangle } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
-import { Switch } from "@/components/ui/Toggle"
 import { Input } from "@/components/ui/Input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -19,7 +18,7 @@ import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { ToolList } from "@/components/shared/ToolList"
 import type { ToolListItem } from "@/components/shared/ToolList"
-import type { ContextManagementConfig, ActiveSessionInfo, ContextModeInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo, ToolDefinition, GetContextModeToolDefinitionsParams } from "@/types/tauri-commands"
+import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
 const DEFAULT_CATALOG_THRESHOLD_BYTES = 1000
@@ -35,10 +34,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
   const [config, setConfig] = useState<ContextManagementConfig | null>(null)
   const [sessions, setSessions] = useState<ActiveSessionInfo[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [modeInfo, setModeInfo] = useState<ContextModeInfo | null>(null)
-  const [modeInfoLoading, setModeInfoLoading] = useState(true)
-  const [installing, setInstalling] = useState(false)
+  const [, setSaving] = useState(false)
   const [sessionDetailTab, setSessionDetailTab] = useState<string>("info")
   const [catalogSources, setCatalogSources] = useState<CatalogSourceEntry[]>([])
   const [catalogSourcesLoading, setCatalogSourcesLoading] = useState(false)
@@ -48,7 +44,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<string | null>(null)
   const [searchLoading, setSearchLoading] = useState(false)
-  const [indexingTools, setIndexingTools] = useState<ToolListItem[]>([])
 
   const tab = activeSubTab || "info"
 
@@ -62,18 +57,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
       setSessions(data)
     } catch (err) {
       console.error("Failed to load sessions:", err)
-    }
-  }, [])
-
-  const loadModeInfo = useCallback(async () => {
-    setModeInfoLoading(true)
-    try {
-      const info = await invoke<ContextModeInfo>("get_context_mode_info")
-      setModeInfo(info)
-    } catch (err) {
-      console.error("Failed to load context-mode info:", err)
-    } finally {
-      setModeInfoLoading(false)
     }
   }, [])
 
@@ -152,43 +135,12 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
       .catch((err) => console.error("Failed to load context management config:", err))
     loadSessions()
 
-    // Inline mode info fetch with ignore flag to handle StrictMode double-mount
-    ;(async () => {
-      setModeInfoLoading(true)
-      try {
-        const info = await invoke<ContextModeInfo>("get_context_mode_info")
-        if (!ignore) setModeInfo(info)
-      } catch (err) {
-        console.error("Failed to load context-mode info:", err)
-      } finally {
-        if (!ignore) setModeInfoLoading(false)
-      }
-    })()
-
     const interval = setInterval(loadSessions, 5000)
     return () => {
       ignore = true
       clearInterval(interval)
     }
   }, [loadSessions])
-
-  // Load indexing tool definitions (re-fetches when config changes)
-  useEffect(() => {
-    const enabled = config?.indexing_tools ?? false
-    invoke<ToolDefinition[]>("get_context_mode_tool_definitions", {
-      indexingToolsEnabled: enabled,
-    } satisfies GetContextModeToolDefinitionsParams as Record<string, unknown>)
-      .then((defs) =>
-        setIndexingTools(
-          defs.map((d): ToolListItem => ({
-            name: d.name,
-            description: d.description,
-            inputSchema: d.input_schema,
-          }))
-        )
-      )
-      .catch(() => setIndexingTools([]))
-  }, [config?.indexing_tools])
 
   // Clear selected session if it disappears
   useEffect(() => {
@@ -254,147 +206,19 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
         {/* Info Tab */}
         <TabsContent value="info" className="flex-1 min-h-0 mt-4">
           <div className="space-y-4 max-w-2xl">
-            {/* Installation Status */}
-            <Card>
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Installation Status</CardTitle>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={loadModeInfo}
-                    className="h-7 w-7 p-0"
-                    disabled={modeInfoLoading}
-                  >
-                    {modeInfoLoading ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <RefreshCw className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
-                </div>
-                <CardDescription>
-                  Context-mode runs as a per-session STDIO process, installed globally via <code className="px-1 py-0.5 rounded bg-muted text-xs">npm install -g context-mode</code>.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {modeInfoLoading && !modeInfo ? (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Checking installation...
-                  </div>
-                ) : modeInfo ? (
-                  <div className="space-y-3">
-                    {/* Node.js */}
-                    <div className={cn("flex items-center gap-2.5", !modeInfo.nodeAvailable && "opacity-45")}>
-                      {modeInfo.nodeAvailable ? (
-                        <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
-                      ) : (
-                        <XCircle className="h-4 w-4 text-destructive shrink-0" />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium">Node.js</p>
-                          {modeInfo.nodeAvailable ? (
-                            <Badge variant="success" className="text-[10px] px-1 py-0">available</Badge>
-                          ) : (
-                            <Badge variant="destructive" className="text-[10px] px-1 py-0">not found</Badge>
-                          )}
-                        </div>
-                        {modeInfo.nodePath && (
-                          <p className="text-xs text-muted-foreground truncate">
-                            {modeInfo.nodePath}
-                            {modeInfo.nodeVersion && ` (v${modeInfo.nodeVersion})`}
-                          </p>
-                        )}
-                        {!modeInfo.nodeAvailable && (
-                          <p className="text-xs text-muted-foreground">
-                            Install Node.js, which is required for context-mode.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* context-mode */}
-                    <div className={cn("flex items-center gap-2.5", !modeInfo.contextModeVersion && "opacity-45")}>
-                      {modeInfo.contextModeVersion ? (
-                        <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
-                      ) : (
-                        <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium">context-mode</p>
-                          {modeInfo.contextModeVersion ? (
-                            <Badge variant="success" className="text-[10px] px-1 py-0">
-                              v{modeInfo.contextModeVersion}
-                            </Badge>
-                          ) : (
-                            <Badge variant="secondary" className="text-[10px] px-1 py-0">not installed</Badge>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {modeInfo.contextModeVersion
-                            ? "Installed and ready. Will be spawned per-session when enabled."
-                            : modeInfo.nodeAvailable
-                              ? "Not yet installed. Install now or it will be auto-installed on first use."
-                              : "Requires Node.js to be available."}
-                        </p>
-                      </div>
-                      {!modeInfo.contextModeVersion && modeInfo.nodeAvailable && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="shrink-0 ml-2"
-                          disabled={installing}
-                          onClick={async () => {
-                            setInstalling(true)
-                            try {
-                              const version = await invoke<string>("install_context_mode")
-                              toast.success(`context-mode v${version} installed`)
-                              await loadModeInfo()
-                            } catch (err) {
-                              toast.error(`Install failed: ${err}`)
-                            } finally {
-                              setInstalling(false)
-                            }
-                          }}
-                        >
-                          {installing ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
-                          ) : (
-                            <Download className="h-3.5 w-3.5 mr-1.5" />
-                          )}
-                          {installing ? "Installing..." : "Install"}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-
             {/* Enable Context Management */}
             {config && (
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base">Default: Enable Catalog Compression</CardTitle>
-                    <Switch
-                      checked={config.enabled}
-                      onCheckedChange={(enabled) => updateField("enabled", enabled)}
-                      disabled={saving}
-                    />
                   </div>
                   <CardDescription>
-                    Uses deferred loading of tools, prompts, and resources combined with{" "}
-                    <a href="https://github.com/mksglu/context-mode" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">context-mode</a>{" "}
-                    indexing of welcome messages and tool descriptions. When catalogs exceed the
+                    Uses deferred loading of tools, prompts, and resources combined with
+                    FTS5 search indexing of welcome messages and tool descriptions. When catalogs exceed the
                     configured threshold, capabilities are hidden and a{" "}
                     <code className="px-1 py-0.5 rounded bg-muted text-xs">ctx_search</code>{" "}
-                    tool lets the AI discover and unhide them on demand. This exposes only the search
-                    capability &mdash; to also give AI clients the full indexing tools, enable
-                    Indexing Tools below.
+                    tool lets the AI discover and unhide them on demand.
                   </CardDescription>
                   <p className="text-xs text-muted-foreground mt-1">
                     Clients can override this setting individually in their Context tab.
@@ -406,49 +230,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                   <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
                   <div className="flex flex-wrap gap-1.5">
                     <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">ctx_search</code>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Indexing Tools */}
-            {config && (
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Default: Indexing Tools</CardTitle>
-                    <Switch
-                      checked={config.indexing_tools}
-                      onCheckedChange={(v) => updateField("indexingTools", v)}
-                      disabled={saving}
-                    />
-                  </div>
-                  <CardDescription>
-                    Enables the{" "}
-                    <a href="https://github.com/mksglu/context-mode" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">context-mode</a>{" "}
-                    indexing tools that reduce context window usage for Bash, Read, WebFetch, Grep,
-                    and Task calls. Tool outputs are indexed and searchable rather than returned
-                    directly into the context window, freeing space for the AI to work with larger
-                    results.
-                  </CardDescription>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Clients can override this setting individually in their Context tab.
-                  </p>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
-                  <ToolList tools={indexingTools} compact />
-                  <div className="p-3 rounded-lg border border-amber-600/50 bg-amber-500/10">
-                    <div className="flex gap-2 items-start">
-                      <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-                      <p className="text-sm text-amber-900 dark:text-amber-400">
-                        This is a global setting that applies to all clients by default.
-                        Indexing tools give AI clients the ability to read any file on the system
-                        (by indexing it) and run arbitrary scripts on disk (in a sandbox, indexing the output).
-                        This may not be appropriate for all clients &mdash; consider using per-client
-                        overrides for fine-grained control.
-                      </p>
-                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -622,12 +403,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                                       <div>
                                         <p className="text-muted-foreground text-xs">Indexed Sources</p>
                                         <p className="font-medium">{selectedSession.cm_indexed_sources}</p>
-                                      </div>
-                                      <div>
-                                        <p className="text-muted-foreground text-xs">Indexing Tools</p>
-                                        <p className="font-medium">
-                                          {selectedSession.cm_indexing_tools_enabled ? "Enabled" : "Disabled"}
-                                        </p>
                                       </div>
                                     </div>
                                   </CardContent>

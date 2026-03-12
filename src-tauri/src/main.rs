@@ -1720,7 +1720,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::toggle_client_enabled,
             ui::commands::rotate_client_secret,
             ui::commands::toggle_client_context_management,
-            ui::commands::toggle_client_indexing_tools,
             ui::commands::get_client_value,
             ui::commands::get_client_effective_config,
             // Strategy management commands
@@ -1848,8 +1847,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Skills commands
             ui::commands::list_skills,
             ui::commands::get_skill,
-            ui::commands::get_context_mode_info,
-            ui::commands::install_context_mode,
             ui::commands::get_context_management_config,
             ui::commands::update_context_management_config,
             ui::commands::preview_catalog_compression,

@@ -34,8 +34,6 @@ pub struct ClientInfo {
     pub strategy_id: String,
     /// Per-client context management override (None = inherit global, Some(false) = disabled)
     pub context_management_enabled: Option<bool>,
-    /// Per-client indexing tools override (None = inherit global, Some(true) = enabled)
-    pub indexing_tools_enabled: Option<bool>,
     pub created_at: String,
     pub last_used: Option<String>,
     /// Unified MCP permissions (hierarchical Allow/Ask/Off)
@@ -82,7 +80,6 @@ pub async fn list_clients(
             enabled: c.enabled,
             strategy_id: c.strategy_id.clone(),
             context_management_enabled: c.context_management_enabled,
-            indexing_tools_enabled: c.indexing_tools_enabled,
             created_at: c.created_at.to_rfc3339(),
             last_used: c.last_used.map(|t| t.to_rfc3339()),
             mcp_permissions: c.mcp_permissions.clone(),
@@ -150,7 +147,6 @@ pub async fn create_client(
         enabled: client.enabled,
         strategy_id: client.strategy_id.clone(),
         context_management_enabled: client.context_management_enabled,
-        indexing_tools_enabled: client.indexing_tools_enabled,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
         mcp_permissions: client.mcp_permissions.clone(),
@@ -411,44 +407,6 @@ pub async fn toggle_client_context_management(
     Ok(())
 }
 
-/// Toggle indexing tools for a specific client.
-///
-/// # Arguments
-/// * `client_id` - Client ID
-/// * `enabled` - None = inherit global setting, Some(true) = enabled for this client
-#[tauri::command]
-pub async fn toggle_client_indexing_tools(
-    client_id: String,
-    enabled: Option<bool>,
-    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!("Setting client {} indexing tools: {:?}", client_id, enabled);
-
-    // Update in client manager (in-memory)
-    client_manager
-        .set_indexing_tools_enabled(&client_id, enabled)
-        .map_err(|e| e.to_string())?;
-
-    // Update in config (for persistence)
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.indexing_tools_enabled = enabled;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
 /// Get the client bearer token value (secret)
 ///
 /// For clients, the secret is stored in the keychain, just like API keys.
@@ -484,8 +442,6 @@ pub struct ClientEffectiveConfig {
     pub context_management_effective: bool,
     /// "client" if overridden, "global" if inherited
     pub context_management_source: String,
-    pub indexing_tools_effective: bool,
-    pub indexing_tools_source: String,
     pub catalog_compression_effective: bool,
     pub catalog_compression_source: String,
 }
@@ -517,12 +473,6 @@ pub async fn get_client_effective_config(
         strategy_name,
         context_management_effective: client.is_context_management_enabled(ctx),
         context_management_source: if client.context_management_enabled.is_some() {
-            "client".to_string()
-        } else {
-            "global".to_string()
-        },
-        indexing_tools_effective: client.is_indexing_tools_enabled(ctx),
-        indexing_tools_source: if client.indexing_tools_enabled.is_some() {
             "client".to_string()
         } else {
             "global".to_string()

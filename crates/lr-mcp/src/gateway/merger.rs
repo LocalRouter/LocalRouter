@@ -38,9 +38,6 @@ pub struct InstructionsContext {
     pub unavailable_servers: Vec<UnavailableServerInfo>,
     /// Whether context management is enabled
     pub context_management_enabled: bool,
-    /// Whether indexing tools (ctx_execute, etc.) are exposed
-    #[allow(dead_code)]
-    pub indexing_tools_enabled: bool,
     /// Catalog compression plan (computed when context management is enabled)
     pub catalog_compression: Option<CatalogCompressionPlan>,
     /// Instructions from virtual servers
@@ -617,7 +614,6 @@ pub fn build_preview_instructions_context() -> InstructionsContext {
             error: "Connection refused".to_string(),
         }],
         context_management_enabled: true,
-        indexing_tools_enabled: true,
         catalog_compression: None, // computed by caller
         virtual_instructions: vec![
             VirtualInstructions {
@@ -998,7 +994,6 @@ pub fn build_preview_mock_realistic() -> InstructionsContext {
             },
         ],
         context_management_enabled: true,
-        indexing_tools_enabled: true,
         catalog_compression: None,
         virtual_instructions: preview_virtual_instructions(),
     }
@@ -1593,7 +1588,6 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
@@ -1627,7 +1621,6 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
@@ -1651,7 +1644,6 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
@@ -1671,7 +1663,6 @@ mod tests {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
@@ -1705,7 +1696,6 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
@@ -1738,7 +1728,6 @@ mod tests {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
@@ -1755,7 +1744,6 @@ mod tests {
                 error: "Connection refused".to_string(),
             }],
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
@@ -1779,7 +1767,6 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
@@ -1803,7 +1790,6 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
@@ -1828,7 +1814,6 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
@@ -1878,7 +1863,6 @@ mod tests {
                 error: "Connection refused".to_string(),
             }],
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![
                 VirtualInstructions {
@@ -1945,7 +1929,6 @@ mod tests {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
@@ -2036,7 +2019,6 @@ mod tests {
             servers: vec![],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2057,7 +2039,6 @@ mod tests {
             }],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2094,7 +2075,6 @@ mod tests {
             }],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2111,7 +2091,6 @@ mod tests {
             servers: vec![make_large_server("big", 5)],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2147,7 +2126,6 @@ mod tests {
             servers: vec![make_large_server("big", 20), make_large_server("small", 3)],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2178,7 +2156,6 @@ mod tests {
             servers: vec![make_large_server("server", 20)],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2207,7 +2184,6 @@ mod tests {
             ],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2239,7 +2215,6 @@ mod tests {
             }],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: Some(CatalogCompressionPlan::default()),
             virtual_instructions: vec![],
         };
@@ -2283,7 +2258,6 @@ mod tests {
             }],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: Some(plan),
             virtual_instructions: vec![],
         };
@@ -2319,7 +2293,6 @@ mod tests {
             }],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: Some(plan),
             virtual_instructions: vec![],
         };
@@ -2364,7 +2337,6 @@ mod tests {
             }],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: Some(plan),
             virtual_instructions: vec![],
         };
@@ -2395,7 +2367,6 @@ mod tests {
             servers: vec![],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: true,
             catalog_compression: Some(plan),
             virtual_instructions: vec![crate::gateway::virtual_server::VirtualInstructions {
                 section_title: "Context Management".to_string(),
@@ -2444,7 +2415,6 @@ mod tests {
             }],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: Some(plan),
             virtual_instructions: vec![],
         };
@@ -2484,7 +2454,6 @@ mod tests {
                 error: "Connection refused".to_string(),
             }],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: Some(CatalogCompressionPlan::default()),
             virtual_instructions: vec![],
         };
@@ -2524,7 +2493,6 @@ mod tests {
             ],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2551,7 +2519,6 @@ mod tests {
             servers: ctx.servers.clone(),
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: Some(plan.clone()),
             virtual_instructions: vec![],
         };
@@ -2580,7 +2547,6 @@ mod tests {
             servers: ctx.servers.clone(),
             unavailable_servers: vec![],
             context_management_enabled: false,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2606,7 +2572,6 @@ mod tests {
             }],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };
@@ -2649,7 +2614,6 @@ mod tests {
             ],
             unavailable_servers: vec![],
             context_management_enabled: true,
-            indexing_tools_enabled: false,
             catalog_compression: None,
             virtual_instructions: vec![],
         };

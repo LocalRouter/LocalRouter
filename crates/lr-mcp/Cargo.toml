@@ -40,6 +40,7 @@ lr-router = { workspace = true }
 lr-marketplace = { workspace = true }
 lr-coding-agents = { workspace = true }
 lr-providers = { workspace = true }
+lr-context = { path = "../lr-context" }
 once_cell = { workspace = true }
 utoipa = { workspace = true }
 async-stream = { workspace = true }
