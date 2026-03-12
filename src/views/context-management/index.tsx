@@ -901,15 +901,15 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
           {/* Slider */}
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Threshold</span>
-              <span className="font-mono">{threshold >= 10240 ? "No limit" : formatBytes(threshold)}</span>
+              <span className="text-muted-foreground">Try it out</span>
+              <span className="font-mono">{threshold >= 102400 ? "No limit" : formatBytes(threshold)}</span>
             </div>
             <input
               type="range"
               value={threshold}
               onChange={(e) => setThreshold(Number(e.target.value))}
               min={0}
-              max={10240}
+              max={102400}
               step={100}
               className="w-full"
             />
@@ -923,7 +923,15 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
           {preview && (
             <div className="flex flex-wrap gap-3 text-sm">
               <div className="flex items-center gap-1.5">
-                <span className="text-muted-foreground">Uncompressed:</span>
+                <span className="text-muted-foreground">Welcome:</span>
+                <span className="font-mono">{formatBytes(preview.welcome_size)}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-muted-foreground">Tool defs:</span>
+                <span className="font-mono">{formatBytes(preview.tool_definitions_size)}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-muted-foreground">Total:</span>
                 <span className="font-mono">{formatBytes(preview.uncompressed_size)}</span>
               </div>
               <div className="flex items-center gap-1.5">
@@ -935,19 +943,24 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
                   {savings}% saved
                 </Badge>
               )}
-              {preview.compressed_descriptions_count > 0 && (
+              {preview.indexed_welcomes_count > 0 && (
                 <Badge variant="outline" className="text-yellow-600 border-yellow-600/30">
-                  {preview.compressed_descriptions_count} compressed
+                  P1: {preview.indexed_welcomes_count} indexed
                 </Badge>
               )}
-              {preview.deferred_items_count > 0 && (
+              {preview.deferred_servers_count > 0 && (
                 <Badge variant="outline" className="text-orange-600 border-orange-600/30">
-                  {preview.deferred_items_count} deferred
+                  P2: {preview.deferred_servers_count} deferred
                 </Badge>
               )}
-              {preview.truncated_servers_count > 0 && (
+              {preview.welcome_toc_dropped_count > 0 && (
                 <Badge variant="outline" className="text-red-600 border-red-600/30">
-                  {preview.truncated_servers_count} truncated
+                  P3: {preview.welcome_toc_dropped_count} TOC dropped
+                </Badge>
+              )}
+              {preview.batch_toc_dropped_count > 0 && (
+                <Badge variant="outline" className="text-red-600 border-red-600/30">
+                  P4: {preview.batch_toc_dropped_count} batch TOC dropped
                 </Badge>
               )}
             </div>

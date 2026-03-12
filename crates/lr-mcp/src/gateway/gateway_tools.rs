@@ -517,9 +517,8 @@ impl McpGateway {
             .catalog_compression
             .as_ref()
             .map(|plan| {
-                plan.deferred_items
+                plan.deferred_servers
                     .iter()
-                    .filter(|d| d.item_type == DeferredItemType::Tools)
                     .map(|d| d.server_slug.as_str())
                     .collect()
             })
@@ -749,7 +748,9 @@ impl McpGateway {
                         return response;
                     }
                     // Skip compression for our own search/read tools
-                    if tool_name == cm_state.search_tool_name || tool_name == cm_state.read_tool_name {
+                    if tool_name == cm_state.search_tool_name
+                        || tool_name == cm_state.read_tool_name
+                    {
                         return response;
                     }
                     // Check gateway indexing eligibility
@@ -757,11 +758,19 @@ impl McpGateway {
                         Some((s, t)) => (s, t),
                         None => (tool_name, tool_name),
                     };
-                    if !cm_state.gateway_indexing.is_tool_eligible(server_slug, original_name) {
+                    if !cm_state
+                        .gateway_indexing
+                        .is_tool_eligible(server_slug, original_name)
+                    {
                         return response;
                     }
                     let run_id = cm_state.next_run_id(tool_name);
-                    (cm_state.response_threshold_bytes, run_id, cm_state.store.clone(), cm_state.search_tool_name.clone())
+                    (
+                        cm_state.response_threshold_bytes,
+                        run_id,
+                        cm_state.store.clone(),
+                        cm_state.search_tool_name.clone(),
+                    )
                 } else {
                     return response;
                 }
@@ -885,9 +894,8 @@ fn apply_catalog_compression_tools(
 
     // Collect server slugs whose tools are fully deferred
     let deferred_servers: std::collections::HashSet<&str> = plan
-        .deferred_items
+        .deferred_servers
         .iter()
-        .filter(|d| d.item_type == DeferredItemType::Tools)
         .map(|d| d.server_slug.as_str())
         .collect();
 
@@ -934,9 +942,8 @@ pub(crate) fn apply_catalog_compression_resources(
     };
 
     let deferred_servers: std::collections::HashSet<&str> = plan
-        .deferred_items
+        .deferred_servers
         .iter()
-        .filter(|d| d.item_type == DeferredItemType::Resources)
         .map(|d| d.server_slug.as_str())
         .collect();
 
@@ -980,9 +987,8 @@ pub(crate) fn apply_catalog_compression_prompts(
     };
 
     let deferred_servers: std::collections::HashSet<&str> = plan
-        .deferred_items
+        .deferred_servers
         .iter()
-        .filter(|d| d.item_type == DeferredItemType::Prompts)
         .map(|d| d.server_slug.as_str())
         .collect();
 

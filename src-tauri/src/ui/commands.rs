@@ -1793,9 +1793,12 @@ pub struct CatalogCompressionPreview {
     pub welcome_message_uncompressed: String,
     pub uncompressed_size: usize,
     pub compressed_size: usize,
-    pub compressed_descriptions_count: usize,
-    pub deferred_items_count: usize,
-    pub truncated_servers_count: usize,
+    pub welcome_size: usize,
+    pub tool_definitions_size: usize,
+    pub indexed_welcomes_count: usize,
+    pub deferred_servers_count: usize,
+    pub welcome_toc_dropped_count: usize,
+    pub batch_toc_dropped_count: usize,
     /// Per-server breakdown with full descriptions and compression state.
     pub servers: Vec<PreviewServerEntry>,
 }
@@ -1906,26 +1909,42 @@ pub async fn preview_catalog_compression(
     let uncompressed = build_gateway_instructions(&ctx).unwrap_or_default();
     let uncompressed_size = uncompressed.len();
 
+    // Compute definition sizes and add to context
+    ctx.item_definition_sizes = lr_mcp::gateway::compute_item_definition_sizes(
+        &tool_catalog,
+        &resource_catalog,
+        &prompt_catalog,
+    );
+
+    // Calculate size breakdown
+    let welcome_size: usize = ctx
+        .servers
+        .iter()
+        .map(|s| {
+            s.description.as_ref().map(|d| d.len()).unwrap_or(0)
+                + s.instructions.as_ref().map(|i| i.len()).unwrap_or(0)
+        })
+        .sum();
+    let tool_definitions_size: usize = ctx.item_definition_sizes.values().sum();
+
     // Compute compression plan
     let plan = compute_catalog_compression_plan(&ctx, catalog_threshold_bytes, true, true, true);
-    let compressed_descriptions_count = plan.compressed_descriptions.len();
-    let deferred_items_count = plan.deferred_items.len();
-    let truncated_servers_count = plan.truncated_servers.len();
+    let indexed_welcomes_count = plan.indexed_welcomes.len();
+    let deferred_servers_count = plan.deferred_servers.len();
+    let welcome_toc_dropped_count = plan.welcome_toc_dropped.len();
+    let batch_toc_dropped_count = plan.batch_toc_dropped.len();
 
     // Build compression state lookups
-    let compressed_slugs: std::collections::HashSet<&str> = plan
-        .compressed_descriptions
+    let indexed_welcome_slugs: std::collections::HashSet<&str> = plan
+        .indexed_welcomes
         .iter()
-        .filter(|c| c.item_type == lr_mcp::gateway::types::CompressedItemType::ServerWelcome)
-        .map(|c| c.namespaced_name.as_str())
+        .map(|w| w.server_slug.as_str())
         .collect();
     let deferred_slugs: std::collections::HashSet<&str> = plan
-        .deferred_items
+        .deferred_servers
         .iter()
         .map(|d| d.server_slug.as_str())
         .collect();
-    let truncated_slugs: std::collections::HashSet<&str> =
-        plan.truncated_servers.iter().map(|s| s.as_str()).collect();
 
     // Build per-server entries
     let mut servers = Vec::new();
@@ -1950,11 +1969,9 @@ pub async fn preview_catalog_compression(
     // MCP servers
     for server in &ctx.servers {
         let slug = server.name.to_lowercase().replace(' ', "-");
-        let compression_state = if truncated_slugs.contains(slug.as_str()) {
-            "truncated"
-        } else if deferred_slugs.contains(slug.as_str()) {
+        let compression_state = if deferred_slugs.contains(slug.as_str()) {
             "deferred"
-        } else if compressed_slugs.contains(slug.as_str()) {
+        } else if indexed_welcome_slugs.contains(slug.as_str()) {
             "compressed"
         } else {
             "visible"
@@ -2030,9 +2047,12 @@ pub async fn preview_catalog_compression(
         welcome_message_uncompressed: uncompressed,
         uncompressed_size,
         compressed_size,
-        compressed_descriptions_count,
-        deferred_items_count,
-        truncated_servers_count,
+        welcome_size,
+        tool_definitions_size,
+        indexed_welcomes_count,
+        deferred_servers_count,
+        welcome_toc_dropped_count,
+        batch_toc_dropped_count,
         servers,
     })
 }

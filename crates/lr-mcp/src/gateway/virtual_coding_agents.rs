@@ -230,7 +230,7 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
         match tool_name {
             "coding_agent_status" => true, // Status output useful
             "coding_agent_list" => true,   // List output useful
-            _ => false,                     // start, say, respond, interrupt are actions
+            _ => false,                    // start, say, respond, interrupt are actions
         }
     }
 }

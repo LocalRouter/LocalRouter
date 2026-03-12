@@ -143,6 +143,134 @@ pub struct IndexResult {
     pub chunk_titles: Vec<ChunkToc>,
 }
 
+impl IndexResult {
+    /// First line: `Indexed "label" — N lines, X.XKB, N chunks (N code)`
+    pub fn summary(&self) -> String {
+        let label_display = if self.label.chars().count() > 200 {
+            let truncated: String = self.label.chars().take(200).collect();
+            format!("{}…", truncated)
+        } else {
+            self.label.clone()
+        };
+        let kb = self.content_bytes as f64 / 1024.0;
+        format!(
+            "Indexed {:?} \u{2014} {} lines, {:.1}KB, {} chunks ({} code)",
+            label_display, self.total_lines, kb, self.total_chunks, self.code_chunks,
+        )
+    }
+
+    /// `## Contents` block with optional depth filter + search/read hints.
+    /// Pass `None` for unlimited depth, `Some(1)` for top-level only, etc.
+    pub fn toc(&self, max_depth: Option<usize>) -> String {
+        let mut out = String::new();
+
+        let filtered: Vec<&ChunkToc> = if let Some(max_d) = max_depth {
+            self.chunk_titles
+                .iter()
+                .filter(|e| e.depth <= max_d)
+                .collect()
+        } else {
+            self.chunk_titles.iter().collect()
+        };
+
+        if !filtered.is_empty() {
+            out.push_str("## Contents\n");
+
+            let (kept, depth_pruned, list_truncated) = prune_toc(&filtered, INDEX_TOC_CAP);
+
+            for entry in &kept {
+                let indent = "  ".repeat(entry.depth);
+                let leaf = leaf_title(&entry.title);
+                let leaf_display = if leaf.chars().count() > TOC_TITLE_MAX_CHARS {
+                    let truncated: String = leaf.chars().take(TOC_TITLE_MAX_CHARS).collect();
+                    format!("{}…", truncated)
+                } else {
+                    leaf.to_string()
+                };
+                out.push_str(&format!(
+                    "{}- [L{}] {}\n",
+                    indent, entry.line_ref, leaf_display
+                ));
+            }
+
+            if depth_pruned > 0 {
+                out.push_str(&format!(
+                    "  \u{2026} {} deeper sections pruned \u{2014} use search() to discover\n",
+                    depth_pruned
+                ));
+            }
+
+            if list_truncated > 0 {
+                out.push_str(&format!("  \u{2026} {} more sections\n", list_truncated));
+            }
+        }
+
+        out.push_str(&format!(
+            "\nUse search(queries: [...]) to find specific content.\n\
+             Use read(source: {:?}, offset: \"1\") to read sections.",
+            self.label
+        ));
+        out
+    }
+}
+
+/// Per-item summary within a batch index.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchItemSummary {
+    pub subpath: String,
+    pub bytes: usize,
+    pub chunks: usize,
+}
+
+/// Result of batch-indexing multiple items under a shared root path.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchIndexResult {
+    pub root_path: String,
+    pub items_indexed: usize,
+    pub total_bytes: usize,
+    pub total_lines: usize,
+    pub total_chunks: usize,
+    pub item_summaries: Vec<BatchItemSummary>,
+}
+
+impl BatchIndexResult {
+    /// Single summary line: `Indexed N items at "root" — X lines, Y.YKB, Z chunks`
+    pub fn summary(&self) -> String {
+        let kb = self.total_bytes as f64 / 1024.0;
+        format!(
+            "Indexed {} items at {:?} \u{2014} {} lines, {:.1}KB, {} chunks",
+            self.items_indexed, self.root_path, self.total_lines, kb, self.total_chunks,
+        )
+    }
+
+    /// TOC listing each indexed item. `max_depth=Some(1)` shows only item names (no sub-entries).
+    pub fn toc(&self, _max_depth: Option<usize>) -> String {
+        let mut out = String::new();
+        if !self.item_summaries.is_empty() {
+            out.push_str("## Contents\n");
+            for item in &self.item_summaries {
+                out.push_str(&format!("- {}\n", item.subpath));
+            }
+        }
+        out.push_str(&format!(
+            "\nUse search(queries: [...], source: {:?}) to discover items.",
+            self.root_path
+        ));
+        out
+    }
+}
+
+impl fmt::Display for BatchIndexResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}", self.summary())?;
+        if !self.item_summaries.is_empty() {
+            writeln!(f)?;
+        }
+        write!(f, "{}", self.toc(None))?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchHit {
     pub title: String,
@@ -263,57 +391,11 @@ impl fmt::Display for ReadResult {
 
 impl fmt::Display for IndexResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label_display = if self.label.chars().count() > 200 {
-            let truncated: String = self.label.chars().take(200).collect();
-            format!("{}…", truncated)
-        } else {
-            self.label.clone()
-        };
-        let kb = self.content_bytes as f64 / 1024.0;
-        writeln!(
-            f,
-            "Indexed {:?} \u{2014} {} lines, {:.1}KB, {} chunks ({} code)",
-            label_display, self.total_lines, kb, self.total_chunks, self.code_chunks,
-        )?;
-
+        writeln!(f, "{}", self.summary())?;
         if !self.chunk_titles.is_empty() {
             writeln!(f)?;
-            writeln!(f, "## Contents")?;
-
-            let (kept, depth_pruned, list_truncated) = prune_toc(&self.chunk_titles, INDEX_TOC_CAP);
-
-            for entry in &kept {
-                let indent = "  ".repeat(entry.depth);
-                let leaf = leaf_title(&entry.title);
-                let leaf_display = if leaf.chars().count() > TOC_TITLE_MAX_CHARS {
-                    let truncated: String = leaf.chars().take(TOC_TITLE_MAX_CHARS).collect();
-                    format!("{}…", truncated)
-                } else {
-                    leaf.to_string()
-                };
-                writeln!(f, "{}- [L{}] {}", indent, entry.line_ref, leaf_display)?;
-            }
-
-            if depth_pruned > 0 {
-                writeln!(
-                    f,
-                    "  \u{2026} {} deeper sections pruned \u{2014} use search() to discover",
-                    depth_pruned
-                )?;
-            }
-
-            if list_truncated > 0 {
-                writeln!(f, "  \u{2026} {} more sections", list_truncated)?;
-            }
         }
-
-        writeln!(f)?;
-        writeln!(f, "Use search(queries: [...]) to find specific content.")?;
-        write!(
-            f,
-            "Use read(source: {:?}, offset: \"1\") to read sections.",
-            self.label
-        )?;
+        write!(f, "{}", self.toc(None))?;
         Ok(())
     }
 }
@@ -394,8 +476,8 @@ fn leaf_title(title: &str) -> &str {
 
 /// Prune TOC entries to fit within max_bytes.
 /// Returns (kept entries, depth_pruned count, list_truncated count).
-fn prune_toc(entries: &[ChunkToc], max_bytes: usize) -> (Vec<&ChunkToc>, usize, usize) {
-    let mut kept: Vec<&ChunkToc> = entries.iter().collect();
+fn prune_toc<'a>(entries: &[&'a ChunkToc], max_bytes: usize) -> (Vec<&'a ChunkToc>, usize, usize) {
+    let mut kept: Vec<&ChunkToc> = entries.to_vec();
     let mut depth_pruned = 0;
     let mut list_truncated = 0;
 

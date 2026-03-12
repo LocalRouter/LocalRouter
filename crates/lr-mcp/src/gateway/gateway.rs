@@ -13,7 +13,9 @@ use super::elicitation::ElicitationManager;
 use super::firewall::FirewallManager;
 use super::merger::{
     build_full_server_content, build_gateway_instructions, compute_catalog_compression_plan,
-    merge_initialize_results, InstructionsContext, McpServerInstructionInfo, UnavailableServerInfo,
+    compute_item_definition_sizes, format_prompt_as_markdown, format_resource_as_markdown,
+    format_tool_as_markdown, merge_initialize_results, InstructionsContext,
+    McpServerInstructionInfo, UnavailableServerInfo,
 };
 use super::router::{broadcast_request, separate_results, should_broadcast};
 use super::session::GatewaySession;
@@ -1224,7 +1226,11 @@ impl McpGateway {
                     .as_any()
                     .downcast_ref::<super::context_mode::ContextModeSessionState>()
                 {
-                    (cm_state.enabled, cm_state.catalog_threshold_bytes, cm_state.search_tool_name.clone())
+                    (
+                        cm_state.enabled,
+                        cm_state.catalog_threshold_bytes,
+                        cm_state.search_tool_name.clone(),
+                    )
                 } else {
                     (false, 0, "IndexSearch".to_string())
                 }
@@ -1281,8 +1287,15 @@ impl McpGateway {
         );
         let unavailable = self.build_unavailable_server_infos(&merged.failures);
 
-        // Context management: index catalog into native FTS5 store and store activation state.
-        // Run in background so it doesn't block the initialize response.
+        // Context management: index catalog into native FTS5 store synchronously
+        // (before computing compression plan, which needs index results).
+        // Also compute item definition sizes for the threshold calculation.
+        let item_definition_sizes = if cm_enabled {
+            compute_item_definition_sizes(&tools_catalog, &resources_catalog, &prompts_catalog)
+        } else {
+            std::collections::HashMap::new()
+        };
+
         if cm_enabled {
             let session_bg = session.clone();
             let server_infos_bg = server_infos.clone();
@@ -1291,41 +1304,33 @@ impl McpGateway {
             let prompts_catalog_bg = prompts_catalog.clone();
             let client_id_bg = client_id_for_log.clone();
 
-            tokio::spawn(async move {
-                // Get a reference to the ContentStore and gateway indexing permissions (Arc clone)
-                let (store, gateway_indexing) = {
-                    let session_read = session_bg.read().await;
-                    if let Some(state) =
-                        session_read.virtual_server_state.get("_context_mode")
+            // Get ContentStore and gateway indexing permissions
+            let (store, gateway_indexing) = {
+                let session_read = session_bg.read().await;
+                if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
+                    if let Some(cm) = state
+                        .as_any()
+                        .downcast_ref::<super::context_mode::ContextModeSessionState>()
                     {
-                        if let Some(cm) = state
-                            .as_any()
-                            .downcast_ref::<super::context_mode::ContextModeSessionState>()
-                        {
-                            (Some(cm.store.clone()), cm.gateway_indexing.clone())
-                        } else {
-                            (None, lr_config::GatewayIndexingPermissions::default())
-                        }
+                        (Some(cm.store.clone()), cm.gateway_indexing.clone())
                     } else {
                         (None, lr_config::GatewayIndexingPermissions::default())
                     }
-                };
+                } else {
+                    (None, lr_config::GatewayIndexingPermissions::default())
+                }
+            };
 
-                let store = match store {
-                    Some(s) => s,
-                    None => return,
-                };
-
-                // Index catalog content using native ContentStore.
-                // Use spawn_blocking since ContentStore uses parking_lot::Mutex
+            if let Some(store) = store {
+                // Index synchronously using spawn_blocking (ContentStore uses parking_lot::Mutex)
                 let server_infos_idx = server_infos_bg.clone();
                 let tools_idx = tools_catalog_bg.clone();
                 let resources_idx = resources_catalog_bg.clone();
                 let prompts_idx = prompts_catalog_bg.clone();
                 let store_idx = store.clone();
                 let client_id_idx = client_id_bg.clone();
-
                 let gateway_perms = gateway_indexing.clone();
+
                 let indexing_result = tokio::task::spawn_blocking(move || {
                     let mut indexed_count = 0u32;
                     let mut skipped_count = 0u32;
@@ -1337,17 +1342,13 @@ impl McpGateway {
                             continue;
                         }
                         let content = build_full_server_content(info);
-                        if let Err(e) = store_idx.index(&format!("catalog:{}", slug), &content) {
-                            tracing::warn!(
-                                "Failed to index catalog for server {}: {}",
-                                slug, e
-                            );
+                        if let Err(e) = store_idx.index(&format!("mcp/{}", slug), &content) {
+                            tracing::warn!("Failed to index catalog for server {}: {}", slug, e);
                         }
                         indexed_count += 1;
                     }
 
                     for tool in &tools_idx {
-                        // Parse server_slug and original_name from namespaced name "server__tool"
                         let (server_slug, original_name) = match tool.name.split_once("__") {
                             Some((s, t)) => (s, t),
                             None => (tool.name.as_str(), tool.name.as_str()),
@@ -1356,14 +1357,9 @@ impl McpGateway {
                             skipped_count += 1;
                             continue;
                         }
-                        let content = format!(
-                            "{}: {}\nInput: {}",
-                            tool.name,
-                            tool.description.as_deref().unwrap_or(""),
-                            serde_json::to_string(&tool.input_schema).unwrap_or_default()
-                        );
-                        if let Err(e) =
-                            store_idx.index(&format!("catalog:{}", tool.name), &content)
+                        let content = format_tool_as_markdown(tool);
+                        if let Err(e) = store_idx
+                            .index(&format!("mcp/{}/tool/{}", server_slug, tool.name), &content)
                         {
                             tracing::warn!("Failed to index tool {}: {}", tool.name, e);
                         }
@@ -1371,36 +1367,31 @@ impl McpGateway {
                     }
 
                     for resource in &resources_idx {
-                        let content = format!(
-                            "{} ({}): {}",
-                            resource.name,
-                            resource.uri,
-                            resource.description.as_deref().unwrap_or("")
-                        );
-                        if let Err(e) =
-                            store_idx.index(&format!("catalog:{}", resource.name), &content)
-                        {
-                            tracing::warn!(
-                                "Failed to index resource {}: {}",
-                                resource.name, e
-                            );
+                        let (server_slug, _) = match resource.name.split_once("__") {
+                            Some((s, t)) => (s, t),
+                            None => (resource.name.as_str(), resource.name.as_str()),
+                        };
+                        let content = format_resource_as_markdown(resource);
+                        if let Err(e) = store_idx.index(
+                            &format!("mcp/{}/resource/{}", server_slug, resource.name),
+                            &content,
+                        ) {
+                            tracing::warn!("Failed to index resource {}: {}", resource.name, e);
                         }
                         indexed_count += 1;
                     }
 
                     for prompt in &prompts_idx {
-                        let content = format!(
-                            "{}: {}",
-                            prompt.name,
-                            prompt.description.as_deref().unwrap_or("")
-                        );
-                        if let Err(e) =
-                            store_idx.index(&format!("catalog:{}", prompt.name), &content)
-                        {
-                            tracing::warn!(
-                                "Failed to index prompt {}: {}",
-                                prompt.name, e
-                            );
+                        let (server_slug, _) = match prompt.name.split_once("__") {
+                            Some((s, t)) => (s, t),
+                            None => (prompt.name.as_str(), prompt.name.as_str()),
+                        };
+                        let content = format_prompt_as_markdown(prompt);
+                        if let Err(e) = store_idx.index(
+                            &format!("mcp/{}/prompt/{}", server_slug, prompt.name),
+                            &content,
+                        ) {
+                            tracing::warn!("Failed to index prompt {}: {}", prompt.name, e);
                         }
                         indexed_count += 1;
                     }
@@ -1425,34 +1416,36 @@ impl McpGateway {
                 // Store catalog state for activation tracking
                 {
                     let mut session_write = session_bg.write().await;
-                    if let Some(state) =
-                        session_write.virtual_server_state.get_mut("_context_mode")
+                    if let Some(state) = session_write.virtual_server_state.get_mut("_context_mode")
                     {
                         if let Some(cm_state) = state
                             .as_any_mut()
-                            .downcast_mut::<super::context_mode::ContextModeSessionState>()
-                        {
+                            .downcast_mut::<super::context_mode::ContextModeSessionState>(
+                        ) {
                             for info in &server_infos_bg {
                                 let slug = super::types::slugify(&info.name);
                                 cm_state.catalog_sources.insert(
-                                    format!("catalog:{}", slug),
+                                    format!("mcp/{}", slug),
                                     super::context_mode::CatalogItemType::ServerWelcome,
                                 );
                                 for name in &info.tool_names {
+                                    let (s, _) = name.split_once("__").unwrap_or((name, name));
                                     cm_state.catalog_sources.insert(
-                                        format!("catalog:{}", name),
+                                        format!("mcp/{}/tool/{}", s, name),
                                         super::context_mode::CatalogItemType::Tool,
                                     );
                                 }
                                 for name in &info.resource_names {
+                                    let (s, _) = name.split_once("__").unwrap_or((name, name));
                                     cm_state.catalog_sources.insert(
-                                        format!("catalog:{}", name),
+                                        format!("mcp/{}/resource/{}", s, name),
                                         super::context_mode::CatalogItemType::Resource,
                                     );
                                 }
                                 for name in &info.prompt_names {
+                                    let (s, _) = name.split_once("__").unwrap_or((name, name));
                                     cm_state.catalog_sources.insert(
-                                        format!("catalog:{}", name),
+                                        format!("mcp/{}/prompt/{}", s, name),
                                         super::context_mode::CatalogItemType::Prompt,
                                     );
                                 }
@@ -1464,7 +1457,7 @@ impl McpGateway {
                         }
                     }
                 }
-            });
+            }
         }
 
         // Build instructions context
@@ -1475,6 +1468,7 @@ impl McpGateway {
             catalog_compression: None,
             virtual_instructions,
             search_tool_name: cm_search_tool_name,
+            item_definition_sizes,
         };
 
         // Context management: compute compression plan
@@ -1993,11 +1987,10 @@ impl McpGateway {
         // Run the blocking FTS5 search off the async executor
         let queries = vec![query.to_string()];
         let source_owned = source.map(|s| s.to_string());
-        let result = tokio::task::spawn_blocking(move || {
-            store.search(&queries, 5, source_owned.as_deref())
-        })
-        .await
-        .map_err(|e| format!("Search task panicked: {}", e))?;
+        let result =
+            tokio::task::spawn_blocking(move || store.search(&queries, 5, source_owned.as_deref()))
+                .await
+                .map_err(|e| format!("Search task panicked: {}", e))?;
 
         match result {
             Ok(results) => {

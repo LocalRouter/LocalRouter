@@ -44,6 +44,9 @@ pub struct InstructionsContext {
     pub virtual_instructions: Vec<super::virtual_server::VirtualInstructions>,
     /// Configured search tool name (for search hints in instructions)
     pub search_tool_name: String,
+    /// Byte size of each tool/resource/prompt definition as serialized JSON.
+    /// Key is the namespaced name (e.g., "filesystem__read_file").
+    pub item_definition_sizes: std::collections::HashMap<String, usize>,
 }
 
 impl Default for InstructionsContext {
@@ -55,6 +58,7 @@ impl Default for InstructionsContext {
             catalog_compression: None,
             virtual_instructions: Vec::new(),
             search_tool_name: "IndexSearch".to_string(),
+            item_definition_sizes: std::collections::HashMap::new(),
         }
     }
 }
@@ -311,7 +315,7 @@ fn build_unified_server_blocks(inst: &mut String, ctx: &InstructionsContext) {
 
 /// Build welcome text when context management is enabled.
 /// Applies the catalog compression plan to produce compressed output.
-/// Uses unified per-server XML blocks with 4 compression tiers.
+/// Uses unified per-server XML blocks with 4 compression phases.
 fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<String> {
     let mut inst = String::new();
 
@@ -334,43 +338,29 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
     }
 
     let plan = ctx.catalog_compression.as_ref();
-    let compressed_names: std::collections::HashSet<&str> = plan
+
+    // Build lookup sets from the new plan structure
+    let indexed_welcome_slugs: std::collections::HashMap<&str, &IndexedWelcome> = plan
         .map(|p| {
-            p.compressed_descriptions
+            p.indexed_welcomes
                 .iter()
-                .map(|c| c.namespaced_name.as_str())
+                .map(|w| (w.server_slug.as_str(), w))
                 .collect()
         })
         .unwrap_or_default();
-    let deferred_tools_servers: std::collections::HashSet<&str> = plan
+    let deferred_server_slugs: std::collections::HashMap<&str, &DeferredServer> = plan
         .map(|p| {
-            p.deferred_items
+            p.deferred_servers
                 .iter()
-                .filter(|d| d.item_type == DeferredItemType::Tools)
-                .map(|d| d.server_slug.as_str())
+                .map(|d| (d.server_slug.as_str(), d))
                 .collect()
         })
         .unwrap_or_default();
-    let deferred_resources_servers: std::collections::HashSet<&str> = plan
-        .map(|p| {
-            p.deferred_items
-                .iter()
-                .filter(|d| d.item_type == DeferredItemType::Resources)
-                .map(|d| d.server_slug.as_str())
-                .collect()
-        })
+    let welcome_toc_dropped: std::collections::HashSet<&str> = plan
+        .map(|p| p.welcome_toc_dropped.iter().map(|s| s.as_str()).collect())
         .unwrap_or_default();
-    let deferred_prompts_servers: std::collections::HashSet<&str> = plan
-        .map(|p| {
-            p.deferred_items
-                .iter()
-                .filter(|d| d.item_type == DeferredItemType::Prompts)
-                .map(|d| d.server_slug.as_str())
-                .collect()
-        })
-        .unwrap_or_default();
-    let truncated_servers: std::collections::HashSet<&str> = plan
-        .map(|p| p.truncated_servers.iter().map(|s| s.as_str()).collect())
+    let batch_toc_dropped: std::collections::HashSet<&str> = plan
+        .map(|p| p.batch_toc_dropped.iter().map(|s| s.as_str()).collect())
         .unwrap_or_default();
 
     // Virtual servers first (always full, never compressed) — in XML blocks
@@ -390,113 +380,32 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
         inst.push_str(&format!("</{}>\n\n", tag));
     }
 
-    // Regular MCP servers — in XML blocks with compression tiers
+    // Regular MCP servers — in XML blocks with compression phases
     for server in &ctx.servers {
         let server_slug = slugify(&server.name);
-
-        // Phase 3: Fully truncated — counts only
-        if truncated_servers.contains(server_slug.as_str()) {
-            let mut parts = Vec::new();
-            if !server.tool_names.is_empty() {
-                parts.push(format!("{} tools", server.tool_names.len()));
-            }
-            if !server.resource_names.is_empty() {
-                parts.push(format!("{} resources", server.resource_names.len()));
-            }
-            if !server.prompt_names.is_empty() {
-                parts.push(format!("{} prompts", server.prompt_names.len()));
-            }
-            inst.push_str(&format!(
-                "<{}>\n{} — {}(source=\"catalog:{}\") to explore\n</{}>\n\n",
-                server_slug,
-                parts.join(", "),
-                ctx.search_tool_name,
-                server_slug,
-                server_slug
-            ));
-            continue;
-        }
+        let slug_str = server_slug.as_str();
 
         inst.push_str(&format!("<{}>\n", server_slug));
 
-        // List tools — deferred, compressed, or full
-        let tools_deferred = deferred_tools_servers.contains(server_slug.as_str());
-        if tools_deferred {
-            if !server.tool_names.is_empty() {
-                for name in &server.tool_names {
-                    inst.push_str(&format!("- {}\n", name));
-                }
-                inst.push_str(&format!(
-                    "\n[deferred] {}(source=\"catalog:{}\") to activate tools and view docs\n",
-                    ctx.search_tool_name, server_slug
-                ));
-            }
-        } else {
-            for name in &server.tool_names {
-                if compressed_names.contains(name.as_str()) {
-                    inst.push_str(&format!(
-                        "- {} — [compressed] {}(source=\"catalog:{}\")\n",
-                        name, ctx.search_tool_name, name
-                    ));
-                } else {
-                    inst.push_str(&format!("- `{}` (tool)\n", name));
-                }
-            }
-        }
+        let has_indexed_welcome = indexed_welcome_slugs.contains_key(slug_str);
+        let has_deferred = deferred_server_slugs.contains_key(slug_str);
+        let toc_dropped = welcome_toc_dropped.contains(slug_str);
+        let batch_toc_drop = batch_toc_dropped.contains(slug_str);
 
-        // List resources
-        let resources_deferred = deferred_resources_servers.contains(server_slug.as_str());
-        if resources_deferred {
-            if !server.resource_names.is_empty() {
-                for name in &server.resource_names {
-                    inst.push_str(&format!("- {}\n", name));
-                }
+        // Welcome section
+        if has_indexed_welcome {
+            let welcome = indexed_welcome_slugs[slug_str];
+            inst.push_str(&welcome.summary);
+            inst.push('\n');
+            if !toc_dropped {
+                inst.push('\n');
+                inst.push_str(&welcome.toc);
+                inst.push('\n');
             }
         } else {
-            for name in &server.resource_names {
-                if compressed_names.contains(name.as_str()) {
-                    inst.push_str(&format!(
-                        "- {} — [compressed] {}(source=\"catalog:{}\")\n",
-                        name, ctx.search_tool_name, name
-                    ));
-                } else {
-                    inst.push_str(&format!("- `{}` (resource)\n", name));
-                }
-            }
-        }
-
-        // List prompts
-        let prompts_deferred = deferred_prompts_servers.contains(server_slug.as_str());
-        if prompts_deferred {
-            if !server.prompt_names.is_empty() {
-                for name in &server.prompt_names {
-                    inst.push_str(&format!("- {}\n", name));
-                }
-            }
-        } else {
-            for name in &server.prompt_names {
-                if compressed_names.contains(name.as_str()) {
-                    inst.push_str(&format!(
-                        "- {} — [compressed] {}(source=\"catalog:{}\")\n",
-                        name, ctx.search_tool_name, name
-                    ));
-                } else {
-                    inst.push_str(&format!("- `{}` (prompt)\n", name));
-                }
-            }
-        }
-
-        // Server instructions: inline unless compressed
-        let welcome_compressed = compressed_names.contains(server_slug.as_str());
-        if welcome_compressed {
-            inst.push_str(&format!(
-                "\n[compressed] {}(source=\"catalog:{}\") for instructions\n",
-                ctx.search_tool_name, server_slug
-            ));
-        } else {
+            // No compression: raw description + instructions (no tool listing)
             let has_content = server.instructions.is_some() || server.description.is_some();
             if has_content {
-                inst.push('\n');
                 if let Some(desc) = &server.description {
                     inst.push_str(desc);
                     if !desc.ends_with('\n') {
@@ -511,6 +420,21 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
                     if !instructions.ends_with('\n') {
                         inst.push('\n');
                     }
+                }
+            }
+        }
+
+        // Batch section (Phase 2 output)
+        if has_deferred {
+            let deferred = deferred_server_slugs[slug_str];
+            for batch in &deferred.batches {
+                inst.push('\n');
+                inst.push_str(&batch.batch_summary);
+                inst.push('\n');
+                if !batch_toc_drop {
+                    inst.push('\n');
+                    inst.push_str(&batch.batch_toc);
+                    inst.push('\n');
                 }
             }
         }
@@ -570,6 +494,158 @@ pub fn build_full_server_content(server: &McpServerInstructionInfo) -> String {
     }
 
     content
+}
+
+/// Compute item definition sizes: `serde_json::to_value(item).to_string().len()` per item.
+pub fn compute_item_definition_sizes(
+    tools: &[NamespacedTool],
+    resources: &[NamespacedResource],
+    prompts: &[NamespacedPrompt],
+) -> std::collections::HashMap<String, usize> {
+    let mut sizes = std::collections::HashMap::new();
+    for tool in tools {
+        let size = serde_json::to_value(tool)
+            .map(|v| v.to_string().len())
+            .unwrap_or(0);
+        sizes.insert(tool.name.clone(), size);
+    }
+    for resource in resources {
+        let size = serde_json::to_value(resource)
+            .map(|v| v.to_string().len())
+            .unwrap_or(0);
+        sizes.insert(resource.name.clone(), size);
+    }
+    for prompt in prompts {
+        let size = serde_json::to_value(prompt)
+            .map(|v| v.to_string().len())
+            .unwrap_or(0);
+        sizes.insert(prompt.name.clone(), size);
+    }
+    sizes
+}
+
+/// Format a tool definition as markdown for indexing.
+/// Includes description + all property descriptions + enum values.
+pub fn format_tool_as_markdown(tool: &NamespacedTool) -> String {
+    let mut md = format!("# {}\n\n", tool.name);
+
+    if let Some(desc) = &tool.description {
+        md.push_str(desc);
+        md.push_str("\n\n");
+    }
+
+    // Extract properties from input_schema
+    if let Some(props) = tool
+        .input_schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+    {
+        let required: std::collections::HashSet<&str> = tool
+            .input_schema
+            .get("required")
+            .and_then(|r| r.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        md.push_str("## Parameters\n");
+        for (name, schema) in props {
+            let type_str = schema.get("type").and_then(|t| t.as_str()).unwrap_or("any");
+            let is_required = required.contains(name.as_str());
+            let req_str = if is_required { ", required" } else { "" };
+
+            md.push_str(&format!("- **{}** ({}{})", name, type_str, req_str));
+
+            if let Some(desc) = schema.get("description").and_then(|d| d.as_str()) {
+                md.push_str(&format!(": {}", desc));
+            }
+
+            if let Some(enum_vals) = schema.get("enum").and_then(|e| e.as_array()) {
+                let vals: Vec<String> = enum_vals
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                if !vals.is_empty() {
+                    md.push_str(&format!(". Options: {}", vals.join(", ")));
+                }
+            }
+
+            md.push('\n');
+        }
+    }
+
+    md
+}
+
+/// Format a resource as markdown for indexing.
+pub fn format_resource_as_markdown(resource: &NamespacedResource) -> String {
+    let mut md = format!("# {}\n\n", resource.name);
+    md.push_str(&format!("URI: {}\n", resource.uri));
+    if let Some(desc) = &resource.description {
+        md.push_str(desc);
+        md.push('\n');
+    }
+    if let Some(mime) = &resource.mime_type {
+        md.push_str(&format!("MIME type: {}\n", mime));
+    }
+    md
+}
+
+/// Format a prompt as markdown for indexing.
+pub fn format_prompt_as_markdown(prompt: &NamespacedPrompt) -> String {
+    let mut md = format!("# {}\n\n", prompt.name);
+    if let Some(desc) = &prompt.description {
+        md.push_str(desc);
+        md.push_str("\n\n");
+    }
+    if let Some(args) = &prompt.arguments {
+        md.push_str("## Arguments\n");
+        for arg in args {
+            let req_str = if arg.required.unwrap_or(false) {
+                ", required"
+            } else {
+                ""
+            };
+            md.push_str(&format!("- **{}**{}", arg.name, req_str));
+            if let Some(desc) = &arg.description {
+                md.push_str(&format!(": {}", desc));
+            }
+            md.push('\n');
+        }
+    }
+    md
+}
+
+/// Compress a tool definition in-place: replace description with index summary,
+/// strip property descriptions from inputSchema.
+pub fn compress_tool_definition(
+    tool: &NamespacedTool,
+    summary: &str,
+    include_toc: bool,
+    toc: &str,
+) -> NamespacedTool {
+    let mut compressed = tool.clone();
+
+    // Replace description with index summary + optional TOC
+    if include_toc && !toc.is_empty() {
+        compressed.description = Some(format!("{}\n{}", summary, toc));
+    } else {
+        compressed.description = Some(summary.to_string());
+    }
+
+    // Strip descriptions from inputSchema properties
+    if let Some(props) = compressed
+        .input_schema
+        .get_mut("properties")
+        .and_then(|p| p.as_object_mut())
+    {
+        for (_name, schema) in props.iter_mut() {
+            if let Some(obj) = schema.as_object_mut() {
+                obj.remove("description");
+            }
+        }
+    }
+
+    compressed
 }
 
 /// Build a mock `InstructionsContext` for the compression preview UI.
@@ -1018,190 +1094,228 @@ pub fn build_preview_mock_realistic() -> InstructionsContext {
     }
 }
 
-/// Compute a catalog compression plan using the progressive algorithm.
+/// Minimum content size (bytes) for indexing. Content shorter than this is not worth indexing.
+const INDEX_MIN_BYTES: usize = 256;
+
+/// Compute a catalog compression plan using the progressive 4-phase algorithm.
 ///
 /// Phases:
-/// 1. Compress individual descriptions (largest first) — index + replace with one-liner
-/// 2. Defer items entirely (hide from tools/list) — only if client supports *_changed
-/// 3. Truncate server listings to counts only
+/// 1. Index welcome messages (selective, by welcome size desc) → summary + TOC
+/// 2. Defer tool definitions (selective, by definition savings desc) → batch-index, remove from tools/list
+/// 3. Drop welcome TOC (keep summary only)
+/// 4. Drop batch TOC (keep summary only)
 pub fn compute_catalog_compression_plan(
     ctx: &InstructionsContext,
     threshold: usize,
     supports_tools_list_changed: bool,
-    supports_resources_list_changed: bool,
-    supports_prompts_list_changed: bool,
+    _supports_resources_list_changed: bool,
+    _supports_prompts_list_changed: bool,
 ) -> CatalogCompressionPlan {
     let mut plan = CatalogCompressionPlan::default();
 
-    // Build the full uncompressed catalog to measure size
     let full_size = estimate_catalog_size(ctx);
 
     if full_size <= threshold {
-        // No compression needed
         return plan;
     }
 
     let bytes_to_save = full_size - threshold;
-
-    // Phase 1: Collect all compressible items with their sizes, sorted descending
-    let mut compressible_items: Vec<CompressibleCandidate> = Vec::new();
-
-    for server in &ctx.servers {
-        let server_slug = slugify(&server.name);
-
-        // Server welcome/instructions text
-        let welcome_size = server.description.as_ref().map(|d| d.len()).unwrap_or(0)
-            + server.instructions.as_ref().map(|i| i.len()).unwrap_or(0);
-        if welcome_size > 0 {
-            compressible_items.push(CompressibleCandidate {
-                namespaced_name: server_slug.clone(),
-                source_label: format!("catalog:{}", server_slug),
-                full_content: build_full_server_content(server),
-                item_type: CompressedItemType::ServerWelcome,
-                byte_size: welcome_size,
-                server_slug: server_slug.clone(),
-            });
-        }
-
-        // Individual tool descriptions (estimated ~80 bytes per tool line in listing)
-        for name in &server.tool_names {
-            let line_size = name.len() + 15; // "- `name` (tool)\n"
-            compressible_items.push(CompressibleCandidate {
-                namespaced_name: name.clone(),
-                source_label: format!("catalog:{}", name),
-                full_content: name.clone(), // Name only; full content indexed separately in handle_initialize
-                item_type: CompressedItemType::Tool,
-                byte_size: line_size,
-                server_slug: server_slug.clone(),
-            });
-        }
-
-        for name in &server.resource_names {
-            let line_size = name.len() + 19; // "- `name` (resource)\n"
-            compressible_items.push(CompressibleCandidate {
-                namespaced_name: name.clone(),
-                source_label: format!("catalog:{}", name),
-                full_content: name.clone(),
-                item_type: CompressedItemType::Resource,
-                byte_size: line_size,
-                server_slug: server_slug.clone(),
-            });
-        }
-
-        for name in &server.prompt_names {
-            let line_size = name.len() + 17; // "- `name` (prompt)\n"
-            compressible_items.push(CompressibleCandidate {
-                namespaced_name: name.clone(),
-                source_label: format!("catalog:{}", name),
-                full_content: name.clone(),
-                item_type: CompressedItemType::Prompt,
-                byte_size: line_size,
-                server_slug: server_slug.clone(),
-            });
-        }
-    }
-
-    // Sort by size descending — compress largest items first
-    compressible_items.sort_by(|a, b| b.byte_size.cmp(&a.byte_size));
-
-    // Batch-compress items until we've saved enough bytes
     let mut saved = 0usize;
-    for candidate in &compressible_items {
-        if saved >= bytes_to_save {
+
+    // ── Phase 1: Index Welcome Messages ──
+    // Sort servers by welcome size descending
+    let mut welcome_candidates: Vec<(String, usize)> = ctx
+        .servers
+        .iter()
+        .filter_map(|server| {
+            let slug = slugify(&server.name);
+            let welcome_size = server.description.as_ref().map(|d| d.len()).unwrap_or(0)
+                + server.instructions.as_ref().map(|i| i.len()).unwrap_or(0);
+            if welcome_size >= INDEX_MIN_BYTES {
+                Some((slug, welcome_size))
+            } else {
+                None
+            }
+        })
+        .collect();
+    welcome_candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Performance shortcut: if total Phase 1 savings < bytes_to_save, apply all at once
+    let total_phase1_savings: usize = welcome_candidates
+        .iter()
+        .map(|(_, size)| {
+            // Estimate summary + TOC at ~500 bytes
+            size.saturating_sub(500)
+        })
+        .sum();
+    let apply_all_phase1 = total_phase1_savings < bytes_to_save;
+
+    for (slug, welcome_size) in &welcome_candidates {
+        if !apply_all_phase1 && saved >= bytes_to_save {
             break;
         }
-        // Compressed one-liner is ~80 bytes (name + search hint)
-        let one_liner_size = candidate.namespaced_name.len() + 80;
-        let savings = candidate.byte_size.saturating_sub(one_liner_size);
-        if savings == 0 {
-            continue;
+
+        // Build welcome content for indexing
+        let server = ctx.servers.iter().find(|s| slugify(&s.name) == *slug);
+        let server = match server {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let content = build_full_server_content(server);
+        let store = lr_context::ContentStore::new().unwrap();
+        let label = format!("mcp/{}", slug);
+        let index_result = match store.index(&label, &content) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        let summary = index_result.summary();
+        let toc = index_result.toc(None);
+        let compressed_size = summary.len() + toc.len();
+        let savings = welcome_size.saturating_sub(compressed_size);
+
+        if savings > 0 {
+            plan.indexed_welcomes.push(IndexedWelcome {
+                server_slug: slug.clone(),
+                summary,
+                toc,
+                original_size: *welcome_size,
+            });
+            saved += savings;
         }
-        plan.compressed_descriptions.push(CompressedItem {
-            source_label: candidate.source_label.clone(),
-            full_content: candidate.full_content.clone(),
-            item_type: candidate.item_type.clone(),
-            namespaced_name: candidate.namespaced_name.clone(),
-            byte_size: candidate.byte_size,
-        });
-        saved += savings;
     }
 
     if saved >= bytes_to_save {
         return plan;
     }
 
-    // Phase 2: Defer items entirely (hide from listing)
-    // Sort servers by item count descending
-    let mut server_slugs: Vec<String> = ctx.servers.iter().map(|s| slugify(&s.name)).collect();
-    server_slugs.sort_by(|a, b| {
-        let count_a = ctx
+    // ── Phase 2: Defer Tool Definitions ──
+    // Only when client supports tools/listChanged (always true when context management is enabled)
+    if supports_tools_list_changed {
+        // Collect per-server definition sizes, sorted by total definition savings desc
+        let mut server_def_candidates: Vec<(String, usize)> = ctx
             .servers
             .iter()
-            .find(|s| slugify(&s.name) == *a)
-            .map(|s| s.tool_names.len() + s.resource_names.len() + s.prompt_names.len())
-            .unwrap_or(0);
-        let count_b = ctx
-            .servers
-            .iter()
-            .find(|s| slugify(&s.name) == *b)
-            .map(|s| s.tool_names.len() + s.resource_names.len() + s.prompt_names.len())
-            .unwrap_or(0);
-        count_b.cmp(&count_a)
-    });
-
-    for server_slug in &server_slugs {
-        if saved >= bytes_to_save {
-            break;
-        }
-
-        if supports_tools_list_changed {
-            plan.deferred_items.push(DeferredItem {
-                server_slug: server_slug.clone(),
-                item_type: DeferredItemType::Tools,
-            });
-        }
-        if supports_resources_list_changed {
-            plan.deferred_items.push(DeferredItem {
-                server_slug: server_slug.clone(),
-                item_type: DeferredItemType::Resources,
-            });
-        }
-        if supports_prompts_list_changed {
-            plan.deferred_items.push(DeferredItem {
-                server_slug: server_slug.clone(),
-                item_type: DeferredItemType::Prompts,
-            });
-        }
-
-        // Estimate savings from deferring this server's items (only count actually deferred types)
-        if let Some(server) = ctx
-            .servers
-            .iter()
-            .find(|s| slugify(&s.name) == *server_slug)
-        {
-            let mut items_bytes = 0usize;
-            if supports_tools_list_changed {
-                items_bytes += server
+            .map(|server| {
+                let slug = slugify(&server.name);
+                let total_def_size: usize = server
                     .tool_names
                     .iter()
-                    .map(|n| n.len() + 20)
-                    .sum::<usize>();
+                    .chain(server.resource_names.iter())
+                    .chain(server.prompt_names.iter())
+                    .filter_map(|name| ctx.item_definition_sizes.get(name))
+                    .sum();
+                (slug, total_def_size)
+            })
+            .filter(|(_, size)| *size > 0)
+            .collect();
+        server_def_candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Performance shortcut
+        let total_phase2_savings: usize = server_def_candidates
+            .iter()
+            .map(|(_, size)| size.saturating_sub(200))
+            .sum();
+        let apply_all_phase2 = total_phase2_savings < bytes_to_save.saturating_sub(saved);
+
+        for (slug, def_size) in &server_def_candidates {
+            if !apply_all_phase2 && saved >= bytes_to_save {
+                break;
             }
-            if supports_resources_list_changed {
-                items_bytes += server
+
+            let server = ctx.servers.iter().find(|s| slugify(&s.name) == *slug);
+            let server = match server {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let store = lr_context::ContentStore::new().unwrap();
+            let mut batches = Vec::new();
+            let mut batch_output_size = 0usize;
+
+            // Batch-index tools
+            if !server.tool_names.is_empty() {
+                let items: Vec<(&str, String)> = server
+                    .tool_names
+                    .iter()
+                    .map(|name| {
+                        // Generate a placeholder markdown for size estimation
+                        let md = format!("# {}\n\nTool definition placeholder.\n", name);
+                        (name.as_str(), md)
+                    })
+                    .collect();
+                let items_ref: Vec<(&str, &str)> =
+                    items.iter().map(|(n, c)| (*n, c.as_str())).collect();
+                let root = format!("mcp/{}/tool/", slug);
+                if let Ok(result) = store.batch_index(&root, &items_ref) {
+                    let summary = result.summary();
+                    let toc = result.toc(Some(1));
+                    batch_output_size += summary.len() + toc.len();
+                    batches.push(DeferredServerBatch {
+                        batch_summary: summary,
+                        batch_toc: toc,
+                    });
+                }
+            }
+
+            // Batch-index resources
+            if !server.resource_names.is_empty() {
+                let items: Vec<(&str, String)> = server
                     .resource_names
                     .iter()
-                    .map(|n| n.len() + 20)
-                    .sum::<usize>();
+                    .map(|name| {
+                        let md = format!("# {}\n\nResource definition placeholder.\n", name);
+                        (name.as_str(), md)
+                    })
+                    .collect();
+                let items_ref: Vec<(&str, &str)> =
+                    items.iter().map(|(n, c)| (*n, c.as_str())).collect();
+                let root = format!("mcp/{}/resource/", slug);
+                if let Ok(result) = store.batch_index(&root, &items_ref) {
+                    let summary = result.summary();
+                    let toc = result.toc(Some(1));
+                    batch_output_size += summary.len() + toc.len();
+                    batches.push(DeferredServerBatch {
+                        batch_summary: summary,
+                        batch_toc: toc,
+                    });
+                }
             }
-            if supports_prompts_list_changed {
-                items_bytes += server
+
+            // Batch-index prompts
+            if !server.prompt_names.is_empty() {
+                let items: Vec<(&str, String)> = server
                     .prompt_names
                     .iter()
-                    .map(|n| n.len() + 20)
-                    .sum::<usize>();
+                    .map(|name| {
+                        let md = format!("# {}\n\nPrompt definition placeholder.\n", name);
+                        (name.as_str(), md)
+                    })
+                    .collect();
+                let items_ref: Vec<(&str, &str)> =
+                    items.iter().map(|(n, c)| (*n, c.as_str())).collect();
+                let root = format!("mcp/{}/prompt/", slug);
+                if let Ok(result) = store.batch_index(&root, &items_ref) {
+                    let summary = result.summary();
+                    let toc = result.toc(Some(1));
+                    batch_output_size += summary.len() + toc.len();
+                    batches.push(DeferredServerBatch {
+                        batch_summary: summary,
+                        batch_toc: toc,
+                    });
+                }
             }
-            saved += items_bytes;
+
+            let savings = def_size.saturating_sub(batch_output_size);
+            if savings > 0 && !batches.is_empty() {
+                plan.deferred_servers.push(DeferredServer {
+                    server_slug: slug.clone(),
+                    batches,
+                    definition_savings: savings,
+                });
+                saved += savings;
+            }
         }
     }
 
@@ -1209,59 +1323,44 @@ pub fn compute_catalog_compression_plan(
         return plan;
     }
 
-    // Phase 3: Truncate remaining server listings to counts only
-    for server_slug in &server_slugs {
+    // ── Phase 3: Drop Welcome TOC ──
+    for indexed in &plan.indexed_welcomes {
         if saved >= bytes_to_save {
             break;
         }
-        // Only truncate if not already fully deferred
-        let already_deferred = plan
-            .deferred_items
-            .iter()
-            .any(|d| d.server_slug == *server_slug);
-        if already_deferred {
-            continue;
+        let toc_bytes = indexed.toc.len();
+        if toc_bytes > 0 {
+            plan.welcome_toc_dropped.push(indexed.server_slug.clone());
+            saved += toc_bytes;
         }
+    }
 
-        plan.truncated_servers.push(server_slug.clone());
+    if saved >= bytes_to_save {
+        return plan;
+    }
 
-        // Estimate savings
-        if let Some(server) = ctx
-            .servers
-            .iter()
-            .find(|s| slugify(&s.name) == *server_slug)
-        {
-            let items_bytes: usize = server
-                .tool_names
-                .iter()
-                .chain(server.resource_names.iter())
-                .chain(server.prompt_names.iter())
-                .map(|n| n.len() + 20)
-                .sum();
-            // Truncated line is ~80 bytes
-            saved += items_bytes.saturating_sub(80);
+    // ── Phase 4: Drop Batch TOC ──
+    for deferred in &plan.deferred_servers {
+        if saved >= bytes_to_save {
+            break;
+        }
+        let toc_bytes: usize = deferred.batches.iter().map(|b| b.batch_toc.len()).sum();
+        if toc_bytes > 0 {
+            plan.batch_toc_dropped.push(deferred.server_slug.clone());
+            saved += toc_bytes;
         }
     }
 
     plan
 }
 
-/// Estimate the total byte size of the catalog (welcome text).
+/// Estimate the total byte size of the catalog (welcome text + tool definitions).
 fn estimate_catalog_size(ctx: &InstructionsContext) -> usize {
     let mut size = 100; // header overhead
 
     for server in &ctx.servers {
         size += server.name.len() + 10; // server header
-        for name in &server.tool_names {
-            size += name.len() + 15;
-        }
-        for name in &server.resource_names {
-            size += name.len() + 19;
-        }
-        for name in &server.prompt_names {
-            size += name.len() + 17;
-        }
-        // Server instructions
+                                        // Server description + instructions (welcome)
         if let Some(desc) = &server.description {
             size += desc.len() + 20; // XML tags
         }
@@ -1281,21 +1380,10 @@ fn estimate_catalog_size(ctx: &InstructionsContext) -> usize {
         }
     }
 
-    size
-}
+    // Add tool definition sizes
+    size += ctx.item_definition_sizes.values().sum::<usize>();
 
-/// Internal candidate for compression planning.
-/// Note: `full_content` is only fully populated for `ServerWelcome` items.
-/// For tool/resource/prompt items it contains only the name — the actual full
-/// content (name + description + parameters) is indexed separately in `handle_initialize`.
-struct CompressibleCandidate {
-    namespaced_name: String,
-    source_label: String,
-    full_content: String,
-    item_type: CompressedItemType,
-    byte_size: usize,
-    #[allow(dead_code)]
-    server_slug: String,
+    size
 }
 
 /// Merge tools from multiple servers with namespacing
@@ -2114,13 +2202,14 @@ mod tests {
         };
 
         let plan = compute_catalog_compression_plan(&ctx, 100_000, true, true, true);
-        assert!(plan.compressed_descriptions.is_empty());
-        assert!(plan.deferred_items.is_empty());
-        assert!(plan.truncated_servers.is_empty());
+        assert!(plan.indexed_welcomes.is_empty());
+        assert!(plan.deferred_servers.is_empty());
+        assert!(plan.welcome_toc_dropped.is_empty());
+        assert!(plan.batch_toc_dropped.is_empty());
     }
 
     #[test]
-    fn test_phase1_compresses_largest_first() {
+    fn test_phase1_indexes_large_welcomes() {
         let ctx = InstructionsContext {
             servers: vec![make_large_server("big", 5)],
             unavailable_servers: vec![],
@@ -2130,34 +2219,51 @@ mod tests {
             ..Default::default()
         };
 
-        // Set threshold low enough to trigger phase 1 but not phase 2
+        // Set threshold low enough to trigger phase 1
         let full_size = estimate_catalog_size(&ctx);
-        // Remove ~200 bytes (threshold = full_size - 200) to trigger mild compression
         let threshold = full_size - 200;
 
         let plan = compute_catalog_compression_plan(&ctx, threshold, true, true, true);
 
-        // Should compress descriptions but not defer
         assert!(
-            !plan.compressed_descriptions.is_empty(),
-            "Phase 1 should compress some descriptions"
+            !plan.indexed_welcomes.is_empty(),
+            "Phase 1 should index large welcomes"
         );
-        // The largest item (server welcome at ~1000 bytes) should be compressed first
         assert_eq!(
-            plan.compressed_descriptions[0].item_type,
-            CompressedItemType::ServerWelcome,
-            "Server welcome (largest) should be compressed first"
+            plan.indexed_welcomes[0].server_slug, "big",
+            "Should index the 'big' server welcome"
         );
-        assert!(plan.deferred_items.is_empty(), "Phase 2 should not trigger");
         assert!(
-            plan.truncated_servers.is_empty(),
-            "Phase 3 should not trigger"
+            plan.deferred_servers.is_empty(),
+            "Phase 2 should not trigger"
         );
     }
 
     #[test]
-    fn test_phase2_defers_items() {
+    fn test_phase1_skips_short_welcomes() {
         let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "tiny".to_string(),
+                description: Some("Short.".to_string()), // < 256 bytes
+                instructions: None,
+                tool_names: vec!["tiny__a".to_string()],
+                resource_names: vec![],
+                prompt_names: vec![],
+            }],
+            ..Default::default()
+        };
+
+        let plan = compute_catalog_compression_plan(&ctx, 1, true, true, true);
+        // Short welcome should not be indexed (< INDEX_MIN_BYTES)
+        assert!(
+            plan.indexed_welcomes.is_empty(),
+            "Short welcomes should not be indexed"
+        );
+    }
+
+    #[test]
+    fn test_phase2_defers_servers() {
+        let mut ctx = InstructionsContext {
             servers: vec![make_large_server("big", 20), make_large_server("small", 3)],
             unavailable_servers: vec![],
             context_management_enabled: true,
@@ -2166,76 +2272,111 @@ mod tests {
             ..Default::default()
         };
 
+        // Add mock definition sizes to trigger phase 2
+        for s in &ctx.servers {
+            for name in s
+                .tool_names
+                .iter()
+                .chain(s.resource_names.iter())
+                .chain(s.prompt_names.iter())
+            {
+                ctx.item_definition_sizes.insert(name.clone(), 200);
+            }
+        }
+
         // Set threshold very low to force phase 2
         let plan = compute_catalog_compression_plan(&ctx, 100, true, true, true);
 
-        // Phase 2 should defer items
         assert!(
-            !plan.deferred_items.is_empty(),
-            "Phase 2 should defer items when threshold is very low"
+            !plan.deferred_servers.is_empty(),
+            "Phase 2 should defer servers when threshold is very low"
         );
-        // The server with more items should be deferred first
-        let deferred_server_slugs: Vec<&str> = plan
-            .deferred_items
+        let deferred_slugs: Vec<&str> = plan
+            .deferred_servers
             .iter()
             .map(|d| d.server_slug.as_str())
             .collect();
         assert!(
-            deferred_server_slugs.contains(&"big"),
+            deferred_slugs.contains(&"big"),
             "Largest server should be deferred first"
         );
     }
 
     #[test]
-    fn test_phase2_respects_capabilities() {
-        let ctx = InstructionsContext {
+    fn test_phase2_no_deferral_without_list_changed() {
+        let mut ctx = InstructionsContext {
             servers: vec![make_large_server("server", 20)],
-            unavailable_servers: vec![],
-            context_management_enabled: true,
-            catalog_compression: None,
-            virtual_instructions: vec![],
             ..Default::default()
         };
+        for name in &ctx.servers[0].tool_names.clone() {
+            ctx.item_definition_sizes.insert(name.clone(), 200);
+        }
 
-        // Only supports tools list_changed — not resources or prompts
-        let plan = compute_catalog_compression_plan(&ctx, 100, true, false, false);
-
-        let deferred_types: Vec<&DeferredItemType> =
-            plan.deferred_items.iter().map(|d| &d.item_type).collect();
-
-        // Should have tools deferred
-        assert!(deferred_types.contains(&&DeferredItemType::Tools));
-        // Should NOT have resources or prompts deferred (client doesn't support list_changed)
-        assert!(!deferred_types.contains(&&DeferredItemType::Resources));
-        assert!(!deferred_types.contains(&&DeferredItemType::Prompts));
+        // No list_changed support → phase 2 does nothing
+        let plan = compute_catalog_compression_plan(&ctx, 100, false, false, false);
+        assert!(
+            plan.deferred_servers.is_empty(),
+            "Phase 2 should not defer without list_changed support"
+        );
     }
 
     #[test]
-    fn test_phase3_truncates_servers() {
-        // Create a context so large that phases 1+2 aren't enough
-        let ctx = InstructionsContext {
-            servers: vec![
-                make_large_server("s1", 50),
-                make_large_server("s2", 50),
-                make_large_server("s3", 50),
-            ],
-            unavailable_servers: vec![],
-            context_management_enabled: true,
-            catalog_compression: None,
-            virtual_instructions: vec![],
+    fn test_phase3_drops_welcome_toc() {
+        let mut ctx = InstructionsContext {
+            servers: vec![make_large_server("s1", 50), make_large_server("s2", 50)],
             ..Default::default()
         };
+        for s in &ctx.servers {
+            for name in s
+                .tool_names
+                .iter()
+                .chain(s.resource_names.iter())
+                .chain(s.prompt_names.iter())
+            {
+                ctx.item_definition_sizes.insert(name.clone(), 200);
+            }
+        }
 
-        // Threshold of 10 is impossibly low — should trigger all 3 phases
-        let plan = compute_catalog_compression_plan(&ctx, 10, false, false, false);
+        // Very low threshold should trigger all phases
+        let plan = compute_catalog_compression_plan(&ctx, 10, true, true, true);
 
-        // Phase 3 can only be tested when phase 2 doesn't fully defer all servers
-        // With no list_changed support, phase 2 does nothing, so phase 3 kicks in
-        assert!(
-            !plan.truncated_servers.is_empty(),
-            "Phase 3 should truncate servers. Plan: {:?}",
-            plan
-        );
+        // Phase 3 should drop welcome TOC for indexed servers
+        if !plan.indexed_welcomes.is_empty() {
+            assert!(
+                !plan.welcome_toc_dropped.is_empty(),
+                "Phase 3 should drop welcome TOC. Plan: {:?}",
+                plan
+            );
+        }
+    }
+
+    #[test]
+    fn test_phase4_drops_batch_toc() {
+        let mut ctx = InstructionsContext {
+            servers: vec![make_large_server("s1", 50), make_large_server("s2", 50)],
+            ..Default::default()
+        };
+        for s in &ctx.servers {
+            for name in s
+                .tool_names
+                .iter()
+                .chain(s.resource_names.iter())
+                .chain(s.prompt_names.iter())
+            {
+                ctx.item_definition_sizes.insert(name.clone(), 200);
+            }
+        }
+
+        let plan = compute_catalog_compression_plan(&ctx, 1, true, true, true);
+
+        // With extremely low threshold, all phases should trigger
+        if !plan.deferred_servers.is_empty() {
+            assert!(
+                !plan.batch_toc_dropped.is_empty(),
+                "Phase 4 should drop batch TOC. Plan: {:?}",
+                plan
+            );
+        }
     }
 
     // ── Context Management: build_context_managed_instructions ──────
@@ -2261,26 +2402,69 @@ mod tests {
         let inst = build_context_managed_instructions(&ctx).unwrap();
         assert!(inst.contains("Unified MCP Gateway"));
         assert!(inst.contains("servername__"));
-        assert!(inst.contains("`filesystem__read_file` (tool)"));
-        assert!(inst.contains("`filesystem__config` (resource)"));
-        // Server instructions should be inline inside XML block
+        // Uncompressed: raw description shown
         assert!(inst.contains("<filesystem>"));
         assert!(inst.contains("File system server"));
         assert!(inst.contains("</filesystem>"));
     }
 
     #[test]
-    fn test_cm_instructions_with_compressed_items() {
+    fn test_cm_instructions_with_indexed_welcome() {
         let plan = CatalogCompressionPlan {
-            compressed_descriptions: vec![CompressedItem {
-                source_label: "catalog:filesystem__read_file".to_string(),
-                full_content: "Read a file from disk".to_string(),
-                item_type: CompressedItemType::Tool,
-                namespaced_name: "filesystem__read_file".to_string(),
-                byte_size: 100,
+            indexed_welcomes: vec![IndexedWelcome {
+                server_slug: "filesystem".to_string(),
+                summary: "Indexed \"mcp/filesystem\" \u{2014} 10 lines, 1.0KB, 3 chunks (0 code)".to_string(),
+                toc: "## Contents\n- [L1] Description\n- [L5] Tools\n\nUse search(queries: [...]) to find specific content.\nUse read(source: \"mcp/filesystem\", offset: \"1\") to read sections.".to_string(),
+                original_size: 1000,
             }],
-            deferred_items: vec![],
-            truncated_servers: vec![],
+            ..Default::default()
+        };
+
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "filesystem".to_string(),
+                description: Some("Detailed docs about filesystem server".to_string()),
+                instructions: Some("Use read_file to read files".to_string()),
+                tool_names: vec!["filesystem__read_file".to_string()],
+                resource_names: vec![],
+                prompt_names: vec![],
+            }],
+            context_management_enabled: true,
+            catalog_compression: Some(plan),
+            ..Default::default()
+        };
+
+        let inst = build_context_managed_instructions(&ctx).unwrap();
+        // Should show summary line
+        assert!(
+            inst.contains("Indexed \"mcp/filesystem\""),
+            "Should contain index summary. Got:\n{}",
+            inst
+        );
+        // Should show TOC
+        assert!(
+            inst.contains("## Contents"),
+            "Should contain TOC. Got:\n{}",
+            inst
+        );
+        // XML block present
+        assert!(inst.contains("<filesystem>"));
+        // Original instructions NOT inline
+        assert!(!inst.contains("Detailed docs about filesystem server"));
+    }
+
+    #[test]
+    fn test_cm_instructions_with_deferred_server() {
+        let plan = CatalogCompressionPlan {
+            deferred_servers: vec![DeferredServer {
+                server_slug: "filesystem".to_string(),
+                batches: vec![DeferredServerBatch {
+                    batch_summary: "Indexed 2 items at \"mcp/filesystem/tool/\" \u{2014} 10 lines, 0.5KB, 4 chunks".to_string(),
+                    batch_toc: "## Contents\n- filesystem__read_file\n- filesystem__write_file\n\nUse search(queries: [...], source: \"mcp/filesystem/tool/\") to discover items.".to_string(),
+                }],
+                definition_savings: 500,
+            }],
+            ..Default::default()
         };
 
         let ctx = InstructionsContext {
@@ -2295,115 +2479,29 @@ mod tests {
                 resource_names: vec![],
                 prompt_names: vec![],
             }],
-            unavailable_servers: vec![],
             context_management_enabled: true,
             catalog_compression: Some(plan),
-            virtual_instructions: vec![],
             ..Default::default()
         };
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
-        // Compressed tool should show [compressed] marker
+        // Should show batch summary
         assert!(
-            inst.contains("[compressed]"),
-            "Compressed tool should show [compressed] marker. Got:\n{}",
+            inst.contains("Indexed 2 items"),
+            "Should contain batch summary. Got:\n{}",
             inst
         );
-        assert!(inst.contains("IndexSearch"));
-        // Non-compressed tool should show backtick notation
-        assert!(inst.contains("`filesystem__write_file` (tool)"));
-    }
-
-    #[test]
-    fn test_cm_instructions_with_truncated_server() {
-        let plan = CatalogCompressionPlan {
-            compressed_descriptions: vec![],
-            deferred_items: vec![],
-            truncated_servers: vec!["big-server".to_string()],
-        };
-
-        let ctx = InstructionsContext {
-            servers: vec![McpServerInstructionInfo {
-                name: "Big Server".to_string(),
-                description: Some("Lots of tools".to_string()),
-                instructions: None,
-                tool_names: (0..10).map(|i| format!("big-server__tool_{}", i)).collect(),
-                resource_names: vec!["big-server__data".to_string()],
-                prompt_names: vec![],
-            }],
-            unavailable_servers: vec![],
-            context_management_enabled: true,
-            catalog_compression: Some(plan),
-            virtual_instructions: vec![],
-            ..Default::default()
-        };
-
-        let inst = build_context_managed_instructions(&ctx).unwrap();
-        // Truncated server shows counts + search hint
+        // Should show batch TOC
         assert!(
-            inst.contains("10 tools"),
-            "Truncated server should show tool count. Got:\n{}",
+            inst.contains("filesystem__read_file"),
+            "Should list deferred tools in TOC. Got:\n{}",
             inst
         );
-        assert!(inst.contains("1 resources"));
-        assert!(inst.contains("IndexSearch"));
-        // Individual tools should NOT be listed
-        assert!(!inst.contains("big-server__tool_0"));
-        // Server instructions should NOT be shown
-        assert!(!inst.contains("Lots of tools"));
-    }
-
-    #[test]
-    fn test_cm_instructions_compressed_server_welcome() {
-        let plan = CatalogCompressionPlan {
-            compressed_descriptions: vec![CompressedItem {
-                source_label: "catalog:filesystem".to_string(),
-                full_content: "Full server docs...".to_string(),
-                item_type: CompressedItemType::ServerWelcome,
-                namespaced_name: "filesystem".to_string(),
-                byte_size: 500,
-            }],
-            deferred_items: vec![],
-            truncated_servers: vec![],
-        };
-
-        let ctx = InstructionsContext {
-            servers: vec![McpServerInstructionInfo {
-                name: "filesystem".to_string(),
-                description: Some("Detailed docs about filesystem server".to_string()),
-                instructions: Some("Use read_file to read files".to_string()),
-                tool_names: vec!["filesystem__read_file".to_string()],
-                resource_names: vec![],
-                prompt_names: vec![],
-            }],
-            unavailable_servers: vec![],
-            context_management_enabled: true,
-            catalog_compression: Some(plan),
-            virtual_instructions: vec![],
-            ..Default::default()
-        };
-
-        let inst = build_context_managed_instructions(&ctx).unwrap();
-        // Server instructions should be [compressed] inside XML block
-        assert!(
-            inst.contains(
-                "[compressed] IndexSearch(source=\"catalog:filesystem\") for instructions"
-            ),
-            "Server welcome should be compressed. Got:\n{}",
-            inst
-        );
-        // XML block still present (unified format), but instructions NOT inline
-        assert!(inst.contains("<filesystem>"));
-        assert!(!inst.contains("Detailed docs about filesystem server"));
     }
 
     #[test]
     fn test_cm_instructions_virtual_servers_never_compressed() {
-        let plan = CatalogCompressionPlan {
-            compressed_descriptions: vec![],
-            deferred_items: vec![],
-            truncated_servers: vec![],
-        };
+        let plan = CatalogCompressionPlan::default();
 
         let ctx = InstructionsContext {
             servers: vec![],
@@ -2422,71 +2520,8 @@ mod tests {
         let inst = build_context_managed_instructions(&ctx).unwrap();
         assert!(inst.contains("`IndexSearch` (tool)"));
         assert!(inst.contains("`ctx_execute` (tool)"));
-        // Virtual instructions always inline
         assert!(inst.contains("<context-management>"));
         assert!(inst.contains("Use IndexSearch to find things"));
-    }
-
-    #[test]
-    fn test_cm_instructions_with_deferred_items() {
-        let plan = CatalogCompressionPlan {
-            compressed_descriptions: vec![],
-            deferred_items: vec![
-                DeferredItem {
-                    server_slug: "filesystem".to_string(),
-                    item_type: DeferredItemType::Tools,
-                },
-                DeferredItem {
-                    server_slug: "filesystem".to_string(),
-                    item_type: DeferredItemType::Resources,
-                },
-            ],
-            truncated_servers: vec![],
-        };
-
-        let ctx = InstructionsContext {
-            servers: vec![McpServerInstructionInfo {
-                name: "filesystem".to_string(),
-                description: None,
-                instructions: None,
-                tool_names: vec![
-                    "filesystem__read_file".to_string(),
-                    "filesystem__write_file".to_string(),
-                ],
-                resource_names: vec!["filesystem__config".to_string()],
-                prompt_names: vec!["filesystem__ask".to_string()],
-            }],
-            unavailable_servers: vec![],
-            context_management_enabled: true,
-            catalog_compression: Some(plan),
-            virtual_instructions: vec![],
-            ..Default::default()
-        };
-
-        let inst = build_context_managed_instructions(&ctx).unwrap();
-        // Deferred tools listed by name (without type tags) + deferred hint
-        assert!(
-            inst.contains("- filesystem__read_file\n"),
-            "Deferred tools should list names without backticks/type. Got:\n{}",
-            inst
-        );
-        assert!(
-            inst.contains("[deferred] IndexSearch"),
-            "Should show deferred activation hint. Got:\n{}",
-            inst
-        );
-        // Resources also deferred — listed by name
-        assert!(
-            inst.contains("- filesystem__config\n"),
-            "Deferred resources should list names. Got:\n{}",
-            inst
-        );
-        // Prompts NOT deferred — should be listed normally
-        assert!(
-            inst.contains("`filesystem__ask` (prompt)"),
-            "Non-deferred prompts should be listed. Got:\n{}",
-            inst
-        );
     }
 
     #[test]
@@ -2513,7 +2548,6 @@ mod tests {
 
     #[test]
     fn test_e2e_compression_plan_applied_to_instructions() {
-        // Create a context with large servers that will trigger compression
         let ctx = InstructionsContext {
             servers: vec![
                 McpServerInstructionInfo {
@@ -2543,7 +2577,6 @@ mod tests {
             ..Default::default()
         };
 
-        // Step 1: Compute compression with a moderate threshold
         let full_size = estimate_catalog_size(&ctx);
         assert!(
             full_size > 5000,
@@ -2551,52 +2584,37 @@ mod tests {
             full_size
         );
 
-        // Set threshold to ~40% of full size to trigger compression
         let threshold = full_size * 2 / 5;
         let plan = compute_catalog_compression_plan(&ctx, threshold, true, true, true);
 
         assert!(
-            !plan.compressed_descriptions.is_empty(),
-            "Should have compressed items"
+            !plan.indexed_welcomes.is_empty(),
+            "Should have indexed welcomes"
         );
 
-        // Step 2: Apply plan to build instructions
-        let mut ctx_with_plan = InstructionsContext {
-            servers: ctx.servers.clone(),
-            unavailable_servers: vec![],
-            context_management_enabled: true,
-            catalog_compression: Some(plan.clone()),
-            virtual_instructions: vec![],
-            ..Default::default()
+        let ctx_with_plan = InstructionsContext {
+            catalog_compression: Some(plan),
+            ..ctx.clone()
         };
-        ctx_with_plan.catalog_compression = Some(plan.clone());
 
         let inst = build_gateway_instructions(&ctx_with_plan).unwrap();
-
-        // Verify: CM header (no longer says "Context-Managed")
         assert!(
             inst.contains("Unified MCP Gateway"),
             "Should use CM instructions path"
         );
-
-        // Verify: compressed items marked in output
-        let has_compressed = inst.contains("[compressed]");
-        assert!(has_compressed, "Output should contain [compressed] markers");
-
-        // Verify: IndexSearch mentioned for discovering content
+        assert!(
+            inst.contains("Indexed"),
+            "Output should contain Indexed markers"
+        );
         assert!(
             inst.contains("IndexSearch"),
             "Should reference IndexSearch for discovery"
         );
 
-        // Verify: the output is smaller than uncompressed version
         let uncompressed_ctx = InstructionsContext {
-            servers: ctx.servers.clone(),
-            unavailable_servers: vec![],
             context_management_enabled: false,
             catalog_compression: None,
-            virtual_instructions: vec![],
-            ..Default::default()
+            ..ctx
         };
         let uncompressed = build_gateway_instructions(&uncompressed_ctx).unwrap();
         assert!(
@@ -2618,17 +2636,13 @@ mod tests {
                 resource_names: vec![],
                 prompt_names: vec![],
             }],
-            unavailable_servers: vec![],
             context_management_enabled: true,
-            catalog_compression: None,
-            virtual_instructions: vec![],
             ..Default::default()
         };
 
         let plan = compute_catalog_compression_plan(&ctx, 100_000, true, true, true);
-        assert!(plan.compressed_descriptions.is_empty());
-        assert!(plan.deferred_items.is_empty());
-        assert!(plan.truncated_servers.is_empty());
+        assert!(plan.indexed_welcomes.is_empty());
+        assert!(plan.deferred_servers.is_empty());
 
         let ctx_with_plan = InstructionsContext {
             catalog_compression: Some(plan),
@@ -2636,55 +2650,49 @@ mod tests {
         };
 
         let inst = build_gateway_instructions(&ctx_with_plan).unwrap();
-        assert!(inst.contains("`tiny__do_thing` (tool)"));
-        assert!(!inst.contains("[compressed]"));
+        assert!(!inst.contains("Indexed"));
     }
 
     #[test]
-    fn test_e2e_mixed_compression_some_servers_compressed_some_not() {
-        let ctx = InstructionsContext {
-            servers: vec![
-                McpServerInstructionInfo {
-                    name: "big".to_string(),
-                    description: Some("D".repeat(3000)),
-                    instructions: Some("I".repeat(3000)),
-                    tool_names: (0..20).map(|i| format!("big__tool_{}", i)).collect(),
-                    resource_names: vec![],
-                    prompt_names: vec![],
-                },
-                McpServerInstructionInfo {
-                    name: "small".to_string(),
-                    description: None,
-                    instructions: None,
-                    tool_names: vec!["small__a".to_string()],
-                    resource_names: vec![],
-                    prompt_names: vec![],
-                },
-            ],
-            unavailable_servers: vec![],
-            context_management_enabled: true,
-            catalog_compression: None,
-            virtual_instructions: vec![],
+    fn test_estimate_includes_definition_sizes() {
+        let mut ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "test".to_string(),
+                description: None,
+                instructions: None,
+                tool_names: vec!["test__tool".to_string()],
+                resource_names: vec![],
+                prompt_names: vec![],
+            }],
             ..Default::default()
         };
+        let base_size = estimate_catalog_size(&ctx);
 
-        let full_size = estimate_catalog_size(&ctx);
-        // Threshold that compresses "big" but not "small"
-        let threshold = full_size - 2000;
-        let plan = compute_catalog_compression_plan(&ctx, threshold, true, true, true);
-
-        let ctx_with_plan = InstructionsContext {
-            catalog_compression: Some(plan),
-            ..ctx
-        };
-
-        let inst = build_gateway_instructions(&ctx_with_plan).unwrap();
-
-        // Small server should be uncompressed
-        assert!(
-            inst.contains("`small__a` (tool)"),
-            "Small server tool should be uncompressed. Got:\n{}",
-            inst
+        ctx.item_definition_sizes
+            .insert("test__tool".to_string(), 1000);
+        let with_defs = estimate_catalog_size(&ctx);
+        assert_eq!(
+            with_defs,
+            base_size + 1000,
+            "Should include definition sizes"
         );
+    }
+
+    #[test]
+    fn test_path_scheme_mcp_prefix() {
+        let ctx = InstructionsContext {
+            servers: vec![make_large_server("github", 5)],
+            ..Default::default()
+        };
+        let plan = compute_catalog_compression_plan(&ctx, 1, true, true, true);
+
+        // All indexed welcomes should use mcp/ paths
+        for w in &plan.indexed_welcomes {
+            assert!(
+                w.summary.contains("mcp/"),
+                "IndexedWelcome summary should use mcp/ path. Got: {}",
+                w.summary
+            );
+        }
     }
 }

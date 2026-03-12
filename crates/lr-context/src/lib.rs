@@ -13,8 +13,9 @@ mod types;
 
 pub use types::format_search_results;
 pub use types::{
-    BatchResult, ChunkToc, ContentType, ContextError, IndexResult, MatchLayer, ReadRequest,
-    ReadResult, SearchHit, SearchResult, SourceInfo, SEARCH_OUTPUT_CAP,
+    BatchIndexResult, BatchItemSummary, BatchResult, ChunkToc, ContentType, ContextError,
+    IndexResult, MatchLayer, ReadRequest, ReadResult, SearchHit, SearchResult, SourceInfo,
+    SEARCH_OUTPUT_CAP,
 };
 
 use once_cell::sync::Lazy;
@@ -205,6 +206,41 @@ impl ContentStore {
                 Err(e)
             }
         }
+    }
+
+    /// Batch-index multiple items under a shared root path.
+    /// Each item is indexed at `{root_path}{subpath}`.
+    pub fn batch_index(
+        &self,
+        root_path: &str,
+        items: &[(&str, &str)], // (subpath, content)
+    ) -> Result<BatchIndexResult, ContextError> {
+        let mut total_bytes = 0usize;
+        let mut total_lines = 0usize;
+        let mut total_chunks = 0usize;
+        let mut item_summaries = Vec::new();
+
+        for (subpath, content) in items {
+            let label = format!("{}{}", root_path, subpath);
+            let result = self.index(&label, content)?;
+            total_bytes += result.content_bytes;
+            total_lines += result.total_lines;
+            total_chunks += result.total_chunks;
+            item_summaries.push(types::BatchItemSummary {
+                subpath: subpath.to_string(),
+                bytes: result.content_bytes,
+                chunks: result.total_chunks,
+            });
+        }
+
+        Ok(BatchIndexResult {
+            root_path: root_path.to_string(),
+            items_indexed: items.len(),
+            total_bytes,
+            total_lines,
+            total_chunks,
+            item_summaries,
+        })
     }
 
     // ── Search ──

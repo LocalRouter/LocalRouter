@@ -697,9 +697,12 @@ export interface CatalogCompressionPreview {
   welcome_message_uncompressed: string
   uncompressed_size: number
   compressed_size: number
-  compressed_descriptions_count: number
-  deferred_items_count: number
-  truncated_servers_count: number
+  welcome_size: number
+  tool_definitions_size: number
+  indexed_welcomes_count: number
+  deferred_servers_count: number
+  welcome_toc_dropped_count: number
+  batch_toc_dropped_count: number
   servers: PreviewServerEntry[]
 }
 

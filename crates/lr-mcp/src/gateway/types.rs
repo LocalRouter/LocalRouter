@@ -459,60 +459,57 @@ pub struct ServerInfo {
     pub description: Option<String>,
 }
 
-/// Catalog compression plan — describes how to progressively compress the welcome text.
+/// Catalog compression plan — describes how to progressively compress the catalog.
 ///
 /// Computed during session init when context management is enabled.
-/// Implements a 3-phase progressive compression algorithm:
-/// 1. Compress individual descriptions (largest first) → one-liner + search hint
-/// 2. Defer tools/resources/prompts entirely (hide from list, activate via ctx_search)
-/// 3. Truncate remaining server listings to counts only
+/// Implements a 4-phase progressive compression algorithm:
+/// 1. Index welcome messages → replace with summary + TOC
+/// 2. Defer tool definitions → batch-index, remove from tools/list, add batch summary + TOC
+/// 3. Drop welcome TOC (keep summary only)
+/// 4. Drop batch TOC (keep summary only)
 #[derive(Debug, Clone, Default)]
 pub struct CatalogCompressionPlan {
-    /// Items whose descriptions are compressed (indexed in FTS5, replaced with one-liner).
-    pub compressed_descriptions: Vec<CompressedItem>,
-    /// Items deferred entirely (hidden from tools/list, activated via ctx_search).
-    pub deferred_items: Vec<DeferredItem>,
-    /// Servers whose item lists are truncated to counts only.
-    pub truncated_servers: Vec<String>,
+    /// Phase 1: servers whose welcome was indexed.
+    pub indexed_welcomes: Vec<IndexedWelcome>,
+    /// Phase 2: servers whose tools/resources/prompts are deferred.
+    pub deferred_servers: Vec<DeferredServer>,
+    /// Phase 3: server slugs where welcome TOC is dropped.
+    pub welcome_toc_dropped: Vec<String>,
+    /// Phase 4: server slugs where batch TOC is dropped.
+    pub batch_toc_dropped: Vec<String>,
 }
 
-/// An item whose description was compressed (Phase 1 of catalog compression).
+/// Phase 1: a server whose welcome message was indexed and replaced with summary + TOC.
 #[derive(Debug, Clone)]
-pub struct CompressedItem {
-    /// Source label for FTS5 indexing (e.g., "catalog:filesystem__read_file").
-    pub source_label: String,
-    /// The full content that was indexed. Only reliably populated for `ServerWelcome`
-    /// items (via `build_full_server_content`). For tool/resource/prompt items, this
-    /// contains only the name — the actual full content is indexed separately in
-    /// `handle_initialize` from the full catalog (name + description + input schema).
-    pub full_content: String,
-    /// The type of item (tool, resource, prompt, or server welcome).
-    pub item_type: CompressedItemType,
-    /// The namespaced name (e.g., "filesystem__read_file") or server slug.
-    pub namespaced_name: String,
-    /// Estimated byte size of the full description.
-    pub byte_size: usize,
-}
-
-/// Type of compressed catalog item.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CompressedItemType {
-    Tool,
-    Resource,
-    Prompt,
-    ServerWelcome,
-}
-
-/// An item deferred entirely (Phase 2 of catalog compression).
-#[derive(Debug, Clone)]
-pub struct DeferredItem {
-    /// Server that owns this item.
+pub struct IndexedWelcome {
     pub server_slug: String,
-    /// Type of deferred content.
-    pub item_type: DeferredItemType,
+    /// IndexResult.summary()
+    pub summary: String,
+    /// IndexResult.toc(None)
+    pub toc: String,
+    pub original_size: usize,
 }
 
-/// Type of deferred catalog item.
+/// A batch of tool/resource/prompt index results for a single type.
+#[derive(Debug, Clone)]
+pub struct DeferredServerBatch {
+    /// BatchIndexResult.summary()
+    pub batch_summary: String,
+    /// BatchIndexResult.toc(Some(1))
+    pub batch_toc: String,
+}
+
+/// Phase 2: a server whose tools/resources/prompts are deferred from tools/list.
+#[derive(Debug, Clone)]
+pub struct DeferredServer {
+    pub server_slug: String,
+    /// One per type (tools, resources, prompts) — empty types skipped.
+    pub batches: Vec<DeferredServerBatch>,
+    /// Total bytes saved by deferring definitions.
+    pub definition_savings: usize,
+}
+
+/// Type of deferred catalog item (used for tracking which types are deferred per server).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeferredItemType {
     Tools,

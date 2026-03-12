@@ -134,10 +134,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
                 .get("skill")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let subpath = arguments
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let subpath = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
             return match lr_skills::mcp_tools::read_skill_file(
                 skill_name,

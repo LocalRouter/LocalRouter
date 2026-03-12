@@ -27,16 +27,17 @@ const INDEX_READ_DEFAULT: &str = "IndexRead";
 const CTX_SEARCH_SOURCE_GUIDE: &str = r#"
 
 MCP Gateway source labels (use with 'source' parameter):
-  source="catalog:"                — search all MCP catalog entries (tools, resources, prompts, server docs)
-  source="catalog:filesystem"      — search within a specific server (docs + all its items)
-  source="catalog:filesystem__"    — search tools/resources/prompts from a specific server
-  source="filesystem__read_file:"  — find all compressed responses from a specific tool
-  source="filesystem__read_file:3" — find a specific invocation
+  source="mcp/"                         — search all MCP catalog entries (tools, resources, prompts, server docs)
+  source="mcp/filesystem"               — search within a specific server (docs + all its items)
+  source="mcp/filesystem/tool/"         — search tools from a specific server
+  source="mcp/filesystem/resource/"     — search resources from a specific server
+  source="filesystem__read_file:"       — find all compressed responses from a specific tool
+  source="filesystem__read_file:3"      — find a specific invocation
 
 Searching catalog entries automatically activates matching tools/resources/prompts for use."#;
 
 /// Additional source guide appended to ctx_search's `source` parameter description.
-const CTX_SEARCH_SOURCE_PARAM_GUIDE: &str = r#" MCP examples: "catalog:" for all MCP entries, "catalog:filesystem" for one server, "filesystem__read_file:" for a tool's responses."#;
+const CTX_SEARCH_SOURCE_PARAM_GUIDE: &str = r#" MCP examples: "mcp/" for all MCP entries, "mcp/filesystem" for one server, "filesystem__read_file:" for a tool's responses."#;
 
 /// The type of catalog item associated with a source label.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,7 +236,10 @@ pub fn build_native_tool_definitions() -> Vec<McpTool> {
 }
 
 /// Build native tool definitions with configured names.
-pub fn build_native_tool_definitions_with_names(search_name: &str, read_name: &str) -> Vec<McpTool> {
+pub fn build_native_tool_definitions_with_names(
+    search_name: &str,
+    read_name: &str,
+) -> Vec<McpTool> {
     build_native_tools_with_names(search_name, read_name)
 }
 
@@ -334,9 +338,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 
         match result {
             Ok(r) => r,
-            Err(e) => {
-                VirtualToolCallResult::ToolError(format!("Tool call panicked: {}", e))
-            }
+            Err(e) => VirtualToolCallResult::ToolError(format!("Tool call panicked: {}", e)),
         }
     }
 
@@ -365,9 +367,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
         let config = self.config.read().unwrap();
         let enabled = client.is_context_management_enabled(&config);
 
-        let store = Arc::new(
-            ContentStore::new().expect("Failed to create in-memory ContentStore"),
-        );
+        let store = Arc::new(ContentStore::new().expect("Failed to create in-memory ContentStore"));
 
         Box::new(ContextModeSessionState {
             enabled,
@@ -444,10 +444,7 @@ fn handle_ctx_search_blocking(
         .and_then(|s| s.as_str())
         .map(|s| s.to_string());
 
-    let limit = arguments
-        .get("limit")
-        .and_then(|l| l.as_u64())
-        .unwrap_or(3) as usize;
+    let limit = arguments.get("limit").and_then(|l| l.as_u64()).unwrap_or(3) as usize;
 
     // Execute search using search_combined (handles both query + queries)
     let results = match store.search_combined(
@@ -561,6 +558,8 @@ fn handle_index_read_blocking(store: &ContentStore, arguments: Value) -> Virtual
 
 /// Extract catalog items that should be activated based on search results.
 /// Uses direct access to SearchResult/SearchHit structs rather than text parsing.
+/// Handles both `mcp/` path format (e.g. "mcp/github/tool/github__issue_read")
+/// and legacy `catalog:` format (e.g. "catalog:github__issue_read").
 fn extract_catalog_activations_from_results(
     results: &[SearchResult],
     catalog_sources: &HashMap<String, CatalogItemType>,
@@ -573,12 +572,13 @@ fn extract_catalog_activations_from_results(
 
     for result in results {
         for hit in &result.hits {
-            // The hit.source contains the source label (e.g. "catalog:filesystem__read_file")
             let source_label = &hit.source;
 
             if let Some(item_type) = catalog_sources.get(source_label) {
-                // Extract the namespaced name from the source label (strip "catalog:" prefix)
-                let name = source_label.strip_prefix("catalog:").unwrap_or(source_label);
+                // Extract the namespaced name from the source label.
+                // New format: "mcp/github/tool/github__issue_read" → "github__issue_read"
+                // Legacy format: "catalog:github__issue_read" → "github__issue_read"
+                let name = extract_item_name_from_source(source_label);
 
                 if seen.contains(name) {
                     continue;
@@ -589,7 +589,7 @@ fn extract_catalog_activations_from_results(
                     CatalogItemType::Tool => activated_tools.contains(name),
                     CatalogItemType::Resource => activated_resources.contains(name),
                     CatalogItemType::Prompt => activated_prompts.contains(name),
-                    CatalogItemType::ServerWelcome => true, // Server welcome doesn't need activation
+                    CatalogItemType::ServerWelcome => true,
                 };
                 if !already_active {
                     newly_activated.push((name.to_string(), item_type.clone()));
@@ -599,6 +599,21 @@ fn extract_catalog_activations_from_results(
     }
 
     newly_activated
+}
+
+/// Extract the item name from a source label.
+/// "mcp/github/tool/github__issue_read" → "github__issue_read"
+/// "mcp/github" → "github"
+/// "catalog:github__issue_read" → "github__issue_read"
+fn extract_item_name_from_source(source: &str) -> &str {
+    if let Some(rest) = source.strip_prefix("mcp/") {
+        // Find last path segment: "github/tool/github__issue_read" → "github__issue_read"
+        rest.rsplit('/').next().unwrap_or(rest)
+    } else if let Some(rest) = source.strip_prefix("catalog:") {
+        rest
+    } else {
+        source
+    }
 }
 
 /// Compress and index a client tool response into the session's ContentStore.
@@ -675,19 +690,22 @@ mod tests {
     fn make_catalog_sources() -> HashMap<String, CatalogItemType> {
         let mut sources = HashMap::new();
         sources.insert(
-            "catalog:filesystem__read_file".to_string(),
+            "mcp/filesystem/tool/filesystem__read_file".to_string(),
             CatalogItemType::Tool,
         );
         sources.insert(
-            "catalog:filesystem__write_file".to_string(),
+            "mcp/filesystem/tool/filesystem__write_file".to_string(),
             CatalogItemType::Tool,
         );
-        sources.insert("catalog:db__users".to_string(), CatalogItemType::Resource);
-        sources.insert("catalog:db__query".to_string(), CatalogItemType::Prompt);
         sources.insert(
-            "catalog:filesystem".to_string(),
-            CatalogItemType::ServerWelcome,
+            "mcp/db/resource/db__users".to_string(),
+            CatalogItemType::Resource,
         );
+        sources.insert(
+            "mcp/db/prompt/db__query".to_string(),
+            CatalogItemType::Prompt,
+        );
+        sources.insert("mcp/filesystem".to_string(), CatalogItemType::ServerWelcome);
         sources
     }
 
@@ -716,8 +734,8 @@ mod tests {
     fn test_activates_tools_from_search_results() {
         let sources = make_catalog_sources();
         let results = vec![make_search_result(vec![
-            ("catalog:filesystem__read_file", "Read File"),
-            ("catalog:filesystem__write_file", "Write File"),
+            ("mcp/filesystem/tool/filesystem__read_file", "Read File"),
+            ("mcp/filesystem/tool/filesystem__write_file", "Write File"),
         ])];
 
         let activated = extract_catalog_activations_from_results(
@@ -741,7 +759,7 @@ mod tests {
     fn test_skips_already_activated_tools() {
         let sources = make_catalog_sources();
         let results = vec![make_search_result(vec![(
-            "catalog:filesystem__read_file",
+            "mcp/filesystem/tool/filesystem__read_file",
             "Read File",
         )])];
 
@@ -763,8 +781,8 @@ mod tests {
     fn test_activates_resources_and_prompts() {
         let sources = make_catalog_sources();
         let results = vec![make_search_result(vec![
-            ("catalog:db__users", "Users"),
-            ("catalog:db__query", "Query"),
+            ("mcp/db/resource/db__users", "Users"),
+            ("mcp/db/prompt/db__query", "Query"),
         ])];
 
         let activated = extract_catalog_activations_from_results(
@@ -785,10 +803,7 @@ mod tests {
     #[test]
     fn test_server_welcome_not_activated() {
         let sources = make_catalog_sources();
-        let results = vec![make_search_result(vec![(
-            "catalog:filesystem",
-            "Filesystem",
-        )])];
+        let results = vec![make_search_result(vec![("mcp/filesystem", "Filesystem")])];
 
         let activated = extract_catalog_activations_from_results(
             &results,
@@ -838,8 +853,14 @@ mod tests {
     fn test_deduplicates_across_results() {
         let sources = make_catalog_sources();
         let results = vec![
-            make_search_result(vec![("catalog:filesystem__read_file", "Read File")]),
-            make_search_result(vec![("catalog:filesystem__read_file", "Read File Again")]),
+            make_search_result(vec![(
+                "mcp/filesystem/tool/filesystem__read_file",
+                "Read File",
+            )]),
+            make_search_result(vec![(
+                "mcp/filesystem/tool/filesystem__read_file",
+                "Read File Again",
+            )]),
         ];
 
         let activated = extract_catalog_activations_from_results(
@@ -886,7 +907,7 @@ mod tests {
         let search_desc = tools[0].description.as_ref().unwrap();
         assert!(search_desc.contains("Search indexed content"));
         assert!(search_desc.contains("MCP Gateway source labels"));
-        assert!(search_desc.contains("catalog:"));
+        assert!(search_desc.contains("mcp/"));
 
         let read_desc = tools[1].description.as_ref().unwrap();
         assert!(read_desc.contains("Read the full content"));
@@ -1078,10 +1099,19 @@ mod tests {
         let tools = build_native_tools();
         let search_tool = tools.iter().find(|t| t.name == "IndexSearch").unwrap();
         let props = &search_tool.input_schema["properties"];
-        assert!(props["query"]["type"].as_str() == Some("string"), "IndexSearch should have a 'query' string parameter");
-        assert!(props["queries"]["type"].as_str() == Some("array"), "IndexSearch should have a 'queries' array parameter");
+        assert!(
+            props["query"]["type"].as_str() == Some("string"),
+            "IndexSearch should have a 'query' string parameter"
+        );
+        assert!(
+            props["queries"]["type"].as_str() == Some("array"),
+            "IndexSearch should have a 'queries' array parameter"
+        );
         // Neither is required — both are optional
-        assert!(search_tool.input_schema.get("required").is_none(), "IndexSearch should not have required fields");
+        assert!(
+            search_tool.input_schema.get("required").is_none(),
+            "IndexSearch should not have required fields"
+        );
     }
 
     #[test]
@@ -1105,16 +1135,25 @@ mod tests {
     fn make_store_with_content() -> Arc<ContentStore> {
         let store = Arc::new(ContentStore::new().unwrap());
         store
-            .index("catalog:filesystem__read_file", "Read file from disk with path parameter")
+            .index(
+                "mcp/filesystem/tool/filesystem__read_file",
+                "Read file from disk with path parameter",
+            )
             .unwrap();
         store
-            .index("catalog:filesystem__write_file", "Write content to a file on disk")
+            .index(
+                "mcp/filesystem/tool/filesystem__write_file",
+                "Write content to a file on disk",
+            )
             .unwrap();
         store
-            .index("catalog:db__users", "Database users table resource")
+            .index("mcp/db/resource/db__users", "Database users table resource")
             .unwrap();
         store
-            .index("response:tool1:1", "The quick brown fox jumps over the lazy dog")
+            .index(
+                "response:tool1:1",
+                "The quick brown fox jumps over the lazy dog",
+            )
             .unwrap();
         store
     }
@@ -1140,7 +1179,10 @@ mod tests {
                 let text = response["content"][0]["text"].as_str().unwrap();
                 assert!(!text.is_empty(), "Search should return results");
             }
-            other => panic!("Expected Success, got: {:?}", format!("{:?}", std::mem::discriminant(&other))),
+            other => panic!(
+                "Expected Success, got: {:?}",
+                format!("{:?}", std::mem::discriminant(&other))
+            ),
         }
     }
 
@@ -1157,11 +1199,18 @@ mod tests {
         );
 
         match result {
-            VirtualToolCallResult::Success(v) | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
+            VirtualToolCallResult::Success(v)
+            | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
                 let text = v["content"][0]["text"].as_str().unwrap();
-                assert!(!text.is_empty(), "Single query search should return results");
+                assert!(
+                    !text.is_empty(),
+                    "Single query search should return results"
+                );
             }
-            other => panic!("Expected Success, got: {:?}", format!("{:?}", std::mem::discriminant(&other))),
+            other => panic!(
+                "Expected Success, got: {:?}",
+                format!("{:?}", std::mem::discriminant(&other))
+            ),
         }
     }
 
@@ -1178,11 +1227,15 @@ mod tests {
         );
 
         match result {
-            VirtualToolCallResult::Success(v) | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
+            VirtualToolCallResult::Success(v)
+            | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
                 let text = v["content"][0]["text"].as_str().unwrap();
                 assert!(!text.is_empty(), "Combined search should return results");
             }
-            other => panic!("Expected Success, got: {:?}", format!("{:?}", std::mem::discriminant(&other))),
+            other => panic!(
+                "Expected Success, got: {:?}",
+                format!("{:?}", std::mem::discriminant(&other))
+            ),
         }
     }
 
@@ -1200,7 +1253,11 @@ mod tests {
 
         match result {
             VirtualToolCallResult::ToolError(msg) => {
-                assert!(msg.contains("query"), "Error should mention missing query: {}", msg);
+                assert!(
+                    msg.contains("query"),
+                    "Error should mention missing query: {}",
+                    msg
+                );
             }
             _ => panic!("Expected ToolError for empty arguments"),
         }
@@ -1219,13 +1276,21 @@ mod tests {
         );
 
         match result {
-            VirtualToolCallResult::Success(v) | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
+            VirtualToolCallResult::Success(v)
+            | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
                 let text = v["content"][0]["text"].as_str().unwrap();
                 // Source filter "response:" should only match the response:tool1:1 entry
-                assert!(text.contains("response:tool1:1") || text.contains("brown fox") || text.contains("No results"),
-                    "Source filter should scope results to response: entries");
+                assert!(
+                    text.contains("response:tool1:1")
+                        || text.contains("brown fox")
+                        || text.contains("No results"),
+                    "Source filter should scope results to response: entries"
+                );
             }
-            other => panic!("Expected Success, got: {:?}", format!("{:?}", std::mem::discriminant(&other))),
+            other => panic!(
+                "Expected Success, got: {:?}",
+                format!("{:?}", std::mem::discriminant(&other))
+            ),
         }
     }
 
@@ -1242,11 +1307,19 @@ mod tests {
         );
 
         match result {
-            VirtualToolCallResult::SuccessWithSideEffects { response, state_update, .. } => {
+            VirtualToolCallResult::SuccessWithSideEffects {
+                response,
+                state_update,
+                ..
+            } => {
                 let text = response["content"].as_array().unwrap();
                 assert!(text.len() >= 2, "Should have results + activation message");
                 let activation_text = text.last().unwrap()["text"].as_str().unwrap();
-                assert!(activation_text.contains("Activated"), "Should show activation: {}", activation_text);
+                assert!(
+                    activation_text.contains("Activated"),
+                    "Should show activation: {}",
+                    activation_text
+                );
                 assert!(state_update.is_some(), "Should have state updater");
             }
             _ => panic!("Expected SuccessWithSideEffects with catalog activation"),
@@ -1258,15 +1331,15 @@ mod tests {
     #[test]
     fn test_ctx_read_returns_indexed_content() {
         let store = make_store_with_content();
-        let result = handle_index_read_blocking(
-            &store,
-            json!({"label": "response:tool1:1"}),
-        );
+        let result = handle_index_read_blocking(&store, json!({"label": "response:tool1:1"}));
 
         match result {
             VirtualToolCallResult::Success(v) => {
                 let text = v["content"][0]["text"].as_str().unwrap();
-                assert!(text.contains("brown fox"), "Should return the indexed content");
+                assert!(
+                    text.contains("brown fox"),
+                    "Should return the indexed content"
+                );
             }
             _ => panic!("Expected Success for read"),
         }
@@ -1279,7 +1352,11 @@ mod tests {
 
         match result {
             VirtualToolCallResult::ToolError(msg) => {
-                assert!(msg.contains("label"), "Error should mention missing label: {}", msg);
+                assert!(
+                    msg.contains("label"),
+                    "Error should mention missing label: {}",
+                    msg
+                );
             }
             _ => panic!("Expected ToolError for missing label"),
         }
@@ -1288,14 +1365,15 @@ mod tests {
     #[test]
     fn test_ctx_read_nonexistent_label_returns_error() {
         let store = make_store_with_content();
-        let result = handle_index_read_blocking(
-            &store,
-            json!({"label": "nonexistent:label"}),
-        );
+        let result = handle_index_read_blocking(&store, json!({"label": "nonexistent:label"}));
 
         match result {
             VirtualToolCallResult::ToolError(msg) => {
-                assert!(msg.contains("Read failed"), "Should report read failure: {}", msg);
+                assert!(
+                    msg.contains("Read failed"),
+                    "Should report read failure: {}",
+                    msg
+                );
             }
             _ => panic!("Expected ToolError for nonexistent label"),
         }
@@ -1305,7 +1383,10 @@ mod tests {
     fn test_ctx_read_with_offset_and_limit() {
         let store = Arc::new(ContentStore::new().unwrap());
         store
-            .index("multiline", "line one\nline two\nline three\nline four\nline five")
+            .index(
+                "multiline",
+                "line one\nline two\nline three\nline four\nline five",
+            )
             .unwrap();
 
         let result = handle_index_read_blocking(
@@ -1316,7 +1397,11 @@ mod tests {
         match result {
             VirtualToolCallResult::Success(v) => {
                 let text = v["content"][0]["text"].as_str().unwrap();
-                assert!(text.contains("line two"), "Should start from offset 2: {}", text);
+                assert!(
+                    text.contains("line two"),
+                    "Should start from offset 2: {}",
+                    text
+                );
             }
             _ => panic!("Expected Success for read with offset"),
         }
@@ -1340,7 +1425,9 @@ mod tests {
             .as_any()
             .downcast_ref::<ContextModeSessionState>()
             .unwrap();
-        cm.store.index("test:doc", "Rust programming language features").unwrap();
+        cm.store
+            .index("test:doc", "Rust programming language features")
+            .unwrap();
 
         let result = vs
             .handle_tool_call(
@@ -1353,7 +1440,8 @@ mod tests {
             .await;
 
         match result {
-            VirtualToolCallResult::Success(v) | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
+            VirtualToolCallResult::Success(v)
+            | VirtualToolCallResult::SuccessWithSideEffects { response: v, .. } => {
                 let text = v["content"][0]["text"].as_str().unwrap();
                 assert!(!text.is_empty(), "Async search should return results");
             }
@@ -1392,7 +1480,11 @@ mod tests {
         match result {
             VirtualToolCallResult::Success(v) => {
                 let text = v["content"][0]["text"].as_str().unwrap();
-                assert!(text.contains("Hello world"), "Async read should return content: {}", text);
+                assert!(
+                    text.contains("Hello world"),
+                    "Async read should return content: {}",
+                    text
+                );
             }
             VirtualToolCallResult::ToolError(e) => panic!("Unexpected error: {}", e),
             _ => panic!("Unexpected result type"),
@@ -1422,7 +1514,11 @@ mod tests {
 
         match result {
             VirtualToolCallResult::ToolError(msg) => {
-                assert!(msg.contains("not enabled"), "Should report not enabled: {}", msg);
+                assert!(
+                    msg.contains("not enabled"),
+                    "Should report not enabled: {}",
+                    msg
+                );
             }
             _ => panic!("Expected ToolError for disabled client"),
         }
