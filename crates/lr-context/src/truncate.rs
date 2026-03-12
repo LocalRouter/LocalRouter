@@ -12,8 +12,10 @@ pub(crate) fn smart_truncate(text: &str, max_bytes: usize) -> String {
 
     // Single line or empty: truncate at char boundary
     if total_lines <= 1 {
-        let head_budget = (max_bytes * 6) / 10;
-        let tail_budget = max_bytes.saturating_sub(head_budget).saturating_sub(80);
+        let separator_reserve = 100;
+        let usable = max_bytes.saturating_sub(separator_reserve);
+        let head_budget = (usable * 6) / 10;
+        let tail_budget = (usable * 4) / 10;
 
         let head_end = char_floor(text, head_budget);
         let tail_len = char_floor_rev(text, tail_budget);
@@ -34,8 +36,11 @@ pub(crate) fn smart_truncate(text: &str, max_bytes: usize) -> String {
         );
     }
 
-    let head_budget = (max_bytes * 6) / 10;
-    let tail_budget = (max_bytes * 4) / 10;
+    // Reserve ~100 bytes for the separator line
+    let separator_reserve = 100;
+    let usable = max_bytes.saturating_sub(separator_reserve);
+    let head_budget = (usable * 6) / 10;
+    let tail_budget = (usable * 4) / 10;
 
     // Accumulate head lines
     let mut head_count = 0;

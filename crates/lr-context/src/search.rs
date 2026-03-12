@@ -312,7 +312,7 @@ fn extract_multi_snippet(
         // Estimate chars for this window
         let window_chars: usize = (start_line_idx..=end_line_idx)
             .filter_map(|i| content_lines.get(i))
-            .map(|l| l.len().min(SNIPPET_LINE_MAX_CHARS) + 10) // +10 for label + tab + newline
+            .map(|l| l.chars().count().min(SNIPPET_LINE_MAX_CHARS) + 10) // +10 for label + tab + newline
             .sum();
 
         if total_chars + window_chars > max_len && !line_windows.is_empty() {
@@ -327,19 +327,24 @@ fn extract_multi_snippet(
         return format_first_n_lines(content, line_start, max_len);
     }
 
-    // Collect all labels for width calculation
-    let mut all_labels: Vec<String> = Vec::new();
-    for &(start, end) in &line_windows {
-        for i in start..=end {
-            let abs_line = line_start + i;
-            all_labels.push(format!("{}", abs_line));
-        }
+    // Filter out degenerate windows where end < start
+    let line_windows: Vec<(usize, usize)> =
+        line_windows.into_iter().filter(|&(s, e)| e >= s).collect();
+
+    if line_windows.is_empty() {
+        return format_first_n_lines(content, line_start, max_len);
     }
-    let max_width = all_labels.iter().map(|l| l.len()).max().unwrap_or(1);
+
+    // Calculate max label width from all windows
+    let max_abs_line = line_windows
+        .iter()
+        .map(|&(_, end)| line_start + end)
+        .max()
+        .unwrap_or(line_start);
+    let max_width = max_abs_line.to_string().len().max(1);
 
     // Format output
     let mut output = String::new();
-    let mut label_idx = 0;
 
     for (wi, &(start, end)) in line_windows.iter().enumerate() {
         if wi > 0 {
@@ -347,9 +352,7 @@ fn extract_multi_snippet(
         }
 
         for (i, line) in content_lines.iter().enumerate().take(end + 1).skip(start) {
-            let _ = i; // line index, used implicitly via label_idx
-            let label = &all_labels[label_idx];
-            label_idx += 1;
+            let abs_line = line_start + i;
 
             // Truncate long lines
             let display_line = if line.chars().count() > SNIPPET_LINE_MAX_CHARS {
@@ -361,7 +364,7 @@ fn extract_multi_snippet(
 
             output.push_str(&format!(
                 "{:>width$}\t{}\n",
-                label,
+                abs_line,
                 display_line,
                 width = max_width
             ));
@@ -376,7 +379,7 @@ fn format_first_n_lines(content: &str, line_start: usize, max_len: usize) -> Str
     let mut output = String::new();
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
-    let max_line = line_start + total;
+    let max_line = line_start + total.saturating_sub(1);
     let width = max_line.to_string().len().max(1);
 
     for (i, line) in lines.iter().enumerate() {
@@ -415,7 +418,7 @@ fn raw_hits_to_search_hits(
                 content_type: ContentType::parse(&h.content_type),
                 match_layer: layer,
                 line_start,
-                line_end: h.line_end.max(0) as usize,
+                line_end: h.line_end.max(1) as usize,
             }
         })
         .collect()
@@ -454,7 +457,7 @@ fn fuzzy_correct_query(conn: &Connection, query: &str) -> Option<String> {
     let lower_query = query.to_lowercase();
     let words: Vec<&str> = lower_query
         .split_whitespace()
-        .filter(|w| w.len() >= 3)
+        .filter(|w| w.chars().count() >= 3)
         .collect();
 
     if words.is_empty() {

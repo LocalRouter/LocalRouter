@@ -370,10 +370,22 @@ impl ContentStore {
             self.search_internal(queries, search_limit, source, SNIPPET_BATCH_MAX_LEN)?
         };
 
-        let read_results: Vec<ReadResult> = reads
-            .iter()
-            .filter_map(|r| self.read(&r.label, r.offset.as_deref(), r.limit).ok())
-            .collect();
+        let mut read_results: Vec<ReadResult> = Vec::new();
+        for r in reads {
+            match self.read(&r.label, r.offset.as_deref(), r.limit) {
+                Ok(result) => read_results.push(result),
+                Err(e) => {
+                    // Surface read errors as empty results with error info
+                    read_results.push(ReadResult {
+                        label: r.label.clone(),
+                        content: format!("Error reading {:?}: {}", r.label, e),
+                        total_lines: 0,
+                        showing_start: "0".to_string(),
+                        showing_end: "0".to_string(),
+                    });
+                }
+            }
+        }
 
         Ok(BatchResult {
             search_results,
@@ -439,12 +451,15 @@ impl ContentStore {
 }
 
 /// Find the starting position in the virtual line list for the given offset.
+/// Gracefully falls through: if the exact offset doesn't exist (e.g., "5-2" on a
+/// short line), finds the next valid position (e.g., line 6).
 fn find_virtual_start(virtual_lines: &[(String, &str)], offset: &LineOffset) -> usize {
     let target = offset.to_display();
     // Find exact match first
     if let Some(pos) = virtual_lines.iter().position(|(lbl, _)| *lbl == target) {
         return pos;
     }
+
     // If offset has no sub, find the first entry for that line number
     if offset.sub.is_none() {
         let line_str = format!("{}", offset.line);
@@ -456,7 +471,23 @@ fn find_virtual_start(virtual_lines: &[(String, &str)], offset: &LineOffset) -> 
             return pos;
         }
     }
-    // Fallback: past end
+
+    // Graceful fallthrough: find the first virtual line whose line number > offset.line.
+    // This handles cases like "5-2" on a short line → start at line 6.
+    for (pos, (lbl, _)) in virtual_lines.iter().enumerate() {
+        // Parse the line number from the label (either "N" or "N-M")
+        let lbl_line: usize = lbl
+            .split_once('-')
+            .map(|(l, _)| l)
+            .unwrap_or(lbl)
+            .parse()
+            .unwrap_or(0);
+        if lbl_line > offset.line {
+            return pos;
+        }
+    }
+
+    // Truly past end
     virtual_lines.len()
 }
 
@@ -1234,5 +1265,122 @@ mod tests {
             "Search output too large: {} bytes",
             output.len()
         );
+    }
+
+    // ── Read: offset edge cases ──
+
+    #[test]
+    fn read_offset_zero_clamps_to_line_1() {
+        let store = ContentStore::new().unwrap();
+        store.index("test", "aaa\nbbb\nccc").unwrap();
+
+        let read = store.read("test", Some("0"), None).unwrap();
+        // "0" clamps to line 1
+        assert_eq!(read.showing_start, "1");
+        assert!(read.content.contains("aaa"));
+    }
+
+    #[test]
+    fn read_offset_sub_zero_clamps_to_sub_1() {
+        let store = ContentStore::new().unwrap();
+        let long_line = "x".repeat(5000);
+        let content = format!("short\n{}\nend", long_line);
+        store.index("test", &content).unwrap();
+
+        // "2-0" should clamp to "2-1"
+        let read = store.read("test", Some("2-0"), Some(1)).unwrap();
+        assert_eq!(read.showing_start, "2-1");
+    }
+
+    #[test]
+    fn read_offset_sub_1_on_short_line() {
+        let store = ContentStore::new().unwrap();
+        // Line 5 is short (no sub-chunks)
+        store
+            .index("test", "a\nb\nc\nd\nshort line 5\nf\ng")
+            .unwrap();
+
+        // "5-1" on a short line that has no sub-chunks — should still find line 5
+        // because "5-1" doesn't exist but line 5 does, so we fall through to
+        // the first entry whose line number >= 5
+        let read = store.read("test", Some("5-1"), Some(1)).unwrap();
+        // Should start at line 5 (no sub-chunks exist, so falls through to next line >= 5)
+        assert!(
+            read.showing_start == "5" || read.showing_start == "6",
+            "Expected 5 or 6, got: {}",
+            read.showing_start
+        );
+        assert!(!read.content.is_empty());
+    }
+
+    #[test]
+    fn read_offset_sub_2_on_short_line_falls_to_next() {
+        let store = ContentStore::new().unwrap();
+        // Line 5 is short (fits in one chunk), no "5-2" exists
+        store
+            .index("test", "a\nb\nc\nd\nshort line 5\nf\ng")
+            .unwrap();
+
+        // "5-2" doesn't exist → should fall through to line 6
+        let read = store.read("test", Some("5-2"), Some(1)).unwrap();
+        assert_eq!(
+            read.showing_start, "6",
+            "Should fall through to line 6 when 5-2 doesn't exist"
+        );
+        assert!(read.content.contains("f"));
+    }
+
+    #[test]
+    fn read_offset_sub_on_last_line_gives_empty() {
+        let store = ContentStore::new().unwrap();
+        store.index("test", "a\nb\nc").unwrap();
+
+        // "3-2" doesn't exist and there's no line after 3 → empty result
+        let read = store.read("test", Some("3-2"), None).unwrap();
+        assert_eq!(read.showing_start, "0");
+        assert!(read.content.is_empty());
+    }
+
+    #[test]
+    fn read_offset_sub_on_long_line_works() {
+        let store = ContentStore::new().unwrap();
+        let long_line = "abcdef".repeat(500); // 3000 chars → 2 sub-chunks
+        let content = format!("first\n{}\nlast", long_line);
+        store.index("test", &content).unwrap();
+
+        // "2-1" should work (first sub-chunk of long line 2)
+        let read1 = store.read("test", Some("2-1"), Some(1)).unwrap();
+        assert_eq!(read1.showing_start, "2-1");
+
+        // "2-2" should work (second sub-chunk of long line 2)
+        let read2 = store.read("test", Some("2-2"), Some(1)).unwrap();
+        assert_eq!(read2.showing_start, "2-2");
+
+        // "2-3" doesn't exist (only 2 sub-chunks) → should fall through to line 3
+        let read3 = store.read("test", Some("2-3"), Some(1)).unwrap();
+        assert_eq!(read3.showing_start, "3");
+        assert!(read3.content.contains("last"));
+    }
+
+    #[test]
+    fn batch_read_error_surfaces() {
+        let store = ContentStore::new().unwrap();
+        store.index("docs:api", sample_markdown()).unwrap();
+
+        // Request a nonexistent source — should surface error instead of silently dropping
+        let result = store
+            .batch_search_read(
+                &[],
+                &[ReadRequest {
+                    label: "nonexistent".to_string(),
+                    offset: None,
+                    limit: None,
+                }],
+                5,
+                None,
+            )
+            .unwrap();
+        assert_eq!(result.read_results.len(), 1);
+        assert!(result.read_results[0].content.contains("Error"));
     }
 }

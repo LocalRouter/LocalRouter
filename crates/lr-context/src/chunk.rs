@@ -283,6 +283,7 @@ pub(crate) fn chunk_plain_text(content: &str) -> Vec<Chunk> {
     if sections.len() >= 3 && sections.len() <= 200 && sections.iter().all(|s| s.len() < 5000) {
         let mut chunks = Vec::new();
         let mut current_line = 1usize;
+        let section_count = sections.len();
         for (i, section) in sections.iter().enumerate() {
             let trimmed = section.trim();
             if trimmed.is_empty() {
@@ -310,8 +311,11 @@ pub(crate) fn chunk_plain_text(content: &str) -> Vec<Chunk> {
                 line_end: current_line + line_count - 1,
                 line_ref: current_line.to_string(),
             });
-            // Move past this section + blank line separator
-            current_line += section.lines().count().max(1) + 1;
+            // Move past this section (+ blank line separator, except after last)
+            current_line += section.lines().count().max(1);
+            if i + 1 < section_count {
+                current_line += 1; // blank line between sections
+            }
         }
         if !chunks.is_empty() {
             return chunks;

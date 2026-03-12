@@ -96,11 +96,9 @@ impl LineOffset {
             let sub: usize = sub_str
                 .parse()
                 .map_err(|_| ContextError::InvalidParams(format!("invalid offset: {:?}", s)))?;
-            if line == 0 || sub == 0 {
-                return Err(ContextError::InvalidParams(
-                    "offset must be >= 1".to_string(),
-                ));
-            }
+            // Clamp to 1-based minimum
+            let line = line.max(1);
+            let sub = sub.max(1);
             Ok(LineOffset {
                 line,
                 sub: Some(sub),
@@ -109,11 +107,8 @@ impl LineOffset {
             let line: usize = s
                 .parse()
                 .map_err(|_| ContextError::InvalidParams(format!("invalid offset: {:?}", s)))?;
-            if line == 0 {
-                return Err(ContextError::InvalidParams(
-                    "offset must be >= 1".to_string(),
-                ));
-            }
+            // Clamp to 1-based minimum
+            let line = line.max(1);
             Ok(LineOffset { line, sub: None })
         }
     }
@@ -268,8 +263,9 @@ impl fmt::Display for ReadResult {
 
 impl fmt::Display for IndexResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label_display = if self.label.len() > 200 {
-            format!("{}…", &self.label[..200])
+        let label_display = if self.label.chars().count() > 200 {
+            let truncated: String = self.label.chars().take(200).collect();
+            format!("{}…", truncated)
         } else {
             self.label.clone()
         };
@@ -284,31 +280,30 @@ impl fmt::Display for IndexResult {
             writeln!(f)?;
             writeln!(f, "## Contents")?;
 
-            let (kept, pruned) = prune_toc(&self.chunk_titles, INDEX_TOC_CAP);
+            let (kept, depth_pruned, list_truncated) = prune_toc(&self.chunk_titles, INDEX_TOC_CAP);
 
             for entry in &kept {
                 let indent = "  ".repeat(entry.depth);
                 let leaf = leaf_title(&entry.title);
-                let leaf_display = if leaf.len() > TOC_TITLE_MAX_CHARS {
-                    format!("{}…", &leaf[..TOC_TITLE_MAX_CHARS])
+                let leaf_display = if leaf.chars().count() > TOC_TITLE_MAX_CHARS {
+                    let truncated: String = leaf.chars().take(TOC_TITLE_MAX_CHARS).collect();
+                    format!("{}…", truncated)
                 } else {
                     leaf.to_string()
                 };
                 writeln!(f, "{}- [L{}] {}", indent, entry.line_ref, leaf_display)?;
             }
 
-            if pruned > 0 {
+            if depth_pruned > 0 {
                 writeln!(
                     f,
                     "  \u{2026} {} deeper sections pruned \u{2014} use search() to discover",
-                    pruned
+                    depth_pruned
                 )?;
             }
 
-            // Show remaining count if many entries were pruned
-            let remaining = self.chunk_titles.len() - kept.len() - pruned;
-            if remaining > 0 {
-                writeln!(f, "  \u{2026} {} more sections", remaining)?;
+            if list_truncated > 0 {
+                writeln!(f, "  \u{2026} {} more sections", list_truncated)?;
             }
         }
 
@@ -317,7 +312,7 @@ impl fmt::Display for IndexResult {
         write!(
             f,
             "Use read(source: {:?}, offset: \"1\") to read sections.",
-            label_display
+            self.label
         )?;
         Ok(())
     }
@@ -325,40 +320,44 @@ impl fmt::Display for IndexResult {
 
 impl fmt::Display for BatchResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Build output into a buffer, then apply smart_truncate as safety net
+        let mut buf = String::new();
         let mut total = 0;
 
         if !self.search_results.is_empty() {
-            writeln!(f, "# Search Results")?;
-            writeln!(f)?;
+            buf.push_str("# Search Results\n\n");
             for result in &self.search_results {
                 let formatted = result.to_string();
                 total += formatted.len();
                 if total > BATCH_OUTPUT_CAP {
-                    writeln!(f, "\n\u{2026} [output truncated at ~40KB] \u{2026}")?;
-                    return Ok(());
+                    buf.push_str("\n\u{2026} [output truncated at ~40KB] \u{2026}\n");
+                    let truncated = smart_truncate(&buf, BATCH_OUTPUT_CAP);
+                    return write!(f, "{}", truncated);
                 }
-                writeln!(f, "{}", formatted)?;
+                buf.push_str(&formatted);
+                buf.push('\n');
             }
         }
 
         if !self.read_results.is_empty() {
             if !self.search_results.is_empty() {
-                writeln!(f)?;
+                buf.push('\n');
             }
-            writeln!(f, "# Read Results")?;
-            writeln!(f)?;
+            buf.push_str("# Read Results\n\n");
             for result in &self.read_results {
                 let formatted = result.to_string();
                 total += formatted.len();
                 if total > BATCH_OUTPUT_CAP {
-                    writeln!(f, "\n\u{2026} [output truncated at ~40KB] \u{2026}")?;
-                    return Ok(());
+                    buf.push_str("\n\u{2026} [output truncated at ~40KB] \u{2026}\n");
+                    let truncated = smart_truncate(&buf, BATCH_OUTPUT_CAP);
+                    return write!(f, "{}", truncated);
                 }
-                writeln!(f, "{}", formatted)?;
+                buf.push_str(&formatted);
+                buf.push('\n');
             }
         }
 
-        Ok(())
+        write!(f, "{}", buf)
     }
 }
 
@@ -394,10 +393,11 @@ fn leaf_title(title: &str) -> &str {
 }
 
 /// Prune TOC entries to fit within max_bytes.
-/// Returns (kept entries, count of pruned entries).
-fn prune_toc(entries: &[ChunkToc], max_bytes: usize) -> (Vec<&ChunkToc>, usize) {
+/// Returns (kept entries, depth_pruned count, list_truncated count).
+fn prune_toc(entries: &[ChunkToc], max_bytes: usize) -> (Vec<&ChunkToc>, usize, usize) {
     let mut kept: Vec<&ChunkToc> = entries.iter().collect();
-    let mut pruned = 0;
+    let mut depth_pruned = 0;
+    let mut list_truncated = 0;
 
     loop {
         let estimated = estimate_toc_size(&kept);
@@ -410,17 +410,17 @@ fn prune_toc(entries: &[ChunkToc], max_bytes: usize) -> (Vec<&ChunkToc>, usize) 
             // Can't prune further by depth — truncate the list
             while estimate_toc_size(&kept) > max_bytes && kept.len() > 1 {
                 kept.pop();
-                pruned += 1;
+                list_truncated += 1;
             }
             break;
         }
 
         let before = kept.len();
         kept.retain(|e| e.depth < max_depth);
-        pruned += before - kept.len();
+        depth_pruned += before - kept.len();
     }
 
-    (kept, pruned)
+    (kept, depth_pruned, list_truncated)
 }
 
 fn estimate_toc_size(entries: &[&ChunkToc]) -> usize {
@@ -428,9 +428,19 @@ fn estimate_toc_size(entries: &[&ChunkToc]) -> usize {
         .iter()
         .map(|e| {
             let leaf = leaf_title(&e.title);
-            let leaf_len = leaf.len().min(TOC_TITLE_MAX_CHARS + 1);
+            let leaf_char_count = leaf.chars().count();
+            // If leaf exceeds TOC_TITLE_MAX_CHARS, it gets truncated + "…" (3 bytes)
+            let leaf_bytes = if leaf_char_count > TOC_TITLE_MAX_CHARS {
+                leaf.chars()
+                    .take(TOC_TITLE_MAX_CHARS)
+                    .map(|c| c.len_utf8())
+                    .sum::<usize>()
+                    + 3
+            } else {
+                leaf.len()
+            };
             // "  " * depth + "- [L" + line_ref + "] " + leaf + "\n"
-            e.depth * 2 + 4 + e.line_ref.len() + 2 + leaf_len + 1
+            e.depth * 2 + 4 + e.line_ref.len() + 2 + leaf_bytes + 1
         })
         .sum()
 }
@@ -465,13 +475,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_zero_rejected() {
-        assert!(LineOffset::parse("0").is_err());
+    fn parse_zero_clamps_to_one() {
+        let lo = LineOffset::parse("0").unwrap();
+        assert_eq!(lo.line, 1);
+        assert_eq!(lo.sub, None);
     }
 
     #[test]
-    fn parse_sub_zero_rejected() {
-        assert!(LineOffset::parse("5-0").is_err());
+    fn parse_sub_zero_clamps_to_one() {
+        let lo = LineOffset::parse("5-0").unwrap();
+        assert_eq!(lo.line, 5);
+        assert_eq!(lo.sub, Some(1));
     }
 
     #[test]
@@ -676,6 +690,68 @@ mod tests {
         }];
         let output = format_search_results(&results, SEARCH_OUTPUT_CAP);
         assert!(!output.contains("truncated"));
+    }
+
+    #[test]
+    fn index_display_unicode_label_no_panic() {
+        // Labels with multi-byte chars must not panic on truncation
+        let long_label: String = "\u{4f60}\u{597d}".repeat(200); // 400 CJK chars
+        let result = IndexResult {
+            source_id: 1,
+            label: long_label,
+            total_chunks: 1,
+            code_chunks: 0,
+            total_lines: 1,
+            content_bytes: 10,
+            chunk_titles: vec![],
+        };
+        // Should not panic
+        let display = result.to_string();
+        assert!(display.contains("…")); // label truncated
+    }
+
+    #[test]
+    fn index_display_unicode_toc_title_no_panic() {
+        // TOC titles with multi-byte chars must not panic on truncation
+        let long_title: String = "\u{4f60}\u{597d}".repeat(200); // 400 CJK chars
+        let result = IndexResult {
+            source_id: 1,
+            label: "test".to_string(),
+            total_chunks: 1,
+            code_chunks: 0,
+            total_lines: 10,
+            content_bytes: 500,
+            chunk_titles: vec![ChunkToc {
+                title: long_title,
+                line_ref: "1".to_string(),
+                depth: 0,
+            }],
+        };
+        // Should not panic
+        let display = result.to_string();
+        assert!(display.contains("…"));
+    }
+
+    #[test]
+    fn batch_result_single_huge_result_capped() {
+        // A single enormous result should still be capped by smart_truncate
+        let batch = BatchResult {
+            search_results: vec![],
+            read_results: vec![ReadResult {
+                label: "big".to_string(),
+                content: "x".repeat(60_000),
+                total_lines: 1,
+                showing_start: "1".to_string(),
+                showing_end: "1".to_string(),
+            }],
+        };
+        let display = batch.to_string();
+        // The output should be bounded
+        assert!(
+            display.len() <= BATCH_OUTPUT_CAP + 1000,
+            "Batch display should be capped, got {} bytes",
+            display.len()
+        );
     }
 
     #[test]
