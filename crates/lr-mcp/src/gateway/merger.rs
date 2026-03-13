@@ -273,18 +273,7 @@ fn build_unified_server_blocks(inst: &mut String, ctx: &InstructionsContext) {
 
         inst.push_str(&format!("<{}>\n", tag));
 
-        for name in &server.tool_names {
-            inst.push_str(&format!("- `{}` (tool)\n", name));
-        }
-        for name in &server.resource_names {
-            inst.push_str(&format!("- `{}` (resource)\n", name));
-        }
-        for name in &server.prompt_names {
-            inst.push_str(&format!("- `{}` (prompt)\n", name));
-        }
-
         if let Some(desc) = &server.description {
-            inst.push('\n');
             inst.push_str(desc);
             if !desc.ends_with('\n') {
                 inst.push('\n');
@@ -715,7 +704,6 @@ pub fn build_preview_instructions_context() -> InstructionsContext {
                 tool_names: vec![
                     "IndexSearch".to_string(),
                     "ctx_execute".to_string(),
-                    "ctx_execute_file".to_string(),
                     "ctx_batch_execute".to_string(),
                     "ctx_index".to_string(),
                     "ctx_fetch_and_index".to_string(),
@@ -746,7 +734,7 @@ pub fn build_preview_instructions_context() -> InstructionsContext {
             },
             VirtualInstructions {
                 section_title: "Skills".to_string(),
-                content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string(),
+                content: "Call a skill's `get_info` tool to view its instructions.\n".to_string(),
                 tool_names: vec![
                     "skill_get_info".to_string(),
                 ],
@@ -767,7 +755,6 @@ fn preview_virtual_instructions() -> Vec<super::virtual_server::VirtualInstructi
             tool_names: vec![
                 "IndexSearch".to_string(),
                 "ctx_execute".to_string(),
-                "ctx_execute_file".to_string(),
                 "ctx_batch_execute".to_string(),
                 "ctx_index".to_string(),
                 "ctx_fetch_and_index".to_string(),
@@ -798,7 +785,7 @@ fn preview_virtual_instructions() -> Vec<super::virtual_server::VirtualInstructi
         },
         VirtualInstructions {
             section_title: "Skills".to_string(),
-            content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string(),
+            content: "Call a skill's `get_info` tool to view its instructions.\n".to_string(),
             tool_names: vec![
                 "skill_get_info".to_string(),
             ],
@@ -1704,12 +1691,9 @@ mod tests {
         // Header
         assert!(instructions.contains("Unified MCP Gateway"));
         assert!(instructions.contains("servername__"));
-        // Tool listing with type annotations inside XML block
+        // Server instructions in XML tags (no tool listing)
         assert!(instructions.contains("<filesystem>"));
-        assert!(instructions.contains("`filesystem__read_file` (tool)"));
-        assert!(instructions.contains("`filesystem__write_file` (tool)"));
-        // Server instructions in XML tags
-        assert!(instructions.contains("<filesystem>"));
+        assert!(!instructions.contains("`filesystem__read_file` (tool)"));
         assert!(instructions.contains("Use read_file to read"));
         assert!(instructions.contains("</filesystem>"));
         // Should NOT contain deferred loading text
@@ -1776,8 +1760,7 @@ mod tests {
             catalog_compression: None,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
-                content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n"
-                    .to_string(),
+                content: "Call a skill's `get_info` tool to view its instructions.\n".to_string(),
                 tool_names: vec!["skill_get_info".to_string()],
                 priority: 30,
             }],
@@ -1788,7 +1771,7 @@ mod tests {
         // Virtual tool listing in XML block (no bold header, tag is enough)
         assert!(instructions.contains("<skills>"));
         assert!(instructions.contains("`skill_get_info` (tool)"));
-        assert!(instructions.contains("ctx_execute_file"));
+        assert!(instructions.contains("get_info"));
         assert!(instructions.contains("</skills>"));
     }
 
@@ -1826,8 +1809,8 @@ mod tests {
         assert!(skills_pos < github_pos, "Virtual servers should come first");
         // Virtual tool listing
         assert!(instructions.contains("`skill_get_info` (tool)"));
-        // Regular tool listing
-        assert!(instructions.contains("`github__create_issue` (tool)"));
+        // Regular tools NOT listed in welcome (they are in tools/list)
+        assert!(!instructions.contains("`github__create_issue` (tool)"));
         // Virtual instructions in XML
         assert!(instructions.contains("<skills>"));
         // Regular instructions in XML
@@ -1911,8 +1894,9 @@ mod tests {
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        assert!(instructions.contains("`barebones__tool` (tool)"));
-        // Servers with tools now always get XML blocks in the unified format
+        // Tools NOT listed in welcome (they are in tools/list)
+        assert!(!instructions.contains("`barebones__tool` (tool)"));
+        // Servers with tools still get XML blocks (even if empty)
         assert!(instructions.contains("<barebones>"));
         assert!(instructions.contains("</barebones>"));
     }
@@ -1936,10 +1920,13 @@ mod tests {
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        assert!(instructions.contains("`knowledge__search` (tool)"));
-        assert!(instructions.contains("`knowledge__docs` (resource)"));
-        assert!(instructions.contains("`knowledge__faq` (resource)"));
-        assert!(instructions.contains("`knowledge__summarize` (prompt)"));
+        // Tool/resource/prompt names NOT listed in welcome (they are in tools/list)
+        assert!(!instructions.contains("`knowledge__search` (tool)"));
+        assert!(!instructions.contains("`knowledge__docs` (resource)"));
+        assert!(!instructions.contains("`knowledge__faq` (resource)"));
+        assert!(!instructions.contains("`knowledge__summarize` (prompt)"));
+        // But the description is still present
+        assert!(instructions.contains("Knowledge base server"));
     }
 
     // --- Snapshot-style tests ---
@@ -1984,7 +1971,7 @@ mod tests {
             virtual_instructions: vec![
                 VirtualInstructions {
                     section_title: "Skills".to_string(),
-                    content: "Call a skill's `get_info` tool to view its instructions, then use `ctx_execute_file` with the absolute script path to run it.\n".to_string(),
+                    content: "Call a skill's `get_info` tool to view its instructions.\n".to_string(),
                     tool_names: vec![
                         "skill_get_info".to_string(),
                     ],
@@ -2014,13 +2001,14 @@ mod tests {
         assert!(marketplace_pos < filesystem_pos);
         assert!(filesystem_pos < broken_pos);
 
-        // Tool annotations
+        // Virtual tool annotations (still listed)
         assert!(instructions.contains("`skill_get_info` (tool)"));
         assert!(instructions.contains("`marketplace__search` (tool)"));
-        assert!(instructions.contains("`filesystem__read_file` (tool)"));
-        assert!(instructions.contains("`knowledge__search` (tool)"));
-        assert!(instructions.contains("`knowledge__docs` (resource)"));
-        assert!(instructions.contains("`knowledge__summarize` (prompt)"));
+        // Regular MCP tools/resources/prompts NOT listed in welcome
+        assert!(!instructions.contains("`filesystem__read_file` (tool)"));
+        assert!(!instructions.contains("`knowledge__search` (tool)"));
+        assert!(!instructions.contains("`knowledge__docs` (resource)"));
+        assert!(!instructions.contains("`knowledge__summarize` (prompt)"));
 
         // XML instructions for virtual servers
         assert!(instructions.contains("<skills>"));

@@ -268,13 +268,8 @@ pub fn read_skill_file(
 
     // Read from disk
     let file_path = skill.skill_dir.join(subpath);
-    std::fs::read_to_string(&file_path).map_err(|e| {
-        format!(
-            "Failed to read '{}': {}",
-            file_path.display(),
-            e
-        )
-    })
+    std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read '{}': {}", file_path.display(), e))
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +308,7 @@ fn build_skill_read_response(skill: &SkillDefinition) -> serde_json::Value {
     // File listings with resource_read-compatible paths
     if !skill.scripts.is_empty() {
         text.push_str("## Scripts\n\n");
-        text.push_str("Read with `resource_read(name=\"...\")`, run with `ctx_execute_file`.\n\n");
+        text.push_str("Read with `resource_read(name=\"...\")`.\n\n");
         for script in &skill.scripts {
             text.push_str(&format!("- `{}/{}`\n", skill_name, script));
         }
