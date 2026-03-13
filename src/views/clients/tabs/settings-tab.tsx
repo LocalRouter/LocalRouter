@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Loader2, Unlink } from "lucide-react"
+import { FlaskConical, Loader2, Unlink } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
 import { Switch } from "@/components/ui/Toggle"
@@ -259,8 +259,8 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
           </CardHeader>
           <CardContent className="space-y-4">
             {/* Sampling */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium">Sampling</p>
                   <p className="text-xs text-muted-foreground">
@@ -278,11 +278,23 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
                     }
                   </p>
                 </div>
-                {(client.mcp_sampling_permission || "ask") === "ask" && (
+                <PermissionStateButton
+                  value={client.mcp_sampling_permission || "ask"}
+                  onChange={handleSamplingPermissionChange}
+                  size="sm"
+                />
+              </div>
+              {(client.mcp_sampling_permission || "ask") === "ask" && (
+                <div className="flex items-center justify-between pb-1">
+                  <div>
+                    <span className="text-sm font-medium">Approval Popup Preview</span>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Preview the popup shown when sampling permission is set to &ldquo;Ask&rdquo;
+                    </p>
+                  </div>
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
-                    className="text-xs h-6 px-2 text-muted-foreground"
                     onClick={async () => {
                       try {
                         await invoke("debug_trigger_sampling_approval_popup")
@@ -291,20 +303,16 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
                       }
                     }}
                   >
-                    Test
+                    <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
+                    Sample Popup
                   </Button>
-                )}
-              </div>
-              <PermissionStateButton
-                value={client.mcp_sampling_permission || "ask"}
-                onChange={handleSamplingPermissionChange}
-                size="sm"
-              />
+                </div>
+              )}
             </div>
 
             {/* Elicitation */}
-            <div className="flex items-center justify-between pt-3 border-t">
-              <div className="flex items-center gap-2">
+            <div className="space-y-3 pt-3 border-t">
+              <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium">Elicitation</p>
                   <p className="text-xs text-muted-foreground">
@@ -321,15 +329,47 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
                     }
                   </p>
                 </div>
-                {(() => {
-                  const perm = client.mcp_elicitation_permission || "ask"
-                  const effective = clientMode === "mcp_via_llm" && perm === "allow" ? "ask" : perm
-                  return effective === "ask"
-                })() ? (
-                  <Button
-                    variant="ghost"
+                {clientMode === "mcp_via_llm" ? (
+                  // MCP via LLM: only Ask/Off (no client to passthrough to)
+                  <div className="inline-flex rounded-md border border-border bg-muted/50">
+                    {(["ask", "off"] as PermissionState[]).map((state) => (
+                      <button
+                        key={state}
+                        type="button"
+                        onClick={() => handleElicitationPermissionChange(state)}
+                        className={`px-2 py-0.5 text-xs font-medium transition-colors ${
+                          (client.mcp_elicitation_permission === "allow" ? "ask" : (client.mcp_elicitation_permission || "ask")) === state
+                            ? state === "ask" ? "bg-amber-500 text-white" : "bg-zinc-500 text-white"
+                            : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                        } ${state === "ask" ? "rounded-l-md" : "rounded-r-md"}`}
+                      >
+                        {state === "ask" ? "Ask" : "Off"}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <PermissionStateButton
+                    value={client.mcp_elicitation_permission || "ask"}
+                    onChange={handleElicitationPermissionChange}
                     size="sm"
-                    className="text-xs h-6 px-2 text-muted-foreground"
+                  />
+                )}
+              </div>
+              {(() => {
+                const perm = client.mcp_elicitation_permission || "ask"
+                const effective = clientMode === "mcp_via_llm" && perm === "allow" ? "ask" : perm
+                return effective === "ask"
+              })() && (
+                <div className="flex items-center justify-between pb-1">
+                  <div>
+                    <span className="text-sm font-medium">Approval Popup Preview</span>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Preview the popup shown when elicitation permission is set to &ldquo;Ask&rdquo;
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={async () => {
                       try {
                         await invoke("debug_trigger_elicitation_form_popup")
@@ -338,34 +378,10 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
                       }
                     }}
                   >
-                    Test
+                    <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
+                    Sample Popup
                   </Button>
-                ) : null}
-              </div>
-              {clientMode === "mcp_via_llm" ? (
-                // MCP via LLM: only Ask/Off (no client to passthrough to)
-                <div className="inline-flex rounded-md border border-border bg-muted/50">
-                  {(["ask", "off"] as PermissionState[]).map((state) => (
-                    <button
-                      key={state}
-                      type="button"
-                      onClick={() => handleElicitationPermissionChange(state)}
-                      className={`px-2 py-0.5 text-xs font-medium transition-colors ${
-                        (client.mcp_elicitation_permission === "allow" ? "ask" : (client.mcp_elicitation_permission || "ask")) === state
-                          ? state === "ask" ? "bg-amber-500 text-white" : "bg-zinc-500 text-white"
-                          : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                      } ${state === "ask" ? "rounded-l-md" : "rounded-r-md"}`}
-                    >
-                      {state === "ask" ? "Ask" : "Off"}
-                    </button>
-                  ))}
                 </div>
-              ) : (
-                <PermissionStateButton
-                  value={client.mcp_elicitation_permission || "ask"}
-                  onChange={handleElicitationPermissionChange}
-                  size="sm"
-                />
               )}
             </div>
           </CardContent>
