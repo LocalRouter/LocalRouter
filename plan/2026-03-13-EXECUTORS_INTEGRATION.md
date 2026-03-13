@@ -408,3 +408,43 @@ Followed by: config migration, frontend updates, demo mocks, tests
 8. Manual test: elicitation forwarded in Elicitation mode
 9. Manual test: tool prefix change updates tool names
 10. Verify: large status output gets indexed via gateway compression
+
+---
+
+## Results
+
+### Implementation status (2026-03-13)
+
+| Phase | Status | Commits |
+|-------|--------|---------|
+| Phase 0: Executors dependency | Done | `e9e34b0` |
+| Phase 1: spawn/spawn_follow_up via executors | Done | `e9e34b0` |
+| Phase 2: Configurable tool prefix | Done | `e9e34b0` |
+| Phase 3: Approval modes (backend) | Done | `0c5c789` |
+| Phase 3: Approval modes (frontend popup) | Deferred | Backend wired, React component TBD |
+| Phase 4: Output indexing (deferrable_tools) | Done | `e9e34b0` |
+| Phase 5: Merge say+interrupt (4 tools) | Done | `e9e34b0` |
+
+### Automated verification
+
+- `cargo test` — 780+ tests pass, 0 failures (1 pre-existing failure in lr-context from unrelated changes)
+- `cargo clippy` — 0 warnings
+- `npx tsc --noEmit` — 0 TypeScript errors
+
+### Binary size impact
+
+| Build | Size | |
+|-------|------|---|
+| Pre-executors (`30bac68`) | 21.4 MB | baseline |
+| With executors (`0c5c789`) | 25.5 MB | current |
+| **Delta** | **+4.1 MB** | **+19.3%** |
+
+The +4.1 MB increase comes from the executors crate's transitive dependencies: `codex-protocol`, `codex-core`, `codex-app-server-protocol` (OpenAI git deps), `agent-client-protocol`, `sqlx`, a second `reqwest` version, `schemars`, `ts-rs`, `bon`, `derivative`, `strum`, `os_pipe`, `git2` (via `git` crate), and others.
+
+### What's deferred
+
+**Frontend approval popup** (Phase 3 UI): The backend infrastructure is fully wired — `CodingAgentApprovalManager` broadcasts `"coding_agent/approvalRequired"` notifications, `AskPopupApprovalService` implements `ExecutorApprovalService`, and the `submit_coding_agent_approval` Tauri command is registered. What remains is:
+- New React popup component with dynamic fields for tool approvals and questions
+- Tauri popup window registration in `main.rs` notification listener
+- Debug menu sample button in the coding agents debug section
+- Approval mode selector in the coding agents config UI with Allow warning
