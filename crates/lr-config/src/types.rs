@@ -1444,6 +1444,10 @@ pub struct ContextManagementConfig {
     #[serde(default)]
     pub gateway_indexing: GatewayIndexingPermissions,
 
+    /// Built-in virtual MCP server indexing permissions
+    #[serde(default)]
+    pub virtual_indexing: GatewayIndexingPermissions,
+
     /// Default On/Off for client tool indexing (all clients)
     #[serde(default)]
     pub client_tools_indexing_default: IndexingState,
@@ -1468,7 +1472,9 @@ pub struct ContextManagementOverrides {
 impl ContextManagementConfig {
     /// Context management is implicitly enabled when any indexing is configured.
     pub fn is_enabled(&self) -> bool {
-        self.gateway_indexing.has_any_enabled() || self.client_tools_indexing_default.is_enabled()
+        self.gateway_indexing.has_any_enabled()
+            || self.virtual_indexing.has_any_enabled()
+            || self.client_tools_indexing_default.is_enabled()
     }
 }
 
@@ -1479,6 +1485,7 @@ impl Default for ContextManagementConfig {
             catalog_threshold_bytes: default_catalog_threshold_bytes(),
             response_threshold_bytes: default_response_threshold_bytes(),
             gateway_indexing: GatewayIndexingPermissions::default(),
+            virtual_indexing: GatewayIndexingPermissions::default(),
             client_tools_indexing_default: IndexingState::default(),
             search_tool_name: default_search_tool_name(),
             read_tool_name: default_read_tool_name(),
@@ -3533,6 +3540,10 @@ mod tests {
                 global: IndexingState::Disable,
                 ..Default::default()
             },
+            virtual_indexing: GatewayIndexingPermissions {
+                global: IndexingState::Disable,
+                ..Default::default()
+            },
             client_tools_indexing_default: IndexingState::Disable,
             ..Default::default()
         };
@@ -3549,6 +3560,10 @@ mod tests {
         // Client explicitly enables even when global indexing is off
         let disabled_config = ContextManagementConfig {
             gateway_indexing: GatewayIndexingPermissions {
+                global: IndexingState::Disable,
+                ..Default::default()
+            },
+            virtual_indexing: GatewayIndexingPermissions {
                 global: IndexingState::Disable,
                 ..Default::default()
             },
@@ -3584,6 +3599,10 @@ mod tests {
                 global: IndexingState::Disable,
                 ..Default::default()
             },
+            virtual_indexing: GatewayIndexingPermissions {
+                global: IndexingState::Disable,
+                ..Default::default()
+            },
             client_tools_indexing_default: IndexingState::Disable,
             ..Default::default()
         };
@@ -3592,6 +3611,10 @@ mod tests {
         // Only client tools indexing enabled
         let client_only = ContextManagementConfig {
             gateway_indexing: GatewayIndexingPermissions {
+                global: IndexingState::Disable,
+                ..Default::default()
+            },
+            virtual_indexing: GatewayIndexingPermissions {
                 global: IndexingState::Disable,
                 ..Default::default()
             },

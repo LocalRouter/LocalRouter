@@ -16,6 +16,14 @@ const TOOL_PREFIX: &str = "coding_agent_";
 /// All valid tool suffixes
 const TOOL_SUFFIXES: &[&str] = &["start", "say", "status", "respond", "interrupt", "list"];
 
+/// Return all coding agent tool names.
+pub fn all_tool_names() -> Vec<String> {
+    TOOL_SUFFIXES
+        .iter()
+        .map(|s| format!("{}{}", TOOL_PREFIX, s))
+        .collect()
+}
+
 /// Check if a tool name belongs to the coding agent system
 pub fn is_coding_agent_tool(tool_name: &str) -> bool {
     if let Some(suffix) = tool_name.strip_prefix(TOOL_PREFIX) {

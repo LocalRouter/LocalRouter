@@ -65,6 +65,11 @@ pub trait VirtualMcpServer: Send + Sync {
     /// Update existing session state when client config changes (called on each request).
     fn update_session_state(&self, state: &mut dyn VirtualSessionState, client: &lr_config::Client);
 
+    /// All tool names this virtual server can provide (regardless of session state).
+    ///
+    /// Used by the UI to enumerate tools for indexing permission controls.
+    fn all_tool_names(&self) -> Vec<String>;
+
     /// Tool names eligible for catalog compression deferral.
     ///
     /// By default returns an empty list, meaning **none** of this server's tools

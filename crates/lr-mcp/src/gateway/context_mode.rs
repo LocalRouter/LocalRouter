@@ -413,6 +413,11 @@ impl VirtualMcpServer for ContextModeVirtualServer {
         state.client_tools_indexing = client.client_tools_indexing.clone();
     }
 
+    fn all_tool_names(&self) -> Vec<String> {
+        let config = self.config.read().unwrap();
+        vec![config.search_tool_name.clone(), config.read_tool_name.clone()]
+    }
+
     fn is_tool_indexable(&self, _tool_name: &str) -> bool {
         // Search/read tools are the indexing system itself — never index their responses
         false
@@ -1012,6 +1017,10 @@ mod tests {
                 global: lr_config::IndexingState::Disable,
                 ..Default::default()
             },
+            virtual_indexing: lr_config::GatewayIndexingPermissions {
+                global: lr_config::IndexingState::Disable,
+                ..Default::default()
+            },
             client_tools_indexing_default: lr_config::IndexingState::Disable,
             ..Default::default()
         };
@@ -1435,6 +1444,10 @@ mod tests {
     async fn test_handle_tool_call_disabled_returns_error() {
         let config = lr_config::ContextManagementConfig {
             gateway_indexing: lr_config::GatewayIndexingPermissions {
+                global: lr_config::IndexingState::Disable,
+                ..Default::default()
+            },
+            virtual_indexing: lr_config::GatewayIndexingPermissions {
                 global: lr_config::IndexingState::Disable,
                 ..Default::default()
             },

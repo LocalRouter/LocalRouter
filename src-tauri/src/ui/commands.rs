@@ -1760,6 +1760,104 @@ pub async fn set_gateway_indexing_permission(
     Ok(())
 }
 
+/// Virtual MCP server indexing info for UI display.
+#[derive(Serialize)]
+pub struct VirtualMcpIndexingInfo {
+    pub id: String,
+    pub display_name: String,
+    pub tools: Vec<VirtualMcpToolIndexingInfo>,
+}
+
+/// Single virtual MCP tool indexing info.
+#[derive(Serialize)]
+pub struct VirtualMcpToolIndexingInfo {
+    pub name: String,
+    pub indexable: bool,
+}
+
+/// List virtual MCP server indexing info for the UI.
+#[tauri::command]
+pub async fn list_virtual_mcp_indexing_info(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Vec<VirtualMcpIndexingInfo>, String> {
+    let infos = state.mcp_gateway.list_virtual_server_indexing_info();
+    Ok(infos
+        .into_iter()
+        .map(|info| VirtualMcpIndexingInfo {
+            id: info.id,
+            display_name: info.display_name,
+            tools: info
+                .tools
+                .into_iter()
+                .map(|t| VirtualMcpToolIndexingInfo {
+                    name: t.name,
+                    indexable: t.indexable,
+                })
+                .collect(),
+        })
+        .collect())
+}
+
+/// Set a virtual MCP indexing permission at global, server, or tool level.
+#[tauri::command]
+pub async fn set_virtual_indexing_permission(
+    level: String,
+    key: Option<String>,
+    state: String,
+    config_manager: State<'_, ConfigManager>,
+    context_mode_vs: State<'_, Arc<lr_mcp::gateway::context_mode::ContextModeVirtualServer>>,
+    mcp_via_llm_manager: State<'_, Arc<lr_mcp_via_llm::McpViaLlmManager>>,
+) -> Result<(), String> {
+    let indexing_state = match state.as_str() {
+        "disable" => lr_config::IndexingState::Disable,
+        _ => lr_config::IndexingState::Enable,
+    };
+
+    config_manager
+        .update(|cfg| {
+            match level.as_str() {
+                "global" => {
+                    cfg.context_management.virtual_indexing.global = indexing_state.clone();
+                }
+                "server" => {
+                    if let Some(ref k) = key {
+                        cfg.context_management
+                            .virtual_indexing
+                            .servers
+                            .insert(k.clone(), indexing_state.clone());
+                    }
+                }
+                "tool" => {
+                    if let Some(ref k) = key {
+                        cfg.context_management
+                            .virtual_indexing
+                            .tools
+                            .insert(k.clone(), indexing_state.clone());
+                    }
+                }
+                "server_clear" => {
+                    if let Some(ref k) = key {
+                        cfg.context_management.virtual_indexing.servers.remove(k);
+                    }
+                }
+                "tool_clear" => {
+                    if let Some(ref k) = key {
+                        cfg.context_management.virtual_indexing.tools.remove(k);
+                    }
+                }
+                _ => {}
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    let new_config = config_manager.get().context_management.clone();
+    context_mode_vs.update_config(new_config.clone());
+    mcp_via_llm_manager.update_context_management_config(new_config);
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Get known client tools for a given template ID.
 #[tauri::command]
 pub async fn get_known_client_tools(
@@ -1791,6 +1889,7 @@ pub struct CatalogCompressionPreview {
     pub compressed_size: usize,
     pub welcome_size: usize,
     pub tool_definitions_size: usize,
+    pub compressed_tool_definitions_size: usize,
     pub indexed_welcomes_count: usize,
     pub deferred_servers_count: usize,
     pub welcome_toc_dropped_count: usize,
@@ -1911,6 +2010,24 @@ pub async fn preview_catalog_compression(
         &resource_catalog,
         &prompt_catalog,
     );
+
+    // When no real catalog is available (servers not running), generate estimated sizes
+    // from tool/resource/prompt names so Phase 2 can still defer servers.
+    if ctx.item_definition_sizes.is_empty() {
+        for server in &ctx.servers {
+            for name in server
+                .tool_names
+                .iter()
+                .chain(server.resource_names.iter())
+                .chain(server.prompt_names.iter())
+            {
+                // Estimate ~200 bytes per item (name + minimal schema)
+                ctx.item_definition_sizes
+                    .entry(name.clone())
+                    .or_insert(200);
+            }
+        }
+    }
 
     // Calculate size breakdown
     let welcome_size: usize = ctx
@@ -2033,6 +2150,10 @@ pub async fn preview_catalog_compression(
         });
     }
 
+    // Compute compressed tool definitions size (subtract savings from deferred servers)
+    let deferred_savings: usize = plan.deferred_servers.iter().map(|d| d.definition_savings).sum();
+    let compressed_tool_definitions_size = tool_definitions_size.saturating_sub(deferred_savings);
+
     // Set plan and build compressed version
     ctx.catalog_compression = Some(plan);
     let compressed = build_gateway_instructions(&ctx).unwrap_or_default();
@@ -2045,6 +2166,7 @@ pub async fn preview_catalog_compression(
         compressed_size,
         welcome_size,
         tool_definitions_size,
+        compressed_tool_definitions_size,
         indexed_welcomes_count,
         deferred_servers_count,
         welcome_toc_dropped_count,
@@ -2108,6 +2230,115 @@ pub async fn query_session_context_index(
         .await
 }
 
+// ─────────────────────────────────────────────────────────
+// Response RAG Preview
+// ─────────────────────────────────────────────────────────
+
+fn rag_preview_store() -> &'static parking_lot::Mutex<Option<lr_context::ContentStore>> {
+    static STORE: std::sync::OnceLock<parking_lot::Mutex<Option<lr_context::ContentStore>>> =
+        std::sync::OnceLock::new();
+    STORE.get_or_init(|| parking_lot::Mutex::new(None))
+}
+
+/// Truncate a string to at most `max_bytes` at a char boundary.
+fn rag_truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+#[derive(Serialize)]
+pub struct RagPreviewIndexResult {
+    pub compressed_preview: String,
+    pub index_result: lr_context::IndexResult,
+    pub sources: Vec<lr_context::SourceInfo>,
+}
+
+/// Index content into a temporary preview store and return the compressed preview.
+#[tauri::command]
+pub async fn preview_rag_index(
+    content: String,
+    label: String,
+    response_threshold_bytes: usize,
+) -> Result<RagPreviewIndexResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let store = lr_context::ContentStore::new().map_err(|e| e.to_string())?;
+        let index_result = store.index(&label, &content).map_err(|e| e.to_string())?;
+
+        let byte_size = content.len();
+        let preview_bytes = (response_threshold_bytes / 8).clamp(200, 500);
+        let preview = rag_truncate_to_char_boundary(&content, preview_bytes);
+        let compressed_preview = format!(
+            "[Response compressed — {} bytes indexed as {}]\n\n{}\n\n\
+             Full output indexed. Use IndexSearch(queries=[\"your search terms\"], source=\"{}\") to retrieve specific sections.",
+            byte_size, label, preview, label
+        );
+
+        let sources = store.list_sources().map_err(|e| e.to_string())?;
+        *rag_preview_store().lock() = Some(store);
+
+        Ok(RagPreviewIndexResult {
+            compressed_preview,
+            index_result,
+            sources,
+        })
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("Task panicked: {}", e)))
+}
+
+/// Search the preview RAG store.
+#[tauri::command]
+pub async fn preview_rag_search(
+    query: Option<String>,
+    queries: Option<Vec<String>>,
+    limit: Option<usize>,
+    source: Option<String>,
+) -> Result<Vec<lr_context::SearchResult>, String> {
+    tokio::task::spawn_blocking(move || {
+        let guard = rag_preview_store().lock();
+        let store = guard
+            .as_ref()
+            .ok_or("No content indexed yet. Index a document first.")?;
+        let limit = limit.unwrap_or(5);
+        store
+            .search_combined(
+                query.as_deref(),
+                queries.as_deref(),
+                limit,
+                source.as_deref(),
+            )
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("Task panicked: {}", e)))
+}
+
+/// Read from the preview RAG store.
+#[tauri::command]
+pub async fn preview_rag_read(
+    label: String,
+    offset: Option<String>,
+    limit: Option<usize>,
+) -> Result<lr_context::ReadResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let guard = rag_preview_store().lock();
+        let store = guard
+            .as_ref()
+            .ok_or("No content indexed yet. Index a document first.")?;
+        store
+            .read(&label, offset.as_deref(), limit)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("Task panicked: {}", e)))
+}
+
 /// Get skills configuration
 #[tauri::command]
 pub async fn get_skills_config(
@@ -2142,6 +2373,144 @@ pub async fn add_skill_source(
     if let Some(watcher) = app.try_state::<Arc<lr_skills::SkillWatcher>>() {
         watcher.inner().add_path(path);
     }
+
+    if let Err(e) = app.emit("skills-changed", ()) {
+        tracing::error!("Failed to emit skills-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Create a new skill by writing a SKILL.md file to the user skills directory
+///
+/// Creates `{config_dir}/skills/{name}/SKILL.md` with the provided frontmatter and body,
+/// then adds the skills directory as a source path if not already present and rescans.
+#[tauri::command]
+pub async fn create_skill(
+    name: String,
+    description: Option<String>,
+    content: String,
+    config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Skill name is required".to_string());
+    }
+
+    // Sanitize name for directory: lowercase, replace spaces/special chars with hyphens
+    let dir_name = name
+        .trim()
+        .to_lowercase()
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
+        .trim_matches('-')
+        .to_string();
+
+    if dir_name.is_empty() {
+        return Err("Invalid skill name".to_string());
+    }
+
+    // Build SKILL.md content with YAML frontmatter
+    let mut skill_md = String::from("---\n");
+    skill_md.push_str(&format!("name: \"{}\"\n", name.trim()));
+    if let Some(ref desc) = description {
+        if !desc.trim().is_empty() {
+            skill_md.push_str(&format!("description: \"{}\"\n", desc.trim()));
+        }
+    }
+    skill_md.push_str("---\n\n");
+    skill_md.push_str(&content);
+
+    // Determine config dir and create skills subdirectory
+    let config_dir =
+        lr_utils::paths::config_dir().map_err(|e| format!("Failed to get config dir: {}", e))?;
+    let skills_dir = config_dir.join("skills");
+    let skill_dir = skills_dir.join(&dir_name);
+
+    if skill_dir.exists() {
+        return Err(format!("A skill directory '{}' already exists", dir_name));
+    }
+
+    std::fs::create_dir_all(&skill_dir)
+        .map_err(|e| format!("Failed to create skill directory: {}", e))?;
+
+    std::fs::write(skill_dir.join("SKILL.md"), &skill_md)
+        .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
+
+    // Ensure the user skills directory is in skill source paths
+    let skills_dir_str = skills_dir
+        .to_str()
+        .ok_or_else(|| "Invalid skills directory path".to_string())?
+        .to_string();
+
+    config_manager
+        .update(|cfg| {
+            if !cfg.skills.paths.contains(&skills_dir_str) {
+                cfg.skills.paths.push(skills_dir_str.clone());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rescan to pick up the new skill
+    let config = config_manager.get();
+    skill_manager.rescan(&config.skills.paths, &config.skills.disabled_skills);
+
+    // Notify watcher if available
+    if let Some(watcher) = app.try_state::<Arc<lr_skills::SkillWatcher>>() {
+        watcher.inner().add_path(skills_dir_str);
+    }
+
+    if let Err(e) = app.emit("skills-changed", ()) {
+        tracing::error!("Failed to emit skills-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Check if a skill was created by the user (lives in {config_dir}/skills/)
+#[tauri::command]
+pub async fn is_user_created_skill(skill_path: String) -> Result<bool, String> {
+    let config_dir =
+        lr_utils::paths::config_dir().map_err(|e| format!("Failed to get config dir: {}", e))?;
+    let user_skills_dir = config_dir.join("skills");
+    let skill_path_buf = std::path::PathBuf::from(&skill_path);
+    Ok(skill_path_buf.starts_with(&user_skills_dir))
+}
+
+/// Delete a user-created skill from disk
+///
+/// Only allows deleting skills that live under {config_dir}/skills/.
+#[tauri::command]
+pub async fn delete_user_skill(
+    skill_name: String,
+    skill_path: String,
+    config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let config_dir =
+        lr_utils::paths::config_dir().map_err(|e| format!("Failed to get config dir: {}", e))?;
+    let user_skills_dir = config_dir.join("skills");
+    let skill_path_buf = std::path::PathBuf::from(&skill_path);
+
+    if !skill_path_buf.starts_with(&user_skills_dir) {
+        return Err(format!(
+            "Skill '{}' is not a user-created skill and cannot be deleted this way",
+            skill_name
+        ));
+    }
+
+    // Delete the skill directory
+    if skill_path_buf.exists() {
+        std::fs::remove_dir_all(&skill_path_buf)
+            .map_err(|e| format!("Failed to delete skill directory: {}", e))?;
+    }
+
+    // Trigger skill rescan
+    let config = config_manager.get();
+    skill_manager.rescan(&config.skills.paths, &config.skills.disabled_skills);
 
     if let Err(e) = app.emit("skills-changed", ()) {
         tracing::error!("Failed to emit skills-changed event: {}", e);

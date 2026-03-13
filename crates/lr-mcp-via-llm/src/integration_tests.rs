@@ -282,6 +282,10 @@ mod helpers {
         }
 
         fn update_session_state(&self, _state: &mut dyn VirtualSessionState, _client: &Client) {}
+
+        fn all_tool_names(&self) -> Vec<String> {
+            self.tools.iter().map(|t| t.name.clone()).collect()
+        }
     }
 
     // ── Test Environment ───────────────────────────────────────────────────

@@ -154,7 +154,7 @@ export function GatewayIndexingTree({ permissions, onUpdate }: GatewayIndexingTr
       onGlobalChange={handleGlobalChange}
       renderButton={(props) => <IndexingStateButton {...props} />}
       disabled={saving}
-      globalLabel="All Gateway Tools"
+      globalLabel="MCPs"
       emptyMessage="No MCP servers configured"
       loading={loading}
     />

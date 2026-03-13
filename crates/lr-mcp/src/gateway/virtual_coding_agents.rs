@@ -226,6 +226,10 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
         }
     }
 
+    fn all_tool_names(&self) -> Vec<String> {
+        lr_coding_agents::mcp_tools::all_tool_names()
+    }
+
     fn is_tool_indexable(&self, tool_name: &str) -> bool {
         match tool_name {
             "coding_agent_status" => true, // Status output useful

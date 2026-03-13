@@ -97,6 +97,25 @@ export interface GatewayIndexingPermissions {
 }
 
 /**
+ * Virtual MCP server indexing info for UI display.
+ * Rust: src-tauri/src/ui/commands.rs - VirtualMcpIndexingInfo struct
+ */
+export interface VirtualMcpIndexingInfo {
+  id: string
+  display_name: string
+  tools: VirtualMcpToolIndexingInfo[]
+}
+
+/**
+ * Single virtual MCP tool indexing info.
+ * Rust: src-tauri/src/ui/commands.rs - VirtualMcpToolIndexingInfo struct
+ */
+export interface VirtualMcpToolIndexingInfo {
+  name: string
+  indexable: boolean
+}
+
+/**
  * Client Tools indexing permissions — global default + per-tool overrides.
  * Rust: crates/lr-config/src/types.rs - ClientToolsIndexingPermissions struct
  */
@@ -117,6 +136,13 @@ export interface KnownToolEntry {
 
 /** Params for set_gateway_indexing_permission */
 export interface SetGatewayIndexingPermissionParams {
+  level: string
+  key?: string | null
+  state: string
+}
+
+/** Params for set_virtual_indexing_permission */
+export interface SetVirtualIndexingPermissionParams {
   level: string
   key?: string | null
   state: string
@@ -672,6 +698,7 @@ export interface ContextManagementConfig {
   catalog_threshold_bytes: number
   response_threshold_bytes: number
   gateway_indexing: GatewayIndexingPermissions
+  virtual_indexing: GatewayIndexingPermissions
   client_tools_indexing_default: IndexingState
   search_tool_name: string
   read_tool_name: string
@@ -695,6 +722,7 @@ export interface CatalogCompressionPreview {
   compressed_size: number
   welcome_size: number
   tool_definitions_size: number
+  compressed_tool_definitions_size: number
   indexed_welcomes_count: number
   deferred_servers_count: number
   welcome_toc_dropped_count: number
@@ -805,6 +833,100 @@ export interface ActiveSessionInfo {
   cm_activated_tools: number
   cm_total_tools: number
   cm_catalog_threshold_bytes: number
+}
+
+// =============================================================================
+// Response RAG Preview Types
+// Rust: src-tauri/src/ui/commands.rs, crates/lr-context/src/types.rs
+// =============================================================================
+
+/** Content type for search hits */
+export type RagContentType = 'prose' | 'code'
+
+/** Match layer for search hits */
+export type RagMatchLayer = 'porter' | 'trigram' | 'fuzzy'
+
+/** Rust: crates/lr-context/src/types.rs - ChunkToc */
+export interface RagChunkToc {
+  title: string
+  line_ref: string
+  depth: number
+}
+
+/** Rust: crates/lr-context/src/types.rs - IndexResult */
+export interface RagIndexResult {
+  source_id: number
+  label: string
+  total_chunks: number
+  code_chunks: number
+  total_lines: number
+  content_bytes: number
+  chunk_titles: RagChunkToc[]
+}
+
+/** Rust: crates/lr-context/src/types.rs - SearchHit */
+export interface RagSearchHit {
+  title: string
+  content: string
+  source: string
+  rank: number
+  content_type: RagContentType
+  match_layer: RagMatchLayer
+  line_start: number
+  line_end: number
+}
+
+/** Rust: crates/lr-context/src/types.rs - SearchResult */
+export interface RagSearchResult {
+  query: string
+  hits: RagSearchHit[]
+  corrected_query: string | null
+}
+
+/** Rust: crates/lr-context/src/types.rs - ReadResult */
+export interface RagReadResult {
+  label: string
+  content: string
+  total_lines: number
+  showing_start: string
+  showing_end: string
+}
+
+/** Rust: crates/lr-context/src/types.rs - SourceInfo */
+export interface RagSourceInfo {
+  label: string
+  total_lines: number
+  chunk_count: number
+  code_chunk_count: number
+}
+
+/** Rust: src-tauri/src/ui/commands.rs - RagPreviewIndexResult */
+export interface RagPreviewIndexResult {
+  compressed_preview: string
+  index_result: RagIndexResult
+  sources: RagSourceInfo[]
+}
+
+/** Params for preview_rag_index */
+export interface PreviewRagIndexParams {
+  content: string
+  label: string
+  responseThresholdBytes: number
+}
+
+/** Params for preview_rag_search */
+export interface PreviewRagSearchParams {
+  query?: string | null
+  queries?: string[] | null
+  limit?: number | null
+  source?: string | null
+}
+
+/** Params for preview_rag_read */
+export interface PreviewRagReadParams {
+  label: string
+  offset?: string | null
+  limit?: number | null
 }
 
 // =============================================================================
@@ -1899,6 +2021,24 @@ export interface AddSkillSourceParams {
 /** Params for remove_skill_source */
 export interface RemoveSkillSourceParams {
   path: string
+}
+
+/** Params for create_skill */
+export interface CreateSkillParams {
+  name: string
+  description: string | null
+  content: string
+}
+
+/** Params for is_user_created_skill */
+export interface IsUserCreatedSkillParams {
+  skillPath: string
+}
+
+/** Params for delete_user_skill */
+export interface DeleteUserSkillParams {
+  skillName: string
+  skillPath: string
 }
 
 /** Params for set_skill_enabled */

@@ -100,6 +100,21 @@ impl Clone for DynamicCacheTTL {
     }
 }
 
+/// Info about a virtual server's tools for the indexing UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct VirtualServerIndexingInfo {
+    pub id: String,
+    pub display_name: String,
+    pub tools: Vec<VirtualToolIndexingInfo>,
+}
+
+/// Info about a single virtual server tool for the indexing UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct VirtualToolIndexingInfo {
+    pub name: String,
+    pub indexable: bool,
+}
+
 /// Gateway configuration
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {

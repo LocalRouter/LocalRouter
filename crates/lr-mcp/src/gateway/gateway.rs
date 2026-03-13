@@ -131,6 +131,31 @@ impl McpGateway {
             .any(|vs| vs.id() == "_skills")
     }
 
+    /// List virtual server indexing info for UI display.
+    ///
+    /// Returns id, display_name, and tools with indexable flag for each virtual server.
+    pub fn list_virtual_server_indexing_info(&self) -> Vec<VirtualServerIndexingInfo> {
+        self.virtual_servers
+            .read()
+            .iter()
+            .map(|vs| {
+                let tool_names = vs.all_tool_names();
+                let tools: Vec<VirtualToolIndexingInfo> = tool_names
+                    .into_iter()
+                    .map(|name| {
+                        let indexable = vs.is_tool_indexable(&name);
+                        VirtualToolIndexingInfo { name, indexable }
+                    })
+                    .collect();
+                VirtualServerIndexingInfo {
+                    id: vs.id().to_string(),
+                    display_name: vs.display_name().to_string(),
+                    tools,
+                }
+            })
+            .collect()
+    }
+
     /// Collect instructions from all registered virtual servers.
     ///
     /// For each virtual server, populates `tool_names` from `list_tools()`.

@@ -229,6 +229,10 @@ impl VirtualMcpServer for SkillsVirtualServer {
         }
     }
 
+    fn all_tool_names(&self) -> Vec<String> {
+        vec![SKILL_META_TOOL_NAME.to_string()]
+    }
+
     fn is_tool_indexable(&self, tool_name: &str) -> bool {
         match tool_name {
             "skill_read" => true, // Skill content useful

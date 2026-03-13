@@ -951,10 +951,53 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       servers: {},
       tools: {},
     },
+    virtual_indexing: {
+      global: 'enable',
+      servers: {},
+      tools: {},
+    },
     client_tools_indexing_default: 'enable',
     search_tool_name: 'IndexSearch',
     read_tool_name: 'IndexRead',
   }),
+  'list_virtual_mcp_indexing_info': () => ([
+    {
+      id: '_context_mode',
+      display_name: 'Context Management',
+      tools: [
+        { name: 'IndexSearch', indexable: false },
+        { name: 'IndexRead', indexable: false },
+      ],
+    },
+    {
+      id: '_skills',
+      display_name: 'Skills',
+      tools: [
+        { name: 'skill_read', indexable: true },
+      ],
+    },
+    {
+      id: '_marketplace',
+      display_name: 'Marketplace',
+      tools: [
+        { name: 'marketplace__search', indexable: true },
+        { name: 'marketplace__install', indexable: false },
+      ],
+    },
+    {
+      id: '_coding_agents',
+      display_name: 'Coding Agents',
+      tools: [
+        { name: 'coding_agent_start', indexable: false },
+        { name: 'coding_agent_say', indexable: false },
+        { name: 'coding_agent_status', indexable: true },
+        { name: 'coding_agent_respond', indexable: false },
+        { name: 'coding_agent_interrupt', indexable: false },
+        { name: 'coding_agent_list', indexable: true },
+      ],
+    },
+  ]),
+  'set_virtual_indexing_permission': () => null,
   'list_active_sessions': () => ([
     {
       session_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
@@ -1031,8 +1074,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       compressed_size: compressedSize,
       welcome_size: 3200,
       tool_definitions_size: 5220,
+      compressed_tool_definitions_size: isLowThreshold ? 2100 : isMidThreshold ? 3800 : 5220,
       indexed_welcomes_count: isMidThreshold ? 3 : isLowThreshold ? 4 : 0,
-      deferred_servers_count: isLowThreshold ? 1 : 0,
+      deferred_servers_count: isLowThreshold ? 2 : isMidThreshold ? 1 : 0,
       welcome_toc_dropped_count: 0,
       batch_toc_dropped_count: 0,
       servers: [
@@ -1172,6 +1216,59 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       text: `🔍 Search results for "${args?.query || 'query'}"\n━━━━━━━━━━━━━━━━━━━━━\n\n--- [catalog:filesystem__read_file] ---\nRead file content from the filesystem. Supports text and binary files.\nParams: path (string, required) - The file path to read\n\n--- [catalog:filesystem__write_file] ---\nWrite content to a file. Creates parent directories if needed.\nParams: path (string), content (string)\n\n--- [catalog:github__search_code] ---\nSearch for code across GitHub repositories.\nParams: query (string), repo (string, optional)\n\nFound 3 results (1.4ms)`,
     }],
   }),
+  'preview_rag_index': (args) => {
+    const content = args?.content ?? ''
+    const label = args?.label ?? 'tool-response:1'
+    const threshold = args?.responseThresholdBytes ?? 200
+    const previewBytes = Math.max(200, Math.min(500, Math.floor(threshold / 8)))
+    const preview = content.substring(0, previewBytes)
+    return {
+      compressed_preview: `[Response compressed — ${content.length} bytes indexed as ${label}]\n\n${preview}\n\nFull output indexed. Use IndexSearch(queries=["your search terms"], source="${label}") to retrieve specific sections.`,
+      index_result: {
+        source_id: 1,
+        label,
+        total_chunks: 8,
+        code_chunks: 3,
+        total_lines: content.split('\n').length,
+        content_bytes: content.length,
+        chunk_titles: [
+          { title: 'API Reference - Authentication Service', line_ref: '1', depth: 0 },
+          { title: 'API Reference > Overview', line_ref: '3', depth: 1 },
+          { title: 'API Reference > Endpoints', line_ref: '8', depth: 1 },
+          { title: 'API Reference > Endpoints > POST /auth/login', line_ref: '10', depth: 2 },
+          { title: 'API Reference > Endpoints > POST /auth/refresh', line_ref: '32', depth: 2 },
+          { title: 'API Reference > Configuration', line_ref: '40', depth: 1 },
+          { title: 'API Reference > Error Codes', line_ref: '55', depth: 1 },
+          { title: 'API Reference > SDK Usage', line_ref: '68', depth: 1 },
+        ],
+      },
+      sources: [{ label, total_lines: content.split('\n').length, chunk_count: 8, code_chunk_count: 3 }],
+    }
+  },
+  'preview_rag_search': (args) => {
+    const query = args?.query ?? args?.queries?.[0] ?? 'login'
+    return [{
+      query,
+      hits: [{
+        title: 'API Reference > Endpoints > POST /auth/login',
+        content: '  10\t### POST /auth/login\n  11\t\n  12\tAuthenticates a user and returns an access token.\n  13\t\n  14\t**Request body:**',
+        source: args?.source ?? 'tool-response:1',
+        rank: -1.5,
+        content_type: 'prose',
+        match_layer: 'porter',
+        line_start: 10,
+        line_end: 30,
+      }],
+      corrected_query: null,
+    }]
+  },
+  'preview_rag_read': (args) => ({
+    label: args?.label ?? 'tool-response:1',
+    content: '   1\t# API Reference - Authentication Service\n   2\t\n   3\t## Overview\n   4\t\n   5\tThe Authentication Service provides OAuth 2.0 and API key based\n   6\tauthentication for all microservices.\n   7\t\n   8\t## Endpoints\n   9\t\n  10\t### POST /auth/login\n  11\t\n  12\tAuthenticates a user and returns an access token.',
+    total_lines: 85,
+    showing_start: args?.offset ?? '1',
+    showing_end: '50',
+  }),
   'get_skills_config': () => ({
     paths: ["~/.localrouter/skills"],
     disabled_skills: ["test-generator"],
@@ -1192,6 +1289,15 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'remove_skill_source': () => {
     toast.success('Skill source removed (demo)')
+    return null
+  },
+  'create_skill': (args) => {
+    toast.success(`Skill "${args?.name}" created (demo)`)
+    return null
+  },
+  'is_user_created_skill': () => false,
+  'delete_user_skill': (args) => {
+    toast.success(`Skill "${args?.skillName}" deleted (demo)`)
     return null
   },
   'add_skills_path': () => {
