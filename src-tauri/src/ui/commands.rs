@@ -1952,8 +1952,11 @@ pub async fn preview_catalog_compression(
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<CatalogCompressionPreview, String> {
     use lr_mcp::gateway::{
-        build_gateway_instructions, build_preview_mock_realistic, compute_catalog_compression_plan,
+        build_gateway_instructions, build_preview_mock_realistic,
+        build_preview_mock_tool_catalog, compute_catalog_compression_plan,
     };
+
+    let is_mock = matches!(source.as_deref(), None | Some("mock"));
 
     // Resolve the InstructionsContext based on source
     let mut ctx = match source.as_deref() {
@@ -1996,8 +1999,19 @@ pub async fn preview_catalog_compression(
 
     // Fetch tool catalog for detailed tool info (descriptions, schemas).
     // Always try — if servers are running we get real data even for mock source.
-    let (tool_catalog, resource_catalog, prompt_catalog) =
+    let (mut tool_catalog, resource_catalog, prompt_catalog) =
         state.mcp_gateway.fetch_preview_catalogs().await;
+
+    // For mock source, supplement with the mock tool catalog so all tools
+    // have verbose descriptions and inputSchemas even without running servers.
+    if is_mock {
+        let mock_catalog = build_preview_mock_tool_catalog();
+        for mock_tool in mock_catalog {
+            if !tool_catalog.iter().any(|t| t.name == mock_tool.name) {
+                tool_catalog.push(mock_tool);
+            }
+        }
+    }
 
     // Build uncompressed version (no plan)
     ctx.catalog_compression = None;
@@ -2064,6 +2078,22 @@ pub async fn preview_catalog_compression(
 
     // Virtual servers (always visible — never compressed)
     for vsi in &ctx.virtual_instructions {
+        // Build tool details from catalog, falling back to humanized name
+        let tools: Vec<PreviewToolDetail> = vsi
+            .tool_names
+            .iter()
+            .map(|name| {
+                let catalog_tool = tool_catalog.iter().find(|t| &t.name == name);
+                PreviewToolDetail {
+                    name: name.clone(),
+                    description: catalog_tool
+                        .and_then(|t| t.description.clone())
+                        .or_else(|| Some(humanize_tool_name(name))),
+                    input_schema: catalog_tool.map(|t| t.input_schema.clone()),
+                }
+            })
+            .collect();
+
         servers.push(PreviewServerEntry {
             name: vsi.section_title.clone(),
             is_virtual: true,
@@ -2073,7 +2103,7 @@ pub async fn preview_catalog_compression(
             description: Some(vsi.content.clone()),
             instructions: None,
             compression_state: "visible".to_string(),
-            tools: Vec::new(),
+            tools,
             resources: Vec::new(),
             prompts: Vec::new(),
         });
@@ -2906,9 +2936,9 @@ pub async fn debug_trigger_firewall_popup(
                 true,
             ),
             DebugFirewallType::CodingAgent => (
-                "coding_agent_start".to_string(),
+                "AgentStart".to_string(),
                 "coding-agents".to_string(),
-                r#"{"task": "Refactor the authentication module", "working_directory": "/home/user/project"}"#.to_string(),
+                r#"{"prompt": "Refactor the authentication module", "workingDirectory": "/home/user/project"}"#.to_string(),
                 false,
                 false,
             ),

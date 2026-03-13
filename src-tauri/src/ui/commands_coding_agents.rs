@@ -1,7 +1,7 @@
 //! Tauri commands for AI coding agents management.
 
 use lr_coding_agents::manager::CodingAgentManager;
-use lr_config::{CodingAgentType, CodingPermissionMode, ConfigManager, PermissionState};
+use lr_config::{CodingAgentApprovalMode, CodingAgentType, CodingPermissionMode, ConfigManager, PermissionState};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Emitter, State};
@@ -268,4 +268,87 @@ pub async fn set_client_coding_agent_type(
     }
 
     Ok(())
+}
+
+/// Get the current coding agent approval mode
+#[tauri::command]
+pub async fn get_coding_agent_approval_mode(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<CodingAgentApprovalMode, String> {
+    Ok(config_manager.get().coding_agents.approval_mode)
+}
+
+/// Set the coding agent approval mode
+#[tauri::command]
+pub async fn set_coding_agent_approval_mode(
+    mode: CodingAgentApprovalMode,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            cfg.coding_agents.approval_mode = mode;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Get the current coding agent tool prefix
+#[tauri::command]
+pub async fn get_coding_agent_tool_prefix(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<String, String> {
+    Ok(config_manager.get().coding_agents.tool_prefix.clone())
+}
+
+/// Set the coding agent tool prefix
+#[tauri::command]
+pub async fn set_coding_agent_tool_prefix(
+    prefix: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    if prefix.is_empty() {
+        return Err("Tool prefix cannot be empty".to_string());
+    }
+    config_manager
+        .update(|cfg| {
+            cfg.coding_agents.tool_prefix = prefix;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Submit a response to a coding agent approval request
+#[tauri::command]
+pub async fn submit_coding_agent_approval(
+    request_id: String,
+    action: String,
+    answers: Option<Vec<String>>,
+    reason: Option<String>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    use lr_mcp::gateway::coding_agent_approval::{
+        CodingAgentApprovalAction, CodingAgentApprovalResponse,
+    };
+
+    let approval_action = match action.as_str() {
+        "allow" => CodingAgentApprovalAction::Allow,
+        "deny" => CodingAgentApprovalAction::Deny,
+        _ => return Err(format!("Invalid action: {}", action)),
+    };
+
+    let response = CodingAgentApprovalResponse {
+        action: approval_action,
+        answers: answers.unwrap_or_default(),
+        reason,
+    };
+
+    state
+        .mcp_gateway
+        .coding_agent_approval_manager
+        .submit_response(&request_id, response)
+        .map_err(|e| e.to_string())
 }

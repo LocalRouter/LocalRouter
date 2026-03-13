@@ -4,6 +4,7 @@
 //! into a single interface with namespace-based routing and deferred loading.
 
 pub mod access_control;
+pub mod coding_agent_approval;
 pub mod context_mode;
 pub mod elicitation;
 pub mod firewall;
@@ -32,6 +33,7 @@ pub use gateway::{ActiveSessionInfo, CatalogSourceEntry, McpGateway};
 pub use gateway_tools::FirewallDecisionResult;
 pub use merger::{
     build_gateway_instructions, build_preview_instructions_context, build_preview_mock_realistic,
+    build_preview_mock_tool_catalog,
     compress_tool_definition, compute_catalog_compression_plan, compute_item_definition_sizes,
     format_prompt_as_markdown, format_resource_as_markdown, format_tool_as_markdown,
     InstructionsContext,

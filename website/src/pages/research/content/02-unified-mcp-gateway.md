@@ -109,7 +109,7 @@ The tools exposed by the context management system are:
 
 The gateway supports **virtual servers** — server implementations that don't correspond to external MCP processes but are injected into the unified namespace as first-class participants. They implement the same `VirtualMcpServer` trait as real servers, meaning clients cannot distinguish them from external MCP servers.
 
-**Coding Agents** (`_coding_agents`): Exposes six tools for managing AI coding agent sessions (start, send messages, check status, respond to questions, interrupt, list). Delegates execution to a `CodingAgentManager` that supports Claude Code and other agents. Only `coding_agent_start` requires firewall approval.
+**Coding Agents** (`_coding_agents`): Exposes four tools for managing AI coding agent sessions (start, say/interrupt, status, list). Uses BloopAI/vibe-kanban's executors crate for robust process management with Claude Code SDK control protocol support. Only the start tool requires firewall approval. Tool prefix is configurable (default: `Agent`).
 
 **Skills** (`_skills`): Exposes available script-based workflows as callable MCP tools. Each skill provides metadata via `skill_get_info` and can execute multi-step workflows that compose multiple tool calls.
 

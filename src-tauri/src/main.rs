@@ -1926,6 +1926,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_coding_agents::set_client_coding_agent_type,
             ui::commands_coding_agents::get_coding_agent_tool_definitions,
             ui::commands_coding_agents::get_context_mode_tool_definitions,
+            ui::commands_coding_agents::get_coding_agent_approval_mode,
+            ui::commands_coding_agents::set_coding_agent_approval_mode,
+            ui::commands_coding_agents::get_coding_agent_tool_prefix,
+            ui::commands_coding_agents::set_coding_agent_tool_prefix,
+            ui::commands_coding_agents::submit_coding_agent_approval,
             // Clipboard commands
             ui::commands::copy_image_to_clipboard,
             ui::commands::copy_text_to_clipboard,
