@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { Download, FolderOpen, Cpu, Trash2, Loader2 } from "lucide-react"
+import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -160,7 +161,7 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
       <div className="flex-shrink-0 pb-4">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Cpu className="h-6 w-6" />
+            <Cpu className={`h-6 w-6 ${OPTIMIZE_COLORS.routing}`} />
             Strong/Weak
           </h1>
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>

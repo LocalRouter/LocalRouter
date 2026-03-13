@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { Shield } from "lucide-react"
+import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -233,7 +234,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
       <div className="flex flex-col h-full min-h-0 max-w-5xl">
         <div className="flex-shrink-0 pb-4">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Shield className="h-6 w-6 text-red-500" />
+            <Shield className={`h-6 w-6 ${OPTIMIZE_COLORS.guardrails}`} />
             GuardRails
           </h1>
           <p className="text-sm text-muted-foreground">Loading...</p>
@@ -247,7 +248,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
       <div className="flex-shrink-0 pb-4">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Shield className="h-6 w-6 text-red-500" />
+            <Shield className={`h-6 w-6 ${OPTIMIZE_COLORS.guardrails}`} />
             GuardRails
           </h1>
         </div>

@@ -10,6 +10,8 @@ import { GatewayIndexingTree } from "@/components/permissions/GatewayIndexingTre
 import { IndexingStateButton } from "@/components/permissions/IndexingStateButton"
 import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, RouteLLMStatus, RouteLLMState, ContextManagementConfig, IndexingState } from "@/types/tauri-commands"
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
+import { OptimizeDiagram } from "./OptimizeDiagram"
+import { OPTIMIZE_COLORS } from "./constants"
 
 interface OptimizeOverviewProps {
   activeSubTab?: string | null
@@ -164,11 +166,14 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
       </div>
 
       <div className="space-y-4 max-w-2xl overflow-y-auto flex-1 min-h-0">
+        {/* Architecture Diagram */}
+        <OptimizeDiagram />
+
         {/* GuardRails Section */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
-              <Shield className="h-4 w-4 text-muted-foreground" />
+              <Shield className={`h-4 w-4 ${OPTIMIZE_COLORS.guardrails}`} />
               <CardTitle className="text-base">GuardRails</CardTitle>
             </div>
             <CardDescription>
@@ -189,7 +194,7 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Wrench className="h-4 w-4 text-muted-foreground" />
+                <Wrench className={`h-4 w-4 ${OPTIMIZE_COLORS.jsonRepair}`} />
                 <CardTitle className="text-base">Default: Enable JSON Repair</CardTitle>
               </div>
               {jsonRepairConfig && (
@@ -218,7 +223,7 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Minimize2 className="h-4 w-4 text-muted-foreground" />
+                <Minimize2 className={`h-4 w-4 ${OPTIMIZE_COLORS.compression}`} />
                 <CardTitle className="text-base">Default: Enable Prompt Compression</CardTitle>
               </div>
               {compressionConfig && (
@@ -268,7 +273,7 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
-              <Cpu className="h-4 w-4 text-muted-foreground" />
+              <Cpu className={`h-4 w-4 ${OPTIMIZE_COLORS.routing}`} />
               <CardTitle className="text-base">Strong/Weak Routing</CardTitle>
               <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400 text-[10px]">EXPERIMENTAL</Badge>
             </div>
@@ -302,7 +307,7 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <BookText className="h-4 w-4 text-muted-foreground" />
+                <BookText className={`h-4 w-4 ${OPTIMIZE_COLORS.catalogCompression}`} />
                 <CardTitle className="text-base">Default: Catalog Compression</CardTitle>
               </div>
               {cmConfig && (
@@ -329,7 +334,7 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
-              <Database className="h-4 w-4 text-muted-foreground" />
+              <Database className={`h-4 w-4 ${OPTIMIZE_COLORS.responseRag}`} />
               <CardTitle className="text-base">Response RAG</CardTitle>
             </div>
             <CardDescription>

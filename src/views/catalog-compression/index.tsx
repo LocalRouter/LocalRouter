@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { BookText, RefreshCw, Loader2, Search, Database, BarChart3, AlertTriangle, Info } from "lucide-react"
+import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -171,7 +172,7 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
       <div className="flex-shrink-0 pb-4">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <BookText className="h-6 w-6" />
+            <BookText className={`h-6 w-6 ${OPTIMIZE_COLORS.catalogCompression}`} />
             MCP Catalog Compression
           </h1>
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
@@ -855,7 +856,7 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="text-muted-foreground">After:</span>
-                <span className="font-mono">{formatBytes(preview.compressed_size + preview.tool_definitions_size)}</span>
+                <span className="font-mono">{formatBytes(preview.compressed_size + preview.compressed_tool_definitions_size)}</span>
               </div>
             </div>
           )}
@@ -928,7 +929,7 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
             <div className="h-full flex flex-col">
               <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
                 <span>Compressed</span>
-                <span className="font-mono">{formatBytes(preview.tool_definitions_size)}</span>
+                <span className="font-mono">{formatBytes(preview.compressed_tool_definitions_size)}</span>
               </div>
               <ScrollArea className="flex-1">
                 <div className="p-3 space-y-4">
@@ -949,11 +950,20 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
 function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode: "full" | "compressed" }) {
   const isDeferred = server.compression_state === "deferred"
   const isTruncated = server.compression_state === "truncated"
-  const isCompressed = server.compression_state === "compressed"
 
-  // In compressed mode, deferred servers are completely omitted
+  // In compressed mode, deferred servers show a summary instead of full tool list
   if (mode === "compressed" && isDeferred) {
-    return null
+    return (
+      <div className="opacity-50">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-xs font-semibold">{server.name}</span>
+          <Badge variant="outline" className="text-[10px] px-1 py-0">deferred</Badge>
+        </div>
+        <p className="text-[10px] text-muted-foreground italic">
+          {server.tool_names.length} tools, {server.resource_names.length} resources, {server.prompt_names.length} prompts — discoverable via search index
+        </p>
+      </div>
+    )
   }
 
   // In compressed mode, truncated servers show only counts
@@ -1015,21 +1025,12 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
     <div>
       <div className="flex items-center gap-2 mb-1">
         <span className="text-xs font-semibold">{server.name}</span>
-        {mode === "compressed" && isCompressed && (
-          <Badge variant="outline" className="text-[10px] px-1 py-0 text-yellow-600 border-yellow-600/30">compressed</Badge>
-        )}
         <span className="text-[10px] text-muted-foreground">{totalItems} items</span>
       </div>
 
       <div className="ml-2">
         <ToolList tools={allItems} compact />
       </div>
-
-      {mode === "compressed" && isCompressed && (
-        <div className="ml-2 mt-1.5 text-[10px] text-yellow-600/80 italic border-l-2 border-yellow-600/20 pl-2">
-          [compressed] ctx_search(source=&quot;catalog:{server.name.toLowerCase().replace(/ /g, "-")}&quot;) to view full details
-        </div>
-      )}
     </div>
   )
 }

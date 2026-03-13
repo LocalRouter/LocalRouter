@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Minimize2, RefreshCw, CheckCircle2, XCircle, Loader2, Download } from "lucide-react"
+import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -137,7 +138,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
       <div className="flex-shrink-0">
         <div className="flex items-center gap-3 mb-1">
           <h1 className="text-xl font-semibold flex items-center gap-2">
-            <Minimize2 className="h-6 w-6" />
+            <Minimize2 className={`h-6 w-6 ${OPTIMIZE_COLORS.compression}`} />
             Prompt Compression
           </h1>
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
