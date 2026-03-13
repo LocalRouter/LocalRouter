@@ -193,7 +193,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="info">Info</TabsTrigger>
-          <TabsTrigger value="preview">Preview</TabsTrigger>
+          <TabsTrigger value="preview">Try it out</TabsTrigger>
           <TabsTrigger value="sessions">
             Sessions
             {sessions.length > 0 && (
@@ -865,10 +865,6 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
     return () => clearTimeout(timer)
   }, [threshold, source, fetchPreview])
 
-  const savings = preview
-    ? Math.round((1 - preview.compressed_size / preview.uncompressed_size) * 100)
-    : 0
-
   return (
     <div className="space-y-4">
       {/* Controls */}
@@ -877,13 +873,12 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
           <CardTitle className="text-base">Compression Preview</CardTitle>
           <CardDescription>
             See how different thresholds affect the welcome message and tool catalog.
-            Select mock servers or a connected client.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Source dropdown */}
+          {/* Client dropdown */}
           <div className="space-y-1.5">
-            <label className="text-sm text-muted-foreground">Source</label>
+            <label className="text-sm text-muted-foreground">Client</label>
             <select
               value={source ?? ""}
               onChange={(e) => setSource(e.target.value)}
@@ -894,14 +889,14 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
                   {c.name}
                 </option>
               ))}
-              <option value="mock">Mock Servers (GitHub, Atlassian, Filesystem, PostgreSQL, Slack)</option>
+              <option value="mock">Example Client</option>
             </select>
           </div>
 
           {/* Slider */}
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Try it out</span>
+              <span className="text-muted-foreground">Threshold</span>
               <span className="font-mono">{threshold >= 102400 ? "No limit" : formatBytes(threshold)}</span>
             </div>
             <input
@@ -921,48 +916,15 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
 
           {/* Stats bar */}
           {preview && (
-            <div className="flex flex-wrap gap-3 text-sm">
+            <div className="flex flex-wrap gap-4 text-sm">
               <div className="flex items-center gap-1.5">
-                <span className="text-muted-foreground">Welcome:</span>
-                <span className="font-mono">{formatBytes(preview.welcome_size)}</span>
+                <span className="text-muted-foreground">Before:</span>
+                <span className="font-mono">{formatBytes(preview.uncompressed_size + preview.tool_definitions_size)}</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <span className="text-muted-foreground">Tool defs:</span>
-                <span className="font-mono">{formatBytes(preview.tool_definitions_size)}</span>
+                <span className="text-muted-foreground">After:</span>
+                <span className="font-mono">{formatBytes(preview.compressed_size + preview.tool_definitions_size)}</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-muted-foreground">Total:</span>
-                <span className="font-mono">{formatBytes(preview.uncompressed_size)}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-muted-foreground">Compressed:</span>
-                <span className="font-mono">{formatBytes(preview.compressed_size)}</span>
-              </div>
-              {savings > 0 && (
-                <Badge variant="outline" className="text-green-600 border-green-600/30">
-                  {savings}% saved
-                </Badge>
-              )}
-              {preview.indexed_welcomes_count > 0 && (
-                <Badge variant="outline" className="text-yellow-600 border-yellow-600/30">
-                  P1: {preview.indexed_welcomes_count} indexed
-                </Badge>
-              )}
-              {preview.deferred_servers_count > 0 && (
-                <Badge variant="outline" className="text-orange-600 border-orange-600/30">
-                  P2: {preview.deferred_servers_count} deferred
-                </Badge>
-              )}
-              {preview.welcome_toc_dropped_count > 0 && (
-                <Badge variant="outline" className="text-red-600 border-red-600/30">
-                  P3: {preview.welcome_toc_dropped_count} TOC dropped
-                </Badge>
-              )}
-              {preview.batch_toc_dropped_count > 0 && (
-                <Badge variant="outline" className="text-red-600 border-red-600/30">
-                  P4: {preview.batch_toc_dropped_count} batch TOC dropped
-                </Badge>
-              )}
             </div>
           )}
 
@@ -1013,49 +975,39 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
 
       {/* Tools / Resources / Prompts — side-by-side detail */}
       {preview && preview.servers.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Tools / Resources / Prompts</CardTitle>
-            <CardDescription>
-              Left: full catalog. Right: after compression (compressed descriptions shortened, deferred items omitted).
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResizablePanelGroup direction="horizontal" className="rounded-md border min-h-[300px]">
-              {/* Left: full catalog */}
-              <ResizablePanel defaultSize={50} minSize={20}>
-                <div className="h-full flex flex-col">
-                  <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground">
-                    Full Catalog
-                  </div>
-                  <ScrollArea className="flex-1">
-                    <div className="p-3 space-y-4">
-                      {preview.servers.map((server) => (
-                        <ServerCatalogBlock key={server.name} server={server} mode="full" />
-                      ))}
-                    </div>
-                  </ScrollArea>
+        <ResizablePanelGroup direction="horizontal" className="rounded-md border min-h-[300px]">
+          <ResizablePanel defaultSize={50} minSize={20}>
+            <div className="h-full flex flex-col">
+              <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
+                <span>Uncompressed</span>
+                <span className="font-mono">{formatBytes(preview.tool_definitions_size)}</span>
+              </div>
+              <ScrollArea className="flex-1">
+                <div className="p-3 space-y-4">
+                  {preview.servers.map((server) => (
+                    <ServerCatalogBlock key={server.name} server={server} mode="full" />
+                  ))}
                 </div>
-              </ResizablePanel>
-              <ResizableHandle withHandle />
-              {/* Right: compressed catalog */}
-              <ResizablePanel defaultSize={50} minSize={20}>
-                <div className="h-full flex flex-col">
-                  <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground">
-                    After Compression
-                  </div>
-                  <ScrollArea className="flex-1">
-                    <div className="p-3 space-y-4">
-                      {preview.servers.map((server) => (
-                        <ServerCatalogBlock key={server.name} server={server} mode="compressed" />
-                      ))}
-                    </div>
-                  </ScrollArea>
+              </ScrollArea>
+            </div>
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize={50} minSize={20}>
+            <div className="h-full flex flex-col">
+              <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
+                <span>Compressed</span>
+                <span className="font-mono">{formatBytes(preview.tool_definitions_size)}</span>
+              </div>
+              <ScrollArea className="flex-1">
+                <div className="p-3 space-y-4">
+                  {preview.servers.map((server) => (
+                    <ServerCatalogBlock key={server.name} server={server} mode="compressed" />
+                  ))}
                 </div>
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </CardContent>
-        </Card>
+              </ScrollArea>
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       )}
     </div>
   )

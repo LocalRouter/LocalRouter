@@ -1,6 +1,3 @@
-import { useState } from "react"
-import { ChevronRight } from "lucide-react"
-import { Badge } from "@/components/ui/Badge"
 import { cn } from "@/lib/utils"
 
 /** Normalized tool shape accepted by ToolList */
@@ -68,8 +65,8 @@ function SchemaProperties({
           <div key={key}>
             <div className={cn("font-mono", textSize)}>
               <span className="text-foreground/80">{key}</span>
-              <span className="text-blue-500/70">{`: ${formatType(prop)}`}</span>
-              {isRequired && <span className="text-red-500">*</span>}
+              <span className="text-muted-foreground/70">{`: ${formatType(prop)}`}</span>
+              {isRequired && <span className="text-muted-foreground/70">*</span>}
               {prop.default !== undefined && (
                 <span className="text-muted-foreground/60">{` = ${JSON.stringify(prop.default)}`}</span>
               )}
@@ -94,44 +91,19 @@ function SchemaProperties({
 
 const TYPE_COLORS: Record<string, string> = {
   tool: "text-muted-foreground/60",
-  resource: "text-blue-500/60",
-  prompt: "text-purple-500/60",
+  resource: "text-muted-foreground/60",
+  prompt: "text-muted-foreground/60",
 }
 
 function ToolItem({ tool, compact }: { tool: ToolListItem; compact?: boolean }) {
-  const [expanded, setExpanded] = useState(false)
-
   const schema = tool.inputSchema as SchemaProperty | null
   const properties = schema?.properties as Record<string, SchemaProperty> | undefined
   const required = Array.isArray(schema?.required) ? (schema!.required as string[]) : []
-  const paramCount = properties ? Object.keys(properties).length : 0
-
-  const hasParams = paramCount > 0
+  const hasParams = properties && Object.keys(properties).length > 0
 
   return (
     <div className="rounded-md border border-border/50">
-      <div
-        role={hasParams ? "button" : undefined}
-        tabIndex={hasParams ? 0 : undefined}
-        onClick={() => hasParams && setExpanded(!expanded)}
-        onKeyDown={hasParams ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpanded(!expanded) } } : undefined}
-        className={cn(
-          "w-full text-left flex items-center gap-2 px-3 py-2 transition-colors",
-          hasParams && "hover:bg-muted/50 cursor-pointer",
-          !hasParams && "cursor-default",
-          expanded && "bg-muted/30"
-        )}
-      >
-        {hasParams ? (
-          <ChevronRight
-            className={cn(
-              "h-3 w-3 text-muted-foreground shrink-0 transition-transform",
-              expanded && "rotate-90"
-            )}
-          />
-        ) : (
-          <div className="w-3 shrink-0" />
-        )}
+      <div className="w-full text-left flex items-center gap-2 px-3 py-2">
         <code className={cn("font-mono font-medium truncate", compact ? "text-[11px]" : "text-xs")}>
           {tool.name}
         </code>
@@ -140,24 +112,19 @@ function ToolItem({ tool, compact }: { tool: ToolListItem; compact?: boolean }) 
             ({tool.itemType})
           </span>
         )}
-        {paramCount > 0 && (
-          <Badge variant="secondary" className="text-[9px] px-1 py-0 shrink-0">
-            {paramCount} param{paramCount !== 1 ? "s" : ""}
-          </Badge>
-        )}
       </div>
 
       {tool.description && (
-        <div className={cn("px-3 pb-2 -mt-1", hasParams ? "ml-5" : "ml-5")}>
+        <div className="px-3 pb-2 -mt-1 ml-0">
           <p className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
             {tool.description}
           </p>
         </div>
       )}
 
-      {expanded && hasParams && properties && (
-        <div className={cn("px-3 pb-3 pt-1 border-t border-border/30 ml-5")}>
-          <p className={cn("font-medium mb-1", compact ? "text-[10px]" : "text-xs")}>
+      {hasParams && properties && (
+        <div className={cn("px-3 pb-3 pt-1 border-t border-border/30")}>
+          <p className={cn("font-medium mb-1 text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
             Parameters
           </p>
           <SchemaProperties
