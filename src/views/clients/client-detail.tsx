@@ -65,7 +65,6 @@ export function ClientDetail({
   const clientMode = client?.client_mode || "both"
   const showModelsTab = clientMode !== "mcp_only"
   const showMcpTab = clientMode !== "llm_only"
-  const showLlmOptimizeTab = clientMode !== "mcp_only"
   const showTryItOutLlm = clientMode !== "mcp_only"
   // MCP via LLM clients speak only OpenAI protocol — no direct MCP try-it-out
   const showTryItOutMcp = clientMode !== "llm_only" && clientMode !== "mcp_via_llm"
@@ -103,11 +102,9 @@ export function ClientDetail({
   useEffect(() => {
     if (activeTab === "models" && !showModelsTab) setActiveTab("info")
     if (activeTab === "mcp" && !showMcpTab) setActiveTab("info")
-    if (activeTab === "optimize" && !showMcpTab) setActiveTab("info")
-    if (activeTab === "llm-optimize" && !showLlmOptimizeTab) setActiveTab("info")
     if (activeTab === "try-llm" && !showTryItOutLlm) setActiveTab("info")
     if (activeTab === "try-mcp" && !showTryItOutMcp) setActiveTab("info")
-  }, [clientMode, activeTab, showModelsTab, showMcpTab, showLlmOptimizeTab, showTryItOutLlm, showTryItOutMcp])
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showTryItOutLlm, showTryItOutMcp])
 
   const loadClient = async () => {
     try {
@@ -168,27 +165,18 @@ export function ClientDetail({
               </div>
             )}
 
-            {showModelsTab && (
+            {(showModelsTab || showMcpTab) && (
               <div>
-                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">LLM</div>
+                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">Configure</div>
                 <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
-                  <TabsTrigger value="models">Providers</TabsTrigger>
-                  <TabsTrigger value="llm-optimize">Optimize</TabsTrigger>
-                </div>
-              </div>
-            )}
-
-            {showMcpTab && (
-              <div>
-                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">MCP</div>
-                <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
-                  <TabsTrigger value="mcp">Servers</TabsTrigger>
-                  <TabsTrigger value="optimize">Optimize</TabsTrigger>
+                  {showModelsTab && <TabsTrigger value="models">LLM</TabsTrigger>}
+                  {showMcpTab && <TabsTrigger value="mcp">MCP</TabsTrigger>}
                 </div>
               </div>
             )}
 
             <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
+              <TabsTrigger value="optimize">Optimize</TabsTrigger>
               <TabsTrigger value="settings">Settings</TabsTrigger>
             </div>
           </TabsList>
@@ -240,21 +228,20 @@ export function ClientDetail({
             </TabsContent>
           )}
 
-          {showMcpTab && (
-            <TabsContent value="optimize">
-              <ClientContextTab client={client} onUpdate={loadClient} onViewChange={onViewChange} />
-            </TabsContent>
-          )}
-
-          {showLlmOptimizeTab && (
-            <TabsContent value="llm-optimize">
-              <ClientLlmOptimizeTab
-                client={client}
-                onUpdate={loadClient}
-                onViewChange={onViewChange}
-              />
-            </TabsContent>
-          )}
+          <TabsContent value="optimize">
+            <div className="space-y-4">
+              {showModelsTab && (
+                <ClientLlmOptimizeTab
+                  client={client}
+                  onUpdate={loadClient}
+                  onViewChange={onViewChange}
+                />
+              )}
+              {showMcpTab && (
+                <ClientContextTab client={client} onUpdate={loadClient} onViewChange={onViewChange} />
+              )}
+            </div>
+          </TabsContent>
 
           <TabsContent value="settings">
             <ClientSettingsTab
