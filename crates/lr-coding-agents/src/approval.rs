@@ -21,12 +21,17 @@ use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
 /// Approval service that routes to LocalRouter's popup UI.
 ///
 /// Each `create_*` call generates a unique approval ID and stores a oneshot
-/// channel. The popup system (via `CodingAgentApprovalManager`) resolves it.
+/// receiver. The `wait_*` method awaits on that receiver. The popup system
+/// resolves it by calling `resolve_*` which sends on the stored sender.
 pub struct AskPopupApprovalService {
-    /// Pending tool approvals: approval_id -> sender
-    pending_approvals: Arc<DashMap<String, oneshot::Sender<ApprovalStatus>>>,
-    /// Pending question approvals: approval_id -> sender
-    pending_questions: Arc<DashMap<String, oneshot::Sender<QuestionStatus>>>,
+    /// Pending tool approvals: approval_id -> (sender, receiver)
+    /// Sender is held so `resolve_tool_approval` can send on it.
+    /// Receiver is consumed by `wait_tool_approval`.
+    pending_tool_senders: Arc<DashMap<String, oneshot::Sender<ApprovalStatus>>>,
+    pending_tool_receivers: Arc<DashMap<String, oneshot::Receiver<ApprovalStatus>>>,
+    /// Pending question approvals
+    pending_question_senders: Arc<DashMap<String, oneshot::Sender<QuestionStatus>>>,
+    pending_question_receivers: Arc<DashMap<String, oneshot::Receiver<QuestionStatus>>>,
     /// Callback to trigger popup (set by the gateway when wiring up)
     popup_callback: Option<Arc<dyn PopupTrigger>>,
 }
@@ -46,8 +51,10 @@ pub trait PopupTrigger: Send + Sync {
 impl AskPopupApprovalService {
     pub fn new() -> Self {
         Self {
-            pending_approvals: Arc::new(DashMap::new()),
-            pending_questions: Arc::new(DashMap::new()),
+            pending_tool_senders: Arc::new(DashMap::new()),
+            pending_tool_receivers: Arc::new(DashMap::new()),
+            pending_question_senders: Arc::new(DashMap::new()),
+            pending_question_receivers: Arc::new(DashMap::new()),
             popup_callback: None,
         }
     }
@@ -59,14 +66,14 @@ impl AskPopupApprovalService {
 
     /// Resolve a pending tool approval (called by the popup system)
     pub fn resolve_tool_approval(&self, approval_id: &str, status: ApprovalStatus) {
-        if let Some((_, sender)) = self.pending_approvals.remove(approval_id) {
+        if let Some((_, sender)) = self.pending_tool_senders.remove(approval_id) {
             let _ = sender.send(status);
         }
     }
 
     /// Resolve a pending question (called by the popup system)
     pub fn resolve_question(&self, approval_id: &str, status: QuestionStatus) {
-        if let Some((_, sender)) = self.pending_questions.remove(approval_id) {
+        if let Some((_, sender)) = self.pending_question_senders.remove(approval_id) {
             let _ = sender.send(status);
         }
     }
@@ -82,9 +89,11 @@ impl Default for AskPopupApprovalService {
 impl ExecutorApprovalService for AskPopupApprovalService {
     async fn create_tool_approval(&self, tool_name: &str) -> Result<String, ExecutorApprovalError> {
         let approval_id = uuid::Uuid::new_v4().to_string();
-        let (tx, _) = oneshot::channel();
-        self.pending_approvals
+        let (tx, rx) = oneshot::channel();
+        self.pending_tool_senders
             .insert(approval_id.clone(), tx);
+        self.pending_tool_receivers
+            .insert(approval_id.clone(), rx);
 
         if let Some(ref trigger) = self.popup_callback {
             trigger.trigger_tool_approval(&approval_id, tool_name);
@@ -104,9 +113,11 @@ impl ExecutorApprovalService for AskPopupApprovalService {
         question_count: usize,
     ) -> Result<String, ExecutorApprovalError> {
         let approval_id = uuid::Uuid::new_v4().to_string();
-        let (tx, _) = oneshot::channel();
-        self.pending_questions
+        let (tx, rx) = oneshot::channel();
+        self.pending_question_senders
             .insert(approval_id.clone(), tx);
+        self.pending_question_receivers
+            .insert(approval_id.clone(), rx);
 
         if let Some(ref trigger) = self.popup_callback {
             trigger.trigger_question_approval(&approval_id, tool_name, question_count);
@@ -126,25 +137,25 @@ impl ExecutorApprovalService for AskPopupApprovalService {
         approval_id: &str,
         cancel: CancellationToken,
     ) -> Result<ApprovalStatus, ExecutorApprovalError> {
-        // Replace the existing sender with a fresh channel and get the receiver
-        let rx = {
-            let (tx, rx) = oneshot::channel();
-            if let Some((_, old_tx)) = self.pending_approvals.remove(approval_id) {
-                // Drop old sender (closes old channel)
-                drop(old_tx);
-            }
-            self.pending_approvals
-                .insert(approval_id.to_string(), tx);
-            rx
-        };
+        // Take the receiver that was stored by create_tool_approval
+        let rx = self
+            .pending_tool_receivers
+            .remove(approval_id)
+            .map(|(_, rx)| rx)
+            .ok_or_else(|| {
+                ExecutorApprovalError::RequestFailed(format!(
+                    "No pending tool approval for {}",
+                    approval_id
+                ))
+            })?;
 
         tokio::select! {
             _ = cancel.cancelled() => {
-                self.pending_approvals.remove(approval_id);
+                self.pending_tool_senders.remove(approval_id);
                 Err(ExecutorApprovalError::Cancelled)
             }
             result = rx => {
-                self.pending_approvals.remove(approval_id);
+                self.pending_tool_senders.remove(approval_id);
                 match result {
                     Ok(status) => Ok(status),
                     Err(_) => {
@@ -161,23 +172,24 @@ impl ExecutorApprovalService for AskPopupApprovalService {
         approval_id: &str,
         cancel: CancellationToken,
     ) -> Result<QuestionStatus, ExecutorApprovalError> {
-        let rx = {
-            let (tx, rx) = oneshot::channel();
-            if let Some((_, old_tx)) = self.pending_questions.remove(approval_id) {
-                drop(old_tx);
-            }
-            self.pending_questions
-                .insert(approval_id.to_string(), tx);
-            rx
-        };
+        let rx = self
+            .pending_question_receivers
+            .remove(approval_id)
+            .map(|(_, rx)| rx)
+            .ok_or_else(|| {
+                ExecutorApprovalError::RequestFailed(format!(
+                    "No pending question approval for {}",
+                    approval_id
+                ))
+            })?;
 
         tokio::select! {
             _ = cancel.cancelled() => {
-                self.pending_questions.remove(approval_id);
+                self.pending_question_senders.remove(approval_id);
                 Err(ExecutorApprovalError::Cancelled)
             }
             result = rx => {
-                self.pending_questions.remove(approval_id);
+                self.pending_question_senders.remove(approval_id);
                 match result {
                     Ok(status) => Ok(status),
                     Err(_) => {
@@ -217,19 +229,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ask_popup_service_create_and_resolve() {
-        let service = AskPopupApprovalService::new();
+    async fn test_ask_popup_service_create_wait_resolve() {
+        let service = Arc::new(AskPopupApprovalService::new());
 
-        let approval_id = service
-            .create_tool_approval("Edit")
-            .await
-            .unwrap();
+        let service_clone = service.clone();
+        let handle = tokio::spawn(async move {
+            let id = service_clone
+                .create_tool_approval("Edit")
+                .await
+                .unwrap();
+            let cancel = CancellationToken::new();
+            service_clone.wait_tool_approval(&id, cancel).await
+        });
 
-        // Resolve it
-        service.resolve_tool_approval(&approval_id, ApprovalStatus::Approved);
+        // Wait for the request to be created
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // The pending map should be empty (resolved removes it on create side,
-        // but wait_tool_approval does the actual receive)
+        // Resolve it via the sender
+        let pending_ids: Vec<String> = service
+            .pending_tool_senders
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        assert_eq!(pending_ids.len(), 1);
+        service.resolve_tool_approval(&pending_ids[0], ApprovalStatus::Approved);
+
+        let result = handle.await.unwrap().unwrap();
+        assert!(matches!(result, ApprovalStatus::Approved));
     }
 
     #[tokio::test]

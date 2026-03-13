@@ -201,13 +201,10 @@ impl CodingAgentManager {
         match session.status {
             SessionStatus::Active | SessionStatus::AwaitingInput => {
                 if interrupt {
-                    // Graceful interrupt via cancellation token
+                    // Graceful interrupt via cancellation token first
+                    // (triggers ProtocolPeer to send interrupt via control protocol)
                     if let Some(ref process) = session.process {
                         process.cancel.cancel();
-                    }
-                    // Also send kill to process group as fallback
-                    if let Some(ref mut process) = session.process {
-                        let _ = process.child.start_kill();
                     }
                     session.status = SessionStatus::Interrupted;
                     session.last_activity = chrono::Utc::now();
@@ -216,7 +213,7 @@ impl CodingAgentManager {
                     self.notify_changed();
 
                     if let Some(msg) = message {
-                        // Interrupt + message: drop lock, then resume with follow-up
+                        // Interrupt + message: drop lock, wait for graceful shutdown, then resume
                         let agent_type = session.agent_type;
                         let work_dir = session.working_directory.clone();
                         let config = session.config.clone();
@@ -224,8 +221,18 @@ impl CodingAgentManager {
                         let sid = session.id.clone();
                         drop(session);
 
-                        // Brief pause for process cleanup
-                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        // Wait for the process to exit gracefully after interrupt.
+                        // The cancellation token triggers the control protocol interrupt;
+                        // we give it time to finish before spawning the follow-up.
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+
+                        // If process hasn't exited yet, force kill as fallback
+                        if let Some(entry) = self.sessions.get(&sid) {
+                            let mut s = entry.value().1.lock().await;
+                            if let Some(ref mut process) = s.process {
+                                let _ = process.child.start_kill();
+                            }
+                        }
 
                         self.resume_session(
                             &sid,
@@ -245,6 +252,18 @@ impl CodingAgentManager {
                         });
                     }
 
+                    // Interrupt only (no message): kill process after grace period
+                    let sid = session.id.clone();
+                    drop(session);
+
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if let Some(entry) = self.sessions.get(&sid) {
+                        let mut s = entry.value().1.lock().await;
+                        if let Some(ref mut process) = s.process {
+                            let _ = process.child.start_kill();
+                        }
+                    }
+
                     return Ok(SayResponse {
                         session_id: session_id.to_string(),
                         status: SessionStatus::Interrupted,
@@ -253,34 +272,14 @@ impl CodingAgentManager {
                     });
                 }
 
-                // Message only on active session — write to stdin if available
-                if let Some(msg) = message {
-                    let has_stdin = session
-                        .process
-                        .as_ref()
-                        .and_then(|p| p.stdin.as_ref())
-                        .is_some();
-
-                    if has_stdin {
-                        use tokio::io::AsyncWriteExt;
-                        let process = session.process.as_mut().unwrap();
-                        let stdin = process.stdin.as_mut().unwrap();
-                        let msg_line = format!("{}\n", msg);
-                        stdin
-                            .write_all(msg_line.as_bytes())
-                            .await
-                            .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
-                        stdin
-                            .flush()
-                            .await
-                            .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
-                        session.status = SessionStatus::Active;
-                        session.last_activity = chrono::Utc::now();
-                    } else {
-                        return Err(CodingAgentError::IoError(
-                            "Session is still running. Wait for it to complete, then use 'say' to send a follow-up.".to_string()
-                        ));
-                    }
+                // Message only on active session.
+                // The executor's ProtocolPeer manages stdin internally — we cannot
+                // write to it directly. For active sessions, the user must wait for
+                // completion, then send a follow-up (which uses spawn_follow_up).
+                if message.is_some() {
+                    return Err(CodingAgentError::IoError(
+                        "Session is still running. Wait for it to complete or use interrupt=true, then send a follow-up message.".to_string()
+                    ));
                 }
 
                 let status = session.status.clone();
@@ -292,8 +291,8 @@ impl CodingAgentManager {
                 })
             }
             SessionStatus::Done | SessionStatus::Error | SessionStatus::Interrupted => {
-                if message.is_none() && interrupt {
-                    // Interrupt on already-stopped session — no-op
+                if message.is_none() {
+                    // No message — interrupt on stopped session is a no-op
                     return Ok(SayResponse {
                         session_id: session_id.to_string(),
                         status: session.status.clone(),
@@ -302,7 +301,8 @@ impl CodingAgentManager {
                     });
                 }
 
-                // Resume session with follow-up
+                // Resume session with follow-up (message is guaranteed Some here)
+                let msg = message.unwrap();
                 let agent_type = session.agent_type;
                 let work_dir = session.working_directory.clone();
                 let config = session.config.clone();
@@ -310,7 +310,6 @@ impl CodingAgentManager {
                 let sid = session.id.clone();
                 drop(session);
 
-                let msg = message.unwrap_or("");
                 self.resume_session(
                     &sid,
                     agent_type,
@@ -618,7 +617,7 @@ async fn spawn_via_executor(
         String::new(),
     );
 
-    let executor = build_executor(agent_type, config, approval_mode);
+    let executor = build_executor(agent_type, config, approval_mode)?;
 
     let spawned = if let Some(sid) = resume_session_id {
         executor
@@ -642,7 +641,7 @@ fn build_executor(
     agent_type: CodingAgentType,
     config: &SessionConfig,
     approval_mode: CodingAgentApprovalMode,
-) -> CodingAgent {
+) -> Result<CodingAgent, CodingAgentError> {
     let is_auto = matches!(approval_mode, CodingAgentApprovalMode::Allow);
 
     match agent_type {
@@ -660,56 +659,49 @@ fn build_executor(
                 json["model"] = serde_json::Value::String(model.clone());
             }
 
-            let executor: executors::executors::claude::ClaudeCode =
-                serde_json::from_value(json).expect("Failed to build ClaudeCode executor");
-            CodingAgent::ClaudeCode(executor)
+            let executor = deser_executor(json, "Claude Code")?;
+            Ok(CodingAgent::ClaudeCode(executor))
         }
         CodingAgentType::GeminiCli => {
             let json = build_model_json(config);
-            let executor: executors::executors::gemini::Gemini =
-                serde_json::from_value(json).expect("Failed to build Gemini executor");
-            CodingAgent::Gemini(executor)
+            let executor = deser_executor(json, "Gemini")?;
+            Ok(CodingAgent::Gemini(executor))
         }
         CodingAgentType::Codex => {
             let json = build_model_json(config);
-            let executor: executors::executors::codex::Codex =
-                serde_json::from_value(json).expect("Failed to build Codex executor");
-            CodingAgent::Codex(executor)
+            let executor = deser_executor(json, "Codex")?;
+            Ok(CodingAgent::Codex(executor))
         }
         CodingAgentType::Amp => {
-            let executor: executors::executors::amp::Amp =
-                serde_json::from_value(serde_json::json!({})).expect("Failed to build Amp executor");
-            CodingAgent::Amp(executor)
+            let executor = deser_executor(serde_json::json!({}), "Amp")?;
+            Ok(CodingAgent::Amp(executor))
         }
         CodingAgentType::Cursor => {
-            let executor: executors::executors::cursor::CursorAgent =
-                serde_json::from_value(serde_json::json!({})).expect("Failed to build Cursor executor");
-            CodingAgent::CursorAgent(executor)
+            let executor = deser_executor(serde_json::json!({}), "Cursor")?;
+            Ok(CodingAgent::CursorAgent(executor))
         }
         CodingAgentType::Opencode => {
             let json = build_model_json(config);
-            let executor: executors::executors::opencode::Opencode =
-                serde_json::from_value(json).expect("Failed to build Opencode executor");
-            CodingAgent::Opencode(executor)
+            let executor = deser_executor(json, "Opencode")?;
+            Ok(CodingAgent::Opencode(executor))
         }
         CodingAgentType::QwenCode => {
-            let executor: executors::executors::qwen::QwenCode =
-                serde_json::from_value(serde_json::json!({})).expect("Failed to build QwenCode executor");
-            CodingAgent::QwenCode(executor)
+            let executor = deser_executor(serde_json::json!({}), "QwenCode")?;
+            Ok(CodingAgent::QwenCode(executor))
         }
         CodingAgentType::Copilot => {
-            let executor: executors::executors::copilot::Copilot =
-                serde_json::from_value(serde_json::json!({})).expect("Failed to build Copilot executor");
-            CodingAgent::Copilot(executor)
+            let executor = deser_executor(serde_json::json!({}), "Copilot")?;
+            Ok(CodingAgent::Copilot(executor))
         }
         CodingAgentType::Droid => {
-            let executor: executors::executors::droid::Droid =
-                serde_json::from_value(serde_json::json!({})).expect("Failed to build Droid executor");
-            CodingAgent::Droid(executor)
+            let executor = deser_executor(serde_json::json!({}), "Droid")?;
+            Ok(CodingAgent::Droid(executor))
         }
         CodingAgentType::Aider => {
-            // Aider is not in the executors crate — use ClaudeCode with base command override
-            warn!("Aider not supported by executors crate, using base command override");
+            // Aider is not in the executors crate — use Amp executor with base command override.
+            // Amp is the simplest executor (no control protocol, just stdin/stdout pipe).
+            // ClaudeCode would add -p, --output-format=stream-json etc. which Aider doesn't support.
+            warn!("Aider not supported by executors crate, using Amp executor with base command override");
             let mut json = serde_json::json!({
                 "base_command_override": "aider",
                 "additional_params": ["--no-auto-commits"],
@@ -717,9 +709,8 @@ fn build_executor(
             if let Some(ref model) = config.model {
                 json["model"] = serde_json::Value::String(model.clone());
             }
-            let executor: executors::executors::claude::ClaudeCode =
-                serde_json::from_value(json).expect("Failed to build Aider executor");
-            CodingAgent::ClaudeCode(executor)
+            let executor = deser_executor(json, "Aider")?;
+            Ok(CodingAgent::Amp(executor))
         }
     }
 }
@@ -731,6 +722,17 @@ fn build_model_json(config: &SessionConfig) -> serde_json::Value {
         json["model"] = serde_json::Value::String(model.clone());
     }
     json
+}
+
+/// Helper to deserialize an executor from JSON, returning CodingAgentError on failure.
+fn deser_executor<T: serde::de::DeserializeOwned>(
+    json: serde_json::Value,
+    agent_name: &str,
+) -> Result<T, CodingAgentError> {
+    serde_json::from_value(json).map_err(|e| CodingAgentError::SpawnFailed {
+        agent: agent_name.to_string(),
+        reason: format!("Failed to build executor: {}", e),
+    })
 }
 
 /// Spawn a background task that reads stdout and appends to the session buffer.
@@ -755,16 +757,14 @@ fn spawn_output_reader(session: Arc<Mutex<CodingSession>>, change_tx: broadcast:
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    // Try to extract agent session ID from Claude Code's stream-json
-                    if let Some(sid) = extract_session_id(&line) {
-                        let mut s = session.lock().await;
-                        if s.agent_session_id.is_none() {
+                    // Single lock per line: extract session ID and append output together
+                    let mut s = session.lock().await;
+                    if s.agent_session_id.is_none() {
+                        if let Some(sid) = extract_session_id(&line) {
                             debug!(session_id = %sid, "Captured agent session ID");
                             s.agent_session_id = Some(sid);
                         }
                     }
-
-                    let mut s = session.lock().await;
                     s.append_output(line);
                 }
                 Ok(None) => {

@@ -264,17 +264,14 @@ impl CodingAgentApprovalManager {
                     approval_type: s.approval_type.clone(),
                     tool_name: s.tool_name.clone(),
                     question_count: s.question_count,
-                    created_at_epoch_ms: s
-                        .created_at
-                        .elapsed()
-                        .as_millis()
-                        .wrapping_neg()
-                        .wrapping_add(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis(),
-                        ),
+                    created_at_epoch_ms: {
+                        let now_epoch = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis();
+                        let elapsed = s.created_at.elapsed().as_millis();
+                        now_epoch.saturating_sub(elapsed)
+                    },
                     timeout_seconds: s.timeout_seconds,
                 }
             })

@@ -1289,7 +1289,7 @@ fn default_tool_prefix() -> String {
 }
 
 /// Coding agents configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CodingAgentsConfig {
     /// Migration shim: old per-agent configurations (deserialize only)
     #[serde(default, skip_serializing)]
@@ -1316,6 +1316,19 @@ pub struct CodingAgentsConfig {
     /// Approval mode for agent tool/question requests
     #[serde(default)]
     pub approval_mode: CodingAgentApprovalMode,
+}
+
+impl Default for CodingAgentsConfig {
+    fn default() -> Self {
+        Self {
+            agents: Vec::new(),
+            default_working_directory: None,
+            max_concurrent_sessions: default_max_concurrent_sessions(),
+            output_buffer_size: default_output_buffer_size(),
+            tool_prefix: default_tool_prefix(),
+            approval_mode: CodingAgentApprovalMode::default(),
+        }
+    }
 }
 
 fn default_max_concurrent_sessions() -> usize {

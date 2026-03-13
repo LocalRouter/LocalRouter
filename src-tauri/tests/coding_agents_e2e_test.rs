@@ -1,7 +1,7 @@
 //! End-to-end integration tests for the Coding Agents system via MCP gateway.
 //!
 //! Starts real coding agent processes through the MCP gateway's unified
-//! `coding_agent_start` tool, polls `coding_agent_status` until the session
+//! `AgentStart` tool, polls `AgentStatus` until the session
 //! completes, and verifies output.
 //!
 //! All tests that spawn real processes are `#[ignore]` by default since they require
@@ -149,7 +149,7 @@ async fn call_tool(
     gateway_request(gateway, client_id, agent_type, req).await
 }
 
-/// Poll `coding_agent_status` until the session reaches a terminal state (done/error).
+/// Poll `AgentStatus` until the session reaches a terminal state (done/error).
 /// Returns the final status response.
 async fn poll_until_done(
     gateway: &Arc<McpGateway>,
@@ -168,7 +168,7 @@ async fn poll_until_done(
             gateway,
             client_id,
             agent_type,
-            "coding_agent_status",
+            "AgentStatus",
             json!({ "sessionId": session_id, "outputLines": 100 }),
         )
         .await;
@@ -226,7 +226,7 @@ async fn run_agent_e2e_time_query(
         &gateway,
         client_id,
         agent_type,
-        "coding_agent_start",
+        "AgentStart",
         json!({
             "prompt": "Tell me what time it is right now. Just respond with the current time, nothing else.",
             "permissionMode": "auto"
@@ -292,7 +292,7 @@ async fn run_agent_e2e_list_and_interrupt(
         &gateway,
         client_id,
         agent_type,
-        "coding_agent_list",
+        "AgentList",
         json!({}),
     )
     .await;
@@ -307,7 +307,7 @@ async fn run_agent_e2e_list_and_interrupt(
         &gateway,
         client_id,
         agent_type,
-        "coding_agent_start",
+        "AgentStart",
         json!({
             "prompt": "Write a very long essay about the history of computing. Make it at least 10000 words.",
             "permissionMode": "auto"
@@ -322,7 +322,7 @@ async fn run_agent_e2e_list_and_interrupt(
         &gateway,
         client_id,
         agent_type,
-        "coding_agent_list",
+        "AgentList",
         json!({}),
     )
     .await;
@@ -332,14 +332,14 @@ async fn run_agent_e2e_list_and_interrupt(
     // Give it a moment to start running
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-    // Interrupt the session
+    // Interrupt the session using combined say+interrupt
     eprintln!("Interrupting {display_name} session...");
     let interrupt_result = call_tool(
         &gateway,
         client_id,
         agent_type,
-        "coding_agent_interrupt",
-        json!({ "sessionId": session_id }),
+        "AgentSay",
+        json!({ "sessionId": session_id, "interrupt": true }),
     )
     .await;
     eprintln!("{display_name} interrupt result: {interrupt_result}");
@@ -350,7 +350,7 @@ async fn run_agent_e2e_list_and_interrupt(
         &gateway,
         client_id,
         agent_type,
-        "coding_agent_status",
+        "AgentStatus",
         json!({ "sessionId": session_id, "outputLines": 10 }),
     )
     .await;
@@ -441,7 +441,7 @@ async fn test_coding_agents_e2e_tools_list() {
     let client_id = "test-tools-list";
     initialize_gateway(&gateway, client_id, CodingAgentType::ClaudeCode).await;
 
-    // tools/list should include all 6 coding_agent_* tools
+    // tools/list should include all 4 Agent* tools
     let list_req = JsonRpcRequest::with_id(2, "tools/list".to_string(), Some(json!({})));
     let list_result =
         gateway_request(&gateway, client_id, CodingAgentType::ClaudeCode, list_req).await;
@@ -450,14 +450,7 @@ async fn test_coding_agents_e2e_tools_list() {
         .expect("tools/list should return tools array");
     let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
-    let expected = [
-        "coding_agent_start",
-        "coding_agent_say",
-        "coding_agent_status",
-        "coding_agent_respond",
-        "coding_agent_interrupt",
-        "coding_agent_list",
-    ];
+    let expected = ["AgentStart", "AgentSay", "AgentStatus", "AgentList"];
     for name in &expected {
         assert!(
             tool_names.contains(name),
