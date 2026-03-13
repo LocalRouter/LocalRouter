@@ -219,13 +219,15 @@ pub async fn set_client_coding_agent_permission(
 }
 
 /// Get the MCP tool definitions for a given coding agent type.
-/// Returns the 6 unified coding agent tools with their schemas.
+/// Returns the 4 unified coding agent tools with their schemas.
 #[tauri::command]
 pub async fn get_coding_agent_tool_definitions(
     agent_type: CodingAgentType,
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<Vec<ToolDefinition>, String> {
+    let prefix = &config_manager.get().coding_agents.tool_prefix;
     Ok(
-        lr_coding_agents::mcp_tools::build_tools_for_agent(agent_type)
+        lr_coding_agents::mcp_tools::build_tools_for_agent(agent_type, prefix)
             .into_iter()
             .map(ToolDefinition::from)
             .collect(),

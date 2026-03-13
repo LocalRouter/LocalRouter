@@ -35,9 +35,6 @@ pub struct CodingSession {
     /// Max buffer size (from config)
     pub output_buffer_max: usize,
 
-    /// Pending question (at most one — agent blocks until answered)
-    pub pending_question: Option<PendingQuestion>,
-
     /// Initial prompt text
     pub initial_prompt: String,
     /// Final result (when done)
@@ -52,6 +49,10 @@ pub struct CodingSession {
     pub created_at: DateTime<Utc>,
     pub last_activity: DateTime<Utc>,
     pub exit_code: Option<i32>,
+
+    /// The underlying agent's session ID (e.g., Claude Code's conversation ID).
+    /// Used for `--resume` on follow-up messages to preserve context.
+    pub agent_session_id: Option<String>,
 }
 
 impl CodingSession {
@@ -76,7 +77,6 @@ impl CodingSession {
             process: None,
             output_buffer: VecDeque::with_capacity(output_buffer_max.min(1000)),
             output_buffer_max,
-            pending_question: None,
             initial_prompt,
             result: None,
             error: None,
@@ -85,6 +85,7 @@ impl CodingSession {
             created_at: now,
             last_activity: now,
             exit_code: None,
+            agent_session_id: None,
         }
     }
 
@@ -139,51 +140,15 @@ impl std::fmt::Display for SessionStatus {
 pub struct AgentProcess {
     /// OS child process group
     pub child: command_group::AsyncGroupChild,
-    /// Stdin writer for sending messages
+    /// Stdin writer for sending messages (piped for Claude Code control protocol)
     pub stdin: Option<tokio::process::ChildStdin>,
     /// Cancellation token
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
-/// A pending question from the agent
-pub struct PendingQuestion {
-    /// Unique question ID
-    pub id: String,
-    /// Type of question
-    pub question_type: QuestionType,
-    /// Individual questions (each with options)
-    pub questions: Vec<QuestionItem>,
-    /// Channel to send the response back to the blocked executor
-    pub resolve: tokio::sync::oneshot::Sender<ApprovalResponse>,
-}
-
-/// Type of pending question
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum QuestionType {
-    ToolApproval,
-    PlanApproval,
-    Question,
-}
-
-/// A single question with options
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuestionItem {
-    pub question: String,
-    pub options: Vec<String>,
-}
-
-/// Response to a pending question
-#[derive(Debug, Clone)]
-pub enum ApprovalResponse {
-    Approved,
-    Denied { reason: Option<String> },
-    Answered { answers: Vec<String> },
-}
-
 // ── MCP tool response types ──
 
-/// Response from {agent}_start
+/// Response from start tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartResponse {
@@ -191,15 +156,21 @@ pub struct StartResponse {
     pub status: SessionStatus,
 }
 
-/// Response from {agent}_say
+/// Response from say tool (combined say + interrupt)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SayResponse {
     pub session_id: String,
     pub status: SessionStatus,
+    /// True if the session was interrupted before sending the message
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupted: Option<bool>,
+    /// True if the session was resumed (context preserved via --resume)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumed: Option<bool>,
 }
 
-/// Response from {agent}_status
+/// Response from status tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusResponse {
@@ -209,40 +180,12 @@ pub struct StatusResponse {
     pub result: Option<String>,
     pub recent_output: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_question: Option<PendingQuestionInfo>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_count: Option<u32>,
 }
 
-/// Serializable info about a pending question (without the oneshot channel)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingQuestionInfo {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub question_type: QuestionType,
-    pub questions: Vec<QuestionItem>,
-}
-
-/// Response from {agent}_respond
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RespondResponse {
-    pub session_id: String,
-    pub status: SessionStatus,
-}
-
-/// Response from {agent}_interrupt
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InterruptResponse {
-    pub session_id: String,
-    pub status: SessionStatus,
-}
-
-/// Session summary for {agent}_list
+/// Session summary for list tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
@@ -255,7 +198,7 @@ pub struct SessionSummary {
     pub status: SessionStatus,
 }
 
-/// Response from {agent}_list
+/// Response from list tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListResponse {
     pub sessions: Vec<SessionSummary>,
@@ -314,13 +257,13 @@ mod tests {
         assert_eq!(session.status, SessionStatus::Active);
         assert!(session.process.is_none());
         assert!(session.output_buffer.is_empty());
-        assert!(session.pending_question.is_none());
         assert_eq!(session.initial_prompt, "initial prompt");
         assert!(session.result.is_none());
         assert!(session.error.is_none());
         assert!(session.cost_usd.is_none());
         assert!(session.turn_count.is_none());
         assert!(session.exit_code.is_none());
+        assert!(session.agent_session_id.is_none());
     }
 
     #[test]
@@ -413,60 +356,14 @@ mod tests {
             status: SessionStatus::Active,
             result: None,
             recent_output: vec!["hello".to_string()],
-            pending_question: None,
             cost_usd: None,
             turn_count: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json.get("result").is_none());
-        assert!(json.get("pendingQuestion").is_none());
         assert!(json.get("costUsd").is_none());
         assert!(json.get("turnCount").is_none());
         assert_eq!(json["recentOutput"][0], "hello");
-    }
-
-    #[test]
-    fn test_status_response_with_pending_question() {
-        let resp = StatusResponse {
-            session_id: "abc".to_string(),
-            status: SessionStatus::AwaitingInput,
-            result: None,
-            recent_output: vec![],
-            pending_question: Some(PendingQuestionInfo {
-                id: "q1".to_string(),
-                question_type: QuestionType::ToolApproval,
-                questions: vec![QuestionItem {
-                    question: "Allow Edit?".to_string(),
-                    options: vec!["allow".to_string(), "deny".to_string()],
-                }],
-            }),
-            cost_usd: Some(0.42),
-            turn_count: Some(5),
-        };
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["pendingQuestion"]["type"], "tool_approval");
-        assert_eq!(
-            json["pendingQuestion"]["questions"][0]["question"],
-            "Allow Edit?"
-        );
-        assert_eq!(json["costUsd"], 0.42);
-        assert_eq!(json["turnCount"], 5);
-    }
-
-    #[test]
-    fn test_question_type_serde() {
-        assert_eq!(
-            serde_json::to_string(&QuestionType::ToolApproval).unwrap(),
-            "\"tool_approval\""
-        );
-        assert_eq!(
-            serde_json::to_string(&QuestionType::PlanApproval).unwrap(),
-            "\"plan_approval\""
-        );
-        assert_eq!(
-            serde_json::to_string(&QuestionType::Question).unwrap(),
-            "\"question\""
-        );
     }
 
     #[test]
@@ -487,5 +384,29 @@ mod tests {
         assert_eq!(json["sessions"][0]["agentType"], "claude_code");
         assert_eq!(json["sessions"][0]["clientId"], "c1");
         assert_eq!(json["sessions"][0]["status"], "done");
+    }
+
+    #[test]
+    fn test_say_response_serde() {
+        let resp = SayResponse {
+            session_id: "abc".to_string(),
+            status: SessionStatus::Active,
+            interrupted: Some(true),
+            resumed: Some(true),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["interrupted"], true);
+        assert_eq!(json["resumed"], true);
+
+        // Without optional fields
+        let resp2 = SayResponse {
+            session_id: "abc".to_string(),
+            status: SessionStatus::Active,
+            interrupted: None,
+            resumed: None,
+        };
+        let json2 = serde_json::to_value(&resp2).unwrap();
+        assert!(json2.get("interrupted").is_none());
+        assert!(json2.get("resumed").is_none());
     }
 }

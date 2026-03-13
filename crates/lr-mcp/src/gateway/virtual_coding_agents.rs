@@ -10,6 +10,7 @@ use super::access_control::{self, AccessDecision, FirewallCheckResult};
 use super::virtual_server::*;
 use crate::protocol::McpTool;
 use lr_coding_agents::manager::CodingAgentManager;
+use lr_coding_agents::mcp_tools;
 
 /// Virtual MCP server for AI coding agent orchestration.
 pub struct CodingAgentVirtualServer {
@@ -20,6 +21,11 @@ impl CodingAgentVirtualServer {
     pub fn new(manager: Arc<CodingAgentManager>) -> Self {
         Self { manager }
     }
+
+    /// Get the configured tool prefix.
+    fn tool_prefix(&self) -> &str {
+        &self.manager.config().tool_prefix
+    }
 }
 
 /// Per-session state for coding agents.
@@ -27,6 +33,7 @@ impl CodingAgentVirtualServer {
 pub struct CodingAgentSessionState {
     pub permission: lr_config::PermissionState,
     pub agent_type: Option<lr_config::CodingAgentType>,
+    pub tool_prefix: String,
 }
 
 impl VirtualSessionState for CodingAgentSessionState {
@@ -52,7 +59,7 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
     }
 
     fn owns_tool(&self, tool_name: &str) -> bool {
-        lr_coding_agents::mcp_tools::is_coding_agent_tool(tool_name)
+        mcp_tools::is_coding_agent_tool(tool_name, self.tool_prefix())
     }
 
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
@@ -69,10 +76,11 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
             return Vec::new();
         }
 
-        lr_coding_agents::mcp_tools::build_coding_agent_tools(
+        mcp_tools::build_coding_agent_tools(
             &self.manager,
             &state.permission,
             state.agent_type,
+            &state.tool_prefix,
         )
     }
 
@@ -92,16 +100,13 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
         let decision = access_control::check_coding_agent_access(&state.permission);
 
         if state.agent_type.is_none() {
-            let result = match decision {
-                AccessDecision::Deny => FirewallCheckResult::Deny,
-                _ => FirewallCheckResult::Deny, // no agent selected
-            };
-            return VirtualFirewallResult::Standard(result);
+            return VirtualFirewallResult::Standard(FirewallCheckResult::Deny);
         }
 
-        // Only session creation (coding_agent_start) requires approval popup.
-        // All other tools (say, status, respond, interrupt, list) proceed freely.
-        if tool_name != "coding_agent_start" {
+        // Only session creation (start tool) requires approval popup.
+        // All other tools (say, status, list) proceed freely.
+        let start_name = mcp_tools::tool_name(&state.tool_prefix, "start");
+        if tool_name != start_name {
             let result = match decision {
                 AccessDecision::Deny => FirewallCheckResult::Deny,
                 _ => FirewallCheckResult::Allow,
@@ -109,7 +114,7 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
             return VirtualFirewallResult::Standard(result);
         }
 
-        // coding_agent_start goes through normal permission flow
+        // Start tool goes through normal permission flow
         let result = match decision {
             AccessDecision::Allow => FirewallCheckResult::Allow,
             AccessDecision::Deny => FirewallCheckResult::Deny,
@@ -148,12 +153,13 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
             }
         };
 
-        match lr_coding_agents::mcp_tools::handle_coding_agent_tool_call(
+        match mcp_tools::handle_coding_agent_tool_call(
             tool_name,
             &arguments,
             &self.manager,
             client_id,
             agent_type,
+            &state.tool_prefix,
         )
         .await
         {
@@ -169,9 +175,13 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
         }
     }
 
-    fn deferrable_tools(&self, state: &dyn VirtualSessionState) -> Vec<String> {
-        // All coding agent tools are deferrable — they can be activated via ctx_search
-        self.list_tools(state).into_iter().map(|t| t.name).collect()
+    fn deferrable_tools(&self, _state: &dyn VirtualSessionState) -> Vec<String> {
+        // Only defer start and list — say and status are primary interaction tools
+        let prefix = self.tool_prefix();
+        vec![
+            mcp_tools::tool_name(prefix, "start"),
+            mcp_tools::tool_name(prefix, "list"),
+        ]
     }
 
     fn build_instructions(&self, state: &dyn VirtualSessionState) -> Option<VirtualInstructions> {
@@ -190,12 +200,17 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
             return None;
         }
 
+        let prefix = &state.tool_prefix;
+        let start = mcp_tools::tool_name(prefix, "start");
+        let say = mcp_tools::tool_name(prefix, "say");
+        let status = mcp_tools::tool_name(prefix, "status");
+        let list = mcp_tools::tool_name(prefix, "list");
+
         let content = format!(
             "You have access to **{}** as a coding agent. Use the unified tools: \
-             `coding_agent_start`, `coding_agent_say`, `coding_agent_status`, \
-             `coding_agent_respond`, `coding_agent_interrupt`, `coding_agent_list`.\n\n\
-             Workflow: Start a session → poll status → respond to questions → get results.\n\
-             Use `wait: true` with `coding_agent_status` to block until the agent needs attention, \
+             `{start}`, `{say}`, `{status}`, `{list}`.\n\n\
+             Workflow: Start a session → poll status → get results.\n\
+             Use `wait: true` with `{status}` to block until the agent needs attention, \
              instead of polling in a loop.\n",
             agent_type.display_name(),
         );
@@ -212,6 +227,7 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
         Box::new(CodingAgentSessionState {
             permission: client.coding_agent_permission.clone(),
             agent_type: client.coding_agent_type,
+            tool_prefix: self.manager.config().tool_prefix.clone(),
         })
     }
 
@@ -223,18 +239,18 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
         if let Some(s) = state.as_any_mut().downcast_mut::<CodingAgentSessionState>() {
             s.permission = client.coding_agent_permission.clone();
             s.agent_type = client.coding_agent_type;
+            s.tool_prefix = self.manager.config().tool_prefix.clone();
         }
     }
 
     fn all_tool_names(&self) -> Vec<String> {
-        lr_coding_agents::mcp_tools::all_tool_names()
+        mcp_tools::all_tool_names(self.tool_prefix())
     }
 
     fn is_tool_indexable(&self, tool_name: &str) -> bool {
-        match tool_name {
-            "coding_agent_status" => true, // Status output useful
-            "coding_agent_list" => true,   // List output useful
-            _ => false,                    // start, say, respond, interrupt are actions
-        }
+        let prefix = self.tool_prefix();
+        let status_name = mcp_tools::tool_name(prefix, "status");
+        let list_name = mcp_tools::tool_name(prefix, "list");
+        tool_name == status_name || tool_name == list_name
     }
 }

@@ -608,74 +608,744 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_mcp_server_capabilities': (args) => {
     const server = mockData.mcpServers.find(s => s.id === args?.id || s.id === args?.serverId)
     // Return server-specific tools based on the server type
-    const toolsByServer: Record<string, { name: string; description: string }[]> = {
+    const toolsByServer: Record<string, { name: string; description: string; input_schema: Record<string, unknown> }[]> = {
       'mcp-github': [
-        { name: 'create_issue', description: 'Create a new GitHub issue' },
-        { name: 'create_pull_request', description: 'Create a new pull request' },
-        { name: 'list_repos', description: 'List repositories for a user or organization' },
-        { name: 'search_code', description: 'Search for code across repositories' },
-        { name: 'get_file_contents', description: 'Get contents of a file from a repository' },
-        { name: 'create_branch', description: 'Create a new branch' },
-        { name: 'merge_pull_request', description: 'Merge a pull request' },
-        { name: 'list_workflows', description: 'List GitHub Actions workflows' },
-        { name: 'trigger_workflow', description: 'Trigger a GitHub Actions workflow' },
-        { name: 'get_commit_history', description: 'Get commit history for a repository' },
-        { name: 'create_release', description: 'Create a new release' },
-        { name: 'add_comment', description: 'Add a comment to an issue or PR' },
+        {
+          name: 'create_issue',
+          description: 'Create a new issue in a GitHub repository. Supports setting the title, body, labels, assignees, and milestone. The repository must exist and the authenticated user must have write access to it.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository. This is the GitHub username or organization name that owns the repo.' },
+              repo: { type: 'string', description: 'The name of the repository where the issue will be created. Must not include the owner prefix.' },
+              title: { type: 'string', description: 'A concise, descriptive title for the issue. Should clearly summarize the problem or feature request.' },
+              body: { type: 'string', description: 'The full body text of the issue, formatted as GitHub-flavored Markdown. May include code blocks, task lists, and references to other issues.' },
+              labels: { type: 'array', items: { type: 'string' }, description: 'An array of label names to apply to the issue. Labels must already exist in the repository.' },
+              assignees: { type: 'array', items: { type: 'string' }, description: 'An array of GitHub usernames to assign to the issue. Each assignee must have access to the repository.' },
+              milestone: { type: 'number', description: 'The numeric ID of a milestone to associate with this issue. The milestone must exist in the repository.' },
+            },
+            required: ['owner', 'repo', 'title'],
+          },
+        },
+        {
+          name: 'create_pull_request',
+          description: 'Create a new pull request in a GitHub repository from a head branch into a base branch. Supports setting the title, body, draft status, and whether maintainer edits are allowed. The head branch must contain commits not present in the base branch.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository where the pull request will be created.' },
+              repo: { type: 'string', description: 'The name of the repository. Must not include the owner prefix.' },
+              title: { type: 'string', description: 'A concise, descriptive title for the pull request summarizing the changes.' },
+              body: { type: 'string', description: 'The full description of the pull request in GitHub-flavored Markdown. Should explain what changes were made and why.' },
+              head: { type: 'string', description: 'The name of the branch where your changes are implemented. For cross-repository PRs, use the format owner:branch.' },
+              base: { type: 'string', description: 'The name of the branch you want the changes pulled into. This is usually "main" or "master".' },
+              draft: { type: 'boolean', description: 'Whether to create the pull request as a draft. Draft PRs cannot be merged until marked as ready for review.' },
+              maintainer_can_modify: { type: 'boolean', description: 'Whether maintainers of the base repository can push to the head branch. Defaults to true for non-fork PRs.' },
+            },
+            required: ['owner', 'repo', 'title', 'head', 'base'],
+          },
+        },
+        {
+          name: 'list_repos',
+          description: 'List repositories accessible to the authenticated user, optionally filtered by owner, type, or sort order. Returns paginated results including repository metadata such as name, description, visibility, and language statistics.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'Filter repositories by this owner (username or organization). If omitted, returns repositories for the authenticated user.' },
+              type: { type: 'string', description: 'The type of repositories to list.', enum: ['all', 'owner', 'public', 'private', 'member'] },
+              sort: { type: 'string', description: 'The property to sort results by.', enum: ['created', 'updated', 'pushed', 'full_name'] },
+              direction: { type: 'string', description: 'The sort direction for results.', enum: ['asc', 'desc'] },
+              per_page: { type: 'number', description: 'Number of results per page. Maximum is 100. Defaults to 30.' },
+              page: { type: 'number', description: 'The page number of results to fetch. Starts at 1.' },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'search_code',
+          description: 'Search for code across all repositories accessible to the authenticated user using GitHub code search syntax. Returns matching file paths, repository information, and text matches with surrounding context. Supports qualifiers for language, filename, path, and repository filtering.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              q: { type: 'string', description: 'The search query using GitHub code search syntax. Can include qualifiers like "language:python", "filename:config.yml", "repo:owner/name", or "path:src/". Example: "addClass in:file language:js repo:jquery/jquery".' },
+              sort: { type: 'string', description: 'Sort field for results. Can only be "indexed" which sorts by last index time.', enum: ['indexed'] },
+              order: { type: 'string', description: 'Sort order for results.', enum: ['asc', 'desc'] },
+              per_page: { type: 'number', description: 'Number of results per page. Maximum is 100. Defaults to 30.' },
+              page: { type: 'number', description: 'The page number of results to fetch, starting at 1.' },
+            },
+            required: ['q'],
+          },
+        },
+        {
+          name: 'get_file_contents',
+          description: 'Retrieve the decoded contents of a file from a GitHub repository at a specific path and optional Git reference. Returns the file content, encoding, size, and SHA hash. For files larger than 1MB, the content may be returned as a download URL instead.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository containing the file.' },
+              repo: { type: 'string', description: 'The name of the repository.' },
+              path: { type: 'string', description: 'The file path relative to the root of the repository. Must not start with a slash.' },
+              ref: { type: 'string', description: 'The name of the commit, branch, or tag to retrieve the file from. Defaults to the default branch if omitted.' },
+            },
+            required: ['owner', 'repo', 'path'],
+          },
+        },
+        {
+          name: 'create_branch',
+          description: 'Create a new Git branch reference in a GitHub repository. The branch is created by pointing to an existing commit SHA. You must first retrieve the SHA of the commit you want the branch to point to, typically the HEAD of another branch.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository where the branch will be created.' },
+              repo: { type: 'string', description: 'The name of the repository.' },
+              branch: { type: 'string', description: 'The name for the new branch. Must not already exist in the repository. Do not include "refs/heads/" prefix.' },
+              from_branch: { type: 'string', description: 'The name of the existing branch to create the new branch from. The new branch will start at the same commit as this branch.' },
+            },
+            required: ['owner', 'repo', 'branch'],
+          },
+        },
+        {
+          name: 'merge_pull_request',
+          description: 'Merge an open pull request in a GitHub repository. Supports merge, squash, and rebase merge strategies. The pull request must be in a mergeable state with all required status checks passing and no merge conflicts.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository containing the pull request.' },
+              repo: { type: 'string', description: 'The name of the repository.' },
+              pull_number: { type: 'number', description: 'The pull request number to merge.' },
+              commit_title: { type: 'string', description: 'Title for the merge commit. If omitted, a default title is generated based on the merge method.' },
+              commit_message: { type: 'string', description: 'Extra detail for the merge commit body. Only used for merge and squash methods.' },
+              merge_method: { type: 'string', description: 'The merge strategy to use for combining the pull request commits.', enum: ['merge', 'squash', 'rebase'] },
+              sha: { type: 'string', description: 'SHA that the pull request head must match to allow the merge. Prevents merging if new commits were pushed after review.' },
+            },
+            required: ['owner', 'repo', 'pull_number'],
+          },
+        },
+        {
+          name: 'list_workflows',
+          description: 'List all GitHub Actions workflows defined in a repository. Returns workflow metadata including the workflow ID, name, file path, state, and creation timestamp. Only workflows stored in the .github/workflows directory are included.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository.' },
+              repo: { type: 'string', description: 'The name of the repository to list workflows for.' },
+              per_page: { type: 'number', description: 'Number of results per page. Maximum is 100. Defaults to 30.' },
+              page: { type: 'number', description: 'The page number of results to fetch.' },
+            },
+            required: ['owner', 'repo'],
+          },
+        },
+        {
+          name: 'trigger_workflow',
+          description: 'Manually trigger a GitHub Actions workflow dispatch event for a specified workflow. The workflow must have a workflow_dispatch trigger configured in its YAML definition. Supports passing custom input parameters defined in the workflow file.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository containing the workflow.' },
+              repo: { type: 'string', description: 'The name of the repository.' },
+              workflow_id: { type: 'string', description: 'The workflow ID (numeric) or the workflow file name (e.g., "ci.yml") to trigger.' },
+              ref: { type: 'string', description: 'The Git reference (branch or tag) to run the workflow on. The workflow file must exist on this ref.' },
+              inputs: { type: 'object', description: 'A key-value map of input parameters to pass to the workflow. Keys must match inputs defined in the workflow_dispatch trigger.' },
+            },
+            required: ['owner', 'repo', 'workflow_id', 'ref'],
+          },
+        },
+        {
+          name: 'get_commit_history',
+          description: 'Retrieve the commit history for a repository, optionally filtered by branch, path, author, or date range. Returns a paginated list of commits with their SHA, message, author information, and timestamp. Commits are returned in reverse chronological order.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository.' },
+              repo: { type: 'string', description: 'The name of the repository to get commit history for.' },
+              sha: { type: 'string', description: 'The branch name or commit SHA to start listing commits from. Defaults to the default branch.' },
+              path: { type: 'string', description: 'Only include commits that modified this file path.' },
+              author: { type: 'string', description: 'Filter commits by this GitHub username or email address.' },
+              since: { type: 'string', description: 'Only show commits after this date. ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ.' },
+              until: { type: 'string', description: 'Only show commits before this date. ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ.' },
+              per_page: { type: 'number', description: 'Number of results per page. Maximum is 100.' },
+            },
+            required: ['owner', 'repo'],
+          },
+        },
+        {
+          name: 'create_release',
+          description: 'Create a new release for a repository on GitHub. Releases are deployable software iterations based on Git tags. This endpoint creates both the Git tag (if it does not exist) and the associated release with release notes and optional binary assets.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository.' },
+              repo: { type: 'string', description: 'The name of the repository.' },
+              tag_name: { type: 'string', description: 'The name of the tag for this release. If the tag does not exist, it will be created from the target_commitish.' },
+              target_commitish: { type: 'string', description: 'The commitish value (branch or SHA) that determines where the Git tag is created from. Ignored if the tag already exists.' },
+              name: { type: 'string', description: 'The human-readable name for the release. Often matches or describes the tag name (e.g., "v1.0.0 - Initial Release").' },
+              body: { type: 'string', description: 'Markdown-formatted text describing the release contents, changes, and upgrade notes.' },
+              draft: { type: 'boolean', description: 'Whether to create the release as an unpublished draft. Draft releases are not visible to the public.' },
+              prerelease: { type: 'boolean', description: 'Whether to mark the release as a prerelease. Prerelease versions indicate the software is not production-ready.' },
+              generate_release_notes: { type: 'boolean', description: 'Whether to automatically generate release notes based on merged pull requests since the last release.' },
+            },
+            required: ['owner', 'repo', 'tag_name'],
+          },
+        },
+        {
+          name: 'add_comment',
+          description: 'Add a comment to an existing issue or pull request in a GitHub repository. The comment body supports full GitHub-flavored Markdown including code blocks, mentions, task lists, and embedded images. The authenticated user must have read access to the repository.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              owner: { type: 'string', description: 'The account owner of the repository.' },
+              repo: { type: 'string', description: 'The name of the repository.' },
+              issue_number: { type: 'number', description: 'The number of the issue or pull request to comment on. Pull requests are treated as issues for the comment API.' },
+              body: { type: 'string', description: 'The contents of the comment in GitHub-flavored Markdown format. Supports @mentions, #references, task lists, and code blocks.' },
+            },
+            required: ['owner', 'repo', 'issue_number', 'body'],
+          },
+        },
       ],
       'mcp-filesystem': [
-        { name: 'read_file', description: 'Read contents of a file' },
-        { name: 'write_file', description: 'Write contents to a file' },
-        { name: 'list_directory', description: 'List files in a directory' },
-        { name: 'create_directory', description: 'Create a new directory' },
-        { name: 'delete_file', description: 'Delete a file' },
-        { name: 'move_file', description: 'Move or rename a file' },
-        { name: 'copy_file', description: 'Copy a file to another location' },
-        { name: 'search_files', description: 'Search for files by pattern' },
+        {
+          name: 'read_file',
+          description: 'Read the complete contents of a file from the filesystem. Returns file content as UTF-8 text, or base64-encoded data for binary files. The file must be within the configured allowed directory paths.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Absolute or relative path to the file to read. Must be within the allowed directories configured for the server.' },
+              encoding: { type: 'string', description: 'File encoding to use when reading. Defaults to utf-8 for text files.', enum: ['utf-8', 'utf-16', 'ascii', 'base64'] },
+            },
+            required: ['path'],
+          },
+        },
+        {
+          name: 'write_file',
+          description: 'Write text content to a file on the filesystem, creating the file if it does not exist or overwriting it if it does. Parent directories must already exist. The file path must be within the configured allowed directory paths.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Absolute or relative path to the file to write. Must be within the allowed directories.' },
+              content: { type: 'string', description: 'The full text content to write to the file. Existing content will be completely replaced.' },
+              encoding: { type: 'string', description: 'File encoding to use when writing. Defaults to utf-8.', enum: ['utf-8', 'utf-16', 'ascii'] },
+              create_parents: { type: 'boolean', description: 'Whether to create parent directories if they do not exist. Defaults to false.' },
+            },
+            required: ['path', 'content'],
+          },
+        },
+        {
+          name: 'list_directory',
+          description: 'List all files and subdirectories within a directory on the filesystem. Returns file names, sizes, types, and modification timestamps. Results can be filtered by file extension or name pattern. The directory must be within the allowed paths.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Absolute or relative path to the directory to list. Must be within the allowed directories.' },
+              recursive: { type: 'boolean', description: 'Whether to recursively list contents of subdirectories. Defaults to false for a single-level listing.' },
+              include_hidden: { type: 'boolean', description: 'Whether to include hidden files and directories (those starting with a dot). Defaults to false.' },
+              pattern: { type: 'string', description: 'Glob pattern to filter results (e.g., "*.ts", "**/*.json"). Only matching entries will be returned.' },
+            },
+            required: ['path'],
+          },
+        },
+        {
+          name: 'create_directory',
+          description: 'Create a new directory on the filesystem at the specified path. Can optionally create parent directories recursively if they do not exist. The path must be within the configured allowed directory paths. Fails if the directory already exists unless ignore_existing is set.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Absolute or relative path for the new directory. Must be within the allowed directories.' },
+              recursive: { type: 'boolean', description: 'Whether to create parent directories if they do not exist, similar to "mkdir -p". Defaults to false.' },
+              ignore_existing: { type: 'boolean', description: 'If true, do not return an error when the directory already exists. Defaults to false.' },
+            },
+            required: ['path'],
+          },
+        },
+        {
+          name: 'delete_file',
+          description: 'Permanently delete a file from the filesystem. This action cannot be undone. The file must exist and be within the configured allowed directory paths. Does not support deleting directories; use delete_directory for that purpose.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Absolute or relative path to the file to delete. Must be within the allowed directories.' },
+              force: { type: 'boolean', description: 'If true, do not return an error if the file does not exist. Defaults to false.' },
+            },
+            required: ['path'],
+          },
+        },
+        {
+          name: 'move_file',
+          description: 'Move or rename a file from one location to another on the filesystem. Both the source and destination paths must be within the configured allowed directory paths. If the destination already exists, the operation will fail unless overwrite is enabled.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              source: { type: 'string', description: 'The current absolute or relative path of the file to move.' },
+              destination: { type: 'string', description: 'The new absolute or relative path where the file should be moved to.' },
+              overwrite: { type: 'boolean', description: 'Whether to overwrite the destination file if it already exists. Defaults to false.' },
+            },
+            required: ['source', 'destination'],
+          },
+        },
+        {
+          name: 'copy_file',
+          description: 'Copy a file from a source path to a destination path on the filesystem. Both paths must be within the configured allowed directory paths. The original file remains unchanged. If the destination file already exists, the operation will fail unless overwrite is enabled.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              source: { type: 'string', description: 'The absolute or relative path of the file to copy from.' },
+              destination: { type: 'string', description: 'The absolute or relative path to copy the file to.' },
+              overwrite: { type: 'boolean', description: 'Whether to overwrite the destination file if it already exists. Defaults to false.' },
+            },
+            required: ['source', 'destination'],
+          },
+        },
+        {
+          name: 'search_files',
+          description: 'Search for files within a directory tree by matching file names against a glob pattern or regular expression. Returns all matching file paths with metadata including size and modification time. Supports recursive searching through subdirectories.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'The root directory to start searching from. Must be within the allowed directories.' },
+              pattern: { type: 'string', description: 'Glob pattern (e.g., "*.ts", "**/*.json") or regular expression to match file names against.' },
+              regex: { type: 'boolean', description: 'If true, treat the pattern as a regular expression instead of a glob pattern. Defaults to false.' },
+              include_hidden: { type: 'boolean', description: 'Whether to include hidden files and directories in the search. Defaults to false.' },
+              max_depth: { type: 'number', description: 'Maximum directory depth to search. A value of 1 only searches the immediate directory. No limit if omitted.' },
+            },
+            required: ['path', 'pattern'],
+          },
+        },
       ],
       'mcp-slack': [
-        { name: 'send_message', description: 'Send a message to a channel' },
-        { name: 'list_channels', description: 'List available channels' },
-        { name: 'get_channel_history', description: 'Get message history from a channel' },
-        { name: 'create_channel', description: 'Create a new channel' },
-        { name: 'invite_user', description: 'Invite a user to a channel' },
-        { name: 'upload_file', description: 'Upload a file to a channel' },
-        { name: 'add_reaction', description: 'Add a reaction to a message' },
-        { name: 'search_messages', description: 'Search for messages' },
-        { name: 'get_user_info', description: 'Get information about a user' },
-        { name: 'set_status', description: 'Set user status' },
-        { name: 'schedule_message', description: 'Schedule a message for later' },
-        { name: 'pin_message', description: 'Pin a message to a channel' },
-        { name: 'create_reminder', description: 'Create a reminder' },
-        { name: 'list_emojis', description: 'List available custom emojis' },
-        { name: 'get_team_info', description: 'Get workspace information' },
+        {
+          name: 'send_message',
+          description: 'Send a message to a Slack channel or direct message conversation. Supports rich text formatting using Slack mrkdwn syntax including bold, italic, code blocks, links, and emoji. Messages can optionally be sent as a reply to an existing thread.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              channel: { type: 'string', description: 'The channel ID or name to send the message to. Channel names should be prefixed with #. For DMs, use the user\'s ID.' },
+              text: { type: 'string', description: 'The message text to send, formatted using Slack mrkdwn syntax. Supports *bold*, _italic_, `code`, ```code blocks```, and <url|link text> formatting.' },
+              thread_ts: { type: 'string', description: 'The timestamp of the parent message to reply to in a thread. If omitted, sends as a new top-level message.' },
+              unfurl_links: { type: 'boolean', description: 'Whether to enable link previews for URLs in the message. Defaults to true.' },
+              unfurl_media: { type: 'boolean', description: 'Whether to enable media previews for media URLs. Defaults to true.' },
+            },
+            required: ['channel', 'text'],
+          },
+        },
+        {
+          name: 'list_channels',
+          description: 'List all public and private channels visible to the authenticated user in the Slack workspace. Returns channel metadata including name, topic, purpose, member count, and creation timestamp. Results are paginated and can be filtered by type.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              types: { type: 'string', description: 'Comma-separated list of channel types to include. Valid values: public_channel, private_channel, mpim, im. Defaults to public_channel.' },
+              exclude_archived: { type: 'boolean', description: 'Whether to exclude archived channels from the results. Defaults to false.' },
+              limit: { type: 'number', description: 'Maximum number of channels to return. Defaults to 100, maximum is 1000.' },
+              cursor: { type: 'string', description: 'Pagination cursor returned from a previous request. Use this to fetch the next page of results.' },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'get_channel_history',
+          description: 'Retrieve the message history from a Slack channel or conversation. Returns messages in reverse chronological order with full metadata including author, timestamp, reactions, and thread reply counts. Supports filtering by time range and pagination.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              channel: { type: 'string', description: 'The ID of the channel to fetch history from.' },
+              limit: { type: 'number', description: 'Maximum number of messages to return. Defaults to 100, maximum is 1000.' },
+              oldest: { type: 'string', description: 'Only return messages after this Unix timestamp (inclusive). Used for filtering by date range.' },
+              latest: { type: 'string', description: 'Only return messages before this Unix timestamp (exclusive). Used for filtering by date range.' },
+              inclusive: { type: 'boolean', description: 'Whether to include messages with the exact oldest or latest timestamps. Defaults to false.' },
+              cursor: { type: 'string', description: 'Pagination cursor for fetching additional pages of results.' },
+            },
+            required: ['channel'],
+          },
+        },
+        {
+          name: 'create_channel',
+          description: 'Create a new public or private channel in the Slack workspace. Channel names must be lowercase, without spaces, and no longer than 80 characters. The authenticated user will automatically be added as a member of the new channel.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Name for the new channel. Must be lowercase, no spaces, max 80 characters. Hyphens and underscores are allowed.' },
+              is_private: { type: 'boolean', description: 'Whether to create a private channel. Private channels are only visible to invited members. Defaults to false.' },
+              description: { type: 'string', description: 'A short description of the channel purpose, displayed in the channel details panel.' },
+              topic: { type: 'string', description: 'The topic text displayed at the top of the channel. Can be updated later by any channel member.' },
+            },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'invite_user',
+          description: 'Invite one or more users to join a Slack channel. The authenticated user must be a member of the channel and have permission to invite others. Users who are already members of the channel will be silently ignored.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              channel: { type: 'string', description: 'The ID of the channel to invite users to.' },
+              users: { type: 'string', description: 'A comma-separated list of user IDs to invite to the channel. Maximum of 1000 users per request.' },
+            },
+            required: ['channel', 'users'],
+          },
+        },
+        {
+          name: 'upload_file',
+          description: 'Upload a file to one or more Slack channels. Supports text files, images, PDFs, and other common file types up to the workspace file size limit. The file can include an optional title and initial comment message.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              channels: { type: 'string', description: 'Comma-separated list of channel IDs to share the file with.' },
+              content: { type: 'string', description: 'The text content of the file. Use this for creating text-based files directly. Mutually exclusive with file_url.' },
+              filename: { type: 'string', description: 'The name of the file including extension (e.g., "report.csv"). Determines the file type and icon shown in Slack.' },
+              title: { type: 'string', description: 'A descriptive title for the file, displayed prominently in the Slack interface.' },
+              initial_comment: { type: 'string', description: 'An optional message to post alongside the file upload. Supports Slack mrkdwn formatting.' },
+              filetype: { type: 'string', description: 'The file type identifier (e.g., "python", "json", "markdown"). Used for syntax highlighting of text content.' },
+            },
+            required: ['channels', 'filename'],
+          },
+        },
+        {
+          name: 'add_reaction',
+          description: 'Add an emoji reaction to a message in a Slack channel. The reaction is added on behalf of the authenticated user. If the user has already reacted with the same emoji, the operation will succeed silently without duplicating the reaction.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              channel: { type: 'string', description: 'The ID of the channel containing the message to react to.' },
+              timestamp: { type: 'string', description: 'The timestamp of the message to add the reaction to. This uniquely identifies the message within the channel.' },
+              name: { type: 'string', description: 'The name of the emoji reaction to add, without surrounding colons (e.g., "thumbsup" not ":thumbsup:").' },
+            },
+            required: ['channel', 'timestamp', 'name'],
+          },
+        },
+        {
+          name: 'search_messages',
+          description: 'Search for messages across all channels and conversations visible to the authenticated user. Supports advanced query syntax including filters for channel, sender, date range, and boolean operators. Returns matching messages with surrounding context.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'The search query string. Supports Slack search syntax: "in:#channel", "from:@user", "before:2024-01-01", "after:2024-01-01", and boolean operators AND, OR, NOT.' },
+              sort: { type: 'string', description: 'How to sort the results.', enum: ['score', 'timestamp'] },
+              sort_dir: { type: 'string', description: 'Sort direction.', enum: ['asc', 'desc'] },
+              count: { type: 'number', description: 'Number of results to return per page. Defaults to 20, maximum is 100.' },
+              page: { type: 'number', description: 'The page number of results to return, starting at 1.' },
+            },
+            required: ['query'],
+          },
+        },
+        {
+          name: 'get_user_info',
+          description: 'Retrieve detailed profile information about a Slack workspace member. Returns the user display name, real name, email address, status, timezone, profile image URLs, and account status flags such as admin, owner, and bot indicators.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              user: { type: 'string', description: 'The unique user ID (e.g., "U0123456789") of the member to look up.' },
+              include_locale: { type: 'boolean', description: 'Whether to include the user locale information in the response. Defaults to false.' },
+            },
+            required: ['user'],
+          },
+        },
+        {
+          name: 'set_status',
+          description: 'Set or update the status for the authenticated user in the Slack workspace. The status appears next to the username in the sidebar and in the user profile. Supports custom status text, an emoji icon, and an optional expiration timestamp.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              status_text: { type: 'string', description: 'The text to display as the user status. Maximum 100 characters. Set to empty string to clear the status.' },
+              status_emoji: { type: 'string', description: 'The emoji to display alongside the status text, using colon format (e.g., ":coffee:"). Set to empty string to remove.' },
+              status_expiration: { type: 'number', description: 'Unix timestamp when the status should automatically expire and be cleared. Set to 0 for no expiration.' },
+            },
+            required: ['status_text'],
+          },
+        },
+        {
+          name: 'schedule_message',
+          description: 'Schedule a message to be posted to a Slack channel at a specific time in the future. The message will appear as if sent at the scheduled time by the authenticated user. Scheduled messages can be listed and deleted before they are sent.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              channel: { type: 'string', description: 'The ID of the channel to post the scheduled message to.' },
+              text: { type: 'string', description: 'The message text to send at the scheduled time. Supports Slack mrkdwn formatting.' },
+              post_at: { type: 'number', description: 'Unix timestamp for when the message should be posted. Must be in the future and within 120 days.' },
+              thread_ts: { type: 'string', description: 'The timestamp of a parent message to post the scheduled message as a threaded reply.' },
+            },
+            required: ['channel', 'text', 'post_at'],
+          },
+        },
+        {
+          name: 'pin_message',
+          description: 'Pin a message to a Slack channel so it appears in the channel pinned items list. Pinned messages remain easily accessible for all channel members. Each channel can have a maximum of 100 pinned messages. Only channel members can pin messages.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              channel: { type: 'string', description: 'The ID of the channel containing the message to pin.' },
+              timestamp: { type: 'string', description: 'The timestamp of the message to pin. This uniquely identifies the message within the channel.' },
+            },
+            required: ['channel', 'timestamp'],
+          },
+        },
+        {
+          name: 'create_reminder',
+          description: 'Create a personal or channel reminder in Slack that fires at a specified time. Reminders can notify the authenticated user or an entire channel. The reminder text supports basic Slack formatting and will appear as a Slackbot notification.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'The reminder text that will be displayed when the reminder fires. Supports basic Slack formatting.' },
+              time: { type: 'string', description: 'When to fire the reminder. Accepts Unix timestamp, ISO 8601 date string, or natural language (e.g., "in 15 minutes", "tomorrow at 9am").' },
+              user: { type: 'string', description: 'The user ID to create the reminder for. Defaults to the authenticated user if omitted.' },
+            },
+            required: ['text', 'time'],
+          },
+        },
+        {
+          name: 'list_emojis',
+          description: 'List all custom emoji available in the Slack workspace. Returns a mapping of emoji names to their image URLs or aliases. This includes only custom emoji uploaded by workspace members, not the standard Unicode emoji set built into Slack.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              include_categories: { type: 'boolean', description: 'Whether to include emoji category groupings in the response. Defaults to false.' },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'get_team_info',
+          description: 'Retrieve detailed information about the Slack workspace (team). Returns the workspace name, domain, email domain restrictions, icon URLs, and plan information. Useful for verifying workspace identity and available features based on the subscription plan.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              team: { type: 'string', description: 'The team ID to fetch information for. If omitted, returns info for the workspace associated with the current authentication token.' },
+            },
+            required: [],
+          },
+        },
       ],
       'mcp-postgres': [
-        { name: 'execute_query', description: 'Execute a SQL query' },
-        { name: 'list_tables', description: 'List all tables in the database' },
-        { name: 'describe_table', description: 'Get table schema information' },
-        { name: 'list_databases', description: 'List available databases' },
-        { name: 'create_table', description: 'Create a new table' },
-        { name: 'insert_row', description: 'Insert a row into a table' },
+        {
+          name: 'execute_query',
+          description: 'Execute a SQL query against the connected PostgreSQL database and return the result set. Supports SELECT, INSERT, UPDATE, DELETE, and DDL statements. Parameterized queries are strongly recommended to prevent SQL injection vulnerabilities.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'The SQL query string to execute. Supports full PostgreSQL syntax including CTEs, window functions, and JSON operators. Use $1, $2, etc. for parameter placeholders.' },
+              params: { type: 'array', items: { type: 'string' }, description: 'An ordered array of parameter values to bind to the $1, $2, etc. placeholders in the query. All values are passed as strings and cast by PostgreSQL.' },
+              timeout_ms: { type: 'number', description: 'Maximum time in milliseconds to wait for the query to complete before cancelling it. Defaults to 30000 (30 seconds).' },
+              read_only: { type: 'boolean', description: 'If true, execute the query in a read-only transaction. Prevents accidental data modification. Defaults to false.' },
+            },
+            required: ['query'],
+          },
+        },
+        {
+          name: 'list_tables',
+          description: 'List all tables and views in the connected PostgreSQL database, optionally filtered by schema name. Returns table names, types (table or view), estimated row counts, and total disk size. System catalog tables are excluded by default.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              schema: { type: 'string', description: 'The schema name to filter tables by. Defaults to "public". Use "*" to list tables across all schemas.' },
+              include_views: { type: 'boolean', description: 'Whether to include views and materialized views in the results. Defaults to true.' },
+              include_system: { type: 'boolean', description: 'Whether to include PostgreSQL system catalog tables (pg_catalog, information_schema). Defaults to false.' },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'describe_table',
+          description: 'Get detailed schema information for a specific table or view in the PostgreSQL database. Returns column names, data types, nullability constraints, default values, primary key information, foreign key references, and index definitions.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              table: { type: 'string', description: 'The name of the table or view to describe. Can be schema-qualified (e.g., "public.users") or just the table name for the default schema.' },
+              include_indexes: { type: 'boolean', description: 'Whether to include index definitions and statistics in the output. Defaults to true.' },
+              include_constraints: { type: 'boolean', description: 'Whether to include check constraints, unique constraints, and foreign key details. Defaults to true.' },
+              include_statistics: { type: 'boolean', description: 'Whether to include column statistics such as null fraction, distinct values, and most common values. Defaults to false.' },
+            },
+            required: ['table'],
+          },
+        },
+        {
+          name: 'list_databases',
+          description: 'List all databases available on the connected PostgreSQL server. Returns database names, owners, encoding settings, collation, and size on disk. Template databases and databases the user does not have access to may be excluded depending on permissions.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              include_templates: { type: 'boolean', description: 'Whether to include template databases (template0, template1) in the results. Defaults to false.' },
+              include_size: { type: 'boolean', description: 'Whether to calculate and include the disk size of each database. May be slow for large servers. Defaults to true.' },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'create_table',
+          description: 'Create a new table in the PostgreSQL database with the specified columns, data types, and constraints. Supports primary keys, foreign keys, unique constraints, check constraints, and default values. The table name must not already exist in the target schema.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              table_name: { type: 'string', description: 'The name for the new table. Can be schema-qualified (e.g., "public.users"). Must follow PostgreSQL naming rules.' },
+              columns: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, type: { type: 'string' }, nullable: { type: 'boolean' }, default_value: { type: 'string' } } }, description: 'Array of column definitions. Each column must have a name and PostgreSQL data type (e.g., "text", "integer", "timestamptz", "jsonb").' },
+              primary_key: { type: 'array', items: { type: 'string' }, description: 'Array of column names that form the primary key. May be a single column or composite key.' },
+              if_not_exists: { type: 'boolean', description: 'If true, do not raise an error if the table already exists. Defaults to false.' },
+              schema: { type: 'string', description: 'The schema to create the table in. Defaults to "public".' },
+            },
+            required: ['table_name', 'columns'],
+          },
+        },
+        {
+          name: 'insert_row',
+          description: 'Insert one or more rows into a PostgreSQL table. Supports inserting a single row or batch inserting multiple rows in a single statement. Returns the inserted rows if the table has a RETURNING clause. Column values are automatically type-cast by PostgreSQL.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              table: { type: 'string', description: 'The name of the table to insert into. Can be schema-qualified (e.g., "public.users").' },
+              rows: { type: 'array', items: { type: 'object' }, description: 'An array of row objects to insert. Each object maps column names to their values. All rows must have the same set of keys.' },
+              on_conflict: { type: 'string', description: 'Conflict resolution strategy. Specify a column name or constraint for ON CONFLICT handling (e.g., "id" for upsert behavior).', enum: ['error', 'ignore', 'update'] },
+              returning: { type: 'array', items: { type: 'string' }, description: 'Array of column names to return from the inserted rows. Use ["*"] to return all columns.' },
+            },
+            required: ['table', 'rows'],
+          },
+        },
       ],
       'mcp-browser': [
-        { name: 'navigate', description: 'Navigate to a URL' },
-        { name: 'screenshot', description: 'Take a screenshot of the current page' },
-        { name: 'click', description: 'Click an element on the page' },
-        { name: 'type', description: 'Type text into an input field' },
-        { name: 'scroll', description: 'Scroll the page' },
-        { name: 'get_text', description: 'Get text content from an element' },
-        { name: 'wait_for_element', description: 'Wait for an element to appear' },
-        { name: 'evaluate', description: 'Execute JavaScript in the page context' },
-        { name: 'get_html', description: 'Get HTML content from the page' },
-        { name: 'fill_form', description: 'Fill out a form with provided data' },
+        {
+          name: 'navigate',
+          description: 'Navigate the browser to a specified URL and wait for the page to fully load. Supports HTTP and HTTPS protocols. The page load is considered complete when the document reaches the "load" event or the specified timeout is exceeded.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              url: { type: 'string', description: 'The full URL to navigate to, including protocol (e.g., "https://example.com"). Relative URLs are resolved against the current page.' },
+              wait_until: { type: 'string', description: 'The event to wait for before considering navigation complete.', enum: ['load', 'domcontentloaded', 'networkidle0', 'networkidle2'] },
+              timeout_ms: { type: 'number', description: 'Maximum time in milliseconds to wait for the page to load. Defaults to 30000 (30 seconds).' },
+              referer: { type: 'string', description: 'The referer URL to include in the navigation request headers.' },
+            },
+            required: ['url'],
+          },
+        },
+        {
+          name: 'screenshot',
+          description: 'Capture a screenshot of the current browser page or a specific element on the page. Returns the image as base64-encoded PNG or JPEG data. Supports full-page screenshots that capture the entire scrollable area, or viewport-only captures.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              selector: { type: 'string', description: 'CSS selector of a specific element to screenshot. If omitted, captures the entire viewport or full page.' },
+              full_page: { type: 'boolean', description: 'Whether to capture the entire scrollable page instead of just the visible viewport. Defaults to false.' },
+              format: { type: 'string', description: 'Image format for the screenshot output.', enum: ['png', 'jpeg', 'webp'] },
+              quality: { type: 'number', description: 'Image quality for JPEG/WebP format, from 0 to 100. Ignored for PNG format. Defaults to 80.' },
+              omit_background: { type: 'boolean', description: 'Whether to hide the default white background and capture with transparency (PNG only). Defaults to false.' },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'click',
+          description: 'Click on an element in the current browser page identified by a CSS selector. Waits for the element to be visible and clickable before performing the click action. Supports left, right, and middle mouse button clicks as well as modifier keys.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              selector: { type: 'string', description: 'CSS selector identifying the element to click on. Must match exactly one visible element on the page.' },
+              button: { type: 'string', description: 'The mouse button to use for the click action.', enum: ['left', 'right', 'middle'] },
+              click_count: { type: 'number', description: 'Number of times to click. Use 2 for double-click, 3 for triple-click. Defaults to 1.' },
+              delay_ms: { type: 'number', description: 'Time in milliseconds to wait between mousedown and mouseup events. Defaults to 0.' },
+              modifiers: { type: 'array', items: { type: 'string', enum: ['Alt', 'Control', 'Meta', 'Shift'] }, description: 'Keyboard modifier keys to hold during the click.' },
+            },
+            required: ['selector'],
+          },
+        },
+        {
+          name: 'type',
+          description: 'Type text into an input field or editable element on the current browser page. The element is identified by a CSS selector and must be focusable. Each character is typed individually with configurable delay to simulate realistic human typing speed.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              selector: { type: 'string', description: 'CSS selector identifying the input field or editable element to type into.' },
+              text: { type: 'string', description: 'The text string to type into the element. Special characters are typed as-is.' },
+              delay_ms: { type: 'number', description: 'Delay in milliseconds between each keystroke to simulate human typing speed. Defaults to 0 for instant typing.' },
+              clear_first: { type: 'boolean', description: 'Whether to clear the existing content of the input field before typing new text. Defaults to false.' },
+              press_enter: { type: 'boolean', description: 'Whether to press the Enter key after typing the text. Useful for form submission. Defaults to false.' },
+            },
+            required: ['selector', 'text'],
+          },
+        },
+        {
+          name: 'scroll',
+          description: 'Scroll the browser page or a specific scrollable element by a given amount in pixels or to a specific element. Supports both vertical and horizontal scrolling. The scroll operation is performed smoothly to simulate natural user interaction.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              direction: { type: 'string', description: 'The direction to scroll the page or element.', enum: ['up', 'down', 'left', 'right'] },
+              amount: { type: 'number', description: 'The number of pixels to scroll in the specified direction. Defaults to one viewport height for vertical or viewport width for horizontal.' },
+              selector: { type: 'string', description: 'CSS selector of a specific scrollable element. If omitted, scrolls the main page document.' },
+              behavior: { type: 'string', description: 'The scrolling behavior to use.', enum: ['auto', 'smooth', 'instant'] },
+            },
+            required: ['direction'],
+          },
+        },
+        {
+          name: 'get_text',
+          description: 'Extract the visible text content from one or more elements on the current browser page, identified by a CSS selector. Returns the inner text of all matching elements, stripped of HTML tags. Useful for reading content from specific sections of a page.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              selector: { type: 'string', description: 'CSS selector identifying the element(s) to extract text from. If multiple elements match, text from all matches is concatenated.' },
+              include_hidden: { type: 'boolean', description: 'Whether to include text from hidden elements (display:none, visibility:hidden). Defaults to false.' },
+              trim: { type: 'boolean', description: 'Whether to trim leading and trailing whitespace from the extracted text. Defaults to true.' },
+            },
+            required: ['selector'],
+          },
+        },
+        {
+          name: 'wait_for_element',
+          description: 'Wait for an element matching a CSS selector to appear in the DOM of the current browser page. Configurable to wait for the element to be visible, hidden, attached to DOM, or detached. Times out with an error if the condition is not met within the specified duration.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              selector: { type: 'string', description: 'CSS selector for the element to wait for.' },
+              state: { type: 'string', description: 'The state to wait for the element to reach.', enum: ['visible', 'hidden', 'attached', 'detached'] },
+              timeout_ms: { type: 'number', description: 'Maximum time in milliseconds to wait for the element. Defaults to 30000 (30 seconds).' },
+              poll_interval_ms: { type: 'number', description: 'How frequently in milliseconds to check for the element. Lower values are more responsive but use more CPU. Defaults to 100.' },
+            },
+            required: ['selector'],
+          },
+        },
+        {
+          name: 'evaluate',
+          description: 'Execute arbitrary JavaScript code in the context of the current browser page and return the result. The code has access to the full DOM API, window object, and any JavaScript libraries loaded on the page. Return values are serialized as JSON.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              expression: { type: 'string', description: 'The JavaScript code to execute in the page context. Can be a single expression or multiple statements. The last expression value is returned.' },
+              await_promise: { type: 'boolean', description: 'Whether to await the result if the expression returns a Promise. Defaults to true.' },
+              timeout_ms: { type: 'number', description: 'Maximum time in milliseconds to wait for the JavaScript execution to complete. Defaults to 30000.' },
+              return_by_value: { type: 'boolean', description: 'Whether to return the result by value (serialized) or by reference (handle). Defaults to true (by value).' },
+            },
+            required: ['expression'],
+          },
+        },
+        {
+          name: 'get_html',
+          description: 'Retrieve the HTML content of the current browser page or a specific element identified by a CSS selector. Returns either the outer HTML (including the element itself) or inner HTML (only the element children). Useful for inspecting page structure and content.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              selector: { type: 'string', description: 'CSS selector identifying the element to get HTML from. If omitted, returns the full page document HTML.' },
+              outer: { type: 'boolean', description: 'Whether to return outer HTML (includes the matched element tag) or inner HTML (only children). Defaults to false (inner HTML).' },
+              pretty_print: { type: 'boolean', description: 'Whether to format the HTML output with indentation for readability. Defaults to false.' },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'fill_form',
+          description: 'Fill out a web form on the current browser page by providing a mapping of field selectors to values. Supports text inputs, selects, checkboxes, radio buttons, and file inputs. Optionally submits the form after filling all fields.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              fields: { type: 'object', description: 'A mapping of CSS selectors to values. Each key is a selector for a form field, and the value is what to enter or select. For checkboxes, use true/false. For selects, use the option value.' },
+              submit: { type: 'boolean', description: 'Whether to submit the form after filling all fields. Clicks the submit button or triggers form submission. Defaults to false.' },
+              submit_selector: { type: 'string', description: 'CSS selector for the submit button to click. Only used when submit is true. Defaults to the first submit button in the form.' },
+              clear_first: { type: 'boolean', description: 'Whether to clear existing field values before filling in new values. Defaults to true.' },
+            },
+            required: ['fields'],
+          },
+        },
       ],
     }
     const tools = server?.id ? (toolsByServer[server.id] || [
-      { name: 'execute', description: 'Execute the primary action' },
-      { name: 'query', description: 'Query for information' },
-      { name: 'list', description: 'List available items' },
-      { name: 'get', description: 'Get a specific item' },
+      { name: 'execute', description: 'Execute the primary action for this server. Accepts arbitrary input parameters and returns the result of the operation.', input_schema: { type: 'object', properties: { action: { type: 'string', description: 'The action to execute.' }, params: { type: 'object', description: 'Additional parameters for the action.' } }, required: ['action'] } },
+      { name: 'query', description: 'Query for information from this server. Returns structured data matching the specified criteria and filters.', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'The query string to search for.' }, limit: { type: 'number', description: 'Maximum number of results to return.' } }, required: ['query'] } },
+      { name: 'list', description: 'List all available items from this server. Returns a paginated collection of items with metadata.', input_schema: { type: 'object', properties: { page: { type: 'number', description: 'Page number to retrieve.' }, per_page: { type: 'number', description: 'Number of items per page.' } }, required: [] } },
+      { name: 'get', description: 'Get a specific item by its unique identifier. Returns the full details and metadata of the requested item.', input_schema: { type: 'object', properties: { id: { type: 'string', description: 'The unique identifier of the item to retrieve.' } }, required: ['id'] } },
     ]) : []
     return {
       tools,
@@ -988,12 +1658,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       id: '_coding_agents',
       display_name: 'Coding Agents',
       tools: [
-        { name: 'coding_agent_start', indexable: false },
-        { name: 'coding_agent_say', indexable: false },
-        { name: 'coding_agent_status', indexable: true },
-        { name: 'coding_agent_respond', indexable: false },
-        { name: 'coding_agent_interrupt', indexable: false },
-        { name: 'coding_agent_list', indexable: true },
+        { name: 'AgentStart', indexable: false },
+        { name: 'AgentSay', indexable: false },
+        { name: 'AgentStatus', indexable: true },
+        { name: 'AgentList', indexable: true },
       ],
     },
   ]),
@@ -1359,12 +2027,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return null
   },
   'get_coding_agent_tool_definitions': () => [
-    { name: 'coding_agent_start', description: 'Start a new coding session with an initial prompt', input_schema: { type: 'object', properties: { prompt: { type: 'string', description: 'The initial task/prompt' }, workingDirectory: { type: 'string', description: 'Working directory for the session' } }, required: ['prompt'] } },
-    { name: 'coding_agent_say', description: 'Send a message to a coding session', input_schema: { type: 'object', properties: { sessionId: { type: 'string', description: 'The session ID' }, message: { type: 'string', description: 'The message to send' } }, required: ['sessionId', 'message'] } },
-    { name: 'coding_agent_status', description: 'Get current status and recent output of a coding session', input_schema: { type: 'object', properties: { sessionId: { type: 'string', description: 'The session ID' }, wait: { type: 'boolean', description: 'Block until session needs attention' } }, required: ['sessionId'] } },
-    { name: 'coding_agent_respond', description: 'Respond to a pending question in a coding session', input_schema: { type: 'object', properties: { sessionId: { type: 'string', description: 'The session ID' }, id: { type: 'string', description: 'Question ID' }, answers: { type: 'array', items: { type: 'string' }, description: 'Answers' } }, required: ['sessionId', 'id', 'answers'] } },
-    { name: 'coding_agent_interrupt', description: 'Interrupt a running coding session', input_schema: { type: 'object', properties: { sessionId: { type: 'string', description: 'The session ID' } }, required: ['sessionId'] } },
-    { name: 'coding_agent_list', description: 'List all coding sessions for this client', input_schema: { type: 'object', properties: { limit: { type: 'number', description: 'Max sessions to return' } } } },
+    { name: 'AgentStart', description: 'Start a new Claude Code coding session with an initial prompt', input_schema: { type: 'object', properties: { prompt: { type: 'string', description: 'The initial task/prompt' }, workingDirectory: { type: 'string', description: 'Working directory for the session' }, model: { type: 'string', description: 'Model override' }, permissionMode: { type: 'string', enum: ['auto', 'supervised', 'plan'], description: 'Permission mode' } }, required: ['prompt'] } },
+    { name: 'AgentSay', description: 'Send a message to a Claude Code session. Can interrupt current work and/or resume completed sessions with context preserved.', input_schema: { type: 'object', properties: { sessionId: { type: 'string', description: 'The session ID' }, message: { type: 'string', description: 'Message to send. If session is done/error, resumes with context.' }, interrupt: { type: 'boolean', description: 'If true, interrupts current work before sending message.' }, permissionMode: { type: 'string', enum: ['auto', 'supervised', 'plan'], description: 'Switch permission mode' } }, required: ['sessionId'] } },
+    { name: 'AgentStatus', description: 'Get current status and recent output of a Claude Code session. Use wait=true to block until the session needs attention.', input_schema: { type: 'object', properties: { sessionId: { type: 'string', description: 'The session ID' }, outputLines: { type: 'number', description: 'Recent output lines to return (default: 50)' }, wait: { type: 'boolean', description: 'Block until session needs attention' }, timeoutSeconds: { type: 'number', description: 'Max seconds to wait (default: 300)' } }, required: ['sessionId'] } },
+    { name: 'AgentList', description: 'List all Claude Code sessions for this client', input_schema: { type: 'object', properties: { limit: { type: 'number', description: 'Max sessions to return (default: 50)' } } } },
+  ],
+  'get_context_mode_tool_definitions': () => [
+    { name: 'IndexSearch', description: 'Search indexed content. Pass ALL search questions as queries array in ONE call.\n\nTIPS: 2-4 specific terms per query. Use \'source\' to scope results.', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'A single search query string.' }, queries: { type: 'array', items: { type: 'string' }, description: 'Array of search queries. Batch ALL questions in one call.' }, source: { type: 'string', description: 'Filter to a specific indexed source (partial match).' }, limit: { type: 'number', description: 'Results per query (default: 3)' } } } },
+    { name: 'IndexRead', description: 'Read the full content of an indexed source. Use after IndexSearch to get complete context around a search hit.', input_schema: { type: 'object', properties: { label: { type: 'string', description: 'Source label to read (from search results)' }, offset: { type: 'string', description: 'Line offset to start from (e.g. "5" or "5-2" for sub-line). Default: start of content.' }, limit: { type: 'number', description: 'Number of lines to return (default: 15)' } }, required: ['label'] } },
   ],
   'get_marketplace_tool_definitions': () => [
     { name: 'marketplace__search', description: 'Search the marketplace for MCP servers and skills', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, type: { type: 'string', enum: ['mcp', 'skill', 'all'], description: 'Item type' } }, required: ['query'] } },
@@ -1958,7 +2628,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const rate = args?.rate || 0.5
     const preserveQuoted = args?.preserveQuoted ?? true
     const compressionNotice = args?.compressionNotice ?? false
-    const words = text.split(/\s+/).filter(Boolean)
+    // Parse words with byte positions for whitespace-preserving reconstruction
+    const wordTokens: { word: string; start: number; end: number }[] = []
+    const wordRegex = /\S+/g
+    let m
+    while ((m = wordRegex.exec(text)) !== null) {
+      wordTokens.push({ word: m[0], start: m.index, end: m.index + m[0].length })
+    }
+    const words = wordTokens.map(t => t.word)
     const keepCount = Math.max(1, Math.round(words.length * rate))
 
     // Basic protection detection for demo: words touching quotes or backticks
@@ -1989,7 +2666,28 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     keptIndices.sort((a, b) => a - b)
 
-    let compressed = keptIndices.map(i => words[i]).join(' ')
+    // Reconstruct preserving original whitespace
+    let compressed = ''
+    for (let k = 0; k < keptIndices.length; k++) {
+      const idx = keptIndices[k]
+      const { word: w, start: wStart, end: wEnd } = wordTokens[idx]
+      if (k === 0) {
+        compressed += idx === 0 ? text.slice(0, wEnd) : w
+      } else {
+        const prevKeptIdx = keptIndices[k - 1]
+        if (prevKeptIdx + 1 === idx) {
+          // Consecutive in original: preserve exact whitespace
+          compressed += text.slice(wordTokens[idx - 1].end, wEnd)
+        } else {
+          const gap = text.slice(wordTokens[prevKeptIdx].end, wStart)
+          if (gap.includes('\n')) {
+            compressed += text.slice(wordTokens[idx - 1].end, wEnd)
+          } else {
+            compressed += ' ' + w
+          }
+        }
+      }
+    }
     if (compressionNotice) compressed = '[abridged] ' + compressed
 
     return {

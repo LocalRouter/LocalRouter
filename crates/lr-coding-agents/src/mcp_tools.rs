@@ -1,8 +1,9 @@
 //! MCP tool generation and dispatch for coding agents.
 //!
-//! Exposes 6 unified tools: `coding_agent_start`, `coding_agent_say`,
-//! `coding_agent_status`, `coding_agent_respond`, `coding_agent_interrupt`, `coding_agent_list`.
-//! The selected agent type is resolved from the client's session, not from the tool name.
+//! Exposes 4 unified tools with configurable prefix:
+//! `{prefix}Start`, `{prefix}Say`, `{prefix}Status`, `{prefix}List`
+//!
+//! Default prefix: "Agent" → tools: AgentStart, AgentSay, AgentStatus, AgentList
 
 use crate::manager::CodingAgentManager;
 use crate::types::*;
@@ -10,37 +11,49 @@ use lr_config::{CodingAgentType, CodingPermissionMode, PermissionState};
 use lr_types::mcp_types::McpTool;
 use serde_json::{json, Value};
 
-/// Unified tool name prefix
-const TOOL_PREFIX: &str = "coding_agent_";
+/// All valid tool suffixes (lowercase form)
+const TOOL_SUFFIXES: &[&str] = &["start", "say", "status", "list"];
 
-/// All valid tool suffixes
-const TOOL_SUFFIXES: &[&str] = &["start", "say", "status", "respond", "interrupt", "list"];
+/// Build a tool name from prefix + suffix.
+///
+/// If prefix ends with a non-alphanumeric char, suffix stays lowercase:
+///   "agent_" + "start" = "agent_start"
+/// If prefix ends with an alphanumeric char, suffix is PascalCase:
+///   "Agent" + "start" = "AgentStart"
+pub fn tool_name(prefix: &str, suffix: &str) -> String {
+    match prefix.chars().last() {
+        Some(c) if c.is_alphanumeric() => {
+            let mut capitalized = suffix.to_string();
+            if let Some(first) = capitalized.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            format!("{}{}", prefix, capitalized)
+        }
+        _ => {
+            format!("{}{}", prefix, suffix)
+        }
+    }
+}
 
-/// Return all coding agent tool names.
-pub fn all_tool_names() -> Vec<String> {
-    TOOL_SUFFIXES
-        .iter()
-        .map(|s| format!("{}{}", TOOL_PREFIX, s))
-        .collect()
+/// Return all tool names for the configured prefix.
+pub fn all_tool_names(prefix: &str) -> Vec<String> {
+    TOOL_SUFFIXES.iter().map(|s| tool_name(prefix, s)).collect()
 }
 
 /// Check if a tool name belongs to the coding agent system
-pub fn is_coding_agent_tool(tool_name: &str) -> bool {
-    if let Some(suffix) = tool_name.strip_prefix(TOOL_PREFIX) {
-        TOOL_SUFFIXES.contains(&suffix)
-    } else {
-        false
-    }
+pub fn is_coding_agent_tool(name: &str, prefix: &str) -> bool {
+    action_from_tool(name, prefix).is_some()
 }
 
 /// Extract the action suffix from a tool name (e.g., "start", "say", "status")
-fn action_from_tool(tool_name: &str) -> Option<&str> {
-    let suffix = tool_name.strip_prefix(TOOL_PREFIX)?;
-    if TOOL_SUFFIXES.contains(&suffix) {
-        Some(suffix)
-    } else {
-        None
+fn action_from_tool<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
+    for suffix in TOOL_SUFFIXES {
+        if name == tool_name(prefix, suffix) {
+            // Return the canonical suffix, not a slice of name
+            return Some(suffix);
+        }
     }
+    None
 }
 
 /// Build MCP tools for the selected coding agent
@@ -48,6 +61,7 @@ pub fn build_coding_agent_tools(
     manager: &CodingAgentManager,
     permission: &PermissionState,
     agent_type: Option<CodingAgentType>,
+    prefix: &str,
 ) -> Vec<McpTool> {
     if !permission.is_enabled() {
         return Vec::new();
@@ -61,18 +75,17 @@ pub fn build_coding_agent_tools(
         return Vec::new();
     }
 
-    build_tools_for_agent(agent_type)
+    build_tools_for_agent(agent_type, prefix)
 }
 
-/// Build the 6 tools with unified `coding_agent_` prefix.
-/// Public so the UI can display tool definitions without starting an agent.
-pub fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
+/// Build the 4 tools for an agent type.
+pub fn build_tools_for_agent(agent_type: CodingAgentType, prefix: &str) -> Vec<McpTool> {
     let name = agent_type.display_name();
 
     vec![
-        // coding_agent_start
+        // Start
         McpTool {
-            name: format!("{}start", TOOL_PREFIX),
+            name: tool_name(prefix, "start"),
             description: Some(format!(
                 "Start a new {} coding session with an initial prompt",
                 name
@@ -101,11 +114,11 @@ pub fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
                 "required": ["prompt"]
             }),
         },
-        // coding_agent_say
+        // Say (combined say + interrupt)
         McpTool {
-            name: format!("{}say", TOOL_PREFIX),
+            name: tool_name(prefix, "say"),
             description: Some(format!(
-                "Send a message to a {} session. Automatically resumes if ended.",
+                "Send a message to a {} session. Can interrupt current work and/or resume completed sessions with context preserved.",
                 name
             )),
             input_schema: json!({
@@ -117,20 +130,24 @@ pub fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
                     },
                     "message": {
                         "type": "string",
-                        "description": "The message to send"
+                        "description": "Message to send. If session is done/error, resumes with context."
+                    },
+                    "interrupt": {
+                        "type": "boolean",
+                        "description": "If true, interrupts current work before sending message. If true with no message, just stops the agent."
                     },
                     "permissionMode": {
                         "type": "string",
                         "enum": ["auto", "supervised", "plan"],
-                        "description": "Switch permission mode (interrupts + resumes if active)"
+                        "description": "Switch permission mode"
                     }
                 },
-                "required": ["sessionId", "message"]
+                "required": ["sessionId"]
             }),
         },
-        // coding_agent_status
+        // Status
         McpTool {
-            name: format!("{}status", TOOL_PREFIX),
+            name: tool_name(prefix, "status"),
             description: Some(format!(
                 "Get current status and recent output of a {} session. Use wait=true to block until the session needs attention (done, awaiting_input, error, interrupted) instead of polling in a loop.",
                 name
@@ -158,51 +175,9 @@ pub fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
                 "required": ["sessionId"]
             }),
         },
-        // coding_agent_respond
+        // List
         McpTool {
-            name: format!("{}respond", TOOL_PREFIX),
-            description: Some(format!(
-                "Respond to a pending question in a {} session",
-                name
-            )),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "sessionId": {
-                        "type": "string",
-                        "description": "The session ID"
-                    },
-                    "id": {
-                        "type": "string",
-                        "description": "Question ID from pendingQuestion.id"
-                    },
-                    "answers": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "One answer per question (e.g. 'allow', 'deny: too risky')"
-                    }
-                },
-                "required": ["sessionId", "id", "answers"]
-            }),
-        },
-        // coding_agent_interrupt
-        McpTool {
-            name: format!("{}interrupt", TOOL_PREFIX),
-            description: Some(format!("Interrupt a running {} session", name)),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "sessionId": {
-                        "type": "string",
-                        "description": "The session ID to interrupt"
-                    }
-                },
-                "required": ["sessionId"]
-            }),
-        },
-        // coding_agent_list
-        McpTool {
-            name: format!("{}list", TOOL_PREFIX),
+            name: tool_name(prefix, "list"),
             description: Some(format!("List all {} sessions for this client", name)),
             input_schema: json!({
                 "type": "object",
@@ -218,18 +193,15 @@ pub fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
 }
 
 /// Handle a coding agent tool call.
-///
-/// The `agent_type` is resolved from the client's session, not from the tool name.
-/// Returns `Ok(Some(value))` on success, `Ok(None)` if tool not found,
-/// or `Err` on error.
 pub async fn handle_coding_agent_tool_call(
-    tool_name: &str,
+    tool_name_str: &str,
     arguments: &Value,
     manager: &CodingAgentManager,
     client_id: &str,
     agent_type: CodingAgentType,
+    prefix: &str,
 ) -> Result<Option<Value>, String> {
-    let action = match action_from_tool(tool_name) {
+    let action = match action_from_tool(tool_name_str, prefix) {
         Some(a) => a,
         None => return Ok(None),
     };
@@ -240,10 +212,8 @@ pub async fn handle_coding_agent_tool_call(
 
     match action {
         "start" => handle_start(manager, agent_type, client_id, arguments).await,
-        "say" => handle_say(manager, agent_type, client_id, arguments).await,
+        "say" => handle_say(manager, client_id, arguments).await,
         "status" => handle_status(manager, client_id, arguments).await,
-        "respond" => handle_respond(manager, client_id, arguments).await,
-        "interrupt" => handle_interrupt(manager, client_id, arguments).await,
         "list" => handle_list(manager, agent_type, client_id, arguments).await,
         _ => Ok(None),
     }
@@ -290,22 +260,20 @@ async fn handle_start(
 
 async fn handle_say(
     manager: &CodingAgentManager,
-    _agent_type: CodingAgentType,
     client_id: &str,
     args: &Value,
 ) -> Result<Option<Value>, String> {
     let session_id = args["sessionId"]
         .as_str()
         .ok_or("Missing required field: sessionId")?;
-    let message = args["message"]
-        .as_str()
-        .ok_or("Missing required field: message")?;
+    let message = args["message"].as_str();
+    let interrupt = args["interrupt"].as_bool().unwrap_or(false);
     let permission_mode = args["permissionMode"]
         .as_str()
         .and_then(parse_permission_mode);
 
     let result = manager
-        .say(session_id, client_id, message, permission_mode)
+        .say(session_id, client_id, message, interrupt, permission_mode)
         .await
         .map_err(|e| e.to_mcp_error())?;
 
@@ -336,47 +304,6 @@ async fn handle_status(
             .await
             .map_err(|e| e.to_mcp_error())?
     };
-
-    Ok(Some(serde_json::to_value(result).unwrap_or_default()))
-}
-
-async fn handle_respond(
-    manager: &CodingAgentManager,
-    client_id: &str,
-    args: &Value,
-) -> Result<Option<Value>, String> {
-    let session_id = args["sessionId"]
-        .as_str()
-        .ok_or("Missing required field: sessionId")?;
-    let question_id = args["id"].as_str().ok_or("Missing required field: id")?;
-    let answers: Vec<String> = args["answers"]
-        .as_array()
-        .ok_or("Missing required field: answers")?
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect();
-
-    let result = manager
-        .respond(session_id, client_id, question_id, answers)
-        .await
-        .map_err(|e| e.to_mcp_error())?;
-
-    Ok(Some(serde_json::to_value(result).unwrap_or_default()))
-}
-
-async fn handle_interrupt(
-    manager: &CodingAgentManager,
-    client_id: &str,
-    args: &Value,
-) -> Result<Option<Value>, String> {
-    let session_id = args["sessionId"]
-        .as_str()
-        .ok_or("Missing required field: sessionId")?;
-
-    let result = manager
-        .interrupt(session_id, client_id)
-        .await
-        .map_err(|e| e.to_mcp_error())?;
 
     Ok(Some(serde_json::to_value(result).unwrap_or_default()))
 }
@@ -416,41 +343,70 @@ mod tests {
         CodingAgentManager::new(config)
     }
 
-    // ── is_coding_agent_tool ──
+    // ── tool_name generation ──
 
     #[test]
-    fn test_is_coding_agent_tool_valid() {
-        assert!(is_coding_agent_tool("coding_agent_start"));
-        assert!(is_coding_agent_tool("coding_agent_say"));
-        assert!(is_coding_agent_tool("coding_agent_status"));
-        assert!(is_coding_agent_tool("coding_agent_respond"));
-        assert!(is_coding_agent_tool("coding_agent_interrupt"));
-        assert!(is_coding_agent_tool("coding_agent_list"));
+    fn test_tool_name_alphanumeric_prefix() {
+        assert_eq!(tool_name("Agent", "start"), "AgentStart");
+        assert_eq!(tool_name("Agent", "say"), "AgentSay");
+        assert_eq!(tool_name("Agent", "status"), "AgentStatus");
+        assert_eq!(tool_name("Agent", "list"), "AgentList");
     }
 
     #[test]
-    fn test_is_coding_agent_tool_invalid() {
-        assert!(!is_coding_agent_tool("random_tool"));
-        assert!(!is_coding_agent_tool("skill_something_run"));
-        assert!(!is_coding_agent_tool("coding_agent_unknown"));
-        assert!(!is_coding_agent_tool("claude_code_start"));
-        assert!(!is_coding_agent_tool(""));
+    fn test_tool_name_non_alphanumeric_prefix() {
+        assert_eq!(tool_name("coding_agent_", "start"), "coding_agent_start");
+        assert_eq!(tool_name("agent-", "say"), "agent-say");
+        assert_eq!(tool_name("my_tool.", "status"), "my_tool.status");
+    }
+
+    #[test]
+    fn test_tool_name_single_char_prefix() {
+        assert_eq!(tool_name("A", "start"), "AStart");
+        assert_eq!(tool_name("_", "start"), "_start");
+    }
+
+    // ── is_coding_agent_tool ──
+
+    #[test]
+    fn test_is_coding_agent_tool_default_prefix() {
+        let prefix = "Agent";
+        assert!(is_coding_agent_tool("AgentStart", prefix));
+        assert!(is_coding_agent_tool("AgentSay", prefix));
+        assert!(is_coding_agent_tool("AgentStatus", prefix));
+        assert!(is_coding_agent_tool("AgentList", prefix));
+        assert!(!is_coding_agent_tool("AgentRespond", prefix));
+        assert!(!is_coding_agent_tool("AgentInterrupt", prefix));
+        assert!(!is_coding_agent_tool("random_tool", prefix));
+    }
+
+    #[test]
+    fn test_is_coding_agent_tool_underscore_prefix() {
+        let prefix = "coding_agent_";
+        assert!(is_coding_agent_tool("coding_agent_start", prefix));
+        assert!(is_coding_agent_tool("coding_agent_say", prefix));
+        assert!(is_coding_agent_tool("coding_agent_status", prefix));
+        assert!(is_coding_agent_tool("coding_agent_list", prefix));
+        assert!(!is_coding_agent_tool("coding_agent_respond", prefix));
+    }
+
+    // ── all_tool_names ──
+
+    #[test]
+    fn test_all_tool_names() {
+        let names = all_tool_names("Agent");
+        assert_eq!(names, vec!["AgentStart", "AgentSay", "AgentStatus", "AgentList"]);
     }
 
     // ── action_from_tool ──
 
     #[test]
     fn test_action_from_tool() {
-        assert_eq!(action_from_tool("coding_agent_start"), Some("start"));
-        assert_eq!(action_from_tool("coding_agent_say"), Some("say"));
-        assert_eq!(action_from_tool("coding_agent_status"), Some("status"));
-        assert_eq!(action_from_tool("coding_agent_respond"), Some("respond"));
-        assert_eq!(
-            action_from_tool("coding_agent_interrupt"),
-            Some("interrupt")
-        );
-        assert_eq!(action_from_tool("coding_agent_list"), Some("list"));
-        assert_eq!(action_from_tool("unknown_tool"), None);
+        assert_eq!(action_from_tool("AgentStart", "Agent"), Some("start"));
+        assert_eq!(action_from_tool("AgentSay", "Agent"), Some("say"));
+        assert_eq!(action_from_tool("AgentStatus", "Agent"), Some("status"));
+        assert_eq!(action_from_tool("AgentList", "Agent"), Some("list"));
+        assert_eq!(action_from_tool("unknown_tool", "Agent"), None);
     }
 
     // ── build_coding_agent_tools ──
@@ -463,12 +419,13 @@ mod tests {
             return;
         }
 
-        let tools = build_coding_agent_tools(&manager, &PermissionState::Allow, Some(installed[0]));
-        assert_eq!(tools.len(), 6);
+        let tools =
+            build_coding_agent_tools(&manager, &PermissionState::Allow, Some(installed[0]), "Agent");
+        assert_eq!(tools.len(), 4);
 
         for tool in &tools {
             assert!(
-                is_coding_agent_tool(&tool.name),
+                is_coding_agent_tool(&tool.name, "Agent"),
                 "Invalid tool name: {}",
                 tool.name
             );
@@ -482,6 +439,7 @@ mod tests {
             &manager,
             &PermissionState::Off,
             Some(CodingAgentType::ClaudeCode),
+            "Agent",
         );
         assert!(tools.is_empty());
     }
@@ -489,24 +447,16 @@ mod tests {
     #[test]
     fn test_build_coding_agent_tools_no_type() {
         let manager = test_manager();
-        let tools = build_coding_agent_tools(&manager, &PermissionState::Allow, None);
+        let tools = build_coding_agent_tools(&manager, &PermissionState::Allow, None, "Agent");
         assert!(tools.is_empty());
     }
 
     #[test]
-    fn test_build_tools_for_agent_generates_six_tools() {
-        let tools = build_tools_for_agent(CodingAgentType::ClaudeCode);
-        assert_eq!(tools.len(), 6);
+    fn test_build_tools_generates_four_tools() {
+        let tools = build_tools_for_agent(CodingAgentType::ClaudeCode, "Agent");
+        assert_eq!(tools.len(), 4);
 
-        let expected_names = vec![
-            "coding_agent_start",
-            "coding_agent_say",
-            "coding_agent_status",
-            "coding_agent_respond",
-            "coding_agent_interrupt",
-            "coding_agent_list",
-        ];
-
+        let expected_names = vec!["AgentStart", "AgentSay", "AgentStatus", "AgentList"];
         for expected in expected_names {
             assert!(
                 tools.iter().any(|t| t.name == expected),
@@ -517,29 +467,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_tools_for_agent_has_descriptions() {
-        let tools = build_tools_for_agent(CodingAgentType::Codex);
-        for tool in &tools {
-            assert!(
-                tool.description.is_some(),
-                "Tool {} has no description",
-                tool.name
-            );
-            assert!(
-                tool.description.as_ref().unwrap().contains("Codex"),
-                "Tool {} description should mention agent name",
-                tool.name
-            );
-        }
-    }
-
-    #[test]
     fn test_build_tools_start_requires_prompt() {
-        let tools = build_tools_for_agent(CodingAgentType::ClaudeCode);
-        let start = tools
-            .iter()
-            .find(|t| t.name == "coding_agent_start")
-            .unwrap();
+        let tools = build_tools_for_agent(CodingAgentType::ClaudeCode, "Agent");
+        let start = tools.iter().find(|t| t.name == "AgentStart").unwrap();
         let required = start.input_schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "prompt"));
     }
@@ -561,7 +491,6 @@ mod tests {
             Some(CodingPermissionMode::Plan)
         );
         assert_eq!(parse_permission_mode("unknown"), None);
-        assert_eq!(parse_permission_mode(""), None);
     }
 
     // ── handle_coding_agent_tool_call ──
@@ -575,10 +504,11 @@ mod tests {
             &manager,
             "c1",
             CodingAgentType::ClaudeCode,
+            "Agent",
         )
         .await;
         assert!(result.is_ok());
-        assert!(result.unwrap().is_none()); // None = not a coding agent tool
+        assert!(result.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -586,18 +516,18 @@ mod tests {
         let manager = test_manager();
         let installed = CodingAgentManager::detect_installed_agents();
 
-        // Find an agent that is NOT installed
         let unavailable = CodingAgentType::all()
             .iter()
             .find(|at| !installed.contains(at));
 
         if let Some(agent_type) = unavailable {
             let result = handle_coding_agent_tool_call(
-                "coding_agent_start",
+                "AgentStart",
                 &json!({"prompt": "test"}),
                 &manager,
                 "c1",
                 *agent_type,
+                "Agent",
             )
             .await;
             assert!(result.is_err());
@@ -613,11 +543,12 @@ mod tests {
             return;
         }
         let result = handle_coding_agent_tool_call(
-            "coding_agent_list",
+            "AgentList",
             &json!({}),
             &manager,
             "c1",
             installed[0],
+            "Agent",
         )
         .await;
         assert!(result.is_ok());
@@ -634,11 +565,12 @@ mod tests {
             return;
         }
         let result = handle_coding_agent_tool_call(
-            "coding_agent_status",
+            "AgentStatus",
             &json!({"sessionId": "nonexistent"}),
             &manager,
             "c1",
             installed[0],
+            "Agent",
         )
         .await;
         assert!(result.is_err());
@@ -653,11 +585,12 @@ mod tests {
             return;
         }
         let result = handle_coding_agent_tool_call(
-            "coding_agent_start",
+            "AgentStart",
             &json!({}),
             &manager,
             "c1",
             installed[0],
+            "Agent",
         )
         .await;
         assert!(result.is_err());

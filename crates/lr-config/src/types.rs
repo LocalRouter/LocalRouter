@@ -1266,6 +1266,28 @@ pub struct SkillsConfig {
     pub skill_paths: Vec<String>,
 }
 
+/// Approval mode for coding agent tool/question approvals
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodingAgentApprovalMode {
+    /// Auto-approve all tool usage and questions (dangerous — autonomous mode)
+    Allow,
+    /// Show approval popup in LocalRouter UI
+    Ask,
+    /// Forward via MCP elicitation to the client (falls back to Ask if unsupported)
+    Elicitation,
+}
+
+impl Default for CodingAgentApprovalMode {
+    fn default() -> Self {
+        CodingAgentApprovalMode::Elicitation
+    }
+}
+
+fn default_tool_prefix() -> String {
+    "Agent".to_string()
+}
+
 /// Coding agents configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct CodingAgentsConfig {
@@ -1284,6 +1306,16 @@ pub struct CodingAgentsConfig {
     /// Output ring buffer size per session in lines (default: 1000)
     #[serde(default = "default_output_buffer_size")]
     pub output_buffer_size: usize,
+
+    /// Tool name prefix. Default: "Agent"
+    /// If ends with non-alphanumeric char, suffixes are lowercase (e.g., "agent_start")
+    /// If ends with alphanumeric char, suffixes are PascalCase (e.g., "AgentStart")
+    #[serde(default = "default_tool_prefix")]
+    pub tool_prefix: String,
+
+    /// Approval mode for agent tool/question requests
+    #[serde(default)]
+    pub approval_mode: CodingAgentApprovalMode,
 }
 
 fn default_max_concurrent_sessions() -> usize {

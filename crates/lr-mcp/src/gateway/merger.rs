@@ -1,4 +1,4 @@
-// Empty import section - using json! macro from types.rs
+use serde_json::json;
 
 use super::types::*;
 use crate::protocol::{McpPrompt, McpResource, McpTool};
@@ -712,14 +712,12 @@ pub fn build_preview_instructions_context() -> InstructionsContext {
             },
             VirtualInstructions {
                 section_title: "Coding Agents".to_string(),
-                content: "You have access to **Claude Code** as a coding agent. Use the unified tools: `coding_agent_start`, `coding_agent_say`, `coding_agent_status`.\n".to_string(),
+                content: "You have access to **Claude Code** as a coding agent. Use the unified tools: `AgentStart`, `AgentSay`, `AgentStatus`, `AgentList`.\n".to_string(),
                 tool_names: vec![
-                    "coding_agent_start".to_string(),
-                    "coding_agent_say".to_string(),
-                    "coding_agent_status".to_string(),
-                    "coding_agent_respond".to_string(),
-                    "coding_agent_interrupt".to_string(),
-                    "coding_agent_list".to_string(),
+                    "AgentStart".to_string(),
+                    "AgentSay".to_string(),
+                    "AgentStatus".to_string(),
+                    "AgentList".to_string(),
                 ],
                 priority: 10,
             },
@@ -1079,6 +1077,700 @@ pub fn build_preview_mock_realistic() -> InstructionsContext {
         virtual_instructions: preview_virtual_instructions(),
         ..Default::default()
     }
+}
+
+/// Build a mock tool catalog for the compression preview UI.
+/// Returns NamespacedTool entries with verbose descriptions and inputSchemas
+/// for all tools in the realistic mock context, so the compression preview
+/// can display full tool properties even when no real servers are running.
+pub fn build_preview_mock_tool_catalog() -> Vec<NamespacedTool> {
+    fn tool(server: &str, name: &str, desc: &str, schema: serde_json::Value) -> NamespacedTool {
+        NamespacedTool {
+            name: format!("{}__{}", server, name),
+            original_name: name.to_string(),
+            server_id: server.to_string(),
+            description: Some(desc.to_string()),
+            input_schema: schema,
+        }
+    }
+
+    vec![
+        // ── GitHub ──────────────────────────────────────────────────────
+        tool("github", "issue_read", "Read detailed information about a GitHub issue including its title, body, labels, assignees, milestone, and timeline events. Supports multiple read methods: 'get' for full issue details, 'get_comments' for all comments on the issue, 'get_sub_issues' for linked sub-issues, and 'get_labels' for available labels. Returns comprehensive issue metadata including creation date, last update, state reason, and linked pull requests.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "The account owner of the repository. This is the GitHub username or organization name that owns the repository (e.g., 'octocat' or 'my-org')." },
+                "repo": { "type": "string", "description": "The name of the repository without the owner prefix (e.g., 'hello-world', not 'octocat/hello-world')." },
+                "issue_number": { "type": "integer", "description": "The unique issue number within the repository. This is the number shown in the issue URL (e.g., 42 from github.com/owner/repo/issues/42)." },
+                "method": { "type": "string", "description": "The type of data to retrieve. Must be one of: 'get' (full issue details), 'get_comments' (all comments), 'get_sub_issues' (linked sub-issues), or 'get_labels' (available labels for the repository).", "enum": ["get", "get_comments", "get_sub_issues", "get_labels"] },
+                "page": { "type": "integer", "description": "Page number for paginated results. Defaults to 1. Each page returns up to 30 items." },
+                "per_page": { "type": "integer", "description": "Number of results per page (max 100). Defaults to 30." }
+            },
+            "required": ["owner", "repo", "issue_number", "method"]
+        })),
+        tool("github", "issue_write", "Create or update GitHub issues. Use method 'create' to open a new issue with title, body, labels, assignees, and milestone. Use 'update' to modify an existing issue's fields — only fields you pass will be changed. Use 'close' or 'reopen' to change an issue's state. When creating issues, the authenticated user must have push access or the repository must allow issue creation by the public.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "The account owner of the repository (username or organization)." },
+                "repo": { "type": "string", "description": "The repository name without the owner prefix." },
+                "method": { "type": "string", "description": "The write operation to perform: 'create' to open a new issue, 'update' to modify an existing issue, 'close' to close an issue, or 'reopen' to reopen a closed issue.", "enum": ["create", "update", "close", "reopen"] },
+                "issue_number": { "type": "integer", "description": "Required for update/close/reopen. The issue number to modify." },
+                "title": { "type": "string", "description": "Issue title. Required for 'create', optional for 'update'." },
+                "body": { "type": "string", "description": "Issue body content in GitHub-flavored Markdown. Supports task lists, mentions, and cross-references." },
+                "labels": { "type": "array", "items": { "type": "string" }, "description": "Array of label names to apply to the issue. Labels must already exist in the repository." },
+                "assignees": { "type": "array", "items": { "type": "string" }, "description": "Array of GitHub usernames to assign to the issue. Users must have push access to the repository." },
+                "milestone": { "type": "integer", "description": "Milestone number to associate with the issue. Use null to remove the milestone." },
+                "state_reason": { "type": "string", "description": "Reason for closing: 'completed' or 'not_planned'. Only used with method 'close'.", "enum": ["completed", "not_planned"] }
+            },
+            "required": ["owner", "repo", "method"]
+        })),
+        tool("github", "search_issues", "Search for issues and pull requests across GitHub repositories using GitHub's search syntax. Supports qualifiers like 'is:issue', 'is:pr', 'state:open', 'label:bug', 'author:username', 'repo:owner/name', and date ranges. Results are sorted by best match by default but can be sorted by creation date, update date, or number of comments.", json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "GitHub search query string. Supports qualifiers like 'is:issue is:open label:bug repo:owner/repo'. See GitHub search syntax documentation for full list of qualifiers." },
+                "sort": { "type": "string", "description": "Sort field: 'created', 'updated', 'comments', or 'best-match' (default).", "enum": ["created", "updated", "comments", "best-match"] },
+                "order": { "type": "string", "description": "Sort order: 'asc' or 'desc' (default).", "enum": ["asc", "desc"] },
+                "per_page": { "type": "integer", "description": "Results per page (max 100, default 30)." },
+                "page": { "type": "integer", "description": "Page number for paginated results (default 1)." }
+            },
+            "required": ["query"]
+        })),
+        tool("github", "list_issues", "List issues in a GitHub repository with optional filtering by state, labels, assignee, milestone, and sort order. Returns paginated results with full issue metadata. Only returns issues (not pull requests) unless explicitly filtered.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner (username or organization)." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "state": { "type": "string", "description": "Filter by state: 'open', 'closed', or 'all'. Defaults to 'open'.", "enum": ["open", "closed", "all"] },
+                "labels": { "type": "string", "description": "Comma-separated list of label names to filter by (e.g., 'bug,priority:high')." },
+                "assignee": { "type": "string", "description": "Filter by assignee username. Use '*' for any assignee, 'none' for unassigned." },
+                "sort": { "type": "string", "description": "Sort field: 'created', 'updated', or 'comments'.", "enum": ["created", "updated", "comments"] },
+                "direction": { "type": "string", "description": "Sort direction: 'asc' or 'desc'.", "enum": ["asc", "desc"] },
+                "per_page": { "type": "integer", "description": "Results per page (max 100, default 30)." },
+                "page": { "type": "integer", "description": "Page number (default 1)." }
+            },
+            "required": ["owner", "repo"]
+        })),
+        tool("github", "add_issue_comment", "Add a comment to an existing GitHub issue or pull request. The comment body supports GitHub-flavored Markdown including task lists, code blocks, mentions (@username), issue references (#123), and cross-repository references (owner/repo#123). The authenticated user must have read access to the repository.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner (username or organization)." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "issue_number": { "type": "integer", "description": "The issue or pull request number to comment on." },
+                "body": { "type": "string", "description": "Comment body in GitHub-flavored Markdown." }
+            },
+            "required": ["owner", "repo", "issue_number", "body"]
+        })),
+        tool("github", "sub_issue_write", "Manage sub-issues (child issues) linked to a parent issue. Supports adding existing issues as sub-issues, removing sub-issue relationships, and reordering sub-issues within the parent. Sub-issues appear as a checklist in the parent issue's body.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "issue_number": { "type": "integer", "description": "The parent issue number." },
+                "method": { "type": "string", "description": "Operation: 'add' to link a sub-issue, 'remove' to unlink, 'reorder' to change position.", "enum": ["add", "remove", "reorder"] },
+                "sub_issue_number": { "type": "integer", "description": "The issue number to add/remove as a sub-issue." },
+                "position": { "type": "integer", "description": "Position index for reordering (0-based). Only used with 'reorder' method." }
+            },
+            "required": ["owner", "repo", "issue_number", "method", "sub_issue_number"]
+        })),
+        tool("github", "pull_request_read", "Read detailed information about a GitHub pull request. Supports multiple methods: 'get' for full PR details including merge status and review state, 'get_diff' for the unified diff, 'get_status' for CI/CD check status of the head commit, 'get_files' for the list of changed files with patches, 'get_reviews' for submitted reviews, and 'get_review_comments' for inline code comments.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "pull_number": { "type": "integer", "description": "Pull request number." },
+                "method": { "type": "string", "description": "Data to retrieve: 'get', 'get_diff', 'get_status', 'get_files', 'get_reviews', or 'get_review_comments'.", "enum": ["get", "get_diff", "get_status", "get_files", "get_reviews", "get_review_comments"] },
+                "page": { "type": "integer", "description": "Page number for paginated results." },
+                "per_page": { "type": "integer", "description": "Results per page (max 100)." }
+            },
+            "required": ["owner", "repo", "pull_number", "method"]
+        })),
+        tool("github", "create_pull_request", "Create a new pull request in a GitHub repository. Requires a head branch with commits to merge into the base branch. The title and body describe the changes for reviewers. Supports draft PRs, auto-merge enablement, and maintainer edit permissions.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "title": { "type": "string", "description": "Pull request title. Should be concise and descriptive of the changes." },
+                "body": { "type": "string", "description": "Pull request description in GitHub-flavored Markdown. Should explain what changed and why." },
+                "head": { "type": "string", "description": "The branch containing the changes. For cross-repo PRs, use 'username:branch' format." },
+                "base": { "type": "string", "description": "The branch to merge changes into (e.g., 'main' or 'develop')." },
+                "draft": { "type": "boolean", "description": "If true, create as a draft PR that cannot be merged until marked ready." },
+                "maintainer_can_modify": { "type": "boolean", "description": "If true, allow maintainers of the base repository to push to the head branch." }
+            },
+            "required": ["owner", "repo", "title", "head", "base"]
+        })),
+        tool("github", "update_pull_request", "Update an existing pull request's title, body, state, base branch, or maintainer edit permissions. Only the fields you provide will be changed — omitted fields remain unchanged. Use state 'closed' to close without merging, or 'open' to reopen a closed PR.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "pull_number": { "type": "integer", "description": "Pull request number to update." },
+                "title": { "type": "string", "description": "New title for the pull request." },
+                "body": { "type": "string", "description": "New body/description for the pull request." },
+                "state": { "type": "string", "description": "New state: 'open' or 'closed'.", "enum": ["open", "closed"] },
+                "base": { "type": "string", "description": "New base branch to merge into." },
+                "maintainer_can_modify": { "type": "boolean", "description": "Allow maintainers to push to the head branch." }
+            },
+            "required": ["owner", "repo", "pull_number"]
+        })),
+        tool("github", "merge_pull_request", "Merge a pull request using one of three merge strategies: 'merge' creates a merge commit, 'squash' combines all commits into one, and 'rebase' replays commits on top of the base branch. The PR must have passing status checks and no merge conflicts. Optionally specify a custom commit title and message.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "pull_number": { "type": "integer", "description": "Pull request number to merge." },
+                "merge_method": { "type": "string", "description": "Merge strategy: 'merge' (merge commit), 'squash' (single commit), or 'rebase' (replay commits).", "enum": ["merge", "squash", "rebase"] },
+                "commit_title": { "type": "string", "description": "Custom title for the merge commit. Defaults to the PR title." },
+                "commit_message": { "type": "string", "description": "Custom message for the merge commit. Defaults to the PR body." },
+                "sha": { "type": "string", "description": "SHA of the head commit to verify. Merge will fail if this doesn't match the current head." }
+            },
+            "required": ["owner", "repo", "pull_number"]
+        })),
+        tool("github", "add_pull_request_review_comment", "Add an inline review comment to a specific line or range of lines in a pull request diff. Comments are attached to the diff at a specific commit and file path. Supports single-line and multi-line comments with suggestions using GitHub's suggestion syntax.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "pull_number": { "type": "integer", "description": "Pull request number." },
+                "body": { "type": "string", "description": "Comment body in Markdown. Use ```suggestion blocks for code suggestions." },
+                "path": { "type": "string", "description": "Relative path of the file to comment on (e.g., 'src/main.rs')." },
+                "line": { "type": "integer", "description": "The line number in the diff to attach the comment to." },
+                "side": { "type": "string", "description": "Which side of the diff: 'LEFT' (deletion) or 'RIGHT' (addition).", "enum": ["LEFT", "RIGHT"] },
+                "start_line": { "type": "integer", "description": "For multi-line comments, the first line of the range." },
+                "commit_id": { "type": "string", "description": "SHA of the commit to comment on. Defaults to the latest commit." }
+            },
+            "required": ["owner", "repo", "pull_number", "body", "path", "line"]
+        })),
+        tool("github", "get_file_contents", "Retrieve the contents of a file or directory from a GitHub repository at a specific branch, tag, or commit. For files, returns the decoded content. For directories, returns a listing of entries with their types and sizes. Large files (>1MB) return a download URL instead of content.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "path": { "type": "string", "description": "Path to the file or directory within the repository (e.g., 'src/lib.rs' or 'docs/')." },
+                "ref": { "type": "string", "description": "Branch name, tag, or commit SHA. Defaults to the repository's default branch. Always specify this for branch-specific reads." }
+            },
+            "required": ["owner", "repo", "path"]
+        })),
+        tool("github", "create_or_update_file", "Create a new file or update an existing file in a GitHub repository by committing directly. For updates, you must provide the SHA of the existing file to prevent overwriting concurrent changes. Creates a new commit on the specified branch.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "path": { "type": "string", "description": "Path for the file in the repository." },
+                "content": { "type": "string", "description": "New file content (will be Base64 encoded automatically)." },
+                "message": { "type": "string", "description": "Commit message describing the change." },
+                "branch": { "type": "string", "description": "Branch to commit to. Defaults to the default branch." },
+                "sha": { "type": "string", "description": "Required for updates: SHA blob of the existing file. Obtain via get_file_contents." }
+            },
+            "required": ["owner", "repo", "path", "content", "message"]
+        })),
+        tool("github", "push_files", "Commit and push multiple files in a single commit to a GitHub repository. More efficient than multiple create_or_update_file calls. Creates a new tree with all file changes and a single commit pointing to it.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "branch": { "type": "string", "description": "Branch to push to." },
+                "message": { "type": "string", "description": "Commit message for all the file changes." },
+                "files": { "type": "array", "description": "Array of file objects to commit. Each object has 'path' (string) and 'content' (string).", "items": { "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } } } }
+            },
+            "required": ["owner", "repo", "branch", "message", "files"]
+        })),
+        tool("github", "search_code", "Search for code across GitHub repositories using GitHub's code search syntax. Supports qualifiers like 'language:rust', 'repo:owner/name', 'path:src/', 'extension:rs', and boolean operators. Returns matching file fragments with highlighting.", json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Code search query. Supports qualifiers: language:, repo:, path:, extension:, filename:, and boolean operators AND, OR, NOT." },
+                "per_page": { "type": "integer", "description": "Results per page (max 100, default 30)." },
+                "page": { "type": "integer", "description": "Page number (default 1)." }
+            },
+            "required": ["query"]
+        })),
+        tool("github", "search_repositories", "Search for GitHub repositories by name, description, topic, language, stars, forks, and other criteria. Supports GitHub search qualifiers and sorting by stars, forks, help-wanted-issues, or update date.", json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Repository search query. Supports qualifiers: language:, stars:>100, topic:, license:, archived:, fork:, is:public/private." },
+                "sort": { "type": "string", "description": "Sort by: 'stars', 'forks', 'help-wanted-issues', 'updated', or best-match.", "enum": ["stars", "forks", "help-wanted-issues", "updated"] },
+                "order": { "type": "string", "description": "Sort order: 'asc' or 'desc'.", "enum": ["asc", "desc"] },
+                "per_page": { "type": "integer", "description": "Results per page (max 100, default 30)." },
+                "page": { "type": "integer", "description": "Page number (default 1)." }
+            },
+            "required": ["query"]
+        })),
+        tool("github", "list_commits", "List commits on a repository branch with optional filtering by author, date range, and path. Returns commit SHA, message, author info, date, and changed file statistics. Results are paginated.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "sha": { "type": "string", "description": "Branch name or commit SHA to list commits from. Defaults to the default branch." },
+                "author": { "type": "string", "description": "Filter by commit author (GitHub username or email)." },
+                "since": { "type": "string", "description": "Only commits after this date (ISO 8601 format, e.g., '2024-01-01T00:00:00Z')." },
+                "until": { "type": "string", "description": "Only commits before this date (ISO 8601 format)." },
+                "path": { "type": "string", "description": "Only commits affecting this file path." },
+                "per_page": { "type": "integer", "description": "Results per page (max 100, default 30)." },
+                "page": { "type": "integer", "description": "Page number (default 1)." }
+            },
+            "required": ["owner", "repo"]
+        })),
+        tool("github", "list_branches", "List branches in a GitHub repository with their latest commit SHA and protection status. Supports filtering by whether branches are protected. Results are paginated alphabetically.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "protected_only": { "type": "boolean", "description": "If true, only return branches with protection rules enabled." },
+                "per_page": { "type": "integer", "description": "Results per page (max 100, default 30)." },
+                "page": { "type": "integer", "description": "Page number (default 1)." }
+            },
+            "required": ["owner", "repo"]
+        })),
+        tool("github", "create_branch", "Create a new branch in a GitHub repository from a specified source commit or branch. The new branch name must not already exist. Useful for creating feature branches before making changes.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "branch": { "type": "string", "description": "Name for the new branch (e.g., 'feature/my-feature')." },
+                "from_branch": { "type": "string", "description": "Source branch or commit SHA to create from. Defaults to the default branch." }
+            },
+            "required": ["owner", "repo", "branch"]
+        })),
+        tool("github", "list_workflow_runs", "List GitHub Actions workflow runs for a repository with optional filtering by workflow, branch, actor, status, and event type. Returns run ID, status, conclusion, timing, and the triggering commit. Supports pagination with at least 30 results per page.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "workflow_id": { "type": "string", "description": "Filter by workflow file name (e.g., 'ci.yml') or workflow ID number." },
+                "branch": { "type": "string", "description": "Filter by branch name." },
+                "actor": { "type": "string", "description": "Filter by the user who triggered the run." },
+                "status": { "type": "string", "description": "Filter by status: 'queued', 'in_progress', 'completed', 'waiting', 'requested'.", "enum": ["queued", "in_progress", "completed", "waiting", "requested"] },
+                "event": { "type": "string", "description": "Filter by event type: 'push', 'pull_request', 'schedule', 'workflow_dispatch', etc." },
+                "per_page": { "type": "integer", "description": "Results per page (max 100, default 30)." },
+                "page": { "type": "integer", "description": "Page number (default 1)." }
+            },
+            "required": ["owner", "repo"]
+        })),
+        tool("github", "get_workflow_run_logs", "Download and return the logs for a specific GitHub Actions workflow run. Logs can be very large for complex workflows with many jobs and steps. Returns the combined log output from all jobs in the run.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "run_id": { "type": "integer", "description": "The unique workflow run ID. Obtain from list_workflow_runs." }
+            },
+            "required": ["owner", "repo", "run_id"]
+        })),
+        tool("github", "rerun_workflow", "Re-run a completed or failed GitHub Actions workflow run. This creates a new run with the same inputs and configuration as the original. Useful for retrying after transient failures or infrastructure issues.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "run_id": { "type": "integer", "description": "The workflow run ID to re-run." },
+                "enable_debug_logging": { "type": "boolean", "description": "If true, enable debug logging for the re-run. Produces more verbose output." }
+            },
+            "required": ["owner", "repo", "run_id"]
+        })),
+        tool("github", "get_code_scanning_alerts", "List code scanning alerts for a repository detected by GitHub Advanced Security (CodeQL, third-party tools). Returns alert details including severity, rule, location, and dismissal status. Requires GitHub Advanced Security to be enabled.", json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "Repository owner." },
+                "repo": { "type": "string", "description": "Repository name." },
+                "state": { "type": "string", "description": "Filter by alert state: 'open', 'closed', 'dismissed', or 'fixed'.", "enum": ["open", "closed", "dismissed", "fixed"] },
+                "severity": { "type": "string", "description": "Filter by severity level: 'critical', 'high', 'medium', 'low', 'warning', 'note', or 'error'.", "enum": ["critical", "high", "medium", "low", "warning", "note", "error"] },
+                "ref": { "type": "string", "description": "Git reference (branch, tag, or SHA) to filter alerts for." },
+                "per_page": { "type": "integer", "description": "Results per page (max 100, default 30)." },
+                "page": { "type": "integer", "description": "Page number (default 1)." }
+            },
+            "required": ["owner", "repo"]
+        })),
+        tool("github", "get_me", "Get the authenticated user's GitHub profile information including username, display name, email, bio, company, location, avatar URL, and account statistics (public repos, followers, following). Useful for identifying the current user in workflows.", json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })),
+
+        // ── Atlassian ───────────────────────────────────────────────────
+        tool("atlassian", "getJiraIssue", "Retrieve a single Jira issue by its key (e.g., 'PROJ-123'). Returns all standard and custom fields including summary, description (in Atlassian Document Format), status, priority, assignee, reporter, labels, components, fix versions, sprint information, story points, and the full change history. Related issues such as blockers, duplicates, and parent epics are included in the response.", json!({
+            "type": "object",
+            "properties": {
+                "issueIdOrKey": { "type": "string", "description": "The issue key (e.g., 'PROJ-123') or numeric issue ID. Issue keys are case-insensitive." },
+                "fields": { "type": "array", "items": { "type": "string" }, "description": "Optional list of field names to return. If omitted, all navigable fields are returned. Use this to reduce response size for large issues. Common fields: 'summary', 'status', 'assignee', 'priority', 'description'." },
+                "expand": { "type": "string", "description": "Comma-separated list of entities to expand in the response. Options: 'renderedFields' (HTML), 'changelog' (full history), 'transitions' (available transitions), 'operations' (available actions)." }
+            },
+            "required": ["issueIdOrKey"]
+        })),
+        tool("atlassian", "createJiraIssue", "Create a new Jira issue in a specified project. Requires the project key, issue type, and summary at minimum. Additional fields depend on the project's configuration and field schemes — use getJiraProjectIssueTypesMetadata to discover required and optional fields before creating. Supports setting description in Atlassian Document Format (ADF), labels, components, priority, assignee, and custom fields.", json!({
+            "type": "object",
+            "properties": {
+                "projectKey": { "type": "string", "description": "The project key (e.g., 'PROJ'). Must be an existing, accessible project." },
+                "issueType": { "type": "string", "description": "Issue type name (e.g., 'Bug', 'Story', 'Task', 'Epic'). Must be a valid type for the target project." },
+                "summary": { "type": "string", "description": "Issue summary/title. Should be concise and descriptive." },
+                "description": { "type": "object", "description": "Issue description in Atlassian Document Format (ADF). Use type 'doc' with content array of paragraph, heading, codeBlock, and other ADF nodes." },
+                "priority": { "type": "string", "description": "Priority name: 'Highest', 'High', 'Medium', 'Low', or 'Lowest'. Defaults to the project's default priority." },
+                "assignee": { "type": "string", "description": "Atlassian account ID of the assignee. Use lookupJiraAccountId to find account IDs from display names." },
+                "labels": { "type": "array", "items": { "type": "string" }, "description": "Array of label strings to apply to the new issue." },
+                "components": { "type": "array", "items": { "type": "object" }, "description": "Array of component objects with 'name' field. Components must exist in the project." },
+                "parentKey": { "type": "string", "description": "Parent issue key for creating sub-tasks or child issues (e.g., 'PROJ-100')." }
+            },
+            "required": ["projectKey", "issueType", "summary"]
+        })),
+        tool("atlassian", "editJiraIssue", "Update fields on an existing Jira issue. Pass only the fields you want to change — omitted fields remain unchanged. Supports updating summary, description, status, priority, assignee, labels, components, fix versions, and any custom fields configured in the project.", json!({
+            "type": "object",
+            "properties": {
+                "issueIdOrKey": { "type": "string", "description": "The issue key (e.g., 'PROJ-123') or numeric issue ID to update." },
+                "summary": { "type": "string", "description": "New summary/title for the issue." },
+                "description": { "type": "object", "description": "New description in Atlassian Document Format (ADF)." },
+                "priority": { "type": "string", "description": "New priority name." },
+                "assignee": { "type": "string", "description": "Atlassian account ID of the new assignee, or null to unassign." },
+                "labels": { "type": "array", "items": { "type": "string" }, "description": "Complete list of labels (replaces existing labels)." },
+                "components": { "type": "array", "items": { "type": "object" }, "description": "Complete list of component objects." }
+            },
+            "required": ["issueIdOrKey"]
+        })),
+        tool("atlassian", "searchJiraIssuesUsingJql", "Search for Jira issues using JQL (Jira Query Language). Supports complex queries with fields, operators, keywords, and functions. Examples: 'project = PROJ AND status = \"In Progress\"', 'assignee = currentUser() AND resolution = Unresolved ORDER BY priority DESC', 'labels in (bug, critical) AND created >= -7d'. Returns paginated results with configurable fields.", json!({
+            "type": "object",
+            "properties": {
+                "jql": { "type": "string", "description": "JQL query string. Supports fields (project, status, assignee, priority, labels, created, updated, etc.), operators (=, !=, IN, NOT IN, ~, >=, <=), keywords (AND, OR, NOT, ORDER BY), and functions (currentUser(), now(), startOfDay(), endOfWeek(), etc.)." },
+                "fields": { "type": "array", "items": { "type": "string" }, "description": "List of field names to include in results. Defaults to all navigable fields. Use '*all' for everything including custom fields." },
+                "maxResults": { "type": "integer", "description": "Maximum number of results to return (default 50, max 100)." },
+                "startAt": { "type": "integer", "description": "Index of the first result to return (0-based). Use for pagination." }
+            },
+            "required": ["jql"]
+        })),
+        tool("atlassian", "transitionJiraIssue", "Move a Jira issue to a new workflow state by executing a transition. Transitions represent the allowed state changes for an issue (e.g., 'To Do' → 'In Progress' → 'Done'). You must use getTransitionsForJiraIssue first to discover which transitions are available from the current state, as available transitions depend on the workflow configuration.", json!({
+            "type": "object",
+            "properties": {
+                "issueIdOrKey": { "type": "string", "description": "The issue key or ID to transition." },
+                "transitionId": { "type": "string", "description": "The ID of the transition to execute. Get available transition IDs from getTransitionsForJiraIssue." },
+                "comment": { "type": "string", "description": "Optional comment to add during the transition, explaining why the state was changed." },
+                "resolution": { "type": "string", "description": "Resolution name when transitioning to a resolved/done state (e.g., 'Done', 'Won\\'t Do', 'Duplicate')." }
+            },
+            "required": ["issueIdOrKey", "transitionId"]
+        })),
+        tool("atlassian", "getTransitionsForJiraIssue", "Retrieve the available workflow transitions for a Jira issue from its current state. Returns transition IDs, names, and target status for each available transition. Use this before transitionJiraIssue to discover valid transitions — available transitions depend on the issue's current status and the project's workflow configuration.", json!({
+            "type": "object",
+            "properties": {
+                "issueIdOrKey": { "type": "string", "description": "The issue key (e.g., 'PROJ-123') or numeric issue ID." }
+            },
+            "required": ["issueIdOrKey"]
+        })),
+        tool("atlassian", "addCommentToJiraIssue", "Add a comment to an existing Jira issue. The comment body uses Atlassian Document Format (ADF), which supports rich text, mentions, code blocks, tables, and inline media. Comments are visible to all users with access to the issue and appear in the issue's activity feed.", json!({
+            "type": "object",
+            "properties": {
+                "issueIdOrKey": { "type": "string", "description": "The issue key or ID to comment on." },
+                "body": { "type": "object", "description": "Comment body in Atlassian Document Format (ADF). Root node must be type 'doc' with a 'content' array of block nodes (paragraph, heading, codeBlock, table, etc.)." }
+            },
+            "required": ["issueIdOrKey", "body"]
+        })),
+        tool("atlassian", "addWorklogToJiraIssue", "Log time spent working on a Jira issue. Creates a worklog entry with the specified duration, start time, and optional description. Supports both seconds-based and string-based time formats. Worklogs contribute to the issue's time tracking and are visible in the issue's worklog tab.", json!({
+            "type": "object",
+            "properties": {
+                "issueIdOrKey": { "type": "string", "description": "The issue key or ID to log work against." },
+                "timeSpentSeconds": { "type": "integer", "description": "Time spent in seconds. Either this or timeSpent string must be provided." },
+                "timeSpent": { "type": "string", "description": "Time spent as a human-readable string (e.g., '2h 30m', '1d', '45m'). Either this or timeSpentSeconds must be provided." },
+                "started": { "type": "string", "description": "When the work was started, in ISO 8601 format (e.g., '2024-03-15T09:00:00.000+0000'). Defaults to the current time." },
+                "comment": { "type": "object", "description": "Optional description of the work performed, in Atlassian Document Format (ADF)." }
+            },
+            "required": ["issueIdOrKey"]
+        })),
+        tool("atlassian", "getJiraProjectIssueTypesMetadata", "Retrieve the available issue types and their field metadata for a Jira project. Returns each issue type (Bug, Story, Task, Epic, etc.) with its required fields, optional fields, allowed values, and default values. Essential to call before createJiraIssue to discover what fields are available and required for the target project.", json!({
+            "type": "object",
+            "properties": {
+                "projectKey": { "type": "string", "description": "The project key (e.g., 'PROJ') to retrieve issue type metadata for." }
+            },
+            "required": ["projectKey"]
+        })),
+        tool("atlassian", "lookupJiraAccountId", "Look up an Atlassian account ID from a display name or email address. Account IDs are required for assigning issues, adding watchers, and other user-referencing operations. Returns matching users with their account ID, display name, email, and avatar URL.", json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Search query: a display name, email address, or partial match. Searches across all accessible Atlassian Cloud sites." },
+                "maxResults": { "type": "integer", "description": "Maximum number of matching users to return (default 10)." }
+            },
+            "required": ["query"]
+        })),
+        tool("atlassian", "getConfluencePage", "Retrieve a Confluence page's content, metadata, and version information. Supports two content representations: 'storage' format (raw XHTML used by Confluence) and 'atlas_doc_format' (structured JSON). The atlas_doc_format is recommended for reading as it provides a structured document tree. Also returns page title, space, version number, ancestors, and labels.", json!({
+            "type": "object",
+            "properties": {
+                "pageId": { "type": "string", "description": "The numeric ID of the Confluence page to retrieve." },
+                "bodyFormat": { "type": "string", "description": "Content representation format: 'storage' (raw XHTML) or 'atlas_doc_format' (structured JSON, recommended for reading).", "enum": ["storage", "atlas_doc_format"] }
+            },
+            "required": ["pageId"]
+        })),
+        tool("atlassian", "createConfluencePage", "Create a new page in a Confluence space. Requires a space ID, title, and body content in either 'storage' (XHTML) or 'atlas_doc_format' (structured JSON). Optionally set a parent page to create the page as a child in the page hierarchy. The page is created as the latest version (version 1).", json!({
+            "type": "object",
+            "properties": {
+                "spaceId": { "type": "string", "description": "The ID of the Confluence space to create the page in." },
+                "title": { "type": "string", "description": "Page title. Must be unique within the space." },
+                "body": { "type": "string", "description": "Page content in the specified representation format." },
+                "bodyFormat": { "type": "string", "description": "Content format: 'storage' (XHTML) or 'atlas_doc_format' (JSON).", "enum": ["storage", "atlas_doc_format"] },
+                "parentId": { "type": "string", "description": "ID of the parent page. If omitted, the page is created at the space root." },
+                "status": { "type": "string", "description": "Page status: 'current' (published) or 'draft'.", "enum": ["current", "draft"] }
+            },
+            "required": ["spaceId", "title", "body"]
+        })),
+        tool("atlassian", "updateConfluencePage", "Update the content, title, or status of an existing Confluence page. You must provide the current version number (obtained from getConfluencePage) to prevent overwriting concurrent edits. The version number is automatically incremented. Supports the same content formats as createConfluencePage.", json!({
+            "type": "object",
+            "properties": {
+                "pageId": { "type": "string", "description": "The numeric ID of the page to update." },
+                "title": { "type": "string", "description": "New page title." },
+                "body": { "type": "string", "description": "New page content in the specified representation format." },
+                "bodyFormat": { "type": "string", "description": "Content format: 'storage' or 'atlas_doc_format'.", "enum": ["storage", "atlas_doc_format"] },
+                "version": { "type": "integer", "description": "Current version number of the page. Required to detect conflicts. Obtain from getConfluencePage." },
+                "status": { "type": "string", "description": "New page status: 'current' or 'draft'.", "enum": ["current", "draft"] }
+            },
+            "required": ["pageId", "title", "body", "version"]
+        })),
+        tool("atlassian", "searchConfluenceUsingCql", "Search Confluence content using CQL (Confluence Query Language). Supports searching pages, blog posts, comments, and attachments with filters on space, type, creator, label, last modified date, and full-text content matching. Examples: 'type = page AND space = DEV AND text ~ \"architecture\"', 'creator = currentUser() AND lastModified > now(\"-7d\")'.", json!({
+            "type": "object",
+            "properties": {
+                "cql": { "type": "string", "description": "CQL query string. Supports fields (type, space, creator, label, ancestor, title, text, lastModified), operators (=, !=, ~, IN, NOT IN, >, <), and functions (currentUser(), now())." },
+                "limit": { "type": "integer", "description": "Maximum results to return (default 25, max 100)." },
+                "start": { "type": "integer", "description": "Starting index for pagination (0-based)." },
+                "expand": { "type": "string", "description": "Comma-separated entities to expand: 'content.body.storage', 'content.metadata.labels', etc." }
+            },
+            "required": ["cql"]
+        })),
+        tool("atlassian", "getConfluenceSpaces", "List all Confluence spaces accessible to the authenticated user. Returns space key, name, type (global/personal), description, and homepage ID. Use the space key or ID when creating pages or searching within a specific space.", json!({
+            "type": "object",
+            "properties": {
+                "type": { "type": "string", "description": "Filter by space type: 'global' or 'personal'.", "enum": ["global", "personal"] },
+                "limit": { "type": "integer", "description": "Maximum results to return (default 25, max 100)." },
+                "start": { "type": "integer", "description": "Starting index for pagination (0-based)." }
+            },
+            "required": []
+        })),
+        tool("atlassian", "createConfluenceFooterComment", "Add a footer (page-level) comment to a Confluence page. Footer comments appear at the bottom of the page and are visible to all users with page access. The comment body uses the same content format as pages.", json!({
+            "type": "object",
+            "properties": {
+                "pageId": { "type": "string", "description": "The ID of the page to comment on." },
+                "body": { "type": "string", "description": "Comment body in storage format (XHTML) or atlas_doc_format (JSON)." },
+                "bodyFormat": { "type": "string", "description": "Content format: 'storage' or 'atlas_doc_format'.", "enum": ["storage", "atlas_doc_format"] }
+            },
+            "required": ["pageId", "body"]
+        })),
+        tool("atlassian", "createConfluenceInlineComment", "Add an inline comment to a specific section of a Confluence page's content. Inline comments are anchored to the text they reference and appear as highlights in the page. Useful for targeted feedback on specific paragraphs or sentences.", json!({
+            "type": "object",
+            "properties": {
+                "pageId": { "type": "string", "description": "The ID of the page to add an inline comment to." },
+                "body": { "type": "string", "description": "Comment body in storage format or atlas_doc_format." },
+                "bodyFormat": { "type": "string", "description": "Content format: 'storage' or 'atlas_doc_format'.", "enum": ["storage", "atlas_doc_format"] },
+                "inlineCommentProperties": { "type": "object", "description": "Object specifying the text selection to anchor the comment to. Contains 'textSelection' (the selected text) and 'textSelectionMatchCount' (which occurrence to match if text appears multiple times)." }
+            },
+            "required": ["pageId", "body", "inlineCommentProperties"]
+        })),
+        tool("atlassian", "getConfluencePageDescendants", "Retrieve all descendant pages of a Confluence page in the page hierarchy. Returns child pages, grandchild pages, and deeper descendants. Useful for understanding the page tree structure under a parent page. Results include page ID, title, status, and depth level.", json!({
+            "type": "object",
+            "properties": {
+                "pageId": { "type": "string", "description": "The ID of the parent page to list descendants for." },
+                "depth": { "type": "string", "description": "How deep to traverse: 'all' for all descendants, or a number (e.g., '1' for direct children only)." },
+                "limit": { "type": "integer", "description": "Maximum results to return (default 25, max 100)." },
+                "start": { "type": "integer", "description": "Starting index for pagination (0-based)." }
+            },
+            "required": ["pageId"]
+        })),
+
+        // ── Filesystem ──────────────────────────────────────────────────
+        tool("filesystem", "read_file", "Read the complete contents of a file from the filesystem. Returns the file content as a UTF-8 encoded string. For binary files, the content is returned as base64-encoded data. The file path must be within the server's configured allowed directories for security.", json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Absolute or relative path to the file to read. Must be within the server's configured allowed directories. Supports both forward slashes and backslashes on Windows." }
+            },
+            "required": ["path"]
+        })),
+        tool("filesystem", "read_multiple_files", "Read the contents of multiple files in a single operation. More efficient than making separate read_file calls for each file. Returns results in the same order as the requested paths. If any file fails to read, its entry contains an error message while other files are still returned.", json!({
+            "type": "object",
+            "properties": {
+                "paths": { "type": "array", "items": { "type": "string" }, "description": "Array of file paths to read. Each path must be within the server's allowed directories." }
+            },
+            "required": ["paths"]
+        })),
+        tool("filesystem", "write_file", "Create a new file or completely overwrite an existing file with the provided content. Parent directories are created automatically if they don't exist. Content must be provided as a UTF-8 string; use base64 encoding for binary content. The file path must be within the server's allowed directories.", json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Path for the file to write. Parent directories will be created if needed." },
+                "content": { "type": "string", "description": "Complete file content to write. For binary files, provide base64-encoded content." }
+            },
+            "required": ["path", "content"]
+        })),
+        tool("filesystem", "edit_file", "Apply targeted edits to a file using a diff-like format. Supports multiple edits in a single call, each specifying an 'oldText' string to find (must match exactly) and a 'newText' replacement. More reliable than write_file for partial modifications because it validates that the expected content exists before replacing.", json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Path to the file to edit." },
+                "edits": { "type": "array", "description": "Array of edit operations. Each edit has 'oldText' (exact string to find) and 'newText' (replacement string).", "items": { "type": "object", "properties": { "oldText": { "type": "string" }, "newText": { "type": "string" } }, "required": ["oldText", "newText"] } },
+                "dryRun": { "type": "boolean", "description": "If true, validate that all edits can be applied without actually modifying the file. Useful for verification." }
+            },
+            "required": ["path", "edits"]
+        })),
+        tool("filesystem", "create_directory", "Create a new directory at the specified path, including any necessary parent directories. Does not return an error if the directory already exists. The path must be within the server's allowed directories.", json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Path for the new directory. Parent directories will be created as needed." }
+            },
+            "required": ["path"]
+        })),
+        tool("filesystem", "list_directory", "List all entries in a directory. Returns each entry prefixed with [FILE] or [DIR] to indicate its type. Does not recurse into subdirectories — use directory_tree for recursive listing. Entries are sorted alphabetically with directories listed first.", json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Path to the directory to list." }
+            },
+            "required": ["path"]
+        })),
+        tool("filesystem", "directory_tree", "Generate a recursive tree structure of a directory showing all files and subdirectories up to a configurable depth. Useful for understanding project layout and file organization. Returns an indented text representation similar to the Unix 'tree' command.", json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Root directory path to generate the tree from." },
+                "depth": { "type": "integer", "description": "Maximum depth to recurse. Defaults to 3. Use -1 for unlimited depth (may be slow for large directories)." }
+            },
+            "required": ["path"]
+        })),
+        tool("filesystem", "move_file", "Move or rename a file or directory. The source path must exist and the destination must not already exist. Both paths must be within the server's allowed directories. Works across directories on the same filesystem.", json!({
+            "type": "object",
+            "properties": {
+                "source": { "type": "string", "description": "Current path of the file or directory to move." },
+                "destination": { "type": "string", "description": "New path for the file or directory. Must not already exist." }
+            },
+            "required": ["source", "destination"]
+        })),
+        tool("filesystem", "search_files", "Search for files matching a glob pattern (e.g., '**/*.ts', 'src/**/*.test.js'). Searches recursively from the given path and returns all matching file paths. Supports standard glob syntax including wildcards (*), recursive matching (**), character classes ([abc]), and brace expansion ({a,b}).", json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Root directory to search from." },
+                "pattern": { "type": "string", "description": "Glob pattern to match files against (e.g., '**/*.rs', 'src/**/*.{ts,tsx}')." },
+                "excludePatterns": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to exclude from results (e.g., ['node_modules/**', '*.min.js'])." }
+            },
+            "required": ["path", "pattern"]
+        })),
+        tool("filesystem", "get_file_info", "Get detailed metadata about a file or directory including size in bytes, creation timestamp, last modification timestamp, last access timestamp, POSIX permissions, and whether the path is a file, directory, or symbolic link.", json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Path to the file or directory to get information about." }
+            },
+            "required": ["path"]
+        })),
+
+        // ── PostgreSQL ──────────────────────────────────────────────────
+        tool("postgres", "query", "Execute a read-only SQL query (SELECT, EXPLAIN, SHOW, WITH) against the PostgreSQL database. Returns results as an array of JSON objects where each object represents a row with column names as keys. Use LIMIT to control result size and avoid returning excessive data. Parameterized queries are supported for safe value interpolation.", json!({
+            "type": "object",
+            "properties": {
+                "sql": { "type": "string", "description": "SQL query to execute. Must be a read-only statement (SELECT, EXPLAIN, SHOW, WITH). Write operations will be rejected." },
+                "params": { "type": "array", "items": {}, "description": "Optional array of parameter values for parameterized queries. Use $1, $2, etc. as placeholders in the SQL. Prevents SQL injection." }
+            },
+            "required": ["sql"]
+        })),
+        tool("postgres", "execute", "Execute a write SQL statement (INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, TRUNCATE) against the PostgreSQL database. Returns the number of affected rows. Always use parameterized queries with the params array for any user-provided values to prevent SQL injection attacks.", json!({
+            "type": "object",
+            "properties": {
+                "sql": { "type": "string", "description": "SQL statement to execute. Must be a write operation. Use $1, $2, etc. for parameter placeholders." },
+                "params": { "type": "array", "items": {}, "description": "Array of parameter values corresponding to $1, $2, etc. placeholders in the SQL." }
+            },
+            "required": ["sql"]
+        })),
+        tool("postgres", "list_schemas", "List all schemas in the connected PostgreSQL database. Returns schema names and their descriptions (if set via COMMENT ON SCHEMA). Useful for discovering the database organization before exploring specific schemas.", json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })),
+        tool("postgres", "list_tables", "List all tables in a specified schema with their approximate row counts, size on disk, and descriptions (if set via COMMENT ON TABLE). Defaults to the 'public' schema if not specified. Also shows views and materialized views in the schema.", json!({
+            "type": "object",
+            "properties": {
+                "schema": { "type": "string", "description": "Schema name to list tables from. Defaults to 'public' if omitted.", "default": "public" }
+            },
+            "required": []
+        })),
+        tool("postgres", "describe_table", "Get the complete schema definition of a table including all columns (name, data type, nullability, default value, character length limits), primary key, unique constraints, foreign key relationships, check constraints, and indexes. Essential for understanding table structure before writing queries.", json!({
+            "type": "object",
+            "properties": {
+                "table": { "type": "string", "description": "Table name. For tables not in the 'public' schema, use schema-qualified form: 'schema.table'." }
+            },
+            "required": ["table"]
+        })),
+        tool("postgres", "explain_query", "Run EXPLAIN ANALYZE on a SQL query and return the query execution plan with actual timing statistics. The query is executed inside a rolled-back transaction so no data is permanently modified, making it safe for analyzing write operations. Shows sequential vs. index scans, join methods, sort operations, and actual row counts vs. estimates.", json!({
+            "type": "object",
+            "properties": {
+                "sql": { "type": "string", "description": "SQL query to analyze. Can be any valid SQL including SELECT, INSERT, UPDATE, DELETE." },
+                "params": { "type": "array", "items": {}, "description": "Optional parameter values for parameterized queries." },
+                "format": { "type": "string", "description": "Output format: 'text' (default, human-readable), 'json' (structured), 'yaml', or 'xml'.", "enum": ["text", "json", "yaml", "xml"] }
+            },
+            "required": ["sql"]
+        })),
+
+        // ── Slack ────────────────────────────────────────────────────────
+        tool("slack", "send_message", "Post a message to a Slack channel, group, or direct message conversation. The message body supports Slack's mrkdwn formatting including bold (*text*), italic (_text_), strikethrough (~text~), code (`code`), code blocks (```code```), links (<url|text>), and user mentions (<@USER_ID>). For threaded replies, include the thread_ts parameter.", json!({
+            "type": "object",
+            "properties": {
+                "channel": { "type": "string", "description": "Channel ID (not name) to post to. Use list_channels to find channel IDs. For DMs, use the user's DM channel ID." },
+                "text": { "type": "string", "description": "Message text with optional Slack mrkdwn formatting. This is also used as the notification text." },
+                "thread_ts": { "type": "string", "description": "Timestamp of the parent message for threaded replies. Format: '1234567890.123456'." },
+                "unfurl_links": { "type": "boolean", "description": "If true, enable URL previews/unfurling in the message." },
+                "unfurl_media": { "type": "boolean", "description": "If true, enable media content unfurling (images, videos)." }
+            },
+            "required": ["channel", "text"]
+        })),
+        tool("slack", "list_channels", "List channels in the Slack workspace that the authenticated user has access to. Returns channel IDs, names, topics, purposes, member counts, and creation dates. Results are paginated — use the cursor parameter for subsequent pages. Supports filtering by channel type.", json!({
+            "type": "object",
+            "properties": {
+                "types": { "type": "string", "description": "Comma-separated channel types to include: 'public_channel', 'private_channel', 'im' (direct messages), 'mpim' (group DMs). Defaults to 'public_channel'." },
+                "limit": { "type": "integer", "description": "Maximum channels per page (default 100, max 1000)." },
+                "cursor": { "type": "string", "description": "Pagination cursor from a previous response's 'next_cursor' field." },
+                "exclude_archived": { "type": "boolean", "description": "If true, exclude archived channels from results. Defaults to false." }
+            },
+            "required": []
+        })),
+        tool("slack", "search_messages", "Search for messages across all channels the authenticated user has access to. Supports Slack search modifiers: 'in:#channel' to limit to a channel, 'from:@user' to filter by sender, 'before:2024-01-01' and 'after:2024-01-01' for date ranges, 'has:link' for messages with URLs, 'has:reaction' for reacted messages, and 'has:pin' for pinned messages. Returns message text, channel, timestamp, and permalink.", json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Search query string with optional Slack search modifiers (in:, from:, before:, after:, has:, is:)." },
+                "sort": { "type": "string", "description": "Sort order: 'score' (relevance, default) or 'timestamp' (newest first).", "enum": ["score", "timestamp"] },
+                "count": { "type": "integer", "description": "Number of results per page (default 20, max 100)." },
+                "page": { "type": "integer", "description": "Page number for pagination (default 1)." }
+            },
+            "required": ["query"]
+        })),
+        tool("slack", "get_thread", "Retrieve all replies in a message thread. Returns messages in chronological order including the parent message. Each message includes sender ID, text, timestamp, reactions, and file attachments. Useful for following up on threaded conversations.", json!({
+            "type": "object",
+            "properties": {
+                "channel": { "type": "string", "description": "Channel ID containing the thread." },
+                "thread_ts": { "type": "string", "description": "Timestamp of the parent message that started the thread." },
+                "limit": { "type": "integer", "description": "Maximum replies to return (default 100, max 1000)." },
+                "cursor": { "type": "string", "description": "Pagination cursor from a previous response." }
+            },
+            "required": ["channel", "thread_ts"]
+        })),
+        tool("slack", "get_channel_history", "Fetch recent messages from a Slack channel in reverse chronological order. Supports filtering by time range using Unix timestamps. Returns message text, sender, timestamp, reactions, thread info, and attachments. Does not include threaded replies — use get_thread for those.", json!({
+            "type": "object",
+            "properties": {
+                "channel": { "type": "string", "description": "Channel ID to fetch history from." },
+                "oldest": { "type": "string", "description": "Only messages after this Unix timestamp (e.g., '1234567890.000000')." },
+                "latest": { "type": "string", "description": "Only messages before this Unix timestamp." },
+                "limit": { "type": "integer", "description": "Maximum messages to return (default 100, max 1000)." },
+                "cursor": { "type": "string", "description": "Pagination cursor from a previous response." }
+            },
+            "required": ["channel"]
+        })),
+        tool("slack", "get_users", "List members of the Slack workspace with their display names, real names, email addresses, status text and emoji, timezone, and whether they are a bot, admin, or owner. Results are paginated. Useful for resolving user IDs needed for mentions and DMs.", json!({
+            "type": "object",
+            "properties": {
+                "limit": { "type": "integer", "description": "Maximum users per page (default 100, max 1000)." },
+                "cursor": { "type": "string", "description": "Pagination cursor from a previous response." }
+            },
+            "required": []
+        })),
+        tool("slack", "add_reaction", "Add an emoji reaction to a message in a Slack channel. The reaction is added on behalf of the authenticated user. The emoji name should not include colons (e.g., use 'thumbsup' not ':thumbsup:'). Each user can only add one of each reaction to a message.", json!({
+            "type": "object",
+            "properties": {
+                "channel": { "type": "string", "description": "Channel ID containing the message to react to." },
+                "timestamp": { "type": "string", "description": "Timestamp of the message to react to (e.g., '1234567890.123456')." },
+                "name": { "type": "string", "description": "Emoji name without colons (e.g., 'thumbsup', 'rocket', 'white_check_mark')." }
+            },
+            "required": ["channel", "timestamp", "name"]
+        })),
+        tool("slack", "upload_file", "Upload a file to one or more Slack channels with an optional initial comment. Supports any file type. The file content is provided as a string (text files) or base64-encoded data (binary files). Returns the file ID, URL, and sharing details.", json!({
+            "type": "object",
+            "properties": {
+                "channels": { "type": "string", "description": "Comma-separated channel IDs to share the file to." },
+                "content": { "type": "string", "description": "File content as a string. For binary files, provide base64-encoded data." },
+                "filename": { "type": "string", "description": "Name for the uploaded file (e.g., 'report.csv', 'screenshot.png')." },
+                "title": { "type": "string", "description": "Title displayed for the file in Slack. Defaults to the filename." },
+                "initial_comment": { "type": "string", "description": "Message text to post alongside the file upload." },
+                "filetype": { "type": "string", "description": "File type identifier (e.g., 'csv', 'png', 'pdf'). Auto-detected if omitted." }
+            },
+            "required": ["channels", "content", "filename"]
+        })),
+    ]
 }
 
 /// Minimum content size (bytes) for indexing. Content shorter than this is not worth indexing.
