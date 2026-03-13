@@ -16,11 +16,24 @@ use lr_skills::mcp_tools::{SKILL_META_TOOL_NAME, SKILL_READ_FILE_TOOL_NAME};
 /// Virtual MCP server for AgentSkills.io skills.
 pub struct SkillsVirtualServer {
     skill_manager: Arc<SkillManager>,
+    /// Global context management config (read at session creation time).
+    config: std::sync::RwLock<lr_config::ContextManagementConfig>,
 }
 
 impl SkillsVirtualServer {
-    pub fn new(skill_manager: Arc<SkillManager>) -> Self {
-        Self { skill_manager }
+    pub fn new(
+        skill_manager: Arc<SkillManager>,
+        config: lr_config::ContextManagementConfig,
+    ) -> Self {
+        Self {
+            skill_manager,
+            config: std::sync::RwLock::new(config),
+        }
+    }
+
+    /// Update the global config (called when settings change).
+    pub fn update_config(&self, config: lr_config::ContextManagementConfig) {
+        *self.config.write().unwrap() = config;
     }
 }
 
@@ -197,9 +210,10 @@ impl VirtualMcpServer for SkillsVirtualServer {
     }
 
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {
+        let config = self.config.read().unwrap();
         Box::new(SkillsSessionState {
             permissions: client.skills_permissions.clone(),
-            context_management_enabled: client.context_management_enabled.unwrap_or(false),
+            context_management_enabled: client.is_context_management_enabled(&config),
         })
     }
 
@@ -208,9 +222,10 @@ impl VirtualMcpServer for SkillsVirtualServer {
         state: &mut dyn VirtualSessionState,
         client: &lr_config::Client,
     ) {
+        let config = self.config.read().unwrap();
         if let Some(s) = state.as_any_mut().downcast_mut::<SkillsSessionState>() {
             s.permissions = client.skills_permissions.clone();
-            s.context_management_enabled = client.context_management_enabled.unwrap_or(false);
+            s.context_management_enabled = client.is_context_management_enabled(&config);
         }
     }
 

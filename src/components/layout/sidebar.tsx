@@ -11,6 +11,7 @@ import {
   Shield,
   Cpu,
   BookText,
+  Database,
   Minimize2,
   Wrench,
   ChevronDown,
@@ -49,9 +50,9 @@ interface HealthCacheState {
   aggregate_status: AggregateHealthStatus
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'context-management' | 'skills'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'catalog-compression' | 'response-rag' | 'skills'
   | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair'
-  | 'llm-optimization' | 'mcp-optimization' | 'settings' | 'debug'
+  | 'optimize-overview' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -73,6 +74,7 @@ interface NavCollapsible {
   id: View
   icon: React.ElementType
   label: string
+  shortcut?: string
   children: NavItem[]
 }
 
@@ -87,37 +89,31 @@ function isNavCollapsible(entry: NavEntry): entry is NavCollapsible {
 }
 
 const clientNavItems: NavItem[] = [
-  { id: 'clients', icon: Users, label: 'Client', shortcut: '⌘2' },
+  { id: 'clients', icon: Users, label: 'Clients', shortcut: '⌘2' },
 ]
 
 const resourceNavEntries: NavEntry[] = [
-  { heading: 'LLM' },
-  { id: 'resources', icon: ProvidersIcon, label: 'Providers', shortcut: '⌘3' },
+  { id: 'resources', icon: ProvidersIcon, label: 'LLMs', shortcut: '⌘3' },
+  { id: 'mcp-servers', icon: McpIcon, label: 'MCPs', shortcut: '⌘4' },
+  { id: 'skills', icon: SkillsIcon, label: 'Skills', shortcut: '⌘5' },
+  { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6' },
+  { id: 'marketplace', icon: StoreIcon, label: 'Marketplace', shortcut: '⌘7' },
   {
-    id: 'llm-optimization', icon: Zap, label: 'Optimize',
+    id: 'optimize-overview', icon: Zap, label: 'Optimize', shortcut: '⌘8',
     children: [
-      { id: 'guardrails', icon: Shield, label: 'GuardRails', shortcut: '⌘7' },
+      { id: 'guardrails', icon: Shield, label: 'GuardRails' },
       { id: 'json-repair', icon: Wrench, label: 'JSON Repair' },
       { id: 'compression', icon: Minimize2, label: 'Compression' },
-      { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak', shortcut: '⌘8' },
-    ],
-  },
-  { heading: 'MCP' },
-  { id: 'mcp-servers', icon: McpIcon, label: 'Servers', shortcut: '⌘4' },
-  { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5' },
-  { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6' },
-  { id: 'marketplace', icon: StoreIcon, label: 'Marketplace', shortcut: '⌘9' },
-  {
-    id: 'mcp-optimization', icon: Zap, label: 'Optimize',
-    children: [
-      { id: 'context-management', icon: BookText, label: 'Context' },
+      { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak' },
+      { id: 'catalog-compression', icon: BookText, label: 'Catalog' },
+      { id: 'response-rag', icon: Database, label: 'RAG' },
     ],
   },
 ]
 
 const bottomNavItems: NavItem[] = [
   ...(import.meta.env.DEV ? [{ id: 'debug' as View, icon: Bug, label: 'Debug' }] : []),
-  { id: 'settings', icon: Settings, label: 'Settings' },
+  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘9' },
 ]
 
 export function Sidebar({ activeView, onViewChange }: SidebarProps) {
@@ -286,15 +282,15 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             break
           case '7':
             e.preventDefault()
-            onViewChange('guardrails')
+            onViewChange('marketplace')
             break
           case '8':
             e.preventDefault()
-            onViewChange('strong-weak')
+            onViewChange('optimize-overview')
             break
           case '9':
             e.preventDefault()
-            onViewChange('marketplace')
+            onViewChange('settings')
             break
         }
       }
@@ -386,22 +382,35 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             </button>
           </TooltipTrigger>
           <TooltipContent side="right" sideOffset={8}>
-            <span>{group.label}</span>
+            <div className="flex items-center gap-2">
+              <span>{group.label}</span>
+              {group.shortcut && (
+                <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {group.shortcut}
+                </kbd>
+              )}
+            </div>
           </TooltipContent>
         </Tooltip>
       )
     }
 
+    const parentContent = group.shortcut ? (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          {parentButton}
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>
+          <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {group.shortcut}
+          </kbd>
+        </TooltipContent>
+      </Tooltip>
+    ) : parentButton
+
     return (
       <div key={group.id}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            {parentButton}
-          </TooltipTrigger>
-          <TooltipContent side="right" sideOffset={8}>
-            <span>{group.label}</span>
-          </TooltipContent>
-        </Tooltip>
+        {parentContent}
         {isOpen && (
           <div className="ml-3 border-l border-border/50 pl-1 mt-0.5 space-y-0.5">
             {group.children.map(renderNavItem)}
@@ -414,6 +423,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
   const renderNavItem = (item: NavItem) => {
     const Icon = item.icon
     const isActive = activeView === item.id
+    const showTooltip = !expanded || !!item.shortcut
 
     const button = (
       <button
@@ -429,6 +439,10 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         <span className="truncate text-left text-sm">{item.label}</span>
       </button>
     )
+
+    if (!showTooltip) {
+      return <React.Fragment key={item.id}>{button}</React.Fragment>
+    }
 
     return (
       <Tooltip key={item.id}>

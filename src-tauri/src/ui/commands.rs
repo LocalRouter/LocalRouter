@@ -1651,7 +1651,6 @@ pub async fn get_context_management_config(
 /// Update context management configuration
 #[tauri::command]
 pub async fn update_context_management_config(
-    enabled: Option<bool>,
     catalog_compression: Option<bool>,
     catalog_threshold_bytes: Option<usize>,
     response_threshold_bytes: Option<usize>,
@@ -1664,9 +1663,6 @@ pub async fn update_context_management_config(
 ) -> Result<(), String> {
     config_manager
         .update(|cfg| {
-            if let Some(v) = enabled {
-                cfg.context_management.enabled = v;
-            }
             if let Some(v) = catalog_compression {
                 cfg.context_management.catalog_compression = v;
             }

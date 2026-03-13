@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { BookText, Info, RefreshCw, Loader2, Search, Database, BarChart3, AlertTriangle } from "lucide-react"
+import { BookText, RefreshCw, Loader2, Search, Database, BarChart3, AlertTriangle, Info } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -13,26 +13,24 @@ import {
   ResizablePanel,
   ResizableHandle,
 } from "@/components/ui/resizable"
+import { Switch } from "@/components/ui/Toggle"
 import { cn } from "@/lib/utils"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { ToolList } from "@/components/shared/ToolList"
 import type { ToolListItem } from "@/components/shared/ToolList"
-import { GatewayIndexingTree } from "@/components/permissions/GatewayIndexingTree"
-import { IndexingStateButton } from "@/components/permissions/IndexingStateButton"
-import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo, IndexingState } from "@/types/tauri-commands"
+import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
 const DEFAULT_CATALOG_THRESHOLD_BYTES = 1000
-const DEFAULT_RESPONSE_THRESHOLD_BYTES = 200
 
 
-interface ContextManagementViewProps {
+interface CatalogCompressionViewProps {
   activeSubTab?: string | null
   onTabChange?: (view: string, subTab?: string | null) => void
 }
 
-export function ContextManagementView({ activeSubTab, onTabChange }: ContextManagementViewProps) {
+export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCompressionViewProps) {
   const [config, setConfig] = useState<ContextManagementConfig | null>(null)
   const [sessions, setSessions] = useState<ActiveSessionInfo[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
@@ -50,7 +48,7 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
   const tab = activeSubTab || "info"
 
   const handleTabChange = (newTab: string) => {
-    onTabChange?.("context-management", newTab)
+    onTabChange?.("catalog-compression", newTab)
   }
 
   const loadSessions = useCallback(async () => {
@@ -102,9 +100,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
       setSearchLoading(false)
     }
   }, [searchQuery])
-
-
-
 
   // Load detail data when session or detail tab changes
   useEffect(() => {
@@ -177,12 +172,12 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <BookText className="h-6 w-6" />
-            Context Management
+            MCP Catalog Compression
           </h1>
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
         </div>
         <p className="text-sm text-muted-foreground">
-          Compress MCP catalogs and tool responses using FTS5 search indexing
+          Compress MCP catalogs using deferred loading and FTS5 search indexing
         </p>
       </div>
 
@@ -208,33 +203,31 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
         {/* Info Tab */}
         <TabsContent value="info" className="flex-1 min-h-0 mt-4">
           <div className="space-y-4 max-w-2xl">
-            {/* Enable Context Management */}
             {config && (
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Default: Enable Catalog Compression</CardTitle>
-                  </div>
-                  <CardDescription>
-                    Uses deferred loading of tools, prompts, and resources combined with
-                    FTS5 search indexing of welcome messages and tool descriptions. When catalogs exceed the
-                    configured threshold, capabilities are hidden and a search
-                    tool lets the AI discover and unhide them on demand.
-                  </CardDescription>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Clients can override this setting individually in their Context tab.
-                    Requires client support for{" "}
-                    <code className="px-1 py-0.5 rounded bg-muted text-xs">tools/listChanged</code> notifications.
-                  </p>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">{config.search_tool_name}</code>
-                    <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">{config.read_tool_name}</code>
-                  </div>
-                </CardContent>
-              </Card>
+              <>
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-base">Default: Catalog Compression</CardTitle>
+                      <Switch
+                        checked={config.catalog_compression}
+                        onCheckedChange={(value) => updateField("catalogCompression", value)}
+                      />
+                    </div>
+                    <CardDescription>
+                      When enabled, tools, prompts, and resources are deferred from the initial catalog
+                      and loaded on-demand via FTS5 search indexing. This reduces the context window
+                      usage for clients with many MCP servers.
+                    </CardDescription>
+                  </CardHeader>
+                </Card>
+
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span>Exposed tool names:</span>
+                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{config.search_tool_name}</code>
+                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{config.read_tool_name}</code>
+                </div>
+              </>
             )}
           </div>
         </TabsContent>
@@ -617,96 +610,10 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
           {config && (
             <div className="space-y-4 max-w-2xl">
               {/* Catalog Threshold */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Catalog Compression Threshold</CardTitle>
-                  <CardDescription>
-                    When the total catalog size exceeds this threshold (in bytes), tool descriptions
-                    are progressively compressed and deferred to the search index.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex gap-2 items-center">
-                    <Input
-                      type="number"
-                      defaultValue={config.catalog_threshold_bytes}
-                      key={`catalog-${config.catalog_threshold_bytes}`}
-                      onBlur={(e) => {
-                        const v = parseInt(e.target.value)
-                        if (!isNaN(v) && v >= 0 && v !== config.catalog_threshold_bytes) {
-                          updateField("catalogThresholdBytes", v)
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          (e.target as HTMLInputElement).blur()
-                        }
-                      }}
-                      className="w-40"
-                      min={0}
-                    />
-                    <span className="text-sm text-muted-foreground">bytes</span>
-                    {config.catalog_threshold_bytes !== DEFAULT_CATALOG_THRESHOLD_BYTES && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => updateField("catalogThresholdBytes", DEFAULT_CATALOG_THRESHOLD_BYTES)}
-                      >
-                        Reset to default
-                      </Button>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    Default: {DEFAULT_CATALOG_THRESHOLD_BYTES.toLocaleString()} bytes. Lower values compress more aggressively. Set to 0 to always compress.
-                  </p>
-                </CardContent>
-              </Card>
-
-              {/* Response Threshold */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Response Compression Threshold</CardTitle>
-                  <CardDescription>
-                    Tool responses larger than this threshold are indexed and replaced with a
-                    truncated preview and a search hint.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex gap-2 items-center">
-                    <Input
-                      type="number"
-                      defaultValue={config.response_threshold_bytes}
-                      key={`response-${config.response_threshold_bytes}`}
-                      onBlur={(e) => {
-                        const v = parseInt(e.target.value)
-                        if (!isNaN(v) && v >= 0 && v !== config.response_threshold_bytes) {
-                          updateField("responseThresholdBytes", v)
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          (e.target as HTMLInputElement).blur()
-                        }
-                      }}
-                      className="w-40"
-                      min={0}
-                    />
-                    <span className="text-sm text-muted-foreground">bytes</span>
-                    {config.response_threshold_bytes !== DEFAULT_RESPONSE_THRESHOLD_BYTES && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => updateField("responseThresholdBytes", DEFAULT_RESPONSE_THRESHOLD_BYTES)}
-                      >
-                        Reset to default
-                      </Button>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    Default: {DEFAULT_RESPONSE_THRESHOLD_BYTES.toLocaleString()} bytes. Set higher to compress fewer responses. Set to 0 to always compress.
-                  </p>
-                </CardContent>
-              </Card>
+              <CatalogThresholdSlider
+                config={config}
+                updateField={updateField}
+              />
 
               {/* Tool Names */}
               <Card>
@@ -757,46 +664,6 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
                   </p>
                 </CardContent>
               </Card>
-
-              {/* Gateway Indexing Picker */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Gateway Tool Indexing</CardTitle>
-                  <CardDescription>
-                    Control which gateway tools get their responses indexed into FTS5.
-                    Applies to all clients in any mode.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <GatewayIndexingTree
-                    permissions={config.gateway_indexing}
-                    onUpdate={async () => {
-                      const updated = await invoke<ContextManagementConfig>("get_context_management_config")
-                      setConfig(updated)
-                    }}
-                  />
-                </CardContent>
-              </Card>
-
-              {/* Client Tools Indexing Default */}
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle className="text-base">Client Tools Indexing</CardTitle>
-                      <CardDescription className="mt-1.5">
-                        Default for client tool response indexing across all MCP via LLM clients.
-                        Per-client overrides in client settings.
-                      </CardDescription>
-                    </div>
-                    <IndexingStateButton
-                      value={config.client_tools_indexing_default}
-                      onChange={(state: IndexingState) => updateField("clientToolsIndexingDefault", state)}
-                    />
-                  </div>
-                </CardHeader>
-              </Card>
-
             </div>
           )}
         </TabsContent>
@@ -809,6 +676,71 @@ export function ContextManagementView({ activeSubTab, onTabChange }: ContextMana
         </TabsContent>
       </Tabs>
     </div>
+  )
+}
+
+interface CatalogThresholdSliderProps {
+  config: ContextManagementConfig
+  updateField: (field: string, value: unknown) => Promise<void>
+}
+
+function CatalogThresholdSlider({ config, updateField }: CatalogThresholdSliderProps) {
+  const [sliderValue, setSliderValue] = useState(config.catalog_threshold_bytes)
+
+  // Sync slider when config changes externally
+  useEffect(() => {
+    setSliderValue(config.catalog_threshold_bytes)
+  }, [config.catalog_threshold_bytes])
+
+  // Debounced save when slider value changes
+  useEffect(() => {
+    if (sliderValue === config.catalog_threshold_bytes) return
+    const timer = setTimeout(() => {
+      updateField("catalogThresholdBytes", sliderValue)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [sliderValue, config.catalog_threshold_bytes, updateField])
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Catalog Compression Threshold</CardTitle>
+        <CardDescription>
+          When the total catalog size exceeds this threshold (in bytes), tool descriptions
+          are progressively compressed and deferred to the search index.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Threshold</span>
+            <span className="font-mono">{sliderValue >= 102400 ? "No limit" : formatBytes(sliderValue)}</span>
+          </div>
+          <input
+            type="range"
+            value={sliderValue}
+            onChange={(e) => setSliderValue(Number(e.target.value))}
+            min={0}
+            max={102400}
+            step={100}
+            className="w-full"
+          />
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>0 (max compression)</span>
+            <span>No limit</span>
+          </div>
+        </div>
+        {sliderValue !== DEFAULT_CATALOG_THRESHOLD_BYTES && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setSliderValue(DEFAULT_CATALOG_THRESHOLD_BYTES)}
+          >
+            Reset to default ({formatBytes(DEFAULT_CATALOG_THRESHOLD_BYTES)})
+          </Button>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -973,7 +905,7 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
         </ResizablePanelGroup>
       )}
 
-      {/* Tools / Resources / Prompts — side-by-side detail */}
+      {/* Tools / Resources / Prompts -- side-by-side detail */}
       {preview && preview.servers.length > 0 && (
         <ResizablePanelGroup direction="horizontal" className="rounded-md border min-h-[300px]">
           <ResizablePanel defaultSize={50} minSize={20}>

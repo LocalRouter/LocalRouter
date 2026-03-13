@@ -537,18 +537,21 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             if let Some(app_state) = server_manager.get_state() {
                 info!("Managing AppState for Tauri commands");
 
+                // Obtain context management config for virtual servers
+                let context_management_config =
+                    config_manager.get().context_management.clone();
+
                 // Register skills virtual server
                 let skills_vs = Arc::new(
                     lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
                         skill_manager.clone(),
+                        context_management_config.clone(),
                     ),
                 );
                 app_state.mcp_gateway.register_virtual_server(skills_vs);
                 info!("Skills virtual server registered");
 
                 // Register context-mode virtual server
-                let context_management_config =
-                    config_manager.get().context_management.clone();
                 let context_mode_vs = Arc::new(
                     lr_mcp::gateway::context_mode::ContextModeVirtualServer::new(
                         context_management_config,
@@ -1723,6 +1726,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::toggle_client_enabled,
             ui::commands::rotate_client_secret,
             ui::commands::toggle_client_context_management,
+            ui::commands::toggle_client_catalog_compression,
             ui::commands::get_client_value,
             ui::commands::get_client_effective_config,
             // Strategy management commands

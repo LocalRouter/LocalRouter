@@ -12,6 +12,7 @@ interface Client {
   name: string
   client_id: string
   context_management_enabled: boolean | null
+  catalog_compression_enabled: boolean | null
   client_mode?: ClientMode
   template_id?: string | null
 }
@@ -25,11 +26,16 @@ interface ContextTabProps {
 export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabProps) {
   const [saving, setSaving] = useState(false)
   const [contextManagement, setContextManagement] = useState<boolean | null>(client.context_management_enabled)
+  const [catalogCompression, setCatalogCompression] = useState<boolean | null>(client.catalog_compression_enabled)
   const [globalConfig, setGlobalConfig] = useState<ContextManagementConfig | null>(null)
 
   useEffect(() => {
     setContextManagement(client.context_management_enabled)
   }, [client.context_management_enabled])
+
+  useEffect(() => {
+    setCatalogCompression(client.catalog_compression_enabled)
+  }, [client.catalog_compression_enabled])
 
   useEffect(() => {
     invoke<ContextManagementConfig>("get_context_management_config")
@@ -56,7 +62,36 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
     }
   }
 
+  const handleCatalogCompressionChange = async (value: boolean | null) => {
+    try {
+      setSaving(true)
+      await invoke("toggle_client_catalog_compression", {
+        clientId: client.client_id,
+        enabled: value,
+      })
+      setCatalogCompression(value)
+      const label = value === null ? "inheriting global" : value ? "enabled" : "disabled"
+      toast.success("Catalog compression " + label)
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to update catalog compression:", error)
+      toast.error("Failed to update settings")
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const isMcpViaLlm = client.client_mode === "mcp_via_llm"
+
+  // Context management is implicitly enabled when any indexing is configured (mirrors Rust is_enabled())
+  const isGloballyEnabled = globalConfig != null && (
+    globalConfig.gateway_indexing.global === "enable" ||
+    Object.values(globalConfig.gateway_indexing.servers).some(s => s === "enable") ||
+    Object.values(globalConfig.gateway_indexing.tools).some(s => s === "enable") ||
+    globalConfig.client_tools_indexing_default === "enable"
+  )
+
+  const isGlobalCatalogCompressionEnabled = globalConfig?.catalog_compression ?? true
 
   return (
     <div className="space-y-6">
@@ -65,7 +100,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <CardTitle className="text-base">Catalog Compression</CardTitle>
+              <CardTitle className="text-base">Context Management</CardTitle>
               <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-900 dark:text-purple-300 font-medium">
                 EXPERIMENTAL
               </span>
@@ -74,14 +109,35 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
               value={contextManagement}
               onChange={handleContextManagementChange}
               disabled={saving}
-              defaultLabel={`Default (${globalConfig?.catalog_compression ? "On" : "Off"})`}
+              defaultLabel={`Default (${isGloballyEnabled ? "On" : "Off"})`}
               onLabel="On"
               offLabel="Off"
             />
           </div>
           <CardDescription>
-            Enables catalog compression: deferred loading of tools, prompts, and resources combined with
-            FTS5 search indexing of welcome messages and tool descriptions. When catalogs exceed the configured
+            Enables context management: FTS5 search indexing of welcome messages and tool descriptions.
+            Requires client support for{" "}
+            <code className="px-1 py-0.5 rounded bg-muted text-xs">tools/listChanged</code> notifications.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+
+      {/* Catalog Compression */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">Catalog Compression</CardTitle>
+            <TriStateButton
+              value={catalogCompression}
+              onChange={handleCatalogCompressionChange}
+              disabled={saving}
+              defaultLabel={`Default (${isGlobalCatalogCompressionEnabled ? "On" : "Off"})`}
+              onLabel="On"
+              offLabel="Off"
+            />
+          </div>
+          <CardDescription>
+            Deferred loading of tools, prompts, and resources. When catalogs exceed the configured
             threshold, descriptions are compressed and low-priority capabilities are deferred.
           </CardDescription>
         </CardHeader>
@@ -103,7 +159,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
                   {onViewChange ? (
                     <button
                       className="text-blue-500 hover:underline"
-                      onClick={() => onViewChange("context-management")}
+                      onClick={() => onViewChange("catalog-compression")}
                     >
                       Global settings
                     </button>
@@ -111,11 +167,6 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
                     <span>Global settings</span>
                   )}{" "}
                   control thresholds, compression levels, and defaults.
-                  Requires client support for{" "}
-                  <code className="px-1 py-0.5 rounded bg-blue-500/20 text-xs">
-                    tools/listChanged
-                  </code>{" "}
-                  notifications.
                 </p>
               </div>
             </div>

@@ -407,6 +407,48 @@ pub async fn toggle_client_context_management(
     Ok(())
 }
 
+/// Toggle catalog compression for a specific client.
+///
+/// # Arguments
+/// * `client_id` - Client ID
+/// * `enabled` - None = inherit global setting, Some(false) = disabled for this client
+#[tauri::command]
+pub async fn toggle_client_catalog_compression(
+    client_id: String,
+    enabled: Option<bool>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting client {} catalog compression: {:?}",
+        client_id,
+        enabled
+    );
+
+    // Update in client manager (in-memory)
+    client_manager
+        .set_catalog_compression_enabled(&client_id, enabled)
+        .map_err(|e| e.to_string())?;
+
+    // Update in config (for persistence)
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.catalog_compression_enabled = enabled;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
 /// Get client tools indexing permissions for a client.
 #[tauri::command]
 pub async fn get_client_tools_indexing(
@@ -533,7 +575,9 @@ pub struct ClientEffectiveConfig {
     pub context_management_effective: bool,
     /// "client" if overridden, "global" if inherited
     pub context_management_source: String,
+    /// Effective catalog compression (resolved from client override or global)
     pub catalog_compression_effective: bool,
+    /// "client" if overridden, "global" if inherited
     pub catalog_compression_source: String,
 }
 

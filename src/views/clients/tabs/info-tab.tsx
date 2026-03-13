@@ -170,13 +170,13 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
   if (showMcp && effectiveConfig) {
     if (effectiveConfig.context_management_effective) {
       pills.push({
-        label: "Catalog Compression",
+        label: "Context Management",
         source: effectiveConfig.context_management_source,
       })
     }
     if (effectiveConfig.catalog_compression_effective) {
       pills.push({
-        label: "Deferred Loading",
+        label: "Catalog Compression",
         source: effectiveConfig.catalog_compression_source,
       })
     }

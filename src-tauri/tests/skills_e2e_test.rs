@@ -126,7 +126,10 @@ async fn test_skills_e2e_all_tool_commands() {
     let router = create_test_router();
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
     gateway.register_virtual_server(Arc::new(
-        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(skill_manager),
+        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
+            skill_manager,
+            lr_config::ContextManagementConfig::default(),
+        ),
     ));
     let gateway = Arc::new(gateway);
 
@@ -301,7 +304,10 @@ async fn setup_gateway_with_skill() -> (Arc<McpGateway>, TempDir) {
     let router = create_test_router();
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
     gateway.register_virtual_server(Arc::new(
-        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(skill_manager),
+        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
+            skill_manager,
+            lr_config::ContextManagementConfig::default(),
+        ),
     ));
 
     (Arc::new(gateway), temp_dir)

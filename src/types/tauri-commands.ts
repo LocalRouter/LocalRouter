@@ -168,8 +168,6 @@ export interface ClientInfo {
   strategy_id: string
   /** Per-client context management override (null = inherit global, false = disabled) */
   context_management_enabled: boolean | null
-  /** Per-client catalog compression override (null = inherit global) */
-  catalog_compression_enabled: boolean | null
   created_at: string
   last_used: string | null
   mcp_permissions: McpPermissions
@@ -670,7 +668,6 @@ export interface SkillsConfig {
  * Rust: crates/lr-config/src/types.rs - ContextManagementConfig struct
  */
 export interface ContextManagementConfig {
-  enabled: boolean
   catalog_compression: boolean
   catalog_threshold_bytes: number
   response_threshold_bytes: number
@@ -682,7 +679,6 @@ export interface ContextManagementConfig {
 
 /** Params for update_context_management_config */
 export interface UpdateContextManagementConfigParams {
-  enabled?: boolean
   catalogCompression?: boolean
   catalogThresholdBytes?: number
   responseThresholdBytes?: number
@@ -750,6 +746,12 @@ export interface PreviewCatalogCompressionParams {
 
 /** Params for toggle_client_context_management */
 export interface ToggleClientContextManagementParams {
+  clientId: string
+  enabled: boolean | null
+}
+
+/** Params for toggle_client_catalog_compression */
+export interface ToggleClientCatalogCompressionParams {
   clientId: string
   enabled: boolean | null
 }

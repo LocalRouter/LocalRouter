@@ -249,26 +249,6 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                             }
                         }
 
-                        // Catalog Compression toggle (per-client override)
-                        {
-                            let is_inherited = client.catalog_compression_enabled.is_none();
-                            let effective =
-                                client.is_catalog_compression_enabled(&global_ctx_config);
-                            let label = if effective {
-                                if is_inherited {
-                                    "✓  Catalog Compression (default)".to_string()
-                                } else {
-                                    "✓  Catalog Compression".to_string()
-                                }
-                            } else if is_inherited {
-                                format!("{}Catalog Compression (default)", TRAY_INDENT)
-                            } else {
-                                format!("{}Catalog Compression", TRAY_INDENT)
-                            };
-                            client_submenu = client_submenu
-                                .text(format!("toggle_catalog_compression_{}", client.id), label);
-                        }
-
                         client_submenu = client_submenu.separator();
                     }
                 }
@@ -424,6 +404,28 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                         client_submenu = client_submenu
                             .text(format!("toggle_coding_agent_{}", client.id), agent_label);
                     }
+
+                    // Catalog Compression toggle (per-client override)
+                    {
+                        let is_inherited = client.catalog_compression_enabled.is_none();
+                        let effective =
+                            client.is_catalog_compression_enabled(&global_ctx_config);
+                        let label = if effective {
+                            if is_inherited {
+                                "✓  Catalog Compression (default)".to_string()
+                            } else {
+                                "✓  Catalog Compression".to_string()
+                            }
+                        } else if is_inherited {
+                            format!("{}Catalog Compression (default)", TRAY_INDENT)
+                        } else {
+                            format!("{}Catalog Compression", TRAY_INDENT)
+                        };
+                        client_submenu = client_submenu
+                            .text(format!("toggle_catalog_compression_{}", client.id), label);
+                    }
+
+                    client_submenu = client_submenu.separator();
                 }
 
                 let client_menu = client_submenu.build()?;

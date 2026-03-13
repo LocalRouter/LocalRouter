@@ -146,7 +146,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       enabled: true,
       strategy_id: 'strategy-default',
       context_management_enabled: null,
-      catalog_compression_enabled: null,
       created_at: new Date().toISOString(),
       last_used: null,
       mcp_permissions: { global: 'ask' as const, servers: {}, tools: {}, resources: {}, prompts: {} },
@@ -197,7 +196,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'toggle_client_catalog_compression': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
     if (client) {
-      client.catalog_compression_enabled = args?.enabled ?? null
+      (client as any).catalog_compression_enabled = args?.enabled ?? null
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
@@ -209,8 +208,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       strategy_name: strategy?.name || 'Unknown',
       context_management_effective: client?.context_management_enabled ?? false,
       context_management_source: client?.context_management_enabled !== null && client?.context_management_enabled !== undefined ? 'client' : 'global',
-      catalog_compression_effective: client?.catalog_compression_enabled ?? false,
-      catalog_compression_source: client?.catalog_compression_enabled !== null && client?.catalog_compression_enabled !== undefined ? 'client' : 'global',
+      catalog_compression_effective: true,
+      catalog_compression_source: 'global' as const,
     }
   },
   'delete_client': (args) => {
@@ -944,7 +943,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     ]
   },
   'get_context_management_config': () => ({
-    enabled: true,
     catalog_compression: true,
     catalog_threshold_bytes: 50000,
     response_threshold_bytes: 10000,

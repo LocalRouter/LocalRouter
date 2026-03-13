@@ -141,17 +141,6 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
               />
             )}
 
-            {/* Catalog Compression toggle (per-client override) */}
-            <MenuItem
-              label={(() => {
-                const isInherited = client.catalog_compression_enabled == null
-                const effective = client.catalog_compression_enabled ?? true
-                const suffix = isInherited ? ' (default)' : ''
-                return effective
-                  ? `✓  Catalog Compression${suffix}`
-                  : `${TRAY_INDENT}Catalog Compression${suffix}`
-              })()}
-            />
 
           </>
         )
@@ -228,6 +217,10 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
               : `${TRAY_INDENT}None selected`
             return <MenuItem label={label} />
           })()}
+
+          <MenuItem label="✓  Catalog Compression (default)" />
+
+          <Separator />
         </>
       )}
     </div>

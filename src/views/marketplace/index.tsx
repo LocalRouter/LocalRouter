@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import { open } from "@tauri-apps/plugin-shell"
 import { toast } from "sonner"
 import {
   Search,
@@ -98,6 +99,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
   const [skillResults, setSkillResults] = useState<SkillListing[]>([])
   const [searchingSkills, setSearchingSkills] = useState(false)
   const [installedSkillNames, setInstalledSkillNames] = useState<string[]>([])
+  const [installedMcpNames, setInstalledMcpNames] = useState<string[]>([])
   const [selectedSkillSource] = useState<string>("all")
 
   // Settings state
@@ -151,10 +153,20 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
     }
   }, [])
 
+  const loadInstalledMcpServers = useCallback(async () => {
+    try {
+      const servers = await invoke<{ id: string; name: string }[]>("list_mcp_servers")
+      setInstalledMcpNames(servers.map(s => s.name))
+    } catch {
+      // MCP servers might not be available
+    }
+  }, [])
+
   useEffect(() => {
     loadConfig()
     loadInstalledSkills()
-  }, [loadConfig, loadInstalledSkills])
+    loadInstalledMcpServers()
+  }, [loadConfig, loadInstalledSkills, loadInstalledMcpServers])
 
   // Load marketplace tool definitions for Via MCP tab
   useEffect(() => {
@@ -610,6 +622,12 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
                                       {pkg?.version && (
                                         <span className="text-xs text-muted-foreground">v{pkg.version}</span>
                                       )}
+                                      {installedMcpNames.includes(server.name) && (
+                                        <Badge variant="secondary" className="text-xs shrink-0">
+                                          <Check className="h-3 w-3 mr-0.5" />
+                                          Installed
+                                        </Badge>
+                                      )}
                                     </div>
                                     <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
                                       {server.vendor && <span>by {server.vendor}</span>}
@@ -638,22 +656,26 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
                                       )}
                                     </div>
                                     {server.homepage && isValidHttpUrl(server.homepage) && (
-                                      <a
-                                        href={server.homepage}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
+                                      <button
                                         className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2"
-                                        onClick={(e) => e.stopPropagation()}
+                                        onClick={(e) => { e.stopPropagation(); open(server.homepage!) }}
                                       >
                                         <ExternalLink className="h-3 w-3" />
                                         Source
-                                      </a>
+                                      </button>
                                     )}
                                   </div>
-                                  <Button size="sm" variant="secondary" onClick={() => handleMcpClick(server)}>
-                                    View
-                                    <ChevronRight className="h-4 w-4 ml-1" />
-                                  </Button>
+                                  {installedMcpNames.includes(server.name) ? (
+                                    <Button size="sm" variant="secondary" onClick={() => onTabChange("mcp-servers", server.name)}>
+                                      View
+                                      <ChevronRight className="h-4 w-4 ml-1" />
+                                    </Button>
+                                  ) : (
+                                    <Button size="sm" onClick={() => handleMcpClick(server)}>
+                                      <Plus className="h-4 w-4 mr-1" />
+                                      Add
+                                    </Button>
+                                  )}
                                 </div>
                               </Card>
                             )
@@ -693,6 +715,15 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
                                         <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
                                       ))}
                                     </div>
+                                  )}
+                                  {skill.source_repo && isValidHttpUrl(skill.source_repo) && (
+                                    <button
+                                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2"
+                                      onClick={(e) => { e.stopPropagation(); open(skill.source_repo) }}
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                      Source
+                                    </button>
                                   )}
                                 </div>
                                 {isInstalled ? (

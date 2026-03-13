@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import { open } from "@tauri-apps/plugin-shell"
 import { toast } from "sonner"
 import { isValidHttpUrl } from "@/utils/url"
 import {
@@ -314,16 +315,16 @@ export function MarketplaceSearchPanel({
                             )}
                           </div>
                           {server.homepage && isValidHttpUrl(server.homepage) && (
-                            <a
-                              href={server.homepage}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                            <button
                               className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2"
-                              onClick={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                open(server.homepage!).catch(console.error)
+                              }}
                             >
                               <ExternalLink className="h-3 w-3" />
                               Source
-                            </a>
+                            </button>
                           )}
                         </div>
                         <Button size="sm" variant="secondary" onClick={() => handleMcpClick(server)}>

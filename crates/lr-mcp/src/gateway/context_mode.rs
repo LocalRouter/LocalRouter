@@ -403,8 +403,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             .expect("wrong state type for ContextModeVirtualServer");
 
         state.enabled = client.is_context_management_enabled(&config);
-        state.catalog_compression_enabled =
-            state.enabled && client.is_catalog_compression_enabled(&config);
+        state.catalog_compression_enabled = state.enabled && client.is_catalog_compression_enabled(&config);
         state.catalog_threshold_bytes = config.catalog_threshold_bytes;
         state.response_threshold_bytes = config.response_threshold_bytes;
         state.search_tool_name = config.search_tool_name.clone();
@@ -945,17 +944,13 @@ mod tests {
     }
 
     #[test]
-    fn test_session_state_cm_enabled_compression_disabled() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            catalog_compression: false,
-            ..Default::default()
-        };
+    fn test_session_state_cm_enabled_compression_follows() {
+        // Default config has is_enabled() == true
+        let config = lr_config::ContextManagementConfig::default();
         let vs = ContextModeVirtualServer::new(config);
         let mut client =
             lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
         client.context_management_enabled = None;
-        client.catalog_compression_enabled = None;
 
         let state = vs.create_session_state(&client);
         let cm = state
@@ -963,60 +958,14 @@ mod tests {
             .downcast_ref::<ContextModeSessionState>()
             .unwrap();
         assert!(cm.enabled);
-        assert!(!cm.catalog_compression_enabled);
-    }
-
-    #[test]
-    fn test_session_state_client_override_disables_compression() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            catalog_compression: true,
-            ..Default::default()
-        };
-        let vs = ContextModeVirtualServer::new(config);
-        let mut client =
-            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
-        client.context_management_enabled = None;
-        client.catalog_compression_enabled = Some(false);
-
-        let state = vs.create_session_state(&client);
-        let cm = state
-            .as_any()
-            .downcast_ref::<ContextModeSessionState>()
-            .unwrap();
-        assert!(cm.enabled);
-        assert!(!cm.catalog_compression_enabled);
-    }
-
-    #[test]
-    fn test_session_state_client_override_enables_compression() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            catalog_compression: false,
-            ..Default::default()
-        };
-        let vs = ContextModeVirtualServer::new(config);
-        let mut client =
-            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
-        client.context_management_enabled = None;
-        client.catalog_compression_enabled = Some(true);
-
-        let state = vs.create_session_state(&client);
-        let cm = state
-            .as_any()
-            .downcast_ref::<ContextModeSessionState>()
-            .unwrap();
-        assert!(cm.enabled);
+        // Catalog compression always follows CM enabled state
         assert!(cm.catalog_compression_enabled);
     }
 
     #[test]
     fn test_session_state_cm_disabled_disables_all() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            catalog_compression: true,
-            ..Default::default()
-        };
+        // Default config has is_enabled() == true, but client overrides to false
+        let config = lr_config::ContextManagementConfig::default();
         let vs = ContextModeVirtualServer::new(config);
         let mut client =
             lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
@@ -1032,12 +981,8 @@ mod tests {
     }
 
     #[test]
-    fn test_update_session_state_reflects_config_change() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            catalog_compression: true,
-            ..Default::default()
-        };
+    fn test_update_session_state_compression_follows_enabled() {
+        let config = lr_config::ContextManagementConfig::default();
         let vs = ContextModeVirtualServer::new(config);
         let mut client =
             lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
@@ -1049,7 +994,8 @@ mod tests {
             .unwrap();
         assert!(cm.catalog_compression_enabled);
 
-        client.catalog_compression_enabled = Some(false);
+        // Disabling CM also disables catalog compression
+        client.context_management_enabled = Some(false);
         vs.update_session_state(state.as_mut(), &client);
 
         let cm = state
@@ -1062,7 +1008,11 @@ mod tests {
     #[test]
     fn test_list_tools_disabled_returns_empty() {
         let config = lr_config::ContextManagementConfig {
-            enabled: false,
+            gateway_indexing: lr_config::GatewayIndexingPermissions {
+                global: lr_config::IndexingState::Disable,
+                ..Default::default()
+            },
+            client_tools_indexing_default: lr_config::IndexingState::Disable,
             ..Default::default()
         };
         let vs = ContextModeVirtualServer::new(config);
@@ -1076,11 +1026,7 @@ mod tests {
 
     #[test]
     fn test_list_tools_enabled_returns_search_and_read() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            catalog_compression: false,
-            ..Default::default()
-        };
+        let config = lr_config::ContextManagementConfig::default();
         let vs = ContextModeVirtualServer::new(config);
         let client =
             lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
@@ -1411,10 +1357,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_tool_call_ctx_search_via_spawn_blocking() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            ..Default::default()
-        };
+        let config = lr_config::ContextManagementConfig::default();
         let vs = ContextModeVirtualServer::new(config);
         let client =
             lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
@@ -1452,10 +1395,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_tool_call_ctx_read_via_spawn_blocking() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            ..Default::default()
-        };
+        let config = lr_config::ContextManagementConfig::default();
         let vs = ContextModeVirtualServer::new(config);
         let client =
             lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
@@ -1494,7 +1434,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_tool_call_disabled_returns_error() {
         let config = lr_config::ContextManagementConfig {
-            enabled: false,
+            gateway_indexing: lr_config::GatewayIndexingPermissions {
+                global: lr_config::IndexingState::Disable,
+                ..Default::default()
+            },
+            client_tools_indexing_default: lr_config::IndexingState::Disable,
             ..Default::default()
         };
         let vs = ContextModeVirtualServer::new(config);
@@ -1526,10 +1470,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_tool_call_unknown_tool_returns_not_handled() {
-        let config = lr_config::ContextManagementConfig {
-            enabled: true,
-            ..Default::default()
-        };
+        let config = lr_config::ContextManagementConfig::default();
         let vs = ContextModeVirtualServer::new(config);
         let client =
             lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());

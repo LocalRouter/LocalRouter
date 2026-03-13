@@ -73,11 +73,11 @@ fn create_test_config(
         sync_config: false,
         guardrails_enabled: None,
         guardrails: lr_config::ClientGuardrailsConfig::default(),
-        catalog_compression_enabled: None,
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
         json_repair: lr_config::ClientJsonRepairConfig::default(),
         mcp_sampling_permission: lr_config::PermissionState::Ask,
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
+        catalog_compression_enabled: None,
         client_tools_indexing: None,
     };
 
@@ -520,11 +520,11 @@ async fn test_disabled_client_returns_unauthorized() {
         sync_config: false,
         guardrails_enabled: None,
         guardrails: lr_config::ClientGuardrailsConfig::default(),
-        catalog_compression_enabled: None,
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
         json_repair: lr_config::ClientJsonRepairConfig::default(),
         mcp_sampling_permission: lr_config::PermissionState::Ask,
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
+        catalog_compression_enabled: None,
         client_tools_indexing: None,
     };
 
@@ -578,11 +578,11 @@ async fn test_client_with_missing_strategy() {
         sync_config: false,
         guardrails_enabled: None,
         guardrails: lr_config::ClientGuardrailsConfig::default(),
-        catalog_compression_enabled: None,
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
         json_repair: lr_config::ClientJsonRepairConfig::default(),
         mcp_sampling_permission: lr_config::PermissionState::Ask,
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
+        catalog_compression_enabled: None,
         client_tools_indexing: None,
     };
 
@@ -1175,11 +1175,11 @@ fn create_free_tier_config(
         sync_config: false,
         guardrails_enabled: None,
         guardrails: lr_config::ClientGuardrailsConfig::default(),
-        catalog_compression_enabled: None,
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),
         json_repair: lr_config::ClientJsonRepairConfig::default(),
         mcp_sampling_permission: lr_config::PermissionState::Ask,
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
+        catalog_compression_enabled: None,
         client_tools_indexing: None,
     };
 

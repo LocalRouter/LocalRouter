@@ -14,12 +14,12 @@ import { SettingsView } from './views/settings'
 import { GuardrailsView } from './views/guardrails'
 import { StrongWeakView } from './views/strong-weak'
 import { CodingAgentsView } from './views/coding-agents'
-import { ContextManagementView } from './views/context-management'
+import { CatalogCompressionView } from './views/catalog-compression'
+import { ResponseRagView } from './views/response-rag'
 import { CompressionView } from './views/compression'
 import { JsonRepairView } from './views/json-repair'
 import { MarketplaceView } from './views/marketplace'
-import { LlmOptimizationView } from './views/llm-optimization'
-import { McpOptimizationView } from './views/mcp-optimization'
+import { OptimizeOverviewView } from './views/optimize-overview'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
 
 const DebugView = import.meta.env.DEV
@@ -278,9 +278,16 @@ function App() {
             onTabChange={handleChildViewChange}
           />
         )
-      case 'context-management':
+      case 'catalog-compression':
         return (
-          <ContextManagementView
+          <CatalogCompressionView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'response-rag':
+        return (
+          <ResponseRagView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />
@@ -327,16 +334,9 @@ function App() {
             onTabChange={handleChildViewChange}
           />
         )
-      case 'llm-optimization':
+      case 'optimize-overview':
         return (
-          <LlmOptimizationView
-            activeSubTab={activeSubTab}
-            onTabChange={handleChildViewChange}
-          />
-        )
-      case 'mcp-optimization':
-        return (
-          <McpOptimizationView
+          <OptimizeOverviewView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

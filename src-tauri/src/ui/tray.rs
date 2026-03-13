@@ -333,19 +333,6 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             }
                         });
                     }
-                    // Handle toggle catalog compression: toggle_catalog_compression_<client_id>
-                    else if let Some(client_id) = id.strip_prefix("toggle_catalog_compression_") {
-                        info!("Toggle catalog compression requested: {}", client_id);
-                        let app_clone = app.clone();
-                        let client_id = client_id.to_string();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) =
-                                handle_toggle_catalog_compression(&app_clone, &client_id).await
-                            {
-                                error!("Failed to toggle catalog compression: {}", e);
-                            }
-                        });
-                    }
                     // Handle toggle MCP: toggle_mcp_<client_id>_<server_id>
                     else if let Some(rest) = id.strip_prefix("toggle_mcp_") {
                         if let Some((client_id, server_id)) = rest.split_once('_') {
@@ -396,6 +383,19 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                                 handle_toggle_coding_agent_access(&app_clone, &client_id).await
                             {
                                 error!("Failed to toggle coding agent access: {}", e);
+                            }
+                        });
+                    }
+                    // Handle toggle catalog compression: toggle_catalog_compression_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("toggle_catalog_compression_") {
+                        info!("Toggle catalog compression requested: client={}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) =
+                                handle_toggle_catalog_compression(&app_clone, &client_id).await
+                            {
+                                error!("Failed to toggle catalog compression: {}", e);
                             }
                         });
                     }
