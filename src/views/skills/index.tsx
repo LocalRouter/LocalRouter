@@ -4,10 +4,13 @@ import { listen } from "@tauri-apps/api/event"
 import { open } from "@tauri-apps/plugin-dialog"
 
 import { toast } from "sonner"
-import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Plus, Trash2, FolderOpen, Loader2 } from "lucide-react"
+import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Plus, Trash2, FolderOpen, Loader2, Store, FilePlus } from "lucide-react"
 import { SkillsIcon } from "@/components/icons/category-icons"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
+import { MarketplaceSearchPanel, type SkillListing } from "@/components/add-resource/MarketplaceSearchPanel"
+import { Textarea } from "@/components/ui/textarea"
+import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -80,14 +83,22 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   const [search, setSearch] = useState("")
   const [detailTab, setDetailTab] = useState("info")
 
-  // Skill paths dialog state
-  const [showPathsDialog, setShowPathsDialog] = useState(false)
+  // Add skills dialog state
+  const [showAddDialog, setShowAddDialog] = useState(false)
+  const [addDialogTab, setAddDialogTab] = useState<"paths" | "marketplace" | "new">("paths")
   const [skillPaths, setSkillPaths] = useState<string[]>([])
   const [newPath, setNewPath] = useState("")
   const [addingPath, setAddingPath] = useState(false)
   const [removingPath, setRemovingPath] = useState<string | null>(null)
   const [isMarketplaceSkill, setIsMarketplaceSkill] = useState(false)
+  const [isUserCreatedSkill, setIsUserCreatedSkill] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+
+  // New skill form state
+  const [newSkillName, setNewSkillName] = useState("")
+  const [newSkillDescription, setNewSkillDescription] = useState("")
+  const [newSkillContent, setNewSkillContent] = useState("")
+  const [isCreatingSkill, setIsCreatingSkill] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -113,11 +124,12 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
       setSkillFiles([])
       setExpandedFiles(new Set())
       setIsMarketplaceSkill(false)
+      setIsUserCreatedSkill(false)
     }
     setDetailTab("info")
   }, [selectedSkill])
 
-  // Check marketplace status when skills list updates (separate to avoid resetting tab)
+  // Check marketplace/user-created status when skills list updates (separate to avoid resetting tab)
   useEffect(() => {
     if (selectedSkill) {
       const skillInfo = skills.find(s => s.name === selectedSkill)
@@ -125,6 +137,9 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
         invoke<boolean>("marketplace_is_skill_from_marketplace", {
           skillPath: skillInfo.source_path,
         }).then(setIsMarketplaceSkill).catch(() => setIsMarketplaceSkill(false))
+        invoke<boolean>("is_user_created_skill", {
+          skillPath: skillInfo.source_path,
+        }).then(setIsUserCreatedSkill).catch(() => setIsUserCreatedSkill(false))
       }
     }
   }, [selectedSkill, skills])
@@ -203,7 +218,11 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   const handleDeleteSkill = async (skillName: string, skillPath: string) => {
     setIsDeleting(true)
     try {
-      await invoke("marketplace_delete_skill", { skillName, skillPath })
+      if (isUserCreatedSkill) {
+        await invoke("delete_user_skill", { skillName, skillPath })
+      } else {
+        await invoke("marketplace_delete_skill", { skillName, skillPath })
+      }
       toast.success(`Skill "${skillName}" deleted`)
       setSelectedSkill(null)
       onTabChange("skills", null)
@@ -225,9 +244,53 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
     }
   }
 
-  const handleOpenPathsDialog = async () => {
+  const handleOpenAddDialog = async (tab?: "paths" | "marketplace" | "new") => {
     await loadSkillsConfig()
-    setShowPathsDialog(true)
+    if (tab) setAddDialogTab(tab)
+    setShowAddDialog(true)
+  }
+
+  const handleSelectMarketplaceSkill = async (listing: SkillListing) => {
+    try {
+      await invoke("marketplace_install_skill_direct", {
+        sourceUrl: listing.skill_md_url,
+        skillName: listing.name,
+      })
+      toast.success(`Skill "${listing.name}" installed`)
+      setShowAddDialog(false)
+      await loadData()
+    } catch (error) {
+      console.error("Failed to install skill:", error)
+      toast.error(`Failed to install skill: ${error}`)
+    }
+  }
+
+  const handleCreateSkill = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newSkillName.trim()) {
+      toast.error("Skill name is required")
+      return
+    }
+
+    setIsCreatingSkill(true)
+    try {
+      await invoke("create_skill", {
+        name: newSkillName.trim(),
+        description: newSkillDescription.trim() || null,
+        content: newSkillContent,
+      })
+      toast.success(`Skill "${newSkillName.trim()}" created`)
+      setNewSkillName("")
+      setNewSkillDescription("")
+      setNewSkillContent("")
+      setShowAddDialog(false)
+      await loadData()
+    } catch (error) {
+      console.error("Failed to create skill:", error)
+      toast.error(`Failed to create skill: ${error}`)
+    } finally {
+      setIsCreatingSkill(false)
+    }
   }
 
   const handleAddPath = async (path: string) => {
@@ -310,7 +373,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                   onChange={(e) => setSearch(e.target.value)}
                   className="flex-1"
                 />
-                <Button size="icon" onClick={handleOpenPathsDialog} title="Add skill source">
+                <Button size="icon" onClick={() => handleOpenAddDialog()} title="Add skill">
                   <Plus className="h-4 w-4" />
                 </Button>
               </div>
@@ -641,7 +704,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                               onCheckedChange={(checked) => handleToggleEnabled(selectedSkillInfo.name, checked)}
                             />
                           </div>
-                          {isMarketplaceSkill && (
+                          {(isMarketplaceSkill || isUserCreatedSkill) && (
                             <div className="flex items-center justify-between pt-4 border-t">
                               <div>
                                 <p className="text-sm font-medium">Delete this skill</p>
@@ -694,7 +757,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
               <div className="text-center">
                 <p className="font-medium">Select a skill to view details</p>
                 <p className="text-sm">
-                  Click + to add skill sources
+                  Click + to browse the marketplace, create a new skill, or add skill paths
                 </p>
               </div>
             </div>
@@ -703,16 +766,106 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
       </ResizablePanelGroup>
 
       {/* Add Skills Dialog */}
-      <Dialog open={showPathsDialog} onOpenChange={setShowPathsDialog}>
-        <DialogContent className="max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
+      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
           <DialogHeader className="flex-shrink-0">
             <DialogTitle>Add Skills</DialogTitle>
             <DialogDescription>
-              Manage local skill paths.
+              Add skills from the marketplace, create new ones, or manage local skill paths.
             </DialogDescription>
           </DialogHeader>
 
-            <div className="flex-1 flex flex-col min-h-0">
+          <Tabs value={addDialogTab} onValueChange={(v) => setAddDialogTab(v as typeof addDialogTab)} className="flex-1 flex flex-col min-h-0">
+            <TabsList className="grid w-full grid-cols-3 flex-shrink-0">
+              <TabsTrigger value="paths" className="flex items-center gap-1.5">
+                <FolderOpen className="h-3.5 w-3.5" />
+                Paths
+              </TabsTrigger>
+              <TabsTrigger value="marketplace" className="flex items-center gap-1.5">
+                <Store className="h-3.5 w-3.5" />
+                Marketplace
+              </TabsTrigger>
+              <TabsTrigger value="new" className="flex items-center gap-1.5">
+                <FilePlus className="h-3.5 w-3.5" />
+                New
+              </TabsTrigger>
+            </TabsList>
+
+            {/* Marketplace Tab */}
+            <TabsContent value="marketplace" className="flex-1 min-h-0 mt-4">
+              <MarketplaceSearchPanel
+                type="skill"
+                onSelectSkill={handleSelectMarketplaceSkill}
+                installedSkillNames={skills.map(s => s.name)}
+                maxHeight="calc(85vh - 220px)"
+              />
+            </TabsContent>
+
+            {/* New Skill Tab */}
+            <TabsContent value="new" className="flex-1 min-h-0 mt-4">
+              <form onSubmit={handleCreateSkill} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="skill-name">Name</Label>
+                  <Input
+                    id="skill-name"
+                    placeholder="my-skill"
+                    value={newSkillName}
+                    onChange={(e) => setNewSkillName(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="skill-description">Description</Label>
+                  <Input
+                    id="skill-description"
+                    placeholder="What does this skill do?"
+                    value={newSkillDescription}
+                    onChange={(e) => setNewSkillDescription(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="skill-content">Content</Label>
+                  <Textarea
+                    id="skill-content"
+                    placeholder="Skill instructions in markdown..."
+                    value={newSkillContent}
+                    onChange={(e) => setNewSkillContent(e.target.value)}
+                    rows={10}
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    The skill content (markdown body after the YAML frontmatter). This will be saved as a SKILL.md file.
+                  </p>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setShowAddDialog(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    disabled={!newSkillName.trim() || isCreatingSkill}
+                  >
+                    {isCreatingSkill ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Creating...
+                      </>
+                    ) : (
+                      "Create Skill"
+                    )}
+                  </Button>
+                </div>
+              </form>
+            </TabsContent>
+
+            {/* Paths Tab */}
+            <TabsContent value="paths" className="flex-1 flex flex-col min-h-0 mt-4">
               <div className="space-y-4 flex-1 overflow-y-auto">
                 {/* Existing Paths */}
                 <div className="space-y-2">
@@ -797,12 +950,13 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                 <Button
                   variant="default"
                   size="sm"
-                  onClick={() => setShowPathsDialog(false)}
+                  onClick={() => setShowAddDialog(false)}
                 >
                   Done
                 </Button>
               </div>
-            </div>
+            </TabsContent>
+          </Tabs>
         </DialogContent>
       </Dialog>
       </div>
