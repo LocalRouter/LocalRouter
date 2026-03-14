@@ -329,7 +329,14 @@ impl VirtualMcpServer for ContextModeVirtualServer {
                     &activated_prompts,
                 )
             } else if tool == read_name {
-                handle_index_read_blocking(&store, arguments)
+                handle_index_read_blocking(
+                    &store,
+                    arguments,
+                    &catalog_sources,
+                    &activated_tools,
+                    &activated_resources,
+                    &activated_prompts,
+                )
             } else {
                 VirtualToolCallResult::NotHandled
             }
@@ -526,7 +533,15 @@ fn handle_ctx_search_blocking(
 }
 
 /// Handle ctx_read tool call using native ContentStore (runs on blocking thread).
-fn handle_index_read_blocking(store: &ContentStore, arguments: Value) -> VirtualToolCallResult {
+/// If the label refers to a deferred catalog item, activates it as a side-effect.
+fn handle_index_read_blocking(
+    store: &ContentStore,
+    arguments: Value,
+    catalog_sources: &HashMap<String, CatalogItemType>,
+    activated_tools: &HashSet<String>,
+    activated_resources: &HashSet<String>,
+    activated_prompts: &HashSet<String>,
+) -> VirtualToolCallResult {
     let label = match arguments.get("label").and_then(|l| l.as_str()) {
         Some(l) => l.to_string(),
         None => {
@@ -549,12 +564,55 @@ fn handle_index_read_blocking(store: &ContentStore, arguments: Value) -> Virtual
     match store.read(&label, offset.as_deref(), limit) {
         Ok(read_result) => {
             let formatted = read_result.to_string();
-            VirtualToolCallResult::Success(json!({
+            let result = json!({
                 "content": [{
                     "type": "text",
                     "text": formatted,
                 }]
-            }))
+            });
+
+            // Activate deferred catalog item if the read label matches one
+            if let Some(item_type) = catalog_sources.get(&label) {
+                let name = extract_item_name_from_source(&label);
+                let already_active = match item_type {
+                    CatalogItemType::Tool => activated_tools.contains(name),
+                    CatalogItemType::Resource => activated_resources.contains(name),
+                    CatalogItemType::Prompt => activated_prompts.contains(name),
+                    CatalogItemType::ServerWelcome => true,
+                };
+                if !already_active {
+                    let name_owned = name.to_string();
+                    let item_type_clone = item_type.clone();
+                    let state_update: Box<
+                        dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send,
+                    > = Box::new(move |s| {
+                        if let Some(cm) =
+                            s.as_any_mut().downcast_mut::<ContextModeSessionState>()
+                        {
+                            match item_type_clone {
+                                CatalogItemType::Tool => {
+                                    cm.activated_tools.insert(name_owned);
+                                }
+                                CatalogItemType::Resource => {
+                                    cm.activated_resources.insert(name_owned);
+                                }
+                                CatalogItemType::Prompt => {
+                                    cm.activated_prompts.insert(name_owned);
+                                }
+                                CatalogItemType::ServerWelcome => {}
+                            }
+                        }
+                    });
+                    return VirtualToolCallResult::SuccessWithSideEffects {
+                        response: result,
+                        invalidate_cache: true,
+                        send_list_changed: true,
+                        state_update: Some(state_update),
+                    };
+                }
+            }
+
+            VirtualToolCallResult::Success(result)
         }
         Err(e) => VirtualToolCallResult::ToolError(format!("Read failed: {}", e)),
     }
@@ -1286,7 +1344,14 @@ mod tests {
     #[test]
     fn test_ctx_read_returns_indexed_content() {
         let store = make_store_with_content();
-        let result = handle_index_read_blocking(&store, json!({"label": "response:tool1:1"}));
+        let result = handle_index_read_blocking(
+            &store,
+            json!({"label": "response:tool1:1"}),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
 
         match result {
             VirtualToolCallResult::Success(v) => {
@@ -1303,7 +1368,14 @@ mod tests {
     #[test]
     fn test_ctx_read_missing_label_returns_error() {
         let store = make_store_with_content();
-        let result = handle_index_read_blocking(&store, json!({}));
+        let result = handle_index_read_blocking(
+            &store,
+            json!({}),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
 
         match result {
             VirtualToolCallResult::ToolError(msg) => {
@@ -1320,7 +1392,14 @@ mod tests {
     #[test]
     fn test_ctx_read_nonexistent_label_returns_error() {
         let store = make_store_with_content();
-        let result = handle_index_read_blocking(&store, json!({"label": "nonexistent:label"}));
+        let result = handle_index_read_blocking(
+            &store,
+            json!({"label": "nonexistent:label"}),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
 
         match result {
             VirtualToolCallResult::ToolError(msg) => {
@@ -1347,6 +1426,10 @@ mod tests {
         let result = handle_index_read_blocking(
             &store,
             json!({"label": "multiline", "offset": "2", "limit": 2}),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
         );
 
         match result {
@@ -1359,6 +1442,109 @@ mod tests {
                 );
             }
             _ => panic!("Expected Success for read with offset"),
+        }
+    }
+
+    #[test]
+    fn test_ctx_read_activates_deferred_catalog_tool() {
+        let store = make_store_with_content();
+        let catalog_sources = make_catalog_sources();
+        let result = handle_index_read_blocking(
+            &store,
+            json!({"label": "mcp/filesystem/tool/filesystem__read_file"}),
+            &catalog_sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::SuccessWithSideEffects {
+                response,
+                invalidate_cache,
+                send_list_changed,
+                state_update,
+            } => {
+                let text = response["content"][0]["text"].as_str().unwrap();
+                assert!(
+                    text.contains("Read file from disk"),
+                    "Should return the indexed content: {}",
+                    text
+                );
+                assert!(invalidate_cache, "Should invalidate cache");
+                assert!(send_list_changed, "Should send list_changed");
+                assert!(state_update.is_some(), "Should have state updater");
+            }
+            _ => panic!("Expected SuccessWithSideEffects for deferred catalog tool read"),
+        }
+    }
+
+    #[test]
+    fn test_ctx_read_skips_activation_for_already_active_tool() {
+        let store = make_store_with_content();
+        let catalog_sources = make_catalog_sources();
+        let mut activated = HashSet::new();
+        activated.insert("filesystem__read_file".to_string());
+
+        let result = handle_index_read_blocking(
+            &store,
+            json!({"label": "mcp/filesystem/tool/filesystem__read_file"}),
+            &catalog_sources,
+            &activated,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::Success(v) => {
+                let text = v["content"][0]["text"].as_str().unwrap();
+                assert!(
+                    text.contains("Read file from disk"),
+                    "Should still return content: {}",
+                    text
+                );
+            }
+            _ => panic!("Expected plain Success for already-activated tool"),
+        }
+    }
+
+    #[test]
+    fn test_ctx_read_activates_deferred_resource() {
+        let store = make_store_with_content();
+        let catalog_sources = make_catalog_sources();
+        let result = handle_index_read_blocking(
+            &store,
+            json!({"label": "mcp/db/resource/db__users"}),
+            &catalog_sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::SuccessWithSideEffects { state_update, .. } => {
+                assert!(state_update.is_some(), "Should activate the resource");
+            }
+            _ => panic!("Expected SuccessWithSideEffects for deferred resource read"),
+        }
+    }
+
+    #[test]
+    fn test_ctx_read_no_activation_for_non_catalog_label() {
+        let store = make_store_with_content();
+        let catalog_sources = make_catalog_sources();
+        let result = handle_index_read_blocking(
+            &store,
+            json!({"label": "response:tool1:1"}),
+            &catalog_sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        match result {
+            VirtualToolCallResult::Success(_) => {} // expected
+            _ => panic!("Expected plain Success for non-catalog label"),
         }
     }
 
