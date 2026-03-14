@@ -18,8 +18,8 @@ import {
 } from "@/components/ui/resizable"
 import { CodingAgentsIcon } from "@/components/icons/category-icons"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
-import { ToolList } from "@/components/shared/ToolList"
-import type { ToolListItem } from "@/components/shared/ToolList"
+import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
+import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import { cn } from "@/lib/utils"
 import type {
   CodingAgentInfo,
@@ -97,8 +97,8 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
   const lastLimitRef = useRef(5)
 
   // Tool definitions state
-  const [agentTools, setAgentTools] = useState<ToolListItem[]>([])
-  const [infoTools, setInfoTools] = useState<ToolListItem[]>([])
+  const [agentTools, setAgentTools] = useState<McpToolDisplayItem[]>([])
+  const [infoTools, setInfoTools] = useState<McpToolDisplayItem[]>([])
 
   // Session detail state
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
@@ -213,7 +213,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     } satisfies GetCodingAgentToolDefinitionsParams as Record<string, unknown>)
       .then((defs) =>
         setInfoTools(
-          defs.map((d): ToolListItem => ({
+          defs.map((d): McpToolDisplayItem => ({
             name: d.name,
             description: d.description,
             inputSchema: d.input_schema,
@@ -234,7 +234,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     } satisfies GetCodingAgentToolDefinitionsParams as Record<string, unknown>)
       .then((defs) =>
         setAgentTools(
-          defs.map((d): ToolListItem => ({
+          defs.map((d): McpToolDisplayItem => ({
             name: d.name,
             description: d.description,
             inputSchema: d.input_schema,
@@ -439,7 +439,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <ToolList tools={infoTools} />
+                    <McpToolDisplay tools={infoTools} />
                   </CardContent>
                 </Card>
               )}
@@ -693,7 +693,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                               </CardDescription>
                             </CardHeader>
                             <CardContent>
-                              <ToolList tools={agentTools} />
+                              <McpToolDisplay tools={agentTools} />
                             </CardContent>
                           </Card>
                         </div>

@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils"
 
-/** Normalized tool shape accepted by ToolList */
-export interface ToolListItem {
+/** Normalized tool shape accepted by McpToolDisplay */
+export interface McpToolDisplayItem {
   name: string
   description?: string | null
   inputSchema?: Record<string, unknown> | null
@@ -21,8 +21,8 @@ interface SchemaProperty {
   anyOf?: SchemaProperty[]
 }
 
-interface ToolListProps {
-  tools: ToolListItem[]
+interface McpToolDisplayProps {
+  tools: McpToolDisplayItem[]
   /** Compact mode uses smaller text (default: false) */
   compact?: boolean
   className?: string
@@ -95,7 +95,7 @@ const TYPE_COLORS: Record<string, string> = {
   prompt: "text-muted-foreground/60",
 }
 
-function ToolItem({ tool, compact }: { tool: ToolListItem; compact?: boolean }) {
+function ToolItem({ tool, compact }: { tool: McpToolDisplayItem; compact?: boolean }) {
   const schema = tool.inputSchema as SchemaProperty | null
   const properties = schema?.properties as Record<string, SchemaProperty> | undefined
   const required = Array.isArray(schema?.required) ? (schema!.required as string[]) : []
@@ -138,7 +138,7 @@ function ToolItem({ tool, compact }: { tool: ToolListItem; compact?: boolean }) 
   )
 }
 
-export function ToolList({ tools, compact, className }: ToolListProps) {
+export function McpToolDisplay({ tools, compact, className }: McpToolDisplayProps) {
   if (tools.length === 0) {
     return (
       <p className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>

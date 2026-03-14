@@ -17,5 +17,5 @@ export {
   createToggleAction,
 } from "./entity-actions"
 
-export { ToolList } from "./ToolList"
-export type { ToolListItem } from "./ToolList"
+export { McpToolDisplay } from "./McpToolDisplay"
+export type { McpToolDisplayItem } from "./McpToolDisplay"

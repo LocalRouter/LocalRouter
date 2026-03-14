@@ -4,8 +4,8 @@ import { listen } from "@tauri-apps/api/event"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { SkillsPermissionTree } from "@/components/permissions"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
-import { ToolList } from "@/components/shared/ToolList"
-import type { ToolListItem } from "@/components/shared/ToolList"
+import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
+import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import type { SkillsPermissions } from "@/components/permissions"
 import type { SkillInfo, SkillToolInfo } from "@/types/tauri-commands"
 
@@ -22,14 +22,14 @@ interface SkillsTabProps {
 }
 
 export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
-  const [skillTools, setSkillTools] = useState<ToolListItem[]>([])
+  const [skillTools, setSkillTools] = useState<McpToolDisplayItem[]>([])
 
   const loadSkillTools = useCallback(async () => {
     try {
       const skills = await invoke<SkillInfo[]>("list_skills")
       const enabledSkills = skills.filter((s) => s.enabled)
 
-      const allTools: ToolListItem[] = []
+      const allTools: McpToolDisplayItem[] = []
       for (const skill of enabledSkills) {
         try {
           const tools = await invoke<SkillToolInfo[]>("get_skill_tools", {
@@ -79,7 +79,7 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
               <p className="text-sm text-muted-foreground">
                 When enabled, this client will have access to {skillTools.length} skill tools:
               </p>
-              <ToolList
+              <McpToolDisplay
                 tools={skillTools}
                 compact
               />

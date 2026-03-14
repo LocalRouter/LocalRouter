@@ -44,8 +44,8 @@ import {
   DialogDescription,
 } from "@/components/ui/Modal"
 import { DisabledOverlay } from "@/components/add-resource/DisabledOverlay"
-import { ToolList } from "@/components/shared/ToolList"
-import type { ToolListItem } from "@/components/shared/ToolList"
+import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
+import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import { isValidHttpUrl } from "@/utils/url"
 import { cn } from "@/lib/utils"
 
@@ -117,7 +117,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
   const [addingDefaultSources, setAddingDefaultSources] = useState(false)
 
   // Via MCP tools state
-  const [marketplaceTools, setMarketplaceTools] = useState<ToolListItem[]>([])
+  const [marketplaceTools, setMarketplaceTools] = useState<McpToolDisplayItem[]>([])
 
   // Skill install dialog state
   const [showInstallDialog, setShowInstallDialog] = useState(false)
@@ -173,7 +173,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
     invoke<ToolDefinition[]>("get_marketplace_tool_definitions")
       .then((defs) =>
         setMarketplaceTools(
-          defs.map((d): ToolListItem => ({
+          defs.map((d): McpToolDisplayItem => ({
             name: d.name,
             description: d.description,
             inputSchema: d.input_schema,
@@ -799,7 +799,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <ToolList tools={marketplaceTools} />
+                  <McpToolDisplay tools={marketplaceTools} />
                 </CardContent>
               </Card>
             )}
