@@ -92,7 +92,7 @@ export function GatewayIndexingTree({ permissions, onUpdate }: GatewayIndexingTr
     const caps = capabilities[server.id]
     const toolChildren: TreeNode[] = (caps?.tools || []).map((tool) => ({
       id: `${slug}__${tool.name}`,
-      label: tool.name,
+      label: `${slug}__${tool.name}`,
       description: tool.description || undefined,
     }))
 

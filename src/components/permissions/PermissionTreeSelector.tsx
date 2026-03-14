@@ -202,7 +202,7 @@ export function PermissionTreeSelector<S extends string>({
 
           {/* Label */}
           <div className="flex-1 min-w-0">
-            <span className={cn("font-medium truncate block", inherited && "text-muted-foreground")}>
+            <span className={cn("truncate block", !node.disabled && "font-medium", inherited && "text-muted-foreground")}>
               {node.label}
             </span>
             {node.description && (

@@ -138,7 +138,7 @@ export function ClientToolsIndexingTree({
         renderButton={(props) => <IndexingStateButton {...props} />}
         disabled={saving}
         globalLabel="All Client Tools"
-        emptyMessage="No client tools discovered yet"
+        emptyMessage="Specific client tools will appear here when client connects and reports its available tools."
         loading={loading}
         defaultExpanded
       />
