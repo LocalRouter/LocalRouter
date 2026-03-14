@@ -33,7 +33,7 @@ use types::{ChunkToc as ChunkTocType, LineOffset, LONG_LINE_THRESHOLD};
 const READ_OUTPUT_CAP: usize = 40 * 1024;
 
 /// Default number of lines returned by `read()` when no limit is specified.
-pub const READ_DEFAULT_LIMIT: usize = 2000;
+pub const READ_DEFAULT_LIMIT: usize = 15;
 
 // ─────────────────────────────────────────────────────────
 // Stopwords (ported from context-mode/src/store.ts)

@@ -9,7 +9,7 @@ use crate::truncate::smart_truncate;
 // ─────────────────────────────────────────────────────────
 
 /// Chars before a line is split into sub-chunks in read().
-pub(crate) const LONG_LINE_THRESHOLD: usize = 2000;
+pub(crate) const LONG_LINE_THRESHOLD: usize = 500;
 
 /// Max bytes for TOC section in index display.
 const INDEX_TOC_CAP: usize = 4 * 1024;
