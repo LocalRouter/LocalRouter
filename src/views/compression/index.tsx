@@ -130,8 +130,16 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
     }
   }, [testInput, testRate, preserveQuoted, compressionNotice, runTest])
 
-  // Split input into words for rendering with kept/deleted styling
-  const inputWords = useMemo(() => testInput.split(/\s+/).filter(Boolean), [testInput])
+  // Split input into words with preceding whitespace for rendering with kept/deleted styling
+  const inputTokens = useMemo(() => {
+    const tokens: { word: string; precedingWs: string }[] = []
+    const regex = /(\s*?)(\S+)/g
+    let match
+    while ((match = regex.exec(testInput)) !== null) {
+      tokens.push({ word: match[2], precedingWs: match[1] })
+    }
+    return tokens
+  }, [testInput])
 
   return (
     <div className="flex flex-col h-full min-h-0 gap-4 max-w-5xl">
@@ -362,71 +370,77 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                   )}
                 </div>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="w-full h-80 p-3 rounded-md border bg-muted text-sm font-mono overflow-y-auto whitespace-pre-wrap">
-                  {testResult ? (
-                    showAnnotated ? (
-                      (() => {
-                        const keptSet = new Set(testResult.kept_indices)
-                        const protectedSet = new Set(testResult.protected_indices)
-                        return (
-                          <>
-                            {compressionNotice && (
-                              <span className="text-blue-600 dark:text-blue-400 font-semibold">[abridged] </span>
-                            )}
-                            {inputWords.map((word, idx) => (
-                              <span key={idx}>
-                                {idx > 0 && " "}
-                                {keptSet.has(idx) ? (
-                                  protectedSet.has(idx) ? (
-                                    <span
-                                      className="bg-purple-500/15 text-purple-900 dark:text-purple-300 rounded px-0.5"
-                                      title="Protected (quoted/code content)"
-                                    >{word}</span>
+              <CardContent className="space-y-4">
+                {testResult ? (
+                  <>
+                    {showAnnotated ? (
+                    /* Annotated view */
+                    <div>
+                      <div className="w-full h-80 p-3 rounded-md border bg-muted text-sm font-mono overflow-y-auto whitespace-pre-wrap">
+                        {(() => {
+                          const keptSet = new Set(testResult.kept_indices)
+                          const protectedSet = new Set(testResult.protected_indices)
+                          return (
+                            <>
+                              {compressionNotice && (
+                                <span className="text-blue-600 dark:text-blue-400 font-semibold">[abridged] </span>
+                              )}
+                              {inputTokens.map(({ word, precedingWs }, idx) => (
+                                <span key={idx}>
+                                  {precedingWs}
+                                  {keptSet.has(idx) ? (
+                                    protectedSet.has(idx) ? (
+                                      <span
+                                        className="bg-purple-500/15 text-purple-900 dark:text-purple-300 rounded px-0.5"
+                                        title="Protected (quoted/code content)"
+                                      >{word}</span>
+                                    ) : (
+                                      <span>{word}</span>
+                                    )
                                   ) : (
-                                    <span>{word}</span>
-                                  )
-                                ) : (
-                                  <span className="line-through text-red-500/40">{word}</span>
-                                )}
-                              </span>
-                            ))}
-                          </>
-                        )
-                      })()
+                                    <span className="line-through text-red-500/40">{word}</span>
+                                  )}
+                                </span>
+                              ))}
+                            </>
+                          )
+                        })()}
+                      </div>
+                      <div className="flex items-center gap-4 text-xs text-muted-foreground mt-1.5">
+                        {compressionNotice && (
+                          <span className="flex items-center gap-1.5">
+                            <span className="inline-block w-3 h-3 rounded bg-blue-500/15 border border-blue-500/30 text-[8px] font-bold text-blue-600 dark:text-blue-400 leading-none text-center">a</span>
+                            Abridged
+                          </span>
+                        )}
+                        <span className="flex items-center gap-1.5">
+                          <span className="inline-block w-3 h-3 rounded bg-purple-500/15 border border-purple-500/30" />
+                          Protected
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="inline-block w-3 h-3 rounded bg-foreground/10 border border-foreground/20" />
+                          Kept
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="inline-block w-3 h-3 rounded bg-red-500/10 border border-red-500/30 line-through" />
+                          Removed
+                        </span>
+                      </div>
+                    </div>
                     ) : (
-                      <>
+                    /* Compressed view (what LLM sees) */
+                    <div>
+                      <div className="w-full h-80 p-3 rounded-md border bg-muted text-sm font-mono overflow-y-auto whitespace-pre-wrap">
                         {compressionNotice && "[abridged] "}
                         {testResult.compressed_text}
-                      </>
-                    )
-                  ) : (
+                      </div>
+                    </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="w-full h-80 p-3 rounded-md border bg-muted text-sm font-mono overflow-y-auto whitespace-pre-wrap">
                     <span className="text-muted-foreground">
                       {testInput.trim() ? "" : "Enter text above to see compression results..."}
-                    </span>
-                  )}
-                </div>
-
-                {/* Legend */}
-                {testResult && showAnnotated && (
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    {compressionNotice && (
-                      <span className="flex items-center gap-1.5">
-                        <span className="inline-block w-3 h-3 rounded bg-blue-500/15 border border-blue-500/30 text-[8px] font-bold text-blue-600 dark:text-blue-400 leading-none text-center">a</span>
-                        Abridged
-                      </span>
-                    )}
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-3 h-3 rounded bg-purple-500/15 border border-purple-500/30" />
-                      Protected
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-3 h-3 rounded bg-foreground/10 border border-foreground/20" />
-                      Kept
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-3 h-3 rounded bg-red-500/10 border border-red-500/30 line-through" />
-                      Removed
                     </span>
                   </div>
                 )}
