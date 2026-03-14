@@ -85,8 +85,30 @@ impl CompressorModel {
             return Ok((text.to_string(), 0, 0, vec![], vec![]));
         }
 
-        // Split into words for word-level compression (cleaner output)
-        let words: Vec<&str> = text.split_whitespace().collect();
+        // Split into words while tracking byte positions for whitespace preservation
+        let mut word_positions: Vec<(usize, usize)> = Vec::new(); // (start, end) byte offsets
+        {
+            let mut in_word = false;
+            let mut word_start = 0;
+            for (i, c) in text.char_indices() {
+                if c.is_whitespace() {
+                    if in_word {
+                        word_positions.push((word_start, i));
+                        in_word = false;
+                    }
+                } else if !in_word {
+                    word_start = i;
+                    in_word = true;
+                }
+            }
+            if in_word {
+                word_positions.push((word_start, text.len()));
+            }
+        }
+        let words: Vec<&str> = word_positions
+            .iter()
+            .map(|&(s, e)| &text[s..e])
+            .collect();
         if words.is_empty() {
             return Ok((text.to_string(), 0, 0, vec![], vec![]));
         }
@@ -236,8 +258,45 @@ impl CompressorModel {
         let mut keep_indices: Vec<usize> = keep_set.into_iter().collect();
         keep_indices.sort(); // Restore original order
 
-        let compressed: Vec<&str> = keep_indices.iter().map(|&idx| words[idx]).collect();
-        let compressed_text = compressed.join(" ");
+        // Reconstruct compressed text preserving original whitespace
+        let mut compressed_text = String::new();
+        for (i, &idx) in keep_indices.iter().enumerate() {
+            let (word_start, word_end) = word_positions[idx];
+            if i == 0 {
+                // First kept word: preserve leading whitespace only if it's the actual first word
+                if idx == 0 {
+                    compressed_text.push_str(&text[..word_end]);
+                } else {
+                    // Use the whitespace immediately preceding this word
+                    let ws_start = word_positions[idx - 1].1;
+                    compressed_text.push_str(&text[ws_start..word_end]);
+                }
+            } else {
+                let prev_kept_idx = keep_indices[i - 1];
+                // Consecutive words in original: preserve exact whitespace between them
+                // Non-consecutive: use the whitespace immediately preceding this word
+                let ws_start = word_positions[idx - 1].1;
+                // But if the previous kept word is adjacent (prev_kept_idx == idx - 1),
+                // ws_start already points to the right place. For non-adjacent kept words,
+                // check if the gap between kept words contains newlines and preserve them.
+                if prev_kept_idx + 1 == idx {
+                    // Consecutive in original text - exact whitespace
+                    compressed_text.push_str(&text[ws_start..word_end]);
+                } else {
+                    // Non-consecutive: check the span between previous kept word and this one
+                    let gap_start = word_positions[prev_kept_idx].1;
+                    let gap = &text[gap_start..word_start];
+                    if gap.contains('\n') {
+                        // Preserve the newline + indentation from the original preceding whitespace
+                        compressed_text.push_str(&text[ws_start..word_end]);
+                    } else {
+                        // No newlines in the gap - use a single space
+                        compressed_text.push(' ');
+                        compressed_text.push_str(&text[word_start..word_end]);
+                    }
+                }
+            }
+        }
 
         debug!(
             "Compressed {} → {} words (rate={:.2}, {} protected)",
