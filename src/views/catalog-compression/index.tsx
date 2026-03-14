@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { BookText, RefreshCw, Loader2, Search, Database, BarChart3, AlertTriangle, Info } from "lucide-react"
+import { BookText, RefreshCw, Loader2, Search, Database, AlertTriangle, Info } from "lucide-react"
 import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -16,10 +16,8 @@ import {
 } from "@/components/ui/resizable"
 import { Switch } from "@/components/ui/Toggle"
 import { cn } from "@/lib/utils"
-import Markdown from "react-markdown"
-import remarkGfm from "remark-gfm"
-import { ToolList } from "@/components/shared/ToolList"
-import type { ToolListItem } from "@/components/shared/ToolList"
+import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
+import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
@@ -39,9 +37,6 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
   const [sessionDetailTab, setSessionDetailTab] = useState<string>("info")
   const [catalogSources, setCatalogSources] = useState<CatalogSourceEntry[]>([])
   const [catalogSourcesLoading, setCatalogSourcesLoading] = useState(false)
-  const [contextStats, setContextStats] = useState<string | null>(null)
-  const [contextStatsLoading, setContextStatsLoading] = useState(false)
-  const [contextStatsLoaded, setContextStatsLoaded] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<string | null>(null)
   const [searchLoading, setSearchLoading] = useState(false)
@@ -74,20 +69,6 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
     }
   }, [])
 
-  const loadContextStats = useCallback(async (sessionId: string) => {
-    setContextStatsLoading(true)
-    try {
-      const result = await invoke<{ content?: Array<{ text?: string }> }>("get_session_context_stats", { sessionId })
-      const text = result?.content?.map((c) => c.text || "").join("\n") || "No stats available"
-      setContextStats(text)
-      setContextStatsLoaded(sessionId)
-    } catch (err) {
-      setContextStats(`Error: ${err}`)
-    } finally {
-      setContextStatsLoading(false)
-    }
-  }, [])
-
   const runSearch = useCallback(async (sessionId: string) => {
     if (!searchQuery.trim()) return
     setSearchLoading(true)
@@ -110,17 +91,13 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
 
     if (sessionDetailTab === "index") {
       loadCatalogSources(selectedSessionId)
-    } else if (sessionDetailTab === "stats" && contextStatsLoaded !== selectedSessionId) {
-      loadContextStats(selectedSessionId)
     }
-  }, [selectedSessionId, sessionDetailTab, sessions, loadCatalogSources, loadContextStats, contextStatsLoaded])
+  }, [selectedSessionId, sessionDetailTab, sessions, loadCatalogSources])
 
   // Reset detail tab when session changes
   useEffect(() => {
     setSessionDetailTab("info")
     setCatalogSources([])
-    setContextStats(null)
-    setContextStatsLoaded(null)
     setSearchResults(null)
     setSearchQuery("")
   }, [selectedSessionId])
@@ -325,10 +302,6 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
                               <TabsTrigger value="query">
                                 <Search className="h-3.5 w-3.5 mr-1" />
                                 Query
-                              </TabsTrigger>
-                              <TabsTrigger value="stats">
-                                <BarChart3 className="h-3.5 w-3.5 mr-1" />
-                                Stats
                               </TabsTrigger>
                             </TabsList>
                           </Tabs>
@@ -541,55 +514,15 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
                                     <CardTitle className="text-sm">Results</CardTitle>
                                   </CardHeader>
                                   <CardContent>
-                                    <div className="prose prose-sm dark:prose-invert max-w-none bg-muted/50 rounded-md p-3 max-h-[400px] overflow-y-auto [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:rounded [&_code]:text-xs [&_p]:my-1 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
-                                      <Markdown remarkPlugins={[remarkGfm]}>{searchResults}</Markdown>
-                                    </div>
+                                    <pre className="text-xs bg-muted/50 rounded-md p-3 max-h-[400px] overflow-y-auto whitespace-pre-wrap break-words font-mono">
+                                      {searchResults}
+                                    </pre>
                                   </CardContent>
                                 </Card>
                               )}
                             </div>
                           )}
 
-                          {/* Stats sub-tab */}
-                          {sessionDetailTab === "stats" && selectedSession.context_management_enabled && (
-                            <Card>
-                              <CardHeader className="pb-3">
-                                <div className="flex items-center justify-between">
-                                  <CardTitle className="text-sm">Context-Mode Stats</CardTitle>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => loadContextStats(selectedSession.session_id)}
-                                    className="h-7 w-7 p-0"
-                                    disabled={contextStatsLoading}
-                                  >
-                                    {contextStatsLoading ? (
-                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    ) : (
-                                      <RefreshCw className="h-3.5 w-3.5" />
-                                    )}
-                                  </Button>
-                                </div>
-                                <CardDescription>
-                                  Each refresh calls ctx_stats which counts towards the session stats.
-                                </CardDescription>
-                              </CardHeader>
-                              <CardContent>
-                                {contextStatsLoading && !contextStats ? (
-                                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    Loading stats...
-                                  </div>
-                                ) : contextStats ? (
-                                  <div className="prose prose-sm dark:prose-invert max-w-none bg-muted/50 rounded-md p-3 [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:rounded [&_code]:text-xs [&_p]:my-1 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
-                                    <Markdown remarkPlugins={[remarkGfm]}>{contextStats}</Markdown>
-                                  </div>
-                                ) : (
-                                  <p className="text-sm text-muted-foreground">No stats available.</p>
-                                )}
-                              </CardContent>
-                            </Card>
-                        )}
                       </div>
                     </ScrollArea>
                   </div>
@@ -986,10 +919,10 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
   const prompts = server.prompts ?? []
   const totalItems = server.tool_names.length + server.resource_names.length + server.prompt_names.length
 
-  // Build unified list of all items for ToolList
-  const allItems: ToolListItem[] = [
+  // Build unified list of all items for McpToolDisplay
+  const allItems: McpToolDisplayItem[] = [
     // Tools with full details
-    ...tools.map((t): ToolListItem => ({
+    ...tools.map((t): McpToolDisplayItem => ({
       name: t.name,
       description: t.description,
       inputSchema: t.input_schema as Record<string, unknown> | null,
@@ -998,9 +931,9 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
     // Tools with names only (no full details available)
     ...server.tool_names
       .filter((name) => !tools.some((t) => t.name === name))
-      .map((name): ToolListItem => ({ name, itemType: "tool" })),
+      .map((name): McpToolDisplayItem => ({ name, itemType: "tool" })),
     // Resources with full details
-    ...resources.map((res): ToolListItem => ({
+    ...resources.map((res): McpToolDisplayItem => ({
       name: res.name,
       description: res.description,
       itemType: "resource",
@@ -1008,9 +941,9 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
     // Resources with names only
     ...server.resource_names
       .filter((name) => !resources.some((r) => r.name === name))
-      .map((name): ToolListItem => ({ name, itemType: "resource" })),
+      .map((name): McpToolDisplayItem => ({ name, itemType: "resource" })),
     // Prompts with full details
-    ...prompts.map((p): ToolListItem => ({
+    ...prompts.map((p): McpToolDisplayItem => ({
       name: p.name,
       description: p.description,
       itemType: "prompt",
@@ -1018,7 +951,7 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
     // Prompts with names only
     ...server.prompt_names
       .filter((name) => !prompts.some((p) => p.name === name))
-      .map((name): ToolListItem => ({ name, itemType: "prompt" })),
+      .map((name): McpToolDisplayItem => ({ name, itemType: "prompt" })),
   ]
 
   return (
@@ -1029,7 +962,7 @@ function ServerCatalogBlock({ server, mode }: { server: PreviewServerEntry; mode
       </div>
 
       <div className="ml-2">
-        <ToolList tools={allItems} compact />
+        <McpToolDisplay tools={allItems} compact />
       </div>
     </div>
   )
