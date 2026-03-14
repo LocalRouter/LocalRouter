@@ -45,11 +45,22 @@ pub fn is_coding_agent_tool(name: &str, prefix: &str) -> bool {
     action_from_tool(name, prefix).is_some()
 }
 
-/// Extract the action suffix from a tool name (e.g., "start", "say", "status")
-fn action_from_tool<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
+/// Extract the action suffix from a tool name (e.g., "start", "say", "status").
+///
+/// Avoids heap allocations by checking prefix match + suffix extraction directly
+/// instead of building tool_name strings for comparison.
+fn action_from_tool(name: &str, prefix: &str) -> Option<&'static str> {
+    let rest = name.strip_prefix(prefix)?;
+
+    let alphanumeric_prefix = prefix.chars().last().map_or(false, |c| c.is_alphanumeric());
+
     for suffix in TOOL_SUFFIXES {
-        if name == tool_name(prefix, suffix) {
-            // Return the canonical suffix, not a slice of name
+        if alphanumeric_prefix {
+            // PascalCase: compare case-insensitively (all suffixes are ASCII lowercase)
+            if rest.eq_ignore_ascii_case(suffix) && rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+                return Some(suffix);
+            }
+        } else if rest == *suffix {
             return Some(suffix);
         }
     }
@@ -149,7 +160,7 @@ pub fn build_tools_for_agent(agent_type: CodingAgentType, prefix: &str) -> Vec<M
         McpTool {
             name: tool_name(prefix, "status"),
             description: Some(format!(
-                "Get current status and recent output of a {} session. Use wait=true to block until the session needs attention (done, awaiting_input, error, interrupted) instead of polling in a loop.",
+                "Get current status and recent output of a {} session. Use wait=true to block until the session reaches a terminal state (done, error, interrupted) instead of polling in a loop.",
                 name
             )),
             input_schema: json!({
@@ -165,7 +176,7 @@ pub fn build_tools_for_agent(agent_type: CodingAgentType, prefix: &str) -> Vec<M
                     },
                     "wait": {
                         "type": "boolean",
-                        "description": "If true, blocks until the session needs attention (done, awaiting_input, error, interrupted) instead of returning immediately. Default: false"
+                        "description": "If true, blocks until the session reaches a terminal state (done, error, interrupted) instead of returning immediately. Default: false"
                     },
                     "timeoutSeconds": {
                         "type": "number",

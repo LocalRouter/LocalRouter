@@ -146,6 +146,7 @@ impl CodingAgentManager {
             child: spawned.child,
             stdin: None, // stdin is managed by the executor's ProtocolPeer
             cancel,
+            reader_cancel: tokio_util::sync::CancellationToken::new(),
         });
 
         let session_arc = Arc::new(Mutex::new(session));
@@ -199,7 +200,7 @@ impl CodingAgentManager {
         }
 
         match session.status {
-            SessionStatus::Active | SessionStatus::AwaitingInput => {
+            SessionStatus::Active => {
                 if interrupt {
                     // Graceful interrupt via cancellation token first
                     // (triggers ProtocolPeer to send interrupt via control protocol)
@@ -330,7 +331,10 @@ impl CodingAgentManager {
         }
     }
 
-    /// Resume a done/error/interrupted session by spawning a new process
+    /// Resume a done/error/interrupted session by spawning a new process.
+    ///
+    /// Cancels the old output reader before replacing the process to avoid
+    /// two concurrent readers appending to the same buffer.
     async fn resume_session(
         &self,
         session_id: &str,
@@ -340,6 +344,24 @@ impl CodingAgentManager {
         config: &SessionConfig,
         agent_session_id: Option<&str>,
     ) -> Result<(), CodingAgentError> {
+        let session_arc = self
+            .sessions
+            .get(session_id)
+            .map(|r| r.value().1.clone())
+            .ok_or_else(|| CodingAgentError::SessionNotFound(session_id.to_string()))?;
+
+        // Cancel the old output reader before spawning a new process.
+        // This prevents two concurrent readers from racing on the buffer.
+        {
+            let session = session_arc.lock().await;
+            if let Some(ref process) = session.process {
+                process.reader_cancel.cancel();
+            }
+        }
+
+        // Brief yield to let the old reader task notice cancellation
+        tokio::task::yield_now().await;
+
         let spawned = spawn_via_executor(
             agent_type,
             message,
@@ -354,18 +376,13 @@ impl CodingAgentManager {
             .cancel
             .unwrap_or_else(tokio_util::sync::CancellationToken::new);
 
-        let session_arc = self
-            .sessions
-            .get(session_id)
-            .map(|r| r.value().1.clone())
-            .ok_or_else(|| CodingAgentError::SessionNotFound(session_id.to_string()))?;
-
         {
             let mut session = session_arc.lock().await;
             session.process = Some(AgentProcess {
                 child: spawned.child,
                 stdin: None,
                 cancel,
+                reader_cancel: tokio_util::sync::CancellationToken::new(),
             });
             session.status = SessionStatus::Active;
             session.last_activity = chrono::Utc::now();
@@ -558,22 +575,34 @@ impl CodingAgentManager {
         })
     }
 
-    /// End a session (admin)
+    /// End a session (admin).
+    ///
+    /// Kills the process and cancels the output reader BEFORE removing from
+    /// the session map, so cleanup completes while the session is still findable.
     pub async fn end_session(&self, session_id: &str) -> Result<(), CodingAgentError> {
-        if let Some((_, (_, session_arc))) = self.sessions.remove(session_id) {
+        // First, kill the process while the session is still in the map
+        let session_arc = self
+            .sessions
+            .get(session_id)
+            .map(|entry| entry.value().1.clone())
+            .ok_or_else(|| CodingAgentError::SessionNotFound(session_id.to_string()))?;
+
+        {
             let mut session = session_arc.lock().await;
             if let Some(ref process) = session.process {
+                process.reader_cancel.cancel();
                 process.cancel.cancel();
             }
             if let Some(ref mut process) = session.process {
                 let _ = process.child.start_kill();
             }
-            info!(session_id = %session_id, "Coding agent session ended by admin");
-            self.notify_changed();
-            Ok(())
-        } else {
-            Err(CodingAgentError::SessionNotFound(session_id.to_string()))
         }
+
+        // Now remove from the map
+        self.sessions.remove(session_id);
+        info!(session_id = %session_id, "Coding agent session ended by admin");
+        self.notify_changed();
+        Ok(())
     }
 
     /// Get a session, validating client ownership.
@@ -611,11 +640,21 @@ async fn spawn_via_executor(
     approval_mode: CodingAgentApprovalMode,
     resume_session_id: Option<&str>,
 ) -> Result<SpawnedChild, CodingAgentError> {
-    let env = ExecutionEnv::new(
+    let mut env = ExecutionEnv::new(
         RepoContext::new(work_dir.to_path_buf(), Vec::new()),
         false,
         String::new(),
     );
+
+    // Merge session-specific environment variables
+    env.merge(&config.env);
+
+    // Clear env vars that prevent nested sessions (e.g., when LocalRouter itself
+    // is running inside a Claude Code session). Setting to empty effectively removes
+    // them since ExecutionEnv applies these via Command::env() which overrides inherited vars.
+    env.insert("CLAUDECODE", "");
+    env.insert("CLAUDE_CODE_ENTRYPOINT", "");
+    env.insert("CLAUDE_CODE_SESSION_ACCESS_TOKEN", "");
 
     let executor = build_executor(agent_type, config, approval_mode)?;
 
@@ -737,14 +776,24 @@ fn deser_executor<T: serde::de::DeserializeOwned>(
 
 /// Spawn a background task that reads stdout and appends to the session buffer.
 /// Also parses Claude Code's session ID from stream-json output.
+///
+/// The reader respects the `reader_cancel` token on the `AgentProcess` — when
+/// the session is resumed with a new process, the old reader stops cleanly.
 fn spawn_output_reader(session: Arc<Mutex<CodingSession>>, change_tx: broadcast::Sender<()>) {
     tokio::spawn(async move {
-        // Take stdout from the process
-        let stdout = {
+        // Take stdout and reader_cancel from the process
+        let (stdout, reader_cancel) = {
             let mut s = session.lock().await;
-            s.process
+            let stdout = s
+                .process
                 .as_mut()
-                .and_then(|p| p.child.inner().stdout.take())
+                .and_then(|p| p.child.inner().stdout.take());
+            let cancel = s
+                .process
+                .as_ref()
+                .map(|p| p.reader_cancel.clone())
+                .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+            (stdout, cancel)
         };
 
         let Some(stdout) = stdout else {
@@ -755,56 +804,71 @@ fn spawn_output_reader(session: Arc<Mutex<CodingSession>>, change_tx: broadcast:
         let mut lines = reader.lines();
 
         loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    // Single lock per line: extract session ID and append output together
-                    let mut s = session.lock().await;
-                    if s.agent_session_id.is_none() {
-                        if let Some(sid) = extract_session_id(&line) {
-                            debug!(session_id = %sid, "Captured agent session ID");
-                            s.agent_session_id = Some(sid);
-                        }
-                    }
-                    s.append_output(line);
+            tokio::select! {
+                biased;
+                _ = reader_cancel.cancelled() => {
+                    debug!("Output reader cancelled (session being resumed)");
+                    break;
                 }
-                Ok(None) => {
-                    // EOF — process exited
-                    let mut s = session.lock().await;
-                    if let Some(ref mut process) = s.process {
-                        match process.child.try_wait() {
-                            Ok(Some(status)) => {
-                                s.exit_code = status.code();
-                                if status.success() {
-                                    if s.status == SessionStatus::Active {
-                                        s.status = SessionStatus::Done;
+                line_result = lines.next_line() => {
+                    match line_result {
+                        Ok(Some(line)) => {
+                            let mut s = session.lock().await;
+                            if s.agent_session_id.is_none() {
+                                if let Some(sid) = extract_session_id(&line) {
+                                    debug!(session_id = %sid, "Captured agent session ID");
+                                    s.agent_session_id = Some(sid);
+                                }
+                            }
+                            s.append_output(line);
+                        }
+                        Ok(None) => {
+                            // EOF — process exited. Only update status if we haven't been cancelled
+                            // (if cancelled, resume_session handles the status transition).
+                            if reader_cancel.is_cancelled() {
+                                break;
+                            }
+                            let mut s = session.lock().await;
+                            if let Some(ref mut process) = s.process {
+                                match process.child.try_wait() {
+                                    Ok(Some(status)) => {
+                                        s.exit_code = status.code();
+                                        if status.success() {
+                                            if s.status == SessionStatus::Active {
+                                                s.status = SessionStatus::Done;
+                                            }
+                                        } else if s.status == SessionStatus::Active {
+                                            s.status = SessionStatus::Error;
+                                            s.error = Some(format!(
+                                                "Process exited with code {}",
+                                                status.code().unwrap_or(-1)
+                                            ));
+                                        }
                                     }
-                                } else if s.status == SessionStatus::Active {
-                                    s.status = SessionStatus::Error;
-                                    s.error = Some(format!(
-                                        "Process exited with code {}",
-                                        status.code().unwrap_or(-1)
-                                    ));
+                                    Ok(None) => {
+                                        if s.status == SessionStatus::Active {
+                                            s.status = SessionStatus::Done;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        if s.status == SessionStatus::Active {
+                                            s.status = SessionStatus::Error;
+                                            s.error =
+                                                Some(format!("Failed to get exit status: {}", e));
+                                        }
+                                    }
                                 }
                             }
-                            Ok(None) => {
-                                if s.status == SessionStatus::Active {
-                                    s.status = SessionStatus::Done;
-                                }
+                            break;
+                        }
+                        Err(e) => {
+                            if !reader_cancel.is_cancelled() {
+                                let mut s = session.lock().await;
+                                s.append_output(format!("[error reading output: {}]", e));
                             }
-                            Err(e) => {
-                                if s.status == SessionStatus::Active {
-                                    s.status = SessionStatus::Error;
-                                    s.error = Some(format!("Failed to get exit status: {}", e));
-                                }
-                            }
+                            break;
                         }
                     }
-                    break;
-                }
-                Err(e) => {
-                    let mut s = session.lock().await;
-                    s.append_output(format!("[error reading output: {}]", e));
-                    break;
                 }
             }
         }

@@ -118,7 +118,6 @@ pub struct SessionConfig {
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Active,
-    AwaitingInput,
     Done,
     Error,
     Interrupted,
@@ -128,7 +127,6 @@ impl std::fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SessionStatus::Active => write!(f, "active"),
-            SessionStatus::AwaitingInput => write!(f, "awaiting_input"),
             SessionStatus::Done => write!(f, "done"),
             SessionStatus::Error => write!(f, "error"),
             SessionStatus::Interrupted => write!(f, "interrupted"),
@@ -142,8 +140,12 @@ pub struct AgentProcess {
     pub child: command_group::AsyncGroupChild,
     /// Stdin writer for sending messages (piped for Claude Code control protocol)
     pub stdin: Option<tokio::process::ChildStdin>,
-    /// Cancellation token
+    /// Cancellation token for interrupting the agent
     pub cancel: tokio_util::sync::CancellationToken,
+    /// Cancellation token for stopping the output reader task.
+    /// Cancelled when the session is resumed with a new process, so the old
+    /// reader stops cleanly instead of racing with the new one.
+    pub reader_cancel: tokio_util::sync::CancellationToken,
 }
 
 // ── MCP tool response types ──
@@ -323,7 +325,6 @@ mod tests {
     #[test]
     fn test_session_status_display() {
         assert_eq!(SessionStatus::Active.to_string(), "active");
-        assert_eq!(SessionStatus::AwaitingInput.to_string(), "awaiting_input");
         assert_eq!(SessionStatus::Done.to_string(), "done");
         assert_eq!(SessionStatus::Error.to_string(), "error");
         assert_eq!(SessionStatus::Interrupted.to_string(), "interrupted");
@@ -331,9 +332,6 @@ mod tests {
 
     #[test]
     fn test_session_status_serde() {
-        let json = serde_json::to_string(&SessionStatus::AwaitingInput).unwrap();
-        assert_eq!(json, "\"awaiting_input\"");
-
         let parsed: SessionStatus = serde_json::from_str("\"done\"").unwrap();
         assert_eq!(parsed, SessionStatus::Done);
     }
