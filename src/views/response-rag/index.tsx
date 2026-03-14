@@ -1,19 +1,15 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Database, Info, Settings, Search, Loader2, BookOpen, PlayCircle } from "lucide-react"
+import { Database, Info, Settings, Search, Loader2, BookOpen, PlayCircle, Wrench } from "lucide-react"
 import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from "@/components/ui/resizable"
+import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
+import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import { VirtualMcpIndexingTree } from "@/components/permissions/VirtualMcpIndexingTree"
 import { GatewayIndexingTree } from "@/components/permissions/GatewayIndexingTree"
 import { IndexingStateButton } from "@/components/permissions/IndexingStateButton"
@@ -26,6 +22,7 @@ import type {
   PreviewRagIndexParams,
   PreviewRagSearchParams,
   PreviewRagReadParams,
+  ToolDefinition,
 } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
@@ -219,6 +216,33 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
         {/* Info Tab */}
         <TabsContent value="info" className="flex-1 min-h-0 mt-4">
           <div className="space-y-4 max-w-2xl">
+            {/* Overview */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">How it works</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm text-muted-foreground">
+                <p>
+                  MCP Response RAG intercepts tool call responses that exceed a configurable size threshold
+                  and replaces them with a compressed preview. The full content is indexed into an FTS5
+                  full-text search database so the LLM can retrieve specific sections on demand.
+                </p>
+                <p>
+                  This reduces context window consumption while preserving the LLM&apos;s ability to access
+                  all information. Two tools are exposed to the LLM:
+                </p>
+                <ul className="list-disc list-inside space-y-1 ml-1">
+                  <li><code className="text-xs bg-muted px-1 py-0.5 rounded">IndexSearch</code> — full-text search across all indexed content</li>
+                  <li><code className="text-xs bg-muted px-1 py-0.5 rounded">IndexRead</code> — read the full content of an indexed source with pagination</li>
+                </ul>
+                <p>
+                  The compressed preview includes a table of contents with line references and a search
+                  hint so the LLM knows it can retrieve more detail. Tool indexing below controls which
+                  tool responses are eligible for compression.
+                </p>
+              </CardContent>
+            </Card>
+
             {/* Tool Indexing */}
             {config && (
               <Card>
@@ -376,6 +400,23 @@ function RagPreview({ initialThreshold }: RagPreviewProps) {
   const [readResult, setReadResult] = useState<RagReadResult | null>(null)
   const [reading, setReading] = useState(false)
 
+  // Tool definitions
+  const [contextTools, setContextTools] = useState<McpToolDisplayItem[]>([])
+
+  useEffect(() => {
+    invoke<ToolDefinition[]>("get_context_mode_tool_definitions")
+      .then((defs) =>
+        setContextTools(
+          defs.map((d): McpToolDisplayItem => ({
+            name: d.name,
+            description: d.description,
+            inputSchema: d.input_schema,
+          }))
+        )
+      )
+      .catch(() => setContextTools([]))
+  }, [])
+
   const doIndex = useCallback(async (text: string) => {
     if (!text.trim()) return
     setIndexing(true)
@@ -472,6 +513,26 @@ function RagPreview({ initialThreshold }: RagPreviewProps) {
         </CardContent>
       </Card>
 
+      {/* Compressed Preview */}
+      {indexResult && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center justify-between">
+              <span>Compressed (what LLM sees)</span>
+              <span className="text-xs font-mono font-normal text-muted-foreground">{formatBytes(indexResult.compressed_preview.length)}</span>
+            </CardTitle>
+            <CardDescription>
+              This is the compressed version that replaces the original {formatBytes(content.length)} response in the LLM&apos;s context window.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="bg-muted/50 rounded-md p-3 max-h-[400px] overflow-y-auto">
+              <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{indexResult.compressed_preview}</pre>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Chunk Table of Contents */}
       {indexResult && indexResult.index_result.chunk_titles.length > 0 && (
         <Card>
@@ -496,6 +557,24 @@ function RagPreview({ initialThreshold }: RagPreviewProps) {
                 </div>
               ))}
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* MCP Tools exposed to the LLM */}
+      {indexResult && contextTools.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Wrench className="h-4 w-4" />
+              MCP Tools
+            </CardTitle>
+            <CardDescription>
+              These tools are exposed to the LLM for searching and reading indexed content.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <McpToolDisplay tools={contextTools} />
           </CardContent>
         </Card>
       )}
@@ -637,34 +716,6 @@ function RagPreview({ initialThreshold }: RagPreviewProps) {
         </Card>
       )}
 
-      {/* Side-by-side: Original vs Compressed */}
-      {indexResult && (
-        <ResizablePanelGroup direction="horizontal" className="rounded-md border min-h-[300px]">
-          <ResizablePanel defaultSize={50} minSize={20}>
-            <div className="h-full flex flex-col">
-              <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
-                <span>Original Response</span>
-                <span className="font-mono">{formatBytes(content.length)}</span>
-              </div>
-              <ScrollArea className="flex-1 p-3">
-                <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{content}</pre>
-              </ScrollArea>
-            </div>
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={50} minSize={20}>
-            <div className="h-full flex flex-col">
-              <div className="px-3 py-2 border-b bg-muted/50 text-xs font-medium text-muted-foreground flex items-center justify-between">
-                <span>Compressed (what LLM sees)</span>
-                <span className="font-mono">{formatBytes(indexResult.compressed_preview.length)}</span>
-              </div>
-              <ScrollArea className="flex-1 p-3">
-                <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{indexResult.compressed_preview}</pre>
-              </ScrollArea>
-            </div>
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      )}
     </div>
   )
 }
