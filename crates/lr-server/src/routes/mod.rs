@@ -10,6 +10,7 @@ pub mod images;
 pub mod mcp;
 pub mod mcp_ws;
 pub mod models;
+pub mod moderations;
 pub mod oauth;
 
 pub use audio::{audio_speech, audio_transcriptions, audio_translations};
@@ -24,4 +25,5 @@ pub use mcp::{
 };
 pub use mcp_ws::mcp_websocket_handler;
 pub use models::{get_model, get_model_pricing, list_models};
+pub use moderations::moderations;
 pub use oauth::token_endpoint;

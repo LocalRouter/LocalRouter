@@ -135,6 +135,35 @@ impl SafetyEngine {
                         enabled_cats,
                     ))
                 }
+                "openai_moderation" => {
+                    // OpenAI moderation uses its own executor (calls /v1/moderations)
+                    if let Some(provider) = model_cfg
+                        .provider_id
+                        .as_ref()
+                        .and_then(|id| provider_lookup.get(id))
+                    {
+                        let mod_executor =
+                            Arc::new(models::openai_moderation::ModerationExecutor::new(
+                                provider.base_url.clone(),
+                                provider.api_key.clone(),
+                            ));
+                        Arc::new(models::openai_moderation::OpenAIModerationModel::new(
+                            model_cfg.id.clone(),
+                            mod_executor,
+                            model_cfg
+                                .model_name
+                                .clone()
+                                .unwrap_or_else(|| "omni-moderation-latest".to_string()),
+                            enabled_cats,
+                        ))
+                    } else {
+                        warn!(
+                            "Provider not found for OpenAI moderation model '{}', skipping",
+                            model_cfg.id
+                        );
+                        continue;
+                    }
+                }
                 other => {
                     warn!("Unknown safety model type '{}', skipping", other);
                     continue;

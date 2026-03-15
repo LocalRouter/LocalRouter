@@ -2492,6 +2492,7 @@ export interface GuardrailsConfig {
   category_actions: CategoryActionEntry[]
   default_confidence_threshold: number
   parallel_guardrails: boolean
+  moderation_api_enabled: boolean
 }
 
 /** Per-client guardrails configuration */

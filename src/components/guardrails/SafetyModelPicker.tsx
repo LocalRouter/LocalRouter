@@ -17,6 +17,7 @@ import {
 import {
   MODEL_FAMILY_GROUPS,
   PROVIDER_MODEL_NAMES,
+  CLOUD_PROVIDER_TYPES,
 } from "@/constants/safety-model-variants"
 import type { ProviderInstanceInfo } from "@/types/tauri-commands"
 
@@ -79,12 +80,13 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
         const expectedModelName = providerMap[provider.provider_type]
         if (!expectedModelName) continue
 
+        const isCloud = CLOUD_PROVIDER_TYPES.has(provider.provider_type)
         const availableModels = providerModels.get(provider.instance_name)
         entries.push({
           provider,
           modelName: expectedModelName,
           modelType,
-          available: availableModels?.has(expectedModelName) ?? false,
+          available: isCloud || (availableModels?.has(expectedModelName) ?? false),
         })
       }
     }
@@ -110,6 +112,7 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
 
     const familyGroup = MODEL_FAMILY_GROUPS.find(g => g.modelType === selectedEntry.modelType)
 
+    const isCloud = CLOUD_PROVIDER_TYPES.has(selectedEntry.provider.provider_type)
     onSelect({
       type: "provider",
       modelType: selectedEntry.modelType,
@@ -117,7 +120,7 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
       providerType: selectedEntry.provider.provider_type,
       modelName: selectedEntry.modelName,
       label: `${familyGroup?.family ?? selectedEntry.modelType} via ${selectedEntry.provider.instance_name}`,
-      needsPull: !selectedEntry.available,
+      needsPull: !isCloud && !selectedEntry.available,
     })
     setSelectedKey(null)
   }
@@ -161,13 +164,17 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
                     entries.map((entry) => {
                       const key = `provider:${group.modelType}:${entry.provider.instance_name}`
                       const alreadyAdded = existingModelIds.includes(key)
+                      const isCloudModel = CLOUD_PROVIDER_TYPES.has(entry.provider.provider_type)
 
                       if (entry.available) {
+                        const readyLabel = isCloudModel
+                          ? ` — ${entry.provider.instance_name} (Free)`
+                          : ` — Ready on ${entry.provider.instance_name}`
                         return (
                           <SelectItem key={key} value={key} className="text-xs pl-6" disabled={alreadyAdded}>
                             <span>{entry.modelName}</span>
                             <span className="text-muted-foreground">
-                              {alreadyAdded ? " — Already added" : ` — Ready on ${entry.provider.instance_name}`}
+                              {alreadyAdded ? " — Already added" : readyLabel}
                             </span>
                           </SelectItem>
                         )

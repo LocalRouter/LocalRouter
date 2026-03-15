@@ -1057,3 +1057,58 @@ pub struct SpeechRequest {
     #[schema(minimum = 0.25, maximum = 4.0)]
     pub speed: Option<f64>,
 }
+
+// ==================== Moderations ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(
+    title = "Moderation Request",
+    description = "Request for content moderation API compatible with OpenAI's format",
+    example = json!({
+        "input": "I want to hurt someone"
+    })
+)]
+pub struct ModerationRequest {
+    /// The input text(s) to classify
+    pub input: ModerationInput,
+
+    /// Model to use (informational only; actual model depends on configured safety models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Input for moderation: a single string or array of strings
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum ModerationInput {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(
+    title = "Moderation Response",
+    description = "Content moderation classification results"
+)]
+pub struct ModerationResponse {
+    /// Unique identifier for the moderation request
+    pub id: String,
+
+    /// Model used for classification
+    pub model: String,
+
+    /// Classification results (one per input)
+    pub results: Vec<ModerationResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ModerationResult {
+    /// Whether any category was flagged
+    pub flagged: bool,
+
+    /// Per-category boolean flags
+    pub categories: HashMap<String, bool>,
+
+    /// Per-category confidence scores (0.0-1.0)
+    pub category_scores: HashMap<String, f64>,
+}

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 21;
+pub(crate) const CONFIG_VERSION: u32 = 22;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -435,6 +435,10 @@ pub struct AppConfig {
     /// MCP via LLM configuration (experimental agentic orchestrator)
     #[serde(default)]
     pub mcp_via_llm: McpViaLlmConfig,
+
+    /// Secret scanning configuration
+    #[serde(default)]
+    pub secret_scanning: SecretScanningConfig,
 }
 
 /// Pricing override for a specific model
@@ -1881,6 +1885,12 @@ pub struct GuardrailsConfig {
     /// For MCP via LLM, guardrails run in parallel but gate before tool execution.
     #[serde(default = "default_true")]
     pub parallel_guardrails: bool,
+
+    /// Enable the /v1/moderations API endpoint.
+    /// When enabled, uses configured safety models to serve moderation requests
+    /// in OpenAI-compatible format. Requires auth.
+    #[serde(default)]
+    pub moderation_api_enabled: bool,
 }
 
 fn default_confidence_threshold() -> f32 {
@@ -1897,6 +1907,7 @@ impl Default for GuardrailsConfig {
             category_actions: vec![],
             default_confidence_threshold: default_confidence_threshold(),
             parallel_guardrails: true,
+            moderation_api_enabled: false,
         }
     }
 }
@@ -2121,6 +2132,101 @@ pub struct ClientJsonRepairConfig {
     /// Override schema coercion setting
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_coercion: Option<bool>,
+}
+
+/// Secret scanning action: what to do when a potential secret is detected
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretScanAction {
+    /// Block the request and show a popup for user decision
+    Ask,
+    /// Allow the request but show a notification
+    Notify,
+    /// No scanning
+    #[default]
+    Off,
+}
+
+/// Secret scanning configuration (global)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SecretScanningConfig {
+    /// What action to take when a secret is detected
+    #[serde(default)]
+    pub action: SecretScanAction,
+
+    /// Minimum Shannon entropy for a match to be considered valid (global only)
+    #[serde(default = "default_entropy_threshold")]
+    pub entropy_threshold: f32,
+
+    /// Custom user-defined rules (global only)
+    #[serde(default)]
+    pub custom_rules: Vec<CustomSecretRule>,
+
+    /// ML verifier configuration (global only, optional precision boost)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_verifier: Option<SecretMlVerifierConfig>,
+
+    /// Whether to scan system messages (default: false)
+    #[serde(default)]
+    pub scan_system_messages: bool,
+
+    /// Allowlist regex patterns that exclude matches (global only)
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+}
+
+impl Default for SecretScanningConfig {
+    fn default() -> Self {
+        Self {
+            action: SecretScanAction::Off,
+            entropy_threshold: default_entropy_threshold(),
+            custom_rules: Vec::new(),
+            ml_verifier: None,
+            scan_system_messages: false,
+            allowlist: Vec::new(),
+        }
+    }
+}
+
+fn default_entropy_threshold() -> f32 {
+    3.5
+}
+
+/// A custom secret detection rule
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CustomSecretRule {
+    pub id: String,
+    pub description: String,
+    pub regex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entropy: Option<f32>,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// ML verifier configuration for secret scanning
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SecretMlVerifierConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub provider_id: String,
+    pub model_name: String,
+    #[serde(default = "default_ml_confidence_threshold")]
+    pub confidence_threshold: f32,
+}
+
+fn default_ml_confidence_threshold() -> f32 {
+    0.7
+}
+
+/// Per-client secret scanning configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ClientSecretScanningConfig {
+    /// Override action for this client (None = inherit global)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<SecretScanAction>,
 }
 
 /// MCP via LLM configuration (experimental agentic orchestrator)
@@ -2406,6 +2512,10 @@ pub struct Client {
     /// Per-client JSON repair configuration
     #[serde(default)]
     pub json_repair: ClientJsonRepairConfig,
+
+    /// Per-client secret scanning configuration
+    #[serde(default)]
+    pub secret_scanning: ClientSecretScanningConfig,
 }
 
 /// MCP server configuration
@@ -3088,6 +3198,7 @@ impl Default for AppConfig {
             prompt_compression: PromptCompressionConfig::default(),
             json_repair: JsonRepairConfig::default(),
             mcp_via_llm: McpViaLlmConfig::default(),
+            secret_scanning: SecretScanningConfig::default(),
         }
     }
 }
@@ -3280,6 +3391,7 @@ impl Client {
             guardrails: ClientGuardrailsConfig::default(),
             prompt_compression: ClientPromptCompressionConfig::default(),
             json_repair: ClientJsonRepairConfig::default(),
+            secret_scanning: ClientSecretScanningConfig::default(),
             coding_agents_permissions: CodingAgentsPermissions::default(),
             coding_agent_permission: PermissionState::default(),
             coding_agent_type: None,
@@ -3628,8 +3740,14 @@ mod tests {
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         let deserialized: ContextManagementConfig = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(config.catalog_threshold_bytes, deserialized.catalog_threshold_bytes);
-        assert_eq!(config.response_threshold_bytes, deserialized.response_threshold_bytes);
+        assert_eq!(
+            config.catalog_threshold_bytes,
+            deserialized.catalog_threshold_bytes
+        );
+        assert_eq!(
+            config.response_threshold_bytes,
+            deserialized.response_threshold_bytes
+        );
     }
 
     #[test]
@@ -3677,7 +3795,10 @@ mod tests {
             client_tools_indexing_default: IndexingState::Disable,
             ..Default::default()
         };
-        server_only.gateway_indexing.servers.insert("fs".to_string(), IndexingState::Enable);
+        server_only
+            .gateway_indexing
+            .servers
+            .insert("fs".to_string(), IndexingState::Enable);
         assert!(server_only.is_enabled());
     }
 
@@ -3753,10 +3874,9 @@ mod tests {
         perms
             .servers
             .insert("filesystem".to_string(), IndexingState::Disable);
-        perms.tools.insert(
-            "filesystem__read_file".to_string(),
-            IndexingState::Enable,
-        );
+        perms
+            .tools
+            .insert("filesystem__read_file".to_string(), IndexingState::Enable);
         // Tool override wins over server
         assert!(perms.is_tool_eligible("filesystem", "read_file"));
         // Other tools in server still disabled

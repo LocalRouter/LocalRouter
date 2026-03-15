@@ -31,6 +31,9 @@ use utoipa::OpenApi;
         // Embeddings endpoints
         crate::routes::embeddings::embeddings,
 
+        // Moderations endpoints
+        crate::routes::moderations::moderations,
+
         // Audio endpoints
         crate::routes::audio::audio_transcriptions,
         crate::routes::audio::audio_translations,
@@ -116,6 +119,12 @@ use utoipa::OpenApi;
             crate::types::EmbeddingVector,
             crate::types::EmbeddingUsage,
 
+            // Moderation types
+            crate::types::ModerationRequest,
+            crate::types::ModerationInput,
+            crate::types::ModerationResponse,
+            crate::types::ModerationResult,
+
             // Audio types
             crate::types::AudioTranscriptionResponse,
             crate::types::SpeechRequest,
@@ -156,6 +165,7 @@ use utoipa::OpenApi;
         (name = "chat", description = "Chat completion endpoints"),
         (name = "completions", description = "Text completion endpoints"),
         (name = "embeddings", description = "Embeddings endpoints"),
+        (name = "moderations", description = "Content moderation endpoints"),
         (name = "audio", description = "Audio endpoints (STT + TTS)"),
         (name = "models", description = "Model management and information"),
         (name = "monitoring", description = "Usage tracking and monitoring"),
@@ -244,6 +254,7 @@ mod tests {
         assert!(spec.paths.paths.contains_key("/v1/chat/completions"));
         assert!(spec.paths.paths.contains_key("/v1/completions"));
         assert!(spec.paths.paths.contains_key("/v1/embeddings"));
+        assert!(spec.paths.paths.contains_key("/v1/moderations"));
         assert!(spec.paths.paths.contains_key("/v1/models"));
         assert!(spec.paths.paths.contains_key("/v1/models/{id}"));
         assert!(spec

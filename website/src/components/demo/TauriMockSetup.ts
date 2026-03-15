@@ -2633,6 +2633,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     ],
     default_confidence_threshold: 0.5,
     parallel_guardrails: true,
+    moderation_api_enabled: false,
   }),
   'update_guardrails_config': () => {
     toast.success('GuardRails configuration saved (demo)')

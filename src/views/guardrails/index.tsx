@@ -51,6 +51,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
     category_actions: [],
     default_confidence_threshold: 0.5,
     parallel_guardrails: true,
+    moderation_api_enabled: false,
   })
   const [categories, setCategories] = useState<SafetyCategoryInfo[]>([])
   const [isLoading, setIsLoading] = useState(true)

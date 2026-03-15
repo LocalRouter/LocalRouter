@@ -51,6 +51,10 @@ pub struct TopLogprob {
 /// Unified executor that routes inference through a provider API
 pub enum ModelExecutor {
     Provider(ProviderExecutor),
+    /// OpenAI moderation executor — uses /v1/moderations instead of completions.
+    /// The actual executor lives in models::openai_moderation; this variant exists
+    /// so the enum is extensible without breaking existing code.
+    Moderation,
 }
 
 impl ModelExecutor {
@@ -58,6 +62,7 @@ impl ModelExecutor {
     pub async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, String> {
         match self {
             Self::Provider(executor) => executor.complete(request).await,
+            Self::Moderation => Err("Moderation executor does not support completions — use OpenAIModerationModel directly".to_string()),
         }
     }
 }
