@@ -1717,6 +1717,7 @@ pub struct SpeechRequest {
 }
 
 /// Text-to-Speech response (binary audio data)
+#[derive(Debug)]
 pub struct SpeechResponse {
     /// The raw audio data
     pub audio_data: Vec<u8>,

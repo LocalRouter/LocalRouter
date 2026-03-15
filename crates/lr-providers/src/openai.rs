@@ -24,6 +24,7 @@ const OAUTH_PROVIDER_ID: &str = "openai-codex";
 pub struct OpenAIProvider {
     api_key: String,
     client: Client,
+    base_url: String,
 }
 
 #[allow(dead_code)]
@@ -33,7 +34,17 @@ impl OpenAIProvider {
         Self {
             api_key,
             client: crate::http_client::default_client(),
+            base_url: OPENAI_API_BASE.to_string(),
         }
+    }
+
+    /// Create a new OpenAI provider with a custom base URL (for testing)
+    pub fn with_base_url(api_key: String, base_url: String) -> AppResult<Self> {
+        Ok(Self {
+            api_key,
+            client: crate::http_client::default_client(),
+            base_url,
+        })
     }
 
     /// Create a new OpenAI provider from stored API key
@@ -363,7 +374,7 @@ impl ModelProvider for OpenAIProvider {
         // Use /v1/models endpoint for health check
         let result = self
             .client
-            .get(format!("{}/models", OPENAI_API_BASE))
+            .get(format!("{}/models", self.base_url))
             .header("Authorization", self.auth_header())
             .send()
             .await;
@@ -400,7 +411,7 @@ impl ModelProvider for OpenAIProvider {
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
         let response = self
             .client
-            .get(format!("{}/models", OPENAI_API_BASE))
+            .get(format!("{}/models", self.base_url))
             .header("Authorization", self.auth_header())
             .send()
             .await
@@ -534,7 +545,7 @@ impl ModelProvider for OpenAIProvider {
 
         let response = self
             .client
-            .post(format!("{}/chat/completions", OPENAI_API_BASE))
+            .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", self.auth_header())
             .header("Content-Type", "application/json")
             .json(&openai_request)
@@ -623,7 +634,7 @@ impl ModelProvider for OpenAIProvider {
 
         let response = self
             .client
-            .post(format!("{}/chat/completions", OPENAI_API_BASE))
+            .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", self.auth_header())
             .header("Content-Type", "application/json")
             .json(&openai_request)
@@ -756,7 +767,7 @@ impl ModelProvider for OpenAIProvider {
 
         let response = self
             .client
-            .post(format!("{}/embeddings", OPENAI_API_BASE))
+            .post(format!("{}/embeddings", self.base_url))
             .header("Authorization", self.auth_header())
             .header("Content-Type", "application/json")
             .json(&openai_request)
@@ -832,7 +843,7 @@ impl ModelProvider for OpenAIProvider {
 
         let response = self
             .client
-            .post(format!("{}/images/generations", OPENAI_API_BASE))
+            .post(format!("{}/images/generations", self.base_url))
             .header("Authorization", self.auth_header())
             .header("Content-Type", "application/json")
             .json(&body)
@@ -916,7 +927,7 @@ impl ModelProvider for OpenAIProvider {
 
         let response = self
             .client
-            .post(format!("{}/audio/transcriptions", OPENAI_API_BASE))
+            .post(format!("{}/audio/transcriptions", self.base_url))
             .header("Authorization", self.auth_header())
             .multipart(form)
             .send()
@@ -975,7 +986,7 @@ impl ModelProvider for OpenAIProvider {
 
         let response = self
             .client
-            .post(format!("{}/audio/translations", OPENAI_API_BASE))
+            .post(format!("{}/audio/translations", self.base_url))
             .header("Authorization", self.auth_header())
             .multipart(form)
             .send()
@@ -1007,7 +1018,7 @@ impl ModelProvider for OpenAIProvider {
     async fn speech(&self, request: super::SpeechRequest) -> AppResult<super::SpeechResponse> {
         let response = self
             .client
-            .post(format!("{}/audio/speech", OPENAI_API_BASE))
+            .post(format!("{}/audio/speech", self.base_url))
             .header("Authorization", self.auth_header())
             .header("Content-Type", "application/json")
             .json(&request)
