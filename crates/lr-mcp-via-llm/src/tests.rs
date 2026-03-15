@@ -178,6 +178,16 @@ mod tool_injection_tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            n: None,
+            logit_bias: None,
+            parallel_tool_calls: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
             pre_computed_routing: None,
         }
     }
@@ -302,7 +312,12 @@ mod tool_injection_tests {
         let tools = request.tools.unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].function.name, RESOURCE_READ_TOOL_NAME);
-        assert!(tools[0].function.description.as_ref().unwrap().contains("name"));
+        assert!(tools[0]
+            .function
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("name"));
     }
 
     #[test]
@@ -538,10 +553,7 @@ mod tool_classification_tests {
 
     #[test]
     fn resource_read_classified_as_mcp() {
-        let mcp: HashSet<String> = ["resource_read"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let mcp: HashSet<String> = ["resource_read"].iter().map(|s| s.to_string()).collect();
         let calls = [tc("1", "resource_read")];
         let (m, _): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 1);
@@ -613,6 +625,16 @@ mod manager_tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            n: None,
+            logit_bias: None,
+            parallel_tool_calls: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
             pre_computed_routing: None,
         }
     }

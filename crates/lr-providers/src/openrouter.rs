@@ -720,6 +720,16 @@ mod tests {
             response_format: None,
             logprobs: None,
             top_logprobs: None,
+            n: None,
+            logit_bias: None,
+            parallel_tool_calls: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
             pre_computed_routing: None,
         };
 

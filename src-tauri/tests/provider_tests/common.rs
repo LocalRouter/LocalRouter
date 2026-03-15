@@ -50,6 +50,16 @@ pub fn standard_completion_request() -> CompletionRequest {
         response_format: None,
         tool_choice: None,
         tools: None,
+        n: None,
+        logit_bias: None,
+        parallel_tool_calls: None,
+        service_tier: None,
+        store: None,
+        metadata: None,
+        modalities: None,
+        audio: None,
+        prediction: None,
+        reasoning_effort: None,
         pre_computed_routing: None,
     }
 }
@@ -81,6 +91,16 @@ pub fn standard_streaming_request() -> CompletionRequest {
         response_format: None,
         tool_choice: None,
         tools: None,
+        n: None,
+        logit_bias: None,
+        parallel_tool_calls: None,
+        service_tier: None,
+        store: None,
+        metadata: None,
+        modalities: None,
+        audio: None,
+        prediction: None,
+        reasoning_effort: None,
         pre_computed_routing: None,
     }
 }

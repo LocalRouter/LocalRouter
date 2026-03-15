@@ -271,6 +271,8 @@ impl ModelProvider for XAIProvider {
                 })
                 .collect(),
             usage: xai_response.usage,
+            system_fingerprint: None,
+            service_tier: None,
             extensions: None,
             routellm_win_rate: None,
             request_usage_entries: None,
