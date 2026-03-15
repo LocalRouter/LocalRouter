@@ -286,6 +286,10 @@ impl ModelProvider for CohereProvider {
         "cohere"
     }
 
+    fn health_check_interval_multiplier(&self) -> u32 {
+        6 // Check every 60 min (6 × 10 min) — fits within 1000 calls/month trial limit
+    }
+
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
 
@@ -310,6 +314,20 @@ impl ModelProvider for CohereProvider {
                         latency_ms: Some(latency_ms),
                         last_checked: Utc::now(),
                         error_message: None,
+                    }
+                } else if status.as_u16() == 429 {
+                    ProviderHealth {
+                        status: HealthStatus::Degraded,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: Some("Rate limited (HTTP 429)".to_string()),
+                    }
+                } else if status.is_server_error() {
+                    ProviderHealth {
+                        status: HealthStatus::Degraded,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: Some(format!("Server error (HTTP {})", status)),
                     }
                 } else {
                     ProviderHealth {

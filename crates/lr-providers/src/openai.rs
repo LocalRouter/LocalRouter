@@ -383,19 +383,34 @@ impl ModelProvider for OpenAIProvider {
 
         match result {
             Ok(response) => {
-                if response.status().is_success() {
+                let status = response.status();
+                if status.is_success() {
                     ProviderHealth {
                         status: HealthStatus::Healthy,
                         latency_ms: Some(latency_ms),
                         last_checked: Utc::now(),
                         error_message: None,
                     }
+                } else if status.as_u16() == 429 {
+                    ProviderHealth {
+                        status: HealthStatus::Degraded,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: Some("Rate limited (HTTP 429)".to_string()),
+                    }
+                } else if status.is_server_error() {
+                    ProviderHealth {
+                        status: HealthStatus::Degraded,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: Some(format!("Server error (HTTP {})", status)),
+                    }
                 } else {
                     ProviderHealth {
                         status: HealthStatus::Unhealthy,
                         latency_ms: Some(latency_ms),
                         last_checked: Utc::now(),
-                        error_message: Some(format!("API returned status: {}", response.status())),
+                        error_message: Some(format!("API returned status: {}", status)),
                     }
                 }
             }

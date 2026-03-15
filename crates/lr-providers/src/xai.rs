@@ -147,12 +147,23 @@ impl ModelProvider for XAIProvider {
                     error_message: None,
                 }
             }
-            Err(e) => ProviderHealth {
-                status: HealthStatus::Unhealthy,
-                latency_ms: None,
-                last_checked: Utc::now(),
-                error_message: Some(e.to_string()),
-            },
+            Err(e) => {
+                let is_rate_limited = matches!(&e, lr_types::errors::AppError::RateLimitExceeded);
+                ProviderHealth {
+                    status: if is_rate_limited {
+                        HealthStatus::Degraded
+                    } else {
+                        HealthStatus::Unhealthy
+                    },
+                    latency_ms: None,
+                    last_checked: Utc::now(),
+                    error_message: Some(if is_rate_limited {
+                        "Rate limited (HTTP 429)".to_string()
+                    } else {
+                        e.to_string()
+                    }),
+                }
+            }
         }
     }
 

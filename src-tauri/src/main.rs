@@ -729,42 +729,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 })
                                 .collect();
 
-                        // Build ML verifier config if enabled
-                        let ml_verifier = ss_config.ml_verifier.as_ref().and_then(|ml| {
-                            if !ml.enabled {
-                                return None;
-                            }
-                            // Look up provider base URL
-                            let provider = app_config.providers.iter().find(|p| p.name == ml.provider_id);
-                            let base_url = provider
-                                .and_then(|p| p.provider_config.as_ref())
-                                .and_then(|cfg| cfg.get("endpoint"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("http://localhost:11434")
-                                .to_string();
-                            let api_key = provider
-                                .and_then(|p| p.provider_config.as_ref())
-                                .and_then(|cfg| cfg.get("api_key"))
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                            let use_ollama = provider.map_or(false, |p| {
-                                matches!(p.provider_type, lr_config::ProviderType::Ollama)
-                            });
-                            Some(lr_secret_scanner::MlVerifierConfig {
-                                provider_base_url: base_url,
-                                provider_api_key: api_key,
-                                model_name: ml.model_name.clone(),
-                                confidence_threshold: ml.confidence_threshold,
-                                use_ollama,
-                            })
-                        });
-
                         let engine_config = lr_secret_scanner::SecretScanEngineConfig {
                             entropy_threshold: ss_config.entropy_threshold,
                             custom_rules,
                             allowlist: ss_config.allowlist.clone(),
                             scan_system_messages: ss_config.scan_system_messages,
-                            ml_verifier,
                         };
 
                         match lr_secret_scanner::SecretScanEngine::new(&engine_config) {
@@ -1303,6 +1272,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
                         let mut interval =
                             tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+                        let mut provider_cycle_counters: std::collections::HashMap<String, u32> =
+                            std::collections::HashMap::new();
 
                         loop {
                             interval.tick().await;
@@ -1329,6 +1300,18 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 if let Some(provider) = provider_registry_for_task
                                     .get_provider(&provider_info.instance_name)
                                 {
+                                    // Respect per-provider interval multiplier
+                                    let multiplier = provider.health_check_interval_multiplier();
+                                    if multiplier > 1 {
+                                        let counter = provider_cycle_counters
+                                            .entry(provider_info.instance_name.clone())
+                                            .or_insert(0);
+                                        *counter += 1;
+                                        if *counter % multiplier != 0 {
+                                            continue;
+                                        }
+                                    }
+
                                     let health = tokio::time::timeout(
                                         std::time::Duration::from_secs(timeout_secs),
                                         provider.health_check(),
@@ -1819,6 +1802,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::update_strategy,
             ui::commands::delete_strategy,
             ui::commands::get_clients_using_strategy,
+            ui::commands::get_feature_clients_status,
             // Client template, mode & guardrails commands
             ui::commands::set_client_mode,
             ui::commands::set_client_template,
@@ -1890,6 +1874,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_secret_scanning_config,
             ui::commands::update_secret_scanning_config,
             ui::commands::test_secret_scan,
+            ui::commands::get_secret_scanning_patterns,
             ui::commands_clients::get_client_secret_scanning_config,
             ui::commands_clients::update_client_secret_scanning_config,
             // Prompt Compression commands

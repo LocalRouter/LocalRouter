@@ -198,6 +198,20 @@ impl ModelProvider for DeepInfraProvider {
                         last_checked: Utc::now(),
                         error_message: None,
                     }
+                } else if status.as_u16() == 429 {
+                    ProviderHealth {
+                        status: HealthStatus::Degraded,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: Some("Rate limited (HTTP 429)".to_string()),
+                    }
+                } else if status.is_server_error() {
+                    ProviderHealth {
+                        status: HealthStatus::Degraded,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: Some(format!("Server error (HTTP {})", status)),
+                    }
                 } else {
                     ProviderHealth {
                         status: HealthStatus::Unhealthy,

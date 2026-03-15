@@ -159,6 +159,13 @@ pub trait ModelProvider: Send + Sync {
     /// Performs a health check on the provider
     async fn health_check(&self) -> ProviderHealth;
 
+    /// Multiplier for the global periodic health check interval.
+    /// Default is 1 (check every cycle). A value of 6 means check every 6th cycle
+    /// (e.g., every 60 min instead of every 10 min). Use for rate-limited providers.
+    fn health_check_interval_multiplier(&self) -> u32 {
+        1
+    }
+
     /// Lists all available models from this provider
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>>;
 

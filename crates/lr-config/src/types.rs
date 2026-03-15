@@ -502,7 +502,7 @@ pub struct HealthCheckConfig {
     pub mode: HealthCheckMode,
     /// Whether periodic health checks are enabled
     /// When false, only on-failure and user-triggered health checks run
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub periodic_enabled: bool,
     /// Interval between health checks (in seconds)
     /// Default: 600 (10 minutes)
@@ -543,7 +543,7 @@ impl Default for HealthCheckConfig {
     fn default() -> Self {
         Self {
             mode: HealthCheckMode::default(),
-            periodic_enabled: true,
+            periodic_enabled: false,
             interval_secs: default_health_check_interval(),
             timeout_secs: default_health_check_timeout(),
             recovery_interval_secs: default_recovery_interval(),
@@ -2162,10 +2162,6 @@ pub struct SecretScanningConfig {
     #[serde(default)]
     pub custom_rules: Vec<CustomSecretRule>,
 
-    /// ML verifier configuration (global only, optional precision boost)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ml_verifier: Option<SecretMlVerifierConfig>,
-
     /// Whether to scan system messages (default: false)
     #[serde(default)]
     pub scan_system_messages: bool,
@@ -2181,7 +2177,6 @@ impl Default for SecretScanningConfig {
             action: SecretScanAction::Off,
             entropy_threshold: default_entropy_threshold(),
             custom_rules: Vec::new(),
-            ml_verifier: None,
             scan_system_messages: false,
             allowlist: Vec::new(),
         }
@@ -2204,21 +2199,6 @@ pub struct CustomSecretRule {
     pub keywords: Vec<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
-}
-
-/// ML verifier configuration for secret scanning
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SecretMlVerifierConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    pub provider_id: String,
-    pub model_name: String,
-    #[serde(default = "default_ml_confidence_threshold")]
-    pub confidence_threshold: f32,
-}
-
-fn default_ml_confidence_threshold() -> f32 {
-    0.7
 }
 
 /// Per-client secret scanning configuration
