@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Shield } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -168,7 +168,7 @@ export function ClientGuardrailsTab({ client, onUpdate }: ClientGuardrailsTabPro
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Shield className="h-5 w-5 text-red-500" />
+            <FEATURES.guardrails.icon className={`h-5 w-5 ${FEATURES.guardrails.color}`} />
             <CardTitle>GuardRails</CardTitle>
           </div>
           <div className="flex items-center gap-2">

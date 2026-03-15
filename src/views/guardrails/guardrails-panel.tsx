@@ -1,5 +1,7 @@
 import { useState } from "react"
-import { Plus, Shield } from "lucide-react"
+import { Plus } from "lucide-react"
+import { FEATURES } from "@/constants/features"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -131,8 +133,8 @@ export function GuardrailsPanel({
 
               <Tabs value={detailTab} onValueChange={setDetailTab}>
                 <TabsList>
-                  <TabsTrigger value="info">Info</TabsTrigger>
-                  <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
+                  <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+                  <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="info">
@@ -222,7 +224,7 @@ export function GuardrailsPanel({
           </ScrollArea>
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-            <Shield className="h-12 w-12 opacity-30" />
+            <FEATURES.guardrails.icon className="h-12 w-12 opacity-30" />
             <div className="text-center">
               <p className="font-medium">Select a model to view details</p>
               <p className="text-sm">or add a new one with the + button</p>

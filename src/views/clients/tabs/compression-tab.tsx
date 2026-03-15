@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Minimize2 } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { TriStateButton } from "@/components/ui/TriStateButton"
@@ -81,7 +81,7 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Minimize2 className="h-5 w-5 text-blue-500" />
+              <FEATURES.compression.icon className={`h-5 w-5 ${FEATURES.compression.color}`} />
               <CardTitle>Prompt Compression</CardTitle>
               <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
             </div>

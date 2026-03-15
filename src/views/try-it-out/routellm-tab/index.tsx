@@ -2,7 +2,8 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Download, Cpu } from "lucide-react"
+import { Download } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
@@ -97,7 +98,7 @@ export function RouteLLMTryItOutTab() {
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <Cpu className="h-5 w-5" />
+              <FEATURES.routing.icon className="h-5 w-5" />
               <div>
                 <CardTitle className="text-sm">Strong/Weak Intelligent Routing</CardTitle>
                 <CardDescription>

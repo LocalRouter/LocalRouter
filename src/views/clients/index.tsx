@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -154,8 +155,8 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="client">Client</TabsTrigger>
-          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="client"><TAB_ICONS.client className={TAB_ICON_CLASS} />Client</TabsTrigger>
+          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
         <TabsContent value="client" className="flex-1 min-h-0 mt-4">

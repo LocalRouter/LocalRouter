@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ProvidersIcon } from "@/components/icons/category-icons"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
 import { ModelsPanel } from "./models-panel"
 import { CompatibilityPanel } from "./compatibility-panel"
@@ -128,9 +129,9 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="providers">Providers</TabsTrigger>
-          <TabsTrigger value="models">All Models</TabsTrigger>
-          <TabsTrigger value="compatibility">Compatibility</TabsTrigger>
+          <TabsTrigger value="providers"><TAB_ICONS.providers className={TAB_ICON_CLASS} />Providers</TabsTrigger>
+          <TabsTrigger value="models"><TAB_ICONS.allModels className={TAB_ICON_CLASS} />All Models</TabsTrigger>
+          <TabsTrigger value="compatibility"><TAB_ICONS.compatibility className={TAB_ICON_CLASS} />Compatibility</TabsTrigger>
         </TabsList>
 
         <TabsContent value="providers" className="flex-1 min-h-0 mt-4">

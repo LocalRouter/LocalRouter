@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react"
-import { Shield, Wrench, Minimize2, Cpu, BookText, Database, ArrowRight, Monitor, Cloud, Server } from "lucide-react"
-import { OPTIMIZE_COLORS } from "./constants"
+import { ArrowRight, Monitor, Cloud, Server } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 
 interface PillProps {
   icon: LucideIcon
@@ -59,12 +59,12 @@ export function OptimizeDiagram() {
         <div className="px-3 py-3 border-b space-y-3">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">LLM Pipeline</div>
           <FlowLine direction="right">
-            <Pill icon={Shield} label="GuardRails" colorClass={OPTIMIZE_COLORS.guardrails} borderClass="border-red-500/30" />
-            <Pill icon={Minimize2} label="Compress" colorClass={OPTIMIZE_COLORS.compression} borderClass="border-blue-500/30" />
-            <Pill icon={Cpu} label="Strong/Weak" colorClass={OPTIMIZE_COLORS.routing} borderClass="border-purple-500/30" />
+            <Pill icon={FEATURES.guardrails.icon} label={FEATURES.guardrails.shortName} colorClass={FEATURES.guardrails.color} borderClass={FEATURES.guardrails.borderColor} />
+            <Pill icon={FEATURES.compression.icon} label={FEATURES.compression.shortName} colorClass={FEATURES.compression.color} borderClass={FEATURES.compression.borderColor} />
+            <Pill icon={FEATURES.routing.icon} label={FEATURES.routing.shortName} colorClass={FEATURES.routing.color} borderClass={FEATURES.routing.borderColor} />
           </FlowLine>
           <FlowLine direction="left">
-            <Pill icon={Wrench} label="JSON Repair" colorClass={OPTIMIZE_COLORS.jsonRepair} borderClass="border-amber-500/30" />
+            <Pill icon={FEATURES.jsonRepair.icon} label={FEATURES.jsonRepair.shortName} colorClass={FEATURES.jsonRepair.color} borderClass={FEATURES.jsonRepair.borderColor} />
           </FlowLine>
         </div>
         {/* ── Column 4: Right arrows (LLM) ── */}
@@ -87,10 +87,10 @@ export function OptimizeDiagram() {
         <div className="px-3 py-3 space-y-3">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">MCP Pipeline</div>
           <FlowLine direction="right">
-            <Pill icon={BookText} label="Catalog Compress" colorClass={OPTIMIZE_COLORS.catalogCompression} borderClass="border-teal-500/30" />
+            <Pill icon={FEATURES.catalogCompression.icon} label={FEATURES.catalogCompression.shortName} colorClass={FEATURES.catalogCompression.color} borderClass={FEATURES.catalogCompression.borderColor} />
           </FlowLine>
           <FlowLine direction="left">
-            <Pill icon={Database} label="Response RAG" colorClass={OPTIMIZE_COLORS.responseRag} borderClass="border-emerald-500/30" />
+            <Pill icon={FEATURES.responseRag.icon} label={FEATURES.responseRag.shortName} colorClass={FEATURES.responseRag.color} borderClass={FEATURES.responseRag.borderColor} />
           </FlowLine>
         </div>
         {/* Column 4: Right arrows (MCP) */}

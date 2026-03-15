@@ -6,6 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog"
 import { toast } from "sonner"
 import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Plus, Trash2, FolderOpen, Loader2, Store, FilePlus } from "lucide-react"
 import { SkillsIcon } from "@/components/icons/category-icons"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { MarketplaceSearchPanel, type SkillListing } from "@/components/add-resource/MarketplaceSearchPanel"
@@ -448,9 +449,9 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
 
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
-                    <TabsTrigger value="info">Info</TabsTrigger>
-                    <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
-                    <TabsTrigger value="settings">Settings</TabsTrigger>
+                    <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+                    <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
+                    <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="info">

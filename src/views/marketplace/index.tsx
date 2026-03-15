@@ -48,6 +48,7 @@ import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
 import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import { isValidHttpUrl } from "@/utils/url"
 import { cn } from "@/lib/utils"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 
 import type { McpServerListing, SkillListing } from "@/components/add-resource"
 import type { ToolDefinition } from "@/types/tauri-commands"
@@ -492,9 +493,9 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="browse">Browse</TabsTrigger>
-          <TabsTrigger value="via-mcp">Via MCP</TabsTrigger>
-          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="browse"><TAB_ICONS.browse className={TAB_ICON_CLASS} />Browse</TabsTrigger>
+          <TabsTrigger value="via-mcp"><TAB_ICONS.viaMcp className={TAB_ICON_CLASS} />Via MCP</TabsTrigger>
+          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
         {/* Browse Tab */}

@@ -3,6 +3,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ClientInfoTab } from "./tabs/info-tab"
 import { ClientConfigTab } from "./tabs/config-tab"
@@ -151,16 +152,16 @@ export function ClientDetail({
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="bg-transparent h-auto gap-2 p-0 items-end flex-wrap">
             <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
-              <TabsTrigger value="info">Overview</TabsTrigger>
-              <TabsTrigger value="connect">Connect</TabsTrigger>
+              <TabsTrigger value="info"><TAB_ICONS.overview className={TAB_ICON_CLASS} />Overview</TabsTrigger>
+              <TabsTrigger value="connect"><TAB_ICONS.connect className={TAB_ICON_CLASS} />Connect</TabsTrigger>
             </div>
 
             {(showTryItOutLlm || showTryItOutMcp) && (
               <div>
                 <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">Try It Out</div>
                 <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
-                  {showTryItOutLlm && <TabsTrigger value="try-llm">LLM</TabsTrigger>}
-                  {showTryItOutMcp && <TabsTrigger value="try-mcp">MCP</TabsTrigger>}
+                  {showTryItOutLlm && <TabsTrigger value="try-llm"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM</TabsTrigger>}
+                  {showTryItOutMcp && <TabsTrigger value="try-mcp"><TAB_ICONS.mcp className={TAB_ICON_CLASS} />MCP</TabsTrigger>}
                 </div>
               </div>
             )}
@@ -169,15 +170,15 @@ export function ClientDetail({
               <div>
                 <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">Configure</div>
                 <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
-                  {showModelsTab && <TabsTrigger value="models">LLM</TabsTrigger>}
-                  {showMcpTab && <TabsTrigger value="mcp">MCP</TabsTrigger>}
+                  {showModelsTab && <TabsTrigger value="models"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM</TabsTrigger>}
+                  {showMcpTab && <TabsTrigger value="mcp"><TAB_ICONS.mcp className={TAB_ICON_CLASS} />MCP</TabsTrigger>}
                 </div>
               </div>
             )}
 
             <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
-              <TabsTrigger value="optimize">Optimize</TabsTrigger>
-              <TabsTrigger value="settings">Settings</TabsTrigger>
+              <TabsTrigger value="optimize"><TAB_ICONS.optimize className={TAB_ICON_CLASS} />Optimize</TabsTrigger>
+              <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
             </div>
           </TabsList>
 

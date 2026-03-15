@@ -1,8 +1,10 @@
 import { Settings as SettingsIcon } from "lucide-react"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { LoggingTab } from "./logging-tab"
 import { UpdatesTab } from "./updates-tab"
 import { AppearanceTab } from "./appearance-tab"
+import { HealthChecksTab } from "./health-checks-tab"
 import { LicensesTab } from "./licenses-tab"
 
 interface SettingsViewProps {
@@ -32,14 +34,19 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
         className="space-y-4"
       >
         <TabsList>
-          <TabsTrigger value="appearance">Appearance</TabsTrigger>
-          <TabsTrigger value="logs">Logs</TabsTrigger>
-          <TabsTrigger value="updates">Updates</TabsTrigger>
-          <TabsTrigger value="licenses">Licenses</TabsTrigger>
+          <TabsTrigger value="appearance"><TAB_ICONS.appearance className={TAB_ICON_CLASS} />Appearance</TabsTrigger>
+          <TabsTrigger value="health-checks"><TAB_ICONS.healthChecks className={TAB_ICON_CLASS} />Health Checks</TabsTrigger>
+          <TabsTrigger value="logs"><TAB_ICONS.logs className={TAB_ICON_CLASS} />Logs</TabsTrigger>
+          <TabsTrigger value="updates"><TAB_ICONS.updates className={TAB_ICON_CLASS} />Updates</TabsTrigger>
+          <TabsTrigger value="licenses"><TAB_ICONS.licenses className={TAB_ICON_CLASS} />Licenses</TabsTrigger>
         </TabsList>
 
         <TabsContent value="appearance">
           <AppearanceTab />
+        </TabsContent>
+
+        <TabsContent value="health-checks">
+          <HealthChecksTab />
         </TabsContent>
 
         <TabsContent value="logs">

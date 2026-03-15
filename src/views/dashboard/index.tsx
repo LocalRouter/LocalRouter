@@ -6,6 +6,7 @@ import { StatsCard, StatsRow } from "@/components/shared/stats-card"
 import { MetricsChart } from "@/components/shared/metrics-chart"
 import { useMetricsSubscription } from "@/hooks/useMetricsSubscription"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Card, CardContent } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/Button"
@@ -308,8 +309,8 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
       {/* Metrics Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "llm" | "mcp")}>
         <TabsList>
-          <TabsTrigger value="llm">LLM Metrics</TabsTrigger>
-          <TabsTrigger value="mcp">MCP Metrics</TabsTrigger>
+          <TabsTrigger value="llm"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM Metrics</TabsTrigger>
+          <TabsTrigger value="mcp"><TAB_ICONS.mcp className={TAB_ICON_CLASS} />MCP Metrics</TabsTrigger>
         </TabsList>
 
         {/* LLM Metrics Tab */}

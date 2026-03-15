@@ -2,8 +2,9 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Download, FolderOpen, Cpu, Trash2, Loader2 } from "lucide-react"
-import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
+import { Download, FolderOpen, Trash2, Loader2 } from "lucide-react"
+import { FEATURES } from "@/constants/features"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -29,6 +30,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
+import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
 import type { RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
 
@@ -161,7 +163,7 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
       <div className="flex-shrink-0 pb-4">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Cpu className={`h-6 w-6 ${OPTIMIZE_COLORS.routing}`} />
+            <FEATURES.routing.icon className={`h-6 w-6 ${FEATURES.routing.color}`} />
             Strong/Weak
           </h1>
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
@@ -177,9 +179,9 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="model">Model</TabsTrigger>
-          <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
-          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="model"><TAB_ICONS.model className={TAB_ICON_CLASS} />Model</TabsTrigger>
+          <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
+          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
         {/* Model Tab */}
@@ -256,6 +258,8 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
                 </CardContent>
               </Card>
             )}
+
+            <FeatureClientsCard feature="strong_weak" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

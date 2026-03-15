@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Wrench, Play, Loader2 } from "lucide-react"
-import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
+import { Play, Loader2 } from "lucide-react"
+import { FEATURES } from "@/constants/features"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import type { JsonRepairConfig, JsonRepairTestResult } from "@/types/tauri-commands"
 
 interface JsonRepairViewProps {
@@ -99,8 +101,8 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
     <div className="flex flex-col h-full min-h-0 gap-4 max-w-5xl">
       <div className="flex-shrink-0">
         <div className="flex items-center gap-3 mb-1">
-          <h1 className="text-xl font-semibold flex items-center gap-2">
-            <Wrench className={`h-6 w-6 ${OPTIMIZE_COLORS.jsonRepair}`} />
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <FEATURES.jsonRepair.icon className={`h-6 w-6 ${FEATURES.jsonRepair.color}`} />
             JSON Repair
           </h1>
         </div>
@@ -115,9 +117,9 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="info">Info</TabsTrigger>
-          <TabsTrigger value="try-it-out">Try it out</TabsTrigger>
-          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+          <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
+          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
         {/* Info Tab */}
@@ -238,6 +240,8 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                 </CardDescription>
               </CardHeader>
             </Card>
+
+            <FeatureClientsCard feature="json_repair" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

@@ -2,7 +2,6 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import {
-  Shield,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -12,6 +11,7 @@ import {
   Layers,
   Brain,
 } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
 import { Badge } from "@/components/ui/Badge"
@@ -143,7 +143,7 @@ export function GuardrailsTab({ initialClientId, forcedMode, hideModeSwitcher, f
         <CardHeader className="pb-3">
           <div className="space-y-1.5">
             <CardTitle className="text-base flex items-center gap-2">
-              <Shield className="h-4 w-4 text-red-500" />
+              <FEATURES.guardrails.icon className={`h-4 w-4 ${FEATURES.guardrails.color}`} />
               GuardRails Test
             </CardTitle>
             <p className="text-sm text-muted-foreground">{getModeDescription()}</p>

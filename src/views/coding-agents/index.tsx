@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Loader2, FlaskConical, Copy, Check, Terminal, CheckCircle2, XCircle, ExternalLink, Square } from "lucide-react"
+import { Loader2, Copy, Check, Terminal, CheckCircle2, XCircle, ExternalLink, Square } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -17,6 +17,7 @@ import {
   ResizableHandle,
 } from "@/components/ui/resizable"
 import { CodingAgentsIcon } from "@/components/icons/category-icons"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
 import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
@@ -369,17 +370,17 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="info">Info</TabsTrigger>
-          <TabsTrigger value="agents">Agents</TabsTrigger>
+          <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+          <TabsTrigger value="agents"><TAB_ICONS.agents className={TAB_ICON_CLASS} />Agents</TabsTrigger>
           <TabsTrigger value="sessions">
-            Sessions
+            <TAB_ICONS.sessions className={TAB_ICON_CLASS} />Sessions
             {sessions.length > 0 && (
               <Badge variant="secondary" className="ml-1.5 text-[10px] px-1 py-0">
                 {sessions.length}
               </Badge>
             )}
           </TabsTrigger>
-          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
         {/* Info Tab */}
@@ -399,32 +400,12 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                     Supported agents include Claude Code, Gemini CLI, Codex, Amp, Aider, and more.
                   </p>
                   <p>
-                    Coding agents are <strong className="text-foreground">implicitly available</strong> when their binary is found on the system PATH.
-                    No manual installation through LocalRouter is required &mdash; install a supported agent and it appears automatically.
+                    Coding agents are <strong className="text-foreground">auto-discovered</strong> when their binary is found on the system PATH.
+                    No manual installation through LocalRouter is required.
                   </p>
                   <p>
-                    Sessions are strictly tied to the creating client. No cross-client session visibility or sharing.
-                  </p>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Enabling for a Client</CardTitle>
-                  <CardDescription>
-                    Coding agent access is configured per-client.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3 text-sm text-muted-foreground">
-                  <p>
-                    To enable coding agents for a client, go to the client's <strong className="text-foreground">Coding Agents</strong> tab and configure:
-                  </p>
-                  <ul className="list-disc list-inside space-y-1.5 ml-1">
-                    <li><strong className="text-foreground">Permission</strong> &mdash; Allow, Ask (requires approval on session start), or Off</li>
-                    <li><strong className="text-foreground">Agent type</strong> &mdash; Select which installed coding agent the client uses</li>
-                  </ul>
-                  <p>
-                    Each client can be assigned one coding agent type. The selected agent determines which binary is spawned and what capabilities are available.
+                    Sessions are strictly tied to the creating client. No cross-client session visibility or sharing. Existing sessions
+                    created outside of LocalRouter are not accessible to clients either.
                   </p>
                 </CardContent>
               </Card>
@@ -531,27 +512,15 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                           {selected.description}
                         </p>
                       </div>
-                      {selected.installed && (
-                        <div className="flex items-center gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setDetailTab("try-it-out")}
-                          >
-                            <FlaskConical className="h-4 w-4 mr-1" />
-                            Try It Out
-                          </Button>
-                        </div>
-                      )}
                     </div>
 
                     <Tabs value={detailTab} onValueChange={setDetailTab}>
                       <TabsList>
-                        <TabsTrigger value="info">Info</TabsTrigger>
-                        {selected.installed && <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>}
+                        <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+                        {selected.installed && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
                         {agentSessions.length > 0 && (
                           <TabsTrigger value="sessions">
-                            Sessions
+                            <TAB_ICONS.sessions className={TAB_ICON_CLASS} />Sessions
                             <Badge variant="secondary" className="ml-1.5 text-[10px] px-1 py-0">
                               {agentSessions.length}
                             </Badge>

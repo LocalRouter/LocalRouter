@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { Zap, Wrench, Minimize2, Cpu, Shield, ArrowRight, CheckCircle2, XCircle, Loader2, Download, KeyRound } from "lucide-react"
+import { Zap, ArrowRight, CheckCircle2, XCircle, Loader2, Download } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -131,7 +132,7 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
     <div className="flex flex-col h-full min-h-0 gap-4 max-w-5xl">
       <div className="flex-shrink-0">
         <div className="flex items-center gap-3 mb-1">
-          <h1 className="text-xl font-semibold flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <Zap className="h-6 w-6" />
             LLM Optimization
           </h1>
@@ -146,7 +147,7 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
-              <Shield className="h-4 w-4 text-muted-foreground" />
+              <FEATURES.guardrails.icon className={`h-4 w-4 ${FEATURES.guardrails.color}`} />
               <CardTitle className="text-base">GuardRails</CardTitle>
             </div>
             <CardDescription>
@@ -166,7 +167,7 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
-              <KeyRound className="h-4 w-4 text-orange-500" />
+              <FEATURES.secretScanning.icon className={`h-4 w-4 ${FEATURES.secretScanning.color}`} />
               <CardTitle className="text-base">Secret Scanning</CardTitle>
             </div>
             <CardDescription>
@@ -187,7 +188,7 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Wrench className="h-4 w-4 text-muted-foreground" />
+                <FEATURES.jsonRepair.icon className={`h-4 w-4 ${FEATURES.jsonRepair.color}`} />
                 <CardTitle className="text-base">Default: Enable JSON Repair</CardTitle>
               </div>
               {jsonRepairConfig && (
@@ -216,7 +217,7 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Minimize2 className="h-4 w-4 text-muted-foreground" />
+                <FEATURES.compression.icon className={`h-4 w-4 ${FEATURES.compression.color}`} />
                 <CardTitle className="text-base">Default: Enable Prompt Compression</CardTitle>
               </div>
               {compressionConfig && (
@@ -266,7 +267,7 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
-              <Cpu className="h-4 w-4 text-muted-foreground" />
+              <FEATURES.routing.icon className={`h-4 w-4 ${FEATURES.routing.color}`} />
               <CardTitle className="text-base">Strong/Weak Routing</CardTitle>
               <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400 text-[10px]">EXPERIMENTAL</Badge>
             </div>

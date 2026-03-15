@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Blocks, Grid, Store, ArrowLeft, Settings2 } from "lucide-react"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import McpServerIcon from "@/components/McpServerIcon"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -662,9 +663,9 @@ export function McpServersPanel({
 
               <Tabs value={detailTab} onValueChange={setDetailTab}>
                 <TabsList>
-                  <TabsTrigger value="info">Info</TabsTrigger>
-                  {selectedServer.enabled && <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>}
-                  <TabsTrigger value="settings">Settings</TabsTrigger>
+                  <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+                  {selectedServer.enabled && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
+                  <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
                 </TabsList>
 
                 {selectedServer.enabled && (

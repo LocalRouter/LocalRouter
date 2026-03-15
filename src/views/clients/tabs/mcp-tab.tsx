@@ -8,6 +8,7 @@ import { ClientCodingAgentsTab } from "./coding-agents-tab"
 import { ClientMarketplaceTab } from "./marketplace-tab"
 import type { McpPermissions, SkillsPermissions, PermissionState } from "@/components/permissions"
 import type { CodingAgentType } from "@/types/tauri-commands"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 
 interface Client {
   id: string
@@ -31,10 +32,10 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
   return (
     <Tabs value={subTab} onValueChange={setSubTab}>
       <TabsList className="bg-muted h-9 p-1 rounded-lg mb-4">
-        <TabsTrigger value="servers">MCP Servers</TabsTrigger>
-        <TabsTrigger value="skills">Skills</TabsTrigger>
-        <TabsTrigger value="coding-agents">Coding Agents</TabsTrigger>
-        <TabsTrigger value="marketplace">Marketplace</TabsTrigger>
+        <TabsTrigger value="servers"><TAB_ICONS.mcpServers className={TAB_ICON_CLASS} />MCP Servers</TabsTrigger>
+        <TabsTrigger value="skills"><TAB_ICONS.skills className={TAB_ICON_CLASS} />Skills</TabsTrigger>
+        <TabsTrigger value="coding-agents"><TAB_ICONS.codingAgents className={TAB_ICON_CLASS} />Coding Agents</TabsTrigger>
+        <TabsTrigger value="marketplace"><TAB_ICONS.marketplace className={TAB_ICON_CLASS} />Marketplace</TabsTrigger>
       </TabsList>
 
       <TabsContent value="servers">

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { FolderOpen, Search, X } from "lucide-react"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
@@ -380,12 +381,14 @@ export function LoggingTab() {
             <Tabs value={activeLogTab} onValueChange={setActiveLogTab}>
               <TabsList>
                 <TabsTrigger value="llm">
+                  <TAB_ICONS.llm className={TAB_ICON_CLASS} />
                   LLM Requests
                   <Badge variant="secondary" className="ml-2">
                     {filteredLlmLogs.length}
                   </Badge>
                 </TabsTrigger>
                 <TabsTrigger value="mcp">
+                  <TAB_ICONS.mcp className={TAB_ICON_CLASS} />
                   MCP Requests
                   <Badge variant="secondary" className="ml-2">
                     {filteredMcpLogs.length}

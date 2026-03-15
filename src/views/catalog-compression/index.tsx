@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { BookText, RefreshCw, Loader2, Search, Database, AlertTriangle, Info } from "lucide-react"
-import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
+import { RefreshCw, Loader2, Search, AlertTriangle } from "lucide-react"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
+import { FEATURES } from "@/constants/features"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -17,6 +18,7 @@ import {
 import { Switch } from "@/components/ui/Toggle"
 import { cn } from "@/lib/utils"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
+import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo } from "@/types/tauri-commands"
 
@@ -149,7 +151,7 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
       <div className="flex-shrink-0 pb-4">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <BookText className={`h-6 w-6 ${OPTIMIZE_COLORS.catalogCompression}`} />
+            <FEATURES.catalogCompression.icon className={`h-6 w-6 ${FEATURES.catalogCompression.color}`} />
             MCP Catalog Compression
           </h1>
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
@@ -165,17 +167,17 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="info">Info</TabsTrigger>
-          <TabsTrigger value="preview">Try it out</TabsTrigger>
+          <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+          <TabsTrigger value="preview"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
           <TabsTrigger value="sessions">
-            Sessions
+            <TAB_ICONS.sessions className={TAB_ICON_CLASS} />Sessions
             {sessions.length > 0 && (
               <Badge variant="secondary" className="ml-1.5 text-[10px] px-1 py-0">
                 {sessions.length}
               </Badge>
             )}
           </TabsTrigger>
-          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
         {/* Info Tab */}
@@ -207,6 +209,8 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
                 </div>
               </>
             )}
+
+            <FeatureClientsCard feature="catalog_compression" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 
@@ -214,7 +218,7 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
         <TabsContent value="sessions" className="flex-1 min-h-0 mt-4">
           {sessions.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4 border rounded-lg">
-              <BookText className="h-12 w-12 opacity-30" />
+              <FEATURES.catalogCompression.icon className="h-12 w-12 opacity-30" />
               <div className="text-center">
                 <p className="font-medium">No active sessions</p>
                 <p className="text-sm mt-1">
@@ -292,15 +296,15 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
                           <Tabs value={sessionDetailTab} onValueChange={setSessionDetailTab}>
                             <TabsList className="w-fit">
                               <TabsTrigger value="info">
-                                <Info className="h-3.5 w-3.5 mr-1" />
+                                <TAB_ICONS.info className={TAB_ICON_CLASS} />
                                 Info
                               </TabsTrigger>
                               <TabsTrigger value="index">
-                                <Database className="h-3.5 w-3.5 mr-1" />
+                                <FEATURES.responseRag.icon className={TAB_ICON_CLASS} />
                                 Index
                               </TabsTrigger>
                               <TabsTrigger value="query">
-                                <Search className="h-3.5 w-3.5 mr-1" />
+                                <TAB_ICONS.browse className={TAB_ICON_CLASS} />
                                 Query
                               </TabsTrigger>
                             </TabsList>
@@ -528,7 +532,7 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
                   </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-                    <BookText className="h-12 w-12 opacity-30" />
+                    <FEATURES.catalogCompression.icon className="h-12 w-12 opacity-30" />
                     <div className="text-center">
                       <p className="font-medium">Select a session to view details</p>
                     </div>

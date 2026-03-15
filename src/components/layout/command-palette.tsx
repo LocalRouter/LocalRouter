@@ -7,12 +7,12 @@ import {
   Cpu,
   RefreshCw,
   Plus,
-  Shield,
   FileText,
   ScrollText,
   Info,
 } from "lucide-react"
 import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon } from "@/components/icons/category-icons"
+import { FEATURES } from "@/constants/features"
 import {
   CommandDialog,
   CommandEmpty,
@@ -138,14 +138,14 @@ export function CommandPalette({
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('guardrails'))}
           >
-            <Shield className="mr-2 h-4 w-4" />
+            <FEATURES.guardrails.icon className="mr-2 h-4 w-4" />
             <span>GuardRails</span>
             <CommandShortcut>⌘7</CommandShortcut>
           </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('strong-weak'))}
           >
-            <Cpu className="mr-2 h-4 w-4" />
+            <FEATURES.routing.icon className="mr-2 h-4 w-4" />
             <span>Strong/Weak</span>
             <CommandShortcut>⌘8</CommandShortcut>
           </CommandItem>

@@ -5,6 +5,7 @@ import { LlmTab } from "./llm-tab"
 import { McpTab } from "./mcp-tab"
 import { RouteLLMTryItOutTab } from "./routellm-tab"
 import { GuardrailsTab } from "./guardrails-tab"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 
 interface TryItOutViewProps {
   activeSubTab: string | null
@@ -99,10 +100,10 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="llm">LLM</TabsTrigger>
-          <TabsTrigger value="mcp">MCP & Skill</TabsTrigger>
-          <TabsTrigger value="routellm">Strong/Weak</TabsTrigger>
-          <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
+          <TabsTrigger value="llm"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM</TabsTrigger>
+          <TabsTrigger value="mcp"><TAB_ICONS.mcpAndSkill className={TAB_ICON_CLASS} />MCP & Skill</TabsTrigger>
+          <TabsTrigger value="routellm"><TAB_ICONS.strongWeak className={TAB_ICON_CLASS} />Strong/Weak</TabsTrigger>
+          <TabsTrigger value="guardrails"><TAB_ICONS.guardrails className={TAB_ICON_CLASS} />GuardRails</TabsTrigger>
         </TabsList>
 
         <TabsContent value="llm" className="flex-1 min-h-0 mt-4">

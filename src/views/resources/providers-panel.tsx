@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw } from "lucide-react"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import {
   Tooltip,
   TooltipContent,
@@ -609,11 +610,11 @@ export function ProvidersPanel({
 
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
-                    <TabsTrigger value="info">Info</TabsTrigger>
-                    {selectedProvider.enabled && <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>}
-                    <TabsTrigger value="models" onClick={() => { loadDetailedModels(selectedProvider.instance_name); loadFreeTierStatus(selectedProvider.instance_name) }}>Models</TabsTrigger>
-                    <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}>Free Tier</TabsTrigger>
-                    <TabsTrigger value="settings">Settings</TabsTrigger>
+                    <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+                    {selectedProvider.enabled && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
+                    <TabsTrigger value="models" onClick={() => { loadDetailedModels(selectedProvider.instance_name); loadFreeTierStatus(selectedProvider.instance_name) }}><TAB_ICONS.models className={TAB_ICON_CLASS} />Models</TabsTrigger>
+                    <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}><TAB_ICONS.freeTier className={TAB_ICON_CLASS} />Free Tier</TabsTrigger>
+                    <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
                   </TabsList>
 
                   {selectedProvider.enabled && (

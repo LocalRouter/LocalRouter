@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Shield, Globe, ChevronDown, ChevronUp } from "lucide-react"
-import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
+import { Globe, ChevronDown, ChevronUp } from "lucide-react"
+import { FEATURES } from "@/constants/features"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -14,6 +15,7 @@ import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { CategoryActionButton, type CategoryActionState } from "@/components/permissions/CategoryActionButton"
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
 import type { TreeNode } from "@/components/permissions/types"
+import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import { GuardrailsPanel } from "./guardrails-panel"
 import type {
   GuardrailsConfig,
@@ -264,7 +266,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
       <div className="flex flex-col h-full min-h-0 max-w-5xl">
         <div className="flex-shrink-0 pb-4">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Shield className={`h-6 w-6 ${OPTIMIZE_COLORS.guardrails}`} />
+            <FEATURES.guardrails.icon className={`h-6 w-6 ${FEATURES.guardrails.color}`} />
             GuardRails
           </h1>
           <p className="text-sm text-muted-foreground">Loading...</p>
@@ -278,7 +280,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
       <div className="flex-shrink-0 pb-4">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Shield className={`h-6 w-6 ${OPTIMIZE_COLORS.guardrails}`} />
+            <FEATURES.guardrails.icon className={`h-6 w-6 ${FEATURES.guardrails.color}`} />
             GuardRails
           </h1>
         </div>
@@ -293,10 +295,10 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
         className="flex flex-col flex-1 min-h-0"
       >
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="info">Info</TabsTrigger>
-          <TabsTrigger value="models">Models</TabsTrigger>
-          <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
-          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+          <TabsTrigger value="models"><TAB_ICONS.models className={TAB_ICON_CLASS} />Models</TabsTrigger>
+          <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
+          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
         <TabsContent value="info" className="flex-1 min-h-0 mt-4 overflow-y-auto">
@@ -323,6 +325,8 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
                 />
               </CardContent>
             </Card>
+
+            <FeatureClientsCard feature="guardrails" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 
@@ -378,8 +382,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
                   <CardTitle className="text-base">Moderation API Endpoint</CardTitle>
                 </div>
                 <CardDescription>
-                  Expose your configured safety models via the standard <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1/moderations</code> endpoint.
-                  Clients can classify content using the OpenAI-compatible moderation API format. Auth required.
+                  Expose your configured safety models via the OpenAI-compatible endpoint <code className="text-xs bg-muted px-1 py-0.5 rounded">/moderations</code>.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">

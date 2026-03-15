@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Database, Info, Settings, Search, Loader2, BookOpen, PlayCircle, Wrench } from "lucide-react"
-import { OPTIMIZE_COLORS } from "@/views/optimize-overview/constants"
+import { Search, Loader2, BookOpen, Wrench } from "lucide-react"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
+import { FEATURES } from "@/constants/features"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
+import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import { VirtualMcpIndexingTree } from "@/components/permissions/VirtualMcpIndexingTree"
 import { GatewayIndexingTree } from "@/components/permissions/GatewayIndexingTree"
@@ -183,7 +185,7 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
       <div className="flex-shrink-0 pb-4">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Database className={`h-6 w-6 ${OPTIMIZE_COLORS.responseRag}`} />
+            <FEATURES.responseRag.icon className={`h-6 w-6 ${FEATURES.responseRag.color}`} />
             MCP Response RAG
           </h1>
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
@@ -200,15 +202,15 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="info">
-            <Info className="h-3.5 w-3.5 mr-1" />
+            <TAB_ICONS.info className={TAB_ICON_CLASS} />
             Info
           </TabsTrigger>
           <TabsTrigger value="preview">
-            <PlayCircle className="h-3.5 w-3.5 mr-1" />
-            Try it out
+            <TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />
+            Try It Out
           </TabsTrigger>
           <TabsTrigger value="settings">
-            <Settings className="h-3.5 w-3.5 mr-1" />
+            <TAB_ICONS.settings className={TAB_ICON_CLASS} />
             Settings
           </TabsTrigger>
         </TabsList>
@@ -308,6 +310,8 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
                 </CardContent>
               </Card>
             )}
+
+            <FeatureClientsCard feature="context_management" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

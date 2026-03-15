@@ -8,16 +8,11 @@ import {
   Bug,
   ChevronsLeft,
   ChevronsRight,
-  Shield,
-  Cpu,
-  BookText,
-  Database,
-  Minimize2,
-  Wrench,
   ChevronDown,
   ChevronRight,
   Zap,
 } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
 import { cn } from "@/lib/utils"
@@ -52,7 +47,7 @@ interface HealthCacheState {
 
 export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'catalog-compression' | 'response-rag' | 'skills'
   | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair'
-  | 'optimize-overview' | 'settings' | 'debug'
+  | 'secret-scanning' | 'optimize-overview' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -101,12 +96,13 @@ const resourceNavEntries: NavEntry[] = [
   {
     id: 'optimize-overview', icon: Zap, label: 'Optimize', shortcut: '⌘8',
     children: [
-      { id: 'guardrails', icon: Shield, label: 'GuardRails' },
-      { id: 'json-repair', icon: Wrench, label: 'JSON Repair' },
-      { id: 'compression', icon: Minimize2, label: 'Compression' },
-      { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak' },
-      { id: 'catalog-compression', icon: BookText, label: 'Catalog' },
-      { id: 'response-rag', icon: Database, label: 'RAG' },
+      { id: FEATURES.guardrails.viewId as View, icon: FEATURES.guardrails.icon, label: FEATURES.guardrails.shortName },
+      { id: FEATURES.secretScanning.viewId as View, icon: FEATURES.secretScanning.icon, label: FEATURES.secretScanning.shortName },
+      { id: FEATURES.jsonRepair.viewId as View, icon: FEATURES.jsonRepair.icon, label: FEATURES.jsonRepair.shortName },
+      { id: FEATURES.compression.viewId as View, icon: FEATURES.compression.icon, label: FEATURES.compression.shortName },
+      { id: FEATURES.routing.viewId as View, icon: FEATURES.routing.icon, label: FEATURES.routing.shortName },
+      { id: FEATURES.catalogCompression.viewId as View, icon: FEATURES.catalogCompression.icon, label: FEATURES.catalogCompression.shortName },
+      { id: FEATURES.responseRag.viewId as View, icon: FEATURES.responseRag.icon, label: FEATURES.responseRag.shortName },
     ],
   },
 ]
