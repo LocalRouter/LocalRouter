@@ -486,6 +486,26 @@ impl ModelProvider for MistralProvider {
 
         Ok(Box::pin(converted_stream))
     }
+
+    fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
+        let mut support = super::default_feature_support(self, instance_name);
+
+        for f in &mut support.model_features {
+            match f.name.as_str() {
+                "N Completions" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes = Some("Generate multiple completion choices".into());
+                }
+                "Parallel Tool Calls" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes = Some("Mistral supports parallel tool calling".into());
+                }
+                _ => {}
+            }
+        }
+
+        support
+    }
 }
 
 #[cfg(test)]

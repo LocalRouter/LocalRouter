@@ -650,6 +650,26 @@ impl ModelProvider for GroqProvider {
     fn supports_speech(&self) -> bool {
         true
     }
+
+    fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
+        let mut support = super::default_feature_support(self, instance_name);
+
+        for f in &mut support.model_features {
+            match f.name.as_str() {
+                "N Completions" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some("Supported on some Groq models".into());
+                }
+                "Parallel Tool Calls" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes = Some("Groq supports parallel tool calling".into());
+                }
+                _ => {}
+            }
+        }
+
+        support
+    }
 }
 
 #[cfg(test)]

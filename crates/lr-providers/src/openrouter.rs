@@ -260,6 +260,11 @@ impl ModelProvider for OpenRouterProvider {
             tool_choice: request.tool_choice.clone(),
             response_format: request.response_format.clone(),
             stream: false,
+            n: request.n,
+            logit_bias: request.logit_bias.clone(),
+            parallel_tool_calls: request.parallel_tool_calls,
+            reasoning_effort: request.reasoning_effort.clone(),
+            prediction: request.prediction.clone(),
         };
 
         let response = self
@@ -330,6 +335,11 @@ impl ModelProvider for OpenRouterProvider {
             tool_choice: request.tool_choice,
             response_format: request.response_format,
             stream: true,
+            n: request.n,
+            logit_bias: request.logit_bias,
+            parallel_tool_calls: request.parallel_tool_calls,
+            reasoning_effort: request.reasoning_effort,
+            prediction: request.prediction,
         };
 
         let response = self
@@ -552,6 +562,48 @@ impl ModelProvider for OpenRouterProvider {
             is_free_tier,
         })
     }
+
+    fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
+        let mut support = super::default_feature_support(self, instance_name);
+
+        for f in &mut support.model_features {
+            match f.name.as_str() {
+                "N Completions" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some(
+                        "Passed through to upstream provider — support depends on model".into(),
+                    );
+                }
+                "Logit Bias" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some(
+                        "Passed through to upstream provider — support depends on model".into(),
+                    );
+                }
+                "Parallel Tool Calls" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some(
+                        "Passed through to upstream provider — support depends on model".into(),
+                    );
+                }
+                "Reasoning Effort" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some(
+                        "Passed through to upstream provider — support depends on model".into(),
+                    );
+                }
+                "Predicted Output" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some(
+                        "Passed through to upstream provider — support depends on model".into(),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        support
+    }
 }
 
 // OpenRouter API types
@@ -579,6 +631,16 @@ struct OpenRouterRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<super::ResponseFormat>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logit_bias: Option<std::collections::HashMap<String, f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prediction: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]

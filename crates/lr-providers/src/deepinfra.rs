@@ -567,6 +567,22 @@ impl ModelProvider for DeepInfraProvider {
         Ok(translation)
     }
 
+    fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
+        let mut support = super::default_feature_support(self, instance_name);
+
+        for f in &mut support.model_features {
+            match f.name.as_str() {
+                "N Completions" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some("Support depends on the model being used".into());
+                }
+                _ => {}
+            }
+        }
+
+        support
+    }
+
     fn supports_image_generation(&self) -> bool {
         true
     }
