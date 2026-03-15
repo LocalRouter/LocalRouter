@@ -2,6 +2,7 @@ import { CheckCircle2, Circle, MinusCircle, ArrowLeftRight, CircleDashed } from 
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import type { SupportLevel } from "@/types/tauri-commands"
@@ -80,23 +81,25 @@ export function SupportLevelBadge({ level, notes, compact = false, featureName }
   const tooltipBody = notes || config.description
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="cursor-help">{badge}</span>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-xs">
-        {notes ? (
-          <p className="text-xs">
-            <span className="font-medium">{config.label}:</span> {notes}
-          </p>
-        ) : (
-          <p className="text-xs">
-            <span className="font-medium">{tooltipTitle}</span>
-            {" \u2014 "}
-            {tooltipBody}
-          </p>
-        )}
-      </TooltipContent>
-    </Tooltip>
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="cursor-help">{badge}</span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs">
+          {notes ? (
+            <p className="text-xs">
+              <span className="font-medium">{config.label}:</span> {notes}
+            </p>
+          ) : (
+            <p className="text-xs">
+              <span className="font-medium">{tooltipTitle}</span>
+              {" \u2014 "}
+              {tooltipBody}
+            </p>
+          )}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
