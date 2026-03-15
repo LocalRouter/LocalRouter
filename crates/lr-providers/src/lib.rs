@@ -1864,6 +1864,133 @@ mod tests {
         assert!(obj.contains_key("completion_tokens"));
         assert!(obj.contains_key("total_tokens"));
     }
+
+    // ==================== Audio Type Tests ====================
+
+    #[test]
+    fn test_audio_transcription_response_serialization() {
+        let response = AudioTranscriptionResponse {
+            text: "Hello world".to_string(),
+            task: Some("transcribe".to_string()),
+            language: Some("en".to_string()),
+            duration: Some(1.5),
+            words: None,
+            segments: None,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["text"], "Hello world");
+        assert_eq!(json["task"], "transcribe");
+        assert_eq!(json["language"], "en");
+        assert_eq!(json["duration"], 1.5);
+    }
+
+    #[test]
+    fn test_audio_transcription_response_deserialization() {
+        let json = r#"{"text": "test", "task": "transcribe", "language": "en", "duration": 2.0}"#;
+        let response: AudioTranscriptionResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.text, "test");
+        assert_eq!(response.task.as_deref(), Some("transcribe"));
+        assert_eq!(response.duration, Some(2.0));
+    }
+
+    #[test]
+    fn test_audio_transcription_response_minimal_deserialization() {
+        let json = r#"{"text": "minimal"}"#;
+        let response: AudioTranscriptionResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.text, "minimal");
+        assert!(response.task.is_none());
+        assert!(response.language.is_none());
+        assert!(response.duration.is_none());
+        assert!(response.words.is_none());
+        assert!(response.segments.is_none());
+    }
+
+    #[test]
+    fn test_transcription_word_roundtrip() {
+        let word = TranscriptionWord {
+            word: "hello".to_string(),
+            start: 0.5,
+            end: 1.0,
+        };
+        let json = serde_json::to_string(&word).unwrap();
+        let parsed: TranscriptionWord = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.word, "hello");
+        assert_eq!(parsed.start, 0.5);
+        assert_eq!(parsed.end, 1.0);
+    }
+
+    #[test]
+    fn test_transcription_segment_roundtrip() {
+        let segment = TranscriptionSegment {
+            id: 0,
+            seek: 0,
+            start: 0.0,
+            end: 5.0,
+            text: "Test".to_string(),
+            tokens: vec![1, 2, 3],
+            temperature: 0.0,
+            avg_logprob: -0.5,
+            compression_ratio: 1.2,
+            no_speech_prob: 0.01,
+        };
+        let json = serde_json::to_string(&segment).unwrap();
+        let parsed: TranscriptionSegment = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.text, "Test");
+        assert_eq!(parsed.tokens.len(), 3);
+        assert_eq!(parsed.no_speech_prob, 0.01);
+    }
+
+    #[test]
+    fn test_speech_request_serialization() {
+        let request = SpeechRequest {
+            model: "tts-1".to_string(),
+            input: "Test".to_string(),
+            voice: "alloy".to_string(),
+            response_format: Some("opus".to_string()),
+            speed: Some(1.5),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["model"], "tts-1");
+        assert_eq!(json["input"], "Test");
+        assert_eq!(json["voice"], "alloy");
+        assert_eq!(json["response_format"], "opus");
+        assert_eq!(json["speed"], 1.5);
+    }
+
+    #[test]
+    fn test_speech_request_optional_omission() {
+        let request = SpeechRequest {
+            model: "tts-1".to_string(),
+            input: "Test".to_string(),
+            voice: "alloy".to_string(),
+            response_format: None,
+            speed: None,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("response_format").is_none());
+        assert!(json.get("speed").is_none());
+    }
+
+    #[test]
+    fn test_capability_enum_has_audio_variants() {
+        let audio = Capability::Audio;
+        let tts = Capability::TextToSpeech;
+        // Verify they serialize correctly
+        let json_audio = serde_json::to_value(&audio).unwrap();
+        let json_tts = serde_json::to_value(&tts).unwrap();
+        assert_eq!(json_audio, "Audio");
+        assert_eq!(json_tts, "TextToSpeech");
+    }
+
+    #[test]
+    fn test_audio_translation_response_is_same_as_transcription() {
+        // AudioTranslationResponse is a type alias for AudioTranscriptionResponse
+        let response: AudioTranslationResponse = serde_json::from_str(
+            r#"{"text": "Hello in English", "language": "en"}"#,
+        )
+        .unwrap();
+        assert_eq!(response.text, "Hello in English");
+    }
 }
 
 // ==================== FEATURE ENDPOINT MATRIX BUILDER ====================

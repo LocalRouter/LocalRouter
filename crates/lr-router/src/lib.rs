@@ -2027,6 +2027,9 @@ impl Router {
                 ))
             })?;
 
+        // Estimate tokens from audio file size (rough: 1 sec audio ~ 25 tokens, ~16KB/sec for common formats)
+        let estimated_tokens = (request.file.len() as u64 / 16_000).max(1) * 25;
+
         let modified_request = AudioTranscriptionRequest {
             model: model.to_string(),
             ..request
@@ -2043,9 +2046,9 @@ impl Router {
             }
         };
 
-        // Record minimal usage for rate limiting
+        // Record estimated usage for rate limiting
         let usage = UsageInfo {
-            input_tokens: 0,
+            input_tokens: estimated_tokens,
             output_tokens: 0,
             cost_usd: 0.0,
         };
@@ -2128,6 +2131,9 @@ impl Router {
                 ))
             })?;
 
+        // Estimate tokens from audio file size (rough: 1 sec audio ~ 25 tokens, ~16KB/sec)
+        let estimated_tokens = (request.file.len() as u64 / 16_000).max(1) * 25;
+
         let modified_request = AudioTranslationRequest {
             model: model.to_string(),
             ..request
@@ -2145,7 +2151,7 @@ impl Router {
         };
 
         let usage = UsageInfo {
-            input_tokens: 0,
+            input_tokens: estimated_tokens,
             output_tokens: 0,
             cost_usd: 0.0,
         };
@@ -2228,6 +2234,9 @@ impl Router {
                 ))
             })?;
 
+        // Estimate tokens from text length (rough: 4 chars per token)
+        let estimated_tokens = (request.input.len() as u64 / 4).max(1);
+
         let modified_request = SpeechRequest {
             model: model.to_string(),
             input: request.input,
@@ -2248,7 +2257,7 @@ impl Router {
         };
 
         let usage = UsageInfo {
-            input_tokens: 0,
+            input_tokens: estimated_tokens,
             output_tokens: 0,
             cost_usd: 0.0,
         };

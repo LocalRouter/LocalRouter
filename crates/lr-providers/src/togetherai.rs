@@ -497,10 +497,14 @@ impl ModelProvider for TogetherAIProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(AppError::Provider(format!(
-                "Together AI API error ({}): {}",
-                status, error_text
-            )));
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                reqwest::StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!(
+                    "Together AI API error ({}): {}",
+                    status, error_text
+                )),
+            });
         }
 
         let transcription: super::AudioTranscriptionResponse = response
@@ -528,10 +532,14 @@ impl ModelProvider for TogetherAIProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(AppError::Provider(format!(
-                "Together AI API error ({}): {}",
-                status, error_text
-            )));
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                reqwest::StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!(
+                    "Together AI API error ({}): {}",
+                    status, error_text
+                )),
+            });
         }
 
         // Determine content type from response headers or requested format

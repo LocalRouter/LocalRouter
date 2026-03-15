@@ -126,8 +126,22 @@ pub async fn audio_transcriptions(
     let model = model
         .ok_or_else(|| ApiErrorResponse::bad_request("model is required").with_param("model"))?;
 
+    if file_data.is_empty() {
+        return Err(ApiErrorResponse::bad_request("file cannot be empty").with_param("file"));
+    }
+
     if model.is_empty() {
         return Err(ApiErrorResponse::bad_request("model cannot be empty").with_param("model"));
+    }
+
+    // Validate temperature if provided
+    if let Some(temp) = temperature {
+        if !(0.0..=1.0).contains(&temp) {
+            return Err(
+                ApiErrorResponse::bad_request("temperature must be between 0 and 1")
+                    .with_param("temperature"),
+            );
+        }
     }
 
     let request_id = format!("audio-{}", Uuid::new_v4());
@@ -277,8 +291,21 @@ pub async fn audio_translations(
     let model = model
         .ok_or_else(|| ApiErrorResponse::bad_request("model is required").with_param("model"))?;
 
+    if file_data.is_empty() {
+        return Err(ApiErrorResponse::bad_request("file cannot be empty").with_param("file"));
+    }
+
     if model.is_empty() {
         return Err(ApiErrorResponse::bad_request("model cannot be empty").with_param("model"));
+    }
+
+    if let Some(temp) = temperature {
+        if !(0.0..=1.0).contains(&temp) {
+            return Err(
+                ApiErrorResponse::bad_request("temperature must be between 0 and 1")
+                    .with_param("temperature"),
+            );
+        }
     }
 
     let request_id = format!("audio-{}", Uuid::new_v4());
@@ -430,7 +457,7 @@ fn validate_speech_request(request: &SpeechRequest) -> ApiResult<()> {
         return Err(ApiErrorResponse::bad_request("input is required").with_param("input"));
     }
 
-    if request.input.len() > 4096 {
+    if request.input.chars().count() > 4096 {
         return Err(
             ApiErrorResponse::bad_request("input must be 4096 characters or less")
                 .with_param("input"),
@@ -469,113 +496,376 @@ fn validate_speech_request(request: &SpeechRequest) -> ApiResult<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_validate_speech_request_valid() {
-        let request = SpeechRequest {
-            model: "tts-1".to_string(),
-            input: "Hello, world!".to_string(),
-            voice: "alloy".to_string(),
+    // ==================== Speech Validation Tests ====================
+
+    fn make_speech_request(model: &str, input: &str, voice: &str) -> SpeechRequest {
+        SpeechRequest {
+            model: model.to_string(),
+            input: input.to_string(),
+            voice: voice.to_string(),
             response_format: None,
             speed: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_speech_request_valid() {
+        assert!(validate_speech_request(&make_speech_request("tts-1", "Hello, world!", "alloy")).is_ok());
+    }
+
+    #[test]
+    fn test_validate_speech_request_all_fields() {
+        let request = SpeechRequest {
+            model: "tts-1-hd".to_string(),
+            input: "Test input".to_string(),
+            voice: "nova".to_string(),
+            response_format: Some("opus".to_string()),
+            speed: Some(1.5),
         };
         assert!(validate_speech_request(&request).is_ok());
     }
 
     #[test]
     fn test_validate_speech_request_empty_model() {
-        let request = SpeechRequest {
-            model: "".to_string(),
-            input: "Hello".to_string(),
-            voice: "alloy".to_string(),
-            response_format: None,
-            speed: None,
-        };
-        assert!(validate_speech_request(&request).is_err());
+        assert!(validate_speech_request(&make_speech_request("", "Hello", "alloy")).is_err());
     }
 
     #[test]
     fn test_validate_speech_request_empty_input() {
-        let request = SpeechRequest {
-            model: "tts-1".to_string(),
-            input: "".to_string(),
-            voice: "alloy".to_string(),
-            response_format: None,
-            speed: None,
-        };
+        assert!(validate_speech_request(&make_speech_request("tts-1", "", "alloy")).is_err());
+    }
+
+    #[test]
+    fn test_validate_speech_request_input_too_long_ascii() {
+        let request = make_speech_request("tts-1", &"a".repeat(4097), "alloy");
         assert!(validate_speech_request(&request).is_err());
     }
 
     #[test]
-    fn test_validate_speech_request_input_too_long() {
-        let request = SpeechRequest {
-            model: "tts-1".to_string(),
-            input: "a".repeat(4097),
-            voice: "alloy".to_string(),
-            response_format: None,
-            speed: None,
-        };
+    fn test_validate_speech_request_input_exactly_4096_chars() {
+        let request = make_speech_request("tts-1", &"a".repeat(4096), "alloy");
+        assert!(validate_speech_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_speech_request_input_multibyte_under_limit() {
+        // 2000 multi-byte chars (each char is 3 bytes = 6000 bytes, but only 2000 chars)
+        let input: String = std::iter::repeat('\u{1F600}').take(2000).collect(); // emoji chars
+        let request = make_speech_request("tts-1", &input, "alloy");
+        assert!(validate_speech_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_speech_request_input_multibyte_over_limit() {
+        // 4097 multi-byte chars — over limit by character count
+        let input: String = std::iter::repeat('\u{00E9}').take(4097).collect(); // é chars
+        let request = make_speech_request("tts-1", &input, "alloy");
         assert!(validate_speech_request(&request).is_err());
     }
 
     #[test]
     fn test_validate_speech_request_empty_voice() {
-        let request = SpeechRequest {
-            model: "tts-1".to_string(),
-            input: "Hello".to_string(),
-            voice: "".to_string(),
-            response_format: None,
-            speed: None,
-        };
-        assert!(validate_speech_request(&request).is_err());
+        assert!(validate_speech_request(&make_speech_request("tts-1", "Hello", "")).is_err());
     }
 
     #[test]
     fn test_validate_speech_request_invalid_format() {
-        let request = SpeechRequest {
-            model: "tts-1".to_string(),
-            input: "Hello".to_string(),
-            voice: "alloy".to_string(),
-            response_format: Some("invalid".to_string()),
-            speed: None,
-        };
+        let mut request = make_speech_request("tts-1", "Hello", "alloy");
+        request.response_format = Some("invalid".to_string());
         assert!(validate_speech_request(&request).is_err());
     }
 
     #[test]
     fn test_validate_speech_request_valid_formats() {
         for format in ["mp3", "opus", "aac", "flac", "wav", "pcm"] {
-            let request = SpeechRequest {
-                model: "tts-1".to_string(),
-                input: "Hello".to_string(),
-                voice: "alloy".to_string(),
-                response_format: Some(format.to_string()),
-                speed: None,
-            };
-            assert!(validate_speech_request(&request).is_ok());
+            let mut request = make_speech_request("tts-1", "Hello", "alloy");
+            request.response_format = Some(format.to_string());
+            assert!(
+                validate_speech_request(&request).is_ok(),
+                "format '{}' should be valid",
+                format
+            );
         }
     }
 
     #[test]
-    fn test_validate_speech_request_speed_bounds() {
-        let mut request = SpeechRequest {
-            model: "tts-1".to_string(),
-            input: "Hello".to_string(),
-            voice: "alloy".to_string(),
-            response_format: None,
-            speed: Some(0.1),
-        };
+    fn test_validate_speech_request_speed_too_low() {
+        let mut request = make_speech_request("tts-1", "Hello", "alloy");
+        request.speed = Some(0.1);
+        assert!(validate_speech_request(&request).is_err());
+
+        request.speed = Some(0.24);
+        assert!(validate_speech_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_speech_request_speed_too_high() {
+        let mut request = make_speech_request("tts-1", "Hello", "alloy");
+        request.speed = Some(4.01);
         assert!(validate_speech_request(&request).is_err());
 
         request.speed = Some(5.0);
         assert!(validate_speech_request(&request).is_err());
+    }
 
-        request.speed = Some(1.0);
-        assert!(validate_speech_request(&request).is_ok());
+    #[test]
+    fn test_validate_speech_request_speed_boundaries() {
+        let mut request = make_speech_request("tts-1", "Hello", "alloy");
 
         request.speed = Some(0.25);
         assert!(validate_speech_request(&request).is_ok());
 
         request.speed = Some(4.0);
         assert!(validate_speech_request(&request).is_ok());
+
+        request.speed = Some(1.0);
+        assert!(validate_speech_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_speech_request_speed_none_is_valid() {
+        let request = make_speech_request("tts-1", "Hello", "alloy");
+        assert!(request.speed.is_none());
+        assert!(validate_speech_request(&request).is_ok());
+    }
+
+    // ==================== Audio Type Serialization Tests ====================
+
+    #[test]
+    fn test_speech_request_json_serialization() {
+        let request = SpeechRequest {
+            model: "tts-1".to_string(),
+            input: "Hello".to_string(),
+            voice: "alloy".to_string(),
+            response_format: Some("mp3".to_string()),
+            speed: Some(1.0),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["model"], "tts-1");
+        assert_eq!(json["input"], "Hello");
+        assert_eq!(json["voice"], "alloy");
+        assert_eq!(json["response_format"], "mp3");
+        assert_eq!(json["speed"], 1.0);
+    }
+
+    #[test]
+    fn test_speech_request_json_optional_fields_omitted() {
+        let request = SpeechRequest {
+            model: "tts-1".to_string(),
+            input: "Hello".to_string(),
+            voice: "alloy".to_string(),
+            response_format: None,
+            speed: None,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("response_format").is_none());
+        assert!(json.get("speed").is_none());
+    }
+
+    #[test]
+    fn test_speech_request_json_deserialization() {
+        let json = r#"{"model": "tts-1", "input": "Hi", "voice": "echo"}"#;
+        let request: SpeechRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.model, "tts-1");
+        assert_eq!(request.input, "Hi");
+        assert_eq!(request.voice, "echo");
+        assert!(request.response_format.is_none());
+        assert!(request.speed.is_none());
+    }
+
+    #[test]
+    fn test_speech_request_json_deserialization_with_all_fields() {
+        let json = r#"{"model": "tts-1-hd", "input": "Hi", "voice": "nova", "response_format": "opus", "speed": 2.0}"#;
+        let request: SpeechRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.model, "tts-1-hd");
+        assert_eq!(request.voice, "nova");
+        assert_eq!(request.response_format.as_deref(), Some("opus"));
+        assert_eq!(request.speed, Some(2.0));
+    }
+
+    #[test]
+    fn test_transcription_response_json_serialization() {
+        let response = AudioTranscriptionResponse {
+            text: "Hello world".to_string(),
+            task: Some("transcribe".to_string()),
+            language: Some("en".to_string()),
+            duration: Some(1.5),
+            words: None,
+            segments: None,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["text"], "Hello world");
+        assert_eq!(json["task"], "transcribe");
+        assert_eq!(json["language"], "en");
+        assert_eq!(json["duration"], 1.5);
+        assert!(json.get("words").is_none()); // skip_serializing_if
+        assert!(json.get("segments").is_none());
+    }
+
+    #[test]
+    fn test_transcription_response_minimal_json() {
+        let response = AudioTranscriptionResponse {
+            text: "Hello".to_string(),
+            task: None,
+            language: None,
+            duration: None,
+            words: None,
+            segments: None,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["text"], "Hello");
+        // All optional fields should be omitted
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.len(), 1, "Only 'text' field should be present");
+    }
+
+    #[test]
+    fn test_transcription_response_with_words() {
+        let response = AudioTranscriptionResponse {
+            text: "Hello world".to_string(),
+            task: None,
+            language: None,
+            duration: None,
+            words: Some(vec![
+                lr_providers::TranscriptionWord {
+                    word: "Hello".to_string(),
+                    start: 0.0,
+                    end: 0.5,
+                },
+                lr_providers::TranscriptionWord {
+                    word: "world".to_string(),
+                    start: 0.5,
+                    end: 1.0,
+                },
+            ]),
+            segments: None,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        let words = json["words"].as_array().unwrap();
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0]["word"], "Hello");
+        assert_eq!(words[0]["start"], 0.0);
+        assert_eq!(words[1]["word"], "world");
+        assert_eq!(words[1]["end"], 1.0);
+    }
+
+    #[test]
+    fn test_transcription_response_deserialization_from_provider() {
+        // Simulate what a provider API would return
+        let json = r#"{
+            "text": "Bonjour le monde",
+            "task": "transcribe",
+            "language": "fr",
+            "duration": 2.35,
+            "words": [
+                {"word": "Bonjour", "start": 0.0, "end": 0.8},
+                {"word": "le", "start": 0.8, "end": 1.0},
+                {"word": "monde", "start": 1.0, "end": 2.35}
+            ]
+        }"#;
+        let response: lr_providers::AudioTranscriptionResponse =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(response.text, "Bonjour le monde");
+        assert_eq!(response.language.as_deref(), Some("fr"));
+        assert_eq!(response.duration, Some(2.35));
+        assert_eq!(response.words.as_ref().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_transcription_response_deserialization_minimal() {
+        // Some providers return minimal JSON
+        let json = r#"{"text": "Hello"}"#;
+        let response: lr_providers::AudioTranscriptionResponse =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(response.text, "Hello");
+        assert!(response.task.is_none());
+        assert!(response.language.is_none());
+        assert!(response.duration.is_none());
+    }
+
+    // ==================== Provider Audio Type Tests ====================
+
+    #[test]
+    fn test_audio_transcription_request_fields() {
+        let req = lr_providers::AudioTranscriptionRequest {
+            file: vec![0u8; 100],
+            file_name: "test.mp3".to_string(),
+            model: "whisper-1".to_string(),
+            language: Some("en".to_string()),
+            prompt: Some("context".to_string()),
+            response_format: Some("verbose_json".to_string()),
+            temperature: Some(0.5),
+            timestamp_granularities: Some(vec!["word".to_string(), "segment".to_string()]),
+        };
+        assert_eq!(req.file.len(), 100);
+        assert_eq!(req.file_name, "test.mp3");
+        assert_eq!(req.model, "whisper-1");
+        assert_eq!(req.language.as_deref(), Some("en"));
+        assert_eq!(req.timestamp_granularities.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_audio_translation_request_no_language_field() {
+        let req = lr_providers::AudioTranslationRequest {
+            file: vec![0u8; 50],
+            file_name: "audio.wav".to_string(),
+            model: "whisper-1".to_string(),
+            prompt: None,
+            response_format: None,
+            temperature: None,
+        };
+        // AudioTranslationRequest has no language field — translation always outputs English
+        assert_eq!(req.model, "whisper-1");
+    }
+
+    #[test]
+    fn test_speech_request_provider_type() {
+        let req = lr_providers::SpeechRequest {
+            model: "tts-1".to_string(),
+            input: "Hello".to_string(),
+            voice: "alloy".to_string(),
+            response_format: None,
+            speed: None,
+        };
+        // Provider SpeechRequest should be serializable (used as JSON body)
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["model"], "tts-1");
+        assert_eq!(json["voice"], "alloy");
+    }
+
+    // ==================== Provider Feature Support Tests ====================
+
+    #[test]
+    fn test_transcription_word_serialization() {
+        let word = lr_providers::TranscriptionWord {
+            word: "hello".to_string(),
+            start: 0.0,
+            end: 0.5,
+        };
+        let json = serde_json::to_value(&word).unwrap();
+        assert_eq!(json["word"], "hello");
+        assert_eq!(json["start"], 0.0);
+        assert_eq!(json["end"], 0.5);
+    }
+
+    #[test]
+    fn test_transcription_segment_serialization() {
+        let segment = lr_providers::TranscriptionSegment {
+            id: 0,
+            seek: 0,
+            start: 0.0,
+            end: 5.0,
+            text: "Hello world".to_string(),
+            tokens: vec![1, 2, 3],
+            temperature: 0.0,
+            avg_logprob: -0.5,
+            compression_ratio: 1.2,
+            no_speech_prob: 0.01,
+        };
+        let json = serde_json::to_value(&segment).unwrap();
+        assert_eq!(json["id"], 0);
+        assert_eq!(json["text"], "Hello world");
+        assert_eq!(json["tokens"].as_array().unwrap().len(), 3);
+        assert_eq!(json["no_speech_prob"], 0.01);
     }
 }

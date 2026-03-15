@@ -490,10 +490,13 @@ impl ModelProvider for DeepInfraProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(AppError::Provider(format!(
-                "DeepInfra API error ({}): {}",
-                status, error_text
-            )));
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                reqwest::StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => {
+                    AppError::Provider(format!("DeepInfra API error ({}): {}", status, error_text))
+                }
+            });
         }
 
         let transcription: super::AudioTranscriptionResponse = response
@@ -547,10 +550,13 @@ impl ModelProvider for DeepInfraProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(AppError::Provider(format!(
-                "DeepInfra API error ({}): {}",
-                status, error_text
-            )));
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                reqwest::StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => {
+                    AppError::Provider(format!("DeepInfra API error ({}): {}", status, error_text))
+                }
+            });
         }
 
         let translation: super::AudioTranslationResponse = response
