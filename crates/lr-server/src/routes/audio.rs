@@ -11,13 +11,15 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
+use chrono::Utc;
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access, get_enabled_client};
+use super::helpers::{check_llm_access, get_enabled_client, get_enabled_client_from_manager};
+use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
-use crate::state::{AppState, AuthContext};
-use crate::types::{AudioTranscriptionResponse, SpeechRequest};
+use crate::state::{AppState, AuthContext, GenerationDetails};
+use crate::types::{AudioTranscriptionResponse, SpeechRequest, TokenUsage};
 
 /// POST /v1/audio/transcriptions
 /// Transcribe audio to text
@@ -38,6 +40,7 @@ use crate::types::{AudioTranscriptionResponse, SpeechRequest};
 pub async fn audio_transcriptions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     mut multipart: axum::extract::Multipart,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
@@ -144,7 +147,11 @@ pub async fn audio_transcriptions(
         }
     }
 
+    // Validate client provider access
+    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &model).await?;
+
     let request_id = format!("audio-{}", Uuid::new_v4());
+    let created_at = Utc::now();
     let started_at = Instant::now();
 
     let provider_request = lr_providers::AudioTranscriptionRequest {
@@ -178,15 +185,94 @@ pub async fn audio_transcriptions(
                 &strategy_id,
                 latency,
             );
+            if let Err(log_err) = state.access_logger.log_failure(
+                &auth.api_key_id,
+                "unknown",
+                &model_for_log,
+                latency,
+                &request_id,
+                502,
+            ) {
+                tracing::warn!("Failed to write access log: {}", log_err);
+            }
             tracing::error!("Audio transcription failed: {}", e);
             ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
         })?;
 
-    let latency_ms = Instant::now().duration_since(started_at).as_millis() as u64;
+    let completed_at = Instant::now();
+    let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
+
+    // Extract provider from model string for metrics
+    let provider = model_for_log
+        .split('/')
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
+
+    let strategy_id = state
+        .client_manager
+        .get_client(&auth.api_key_id)
+        .map(|c| c.strategy_id.clone())
+        .unwrap_or_else(|| "default".to_string());
+
+    // Record success metrics
+    state
+        .metrics_collector
+        .record_success(&lr_monitoring::metrics::RequestMetrics {
+            api_key_name: &auth.api_key_id,
+            provider: &provider,
+            model: &model_for_log,
+            strategy_id: &strategy_id,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+            latency_ms,
+        });
+
+    // Log to access log
+    if let Err(e) = state.access_logger.log_success(
+        &auth.api_key_id,
+        &provider,
+        &model_for_log,
+        0,
+        0,
+        0.0,
+        latency_ms,
+        &request_id,
+    ) {
+        tracing::warn!("Failed to write access log: {}", e);
+    }
+
+    // Record generation for tracking
+    let generation_details = GenerationDetails {
+        id: request_id.clone(),
+        model: model_for_log.clone(),
+        provider: provider.clone(),
+        created_at,
+        finish_reason: "stop".to_string(),
+        tokens: TokenUsage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        },
+        cost: None,
+        started_at,
+        completed_at,
+        provider_health: None,
+        api_key_id: auth.api_key_id,
+        user: None,
+        stream: false,
+    };
+    state
+        .generation_tracker
+        .record(generation_details.id.clone(), generation_details);
 
     tracing::info!(
-        "Audio transcription completed: id={}, latency={}ms",
+        "Audio transcription completed: id={}, model={}, latency={}ms",
         request_id,
+        model_for_log,
         latency_ms
     );
 
@@ -221,6 +307,7 @@ pub async fn audio_transcriptions(
 pub async fn audio_translations(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     mut multipart: axum::extract::Multipart,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
@@ -308,7 +395,11 @@ pub async fn audio_translations(
         }
     }
 
+    // Validate client provider access
+    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &model).await?;
+
     let request_id = format!("audio-{}", Uuid::new_v4());
+    let created_at = Utc::now();
     let started_at = Instant::now();
 
     let provider_request = lr_providers::AudioTranslationRequest {
@@ -340,15 +431,90 @@ pub async fn audio_translations(
                 &strategy_id,
                 latency,
             );
+            if let Err(log_err) = state.access_logger.log_failure(
+                &auth.api_key_id,
+                "unknown",
+                &model_for_log,
+                latency,
+                &request_id,
+                502,
+            ) {
+                tracing::warn!("Failed to write access log: {}", log_err);
+            }
             tracing::error!("Audio translation failed: {}", e);
             ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
         })?;
 
-    let latency_ms = Instant::now().duration_since(started_at).as_millis() as u64;
+    let completed_at = Instant::now();
+    let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
+
+    let provider = model_for_log
+        .split('/')
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
+
+    let strategy_id = state
+        .client_manager
+        .get_client(&auth.api_key_id)
+        .map(|c| c.strategy_id.clone())
+        .unwrap_or_else(|| "default".to_string());
+
+    state
+        .metrics_collector
+        .record_success(&lr_monitoring::metrics::RequestMetrics {
+            api_key_name: &auth.api_key_id,
+            provider: &provider,
+            model: &model_for_log,
+            strategy_id: &strategy_id,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+            latency_ms,
+        });
+
+    if let Err(e) = state.access_logger.log_success(
+        &auth.api_key_id,
+        &provider,
+        &model_for_log,
+        0,
+        0,
+        0.0,
+        latency_ms,
+        &request_id,
+    ) {
+        tracing::warn!("Failed to write access log: {}", e);
+    }
+
+    let generation_details = GenerationDetails {
+        id: request_id.clone(),
+        model: model_for_log.clone(),
+        provider: provider.clone(),
+        created_at,
+        finish_reason: "stop".to_string(),
+        tokens: TokenUsage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        },
+        cost: None,
+        started_at,
+        completed_at,
+        provider_health: None,
+        api_key_id: auth.api_key_id,
+        user: None,
+        stream: false,
+    };
+    state
+        .generation_tracker
+        .record(generation_details.id.clone(), generation_details);
 
     tracing::info!(
-        "Audio translation completed: id={}, latency={}ms",
+        "Audio translation completed: id={}, model={}, latency={}ms",
         request_id,
+        model_for_log,
         latency_ms
     );
 
@@ -384,6 +550,7 @@ pub async fn audio_translations(
 pub async fn audio_speech(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     Json(request): Json<SpeechRequest>,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
@@ -397,7 +564,12 @@ pub async fn audio_speech(
     // Validate request
     validate_speech_request(&request)?;
 
+    // Validate client provider access
+    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request.model)
+        .await?;
+
     let request_id = format!("tts-{}", Uuid::new_v4());
+    let created_at = Utc::now();
     let started_at = Instant::now();
 
     let provider_request = lr_providers::SpeechRequest {
@@ -426,11 +598,89 @@ pub async fn audio_speech(
                 &strategy_id,
                 latency,
             );
+            if let Err(log_err) = state.access_logger.log_failure(
+                &auth.api_key_id,
+                "unknown",
+                &request.model,
+                latency,
+                &request_id,
+                502,
+            ) {
+                tracing::warn!("Failed to write access log: {}", log_err);
+            }
             tracing::error!("Speech generation failed: {}", e);
             ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
         })?;
 
-    let latency_ms = Instant::now().duration_since(started_at).as_millis() as u64;
+    let completed_at = Instant::now();
+    let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
+
+    let provider = request
+        .model
+        .split('/')
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
+
+    let strategy_id = state
+        .client_manager
+        .get_client(&auth.api_key_id)
+        .map(|c| c.strategy_id.clone())
+        .unwrap_or_else(|| "default".to_string());
+
+    // Estimate tokens from input text length (TTS: ~4 chars per token)
+    let estimated_tokens = (request.input.len() as u64 / 4).max(1);
+
+    state
+        .metrics_collector
+        .record_success(&lr_monitoring::metrics::RequestMetrics {
+            api_key_name: &auth.api_key_id,
+            provider: &provider,
+            model: &request.model,
+            strategy_id: &strategy_id,
+            input_tokens: estimated_tokens,
+            output_tokens: 0,
+            cost_usd: 0.0,
+            latency_ms,
+        });
+
+    if let Err(e) = state.access_logger.log_success(
+        &auth.api_key_id,
+        &provider,
+        &request.model,
+        estimated_tokens,
+        0,
+        0.0,
+        latency_ms,
+        &request_id,
+    ) {
+        tracing::warn!("Failed to write access log: {}", e);
+    }
+
+    let generation_details = GenerationDetails {
+        id: request_id.clone(),
+        model: request.model.clone(),
+        provider: provider.clone(),
+        created_at,
+        finish_reason: "stop".to_string(),
+        tokens: TokenUsage {
+            prompt_tokens: estimated_tokens as u32,
+            completion_tokens: 0,
+            total_tokens: estimated_tokens as u32,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        },
+        cost: None,
+        started_at,
+        completed_at,
+        provider_health: None,
+        api_key_id: auth.api_key_id,
+        user: None,
+        stream: false,
+    };
+    state
+        .generation_tracker
+        .record(generation_details.id.clone(), generation_details);
 
     tracing::info!(
         "Speech generation completed: id={}, size={}B, latency={}ms",
@@ -445,6 +695,73 @@ pub async fn audio_speech(
         .header(header::TRANSFER_ENCODING, "chunked")
         .body(Body::from(response.audio_data))
         .unwrap())
+}
+
+/// Validate that the client has access to the requested audio model's provider
+async fn validate_client_provider_access(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+    model: &str,
+) -> ApiResult<()> {
+    let Some(client_ctx) = client_context else {
+        return Ok(());
+    };
+
+    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
+
+    // Extract provider and model_id from model string
+    let (provider, model_id) = if let Some((prov, m)) = model.split_once('/') {
+        (prov.to_string(), m.to_string())
+    } else {
+        // No provider specified — find which provider has this model
+        let all_models = state
+            .provider_registry
+            .list_all_models()
+            .await
+            .map_err(|e| {
+                ApiErrorResponse::internal_error(format!("Failed to list models: {}", e))
+            })?;
+
+        let matching_models: Vec<_> = all_models
+            .iter()
+            .filter(|m| m.id.eq_ignore_ascii_case(model))
+            .collect();
+
+        let matching_model = matching_models
+            .iter()
+            .find(|m| {
+                client
+                    .model_permissions
+                    .resolve_model(&m.provider, &m.id)
+                    .is_enabled()
+            })
+            .or(matching_models.first())
+            .ok_or_else(|| {
+                ApiErrorResponse::bad_request(format!("Model not found: {}", model))
+                    .with_param("model")
+            })?;
+
+        (matching_model.provider.clone(), matching_model.id.clone())
+    };
+
+    let permission_state = client.model_permissions.resolve_model(&provider, &model_id);
+
+    if !permission_state.is_enabled() {
+        tracing::warn!(
+            "Client {} attempted to access unauthorized audio model: {}/{}",
+            client.id,
+            provider,
+            model_id
+        );
+
+        return Err(ApiErrorResponse::forbidden(format!(
+            "Access denied: Client is not authorized to use model '{}/{}'. Contact administrator to grant access.",
+            provider, model_id
+        ))
+        .with_param("model"));
+    }
+
+    Ok(())
 }
 
 /// Validate speech request
@@ -510,7 +827,10 @@ mod tests {
 
     #[test]
     fn test_validate_speech_request_valid() {
-        assert!(validate_speech_request(&make_speech_request("tts-1", "Hello, world!", "alloy")).is_ok());
+        assert!(
+            validate_speech_request(&make_speech_request("tts-1", "Hello, world!", "alloy"))
+                .is_ok()
+        );
     }
 
     #[test]
