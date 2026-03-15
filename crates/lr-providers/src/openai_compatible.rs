@@ -520,17 +520,23 @@ impl ModelProvider for OpenAICompatibleProvider {
     fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
         let mut support = super::default_feature_support(self, instance_name);
 
-        // OpenAI-compatible providers — support depends on upstream server
+        // OpenAI-compatible providers — support depends on upstream server capabilities
         for f in &mut support.model_features {
             if f.support == super::SupportLevel::NotSupported {
                 f.support = super::SupportLevel::Partial;
-                f.notes = Some("Depends on upstream server".into());
+                f.notes = Some(format!(
+                    "May be available depending on upstream server; {} is not guaranteed by generic OpenAI-compatible API",
+                    f.name
+                ));
             }
         }
         for e in &mut support.endpoints {
             if e.support == super::SupportLevel::NotImplemented {
                 e.support = super::SupportLevel::Partial;
-                e.notes = Some("Depends on upstream server".into());
+                e.notes = Some(format!(
+                    "May be available depending on upstream server; {} is not guaranteed by generic OpenAI-compatible API",
+                    e.name
+                ));
             }
         }
 

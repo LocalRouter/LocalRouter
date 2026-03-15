@@ -27,7 +27,7 @@ export function ProviderFeatureTable({ title, items }: ProviderFeatureTableProps
               className="flex items-center justify-between px-3 py-1.5 text-sm"
             >
               <span className="truncate mr-2">{item.name}</span>
-              <SupportLevelBadge level={item.support} notes={item.notes} />
+              <SupportLevelBadge level={item.support} notes={item.notes} featureName={item.name} />
             </div>
           ))}
         </div>
@@ -73,22 +73,26 @@ export function MatrixGrid({ title, description, columnHeaders, rows }: MatrixGr
               </tr>
             </thead>
             <tbody className="divide-y">
-              {rows.map((row) => (
-                <tr key={getRowName(row)} className="hover:bg-muted/30">
-                  <td className="px-3 py-1.5 font-medium whitespace-nowrap">
-                    {getRowName(row)}
-                  </td>
-                  {row.cells.map((cell: MatrixCell, i: number) => (
-                    <td key={i} className="px-2 py-1.5 text-center">
-                      <SupportLevelBadge
-                        level={cell.support}
-                        notes={cell.notes}
-                        compact
-                      />
+              {rows.map((row) => {
+                const rowName = getRowName(row)
+                return (
+                  <tr key={rowName} className="hover:bg-muted/30">
+                    <td className="px-3 py-1.5 font-medium whitespace-nowrap">
+                      {rowName}
                     </td>
-                  ))}
-                </tr>
-              ))}
+                    {row.cells.map((cell: MatrixCell, i: number) => (
+                      <td key={i} className="px-2 py-1.5 text-center">
+                        <SupportLevelBadge
+                          level={cell.support}
+                          notes={cell.notes}
+                          featureName={`${rowName} \u00d7 ${columnHeaders[i]}`}
+                          compact
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>

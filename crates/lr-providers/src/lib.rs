@@ -356,19 +356,19 @@ pub fn default_feature_support(
             name: "Chat Completions".into(),
             endpoint: "/v1/chat/completions".into(),
             support: SupportLevel::Supported,
-            notes: None,
+            notes: Some("Send messages and receive AI responses".into()),
         },
         EndpointSupport {
             name: "Completions (legacy)".into(),
             endpoint: "/v1/completions".into(),
             support: SupportLevel::Supported,
-            notes: Some("Converted to chat completions internally".into()),
+            notes: Some("Converted to chat completions internally by LocalRouter".into()),
         },
         EndpointSupport {
             name: "Streaming".into(),
             endpoint: "/v1/chat/completions".into(),
             support: SupportLevel::Supported,
-            notes: None,
+            notes: Some("Server-sent events for real-time token streaming".into()),
         },
         EndpointSupport {
             name: "Embeddings".into(),
@@ -378,7 +378,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if has_embeddings {
+                "Generate vector embeddings for text".into()
+            } else {
+                "This provider does not offer an embeddings API".into()
+            }),
         },
         EndpointSupport {
             name: "Image Generation".into(),
@@ -388,7 +392,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if has_images {
+                "Generate images from text prompts".into()
+            } else {
+                "This provider does not offer image generation".into()
+            }),
         },
         EndpointSupport {
             name: "Audio Transcription".into(),
@@ -398,11 +406,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotImplemented
             },
-            notes: if provider.supports_transcription() {
-                None
+            notes: Some(if provider.supports_transcription() {
+                "Speech-to-text transcription (e.g., Whisper)".into()
             } else {
-                Some("Planned — see plan/2026-03-15-API-AUDIO.md".into())
-            },
+                "Audio transcription endpoint not yet available in LocalRouter".into()
+            }),
         },
         EndpointSupport {
             name: "Audio Speech (TTS)".into(),
@@ -412,35 +420,38 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotImplemented
             },
-            notes: if provider.supports_speech() {
-                None
+            notes: Some(if provider.supports_speech() {
+                "Text-to-speech audio generation".into()
             } else {
-                Some("Planned — see plan/2026-03-15-API-AUDIO.md".into())
-            },
+                "Text-to-speech endpoint not yet available in LocalRouter".into()
+            }),
         },
         EndpointSupport {
             name: "Moderations".into(),
             endpoint: "/v1/moderations".into(),
             support: SupportLevel::NotImplemented,
-            notes: Some("Planned — see plan/2026-03-15-API-MODERATIONS.md".into()),
+            notes: Some("Content moderation endpoint not yet available in LocalRouter".into()),
         },
         EndpointSupport {
             name: "Responses API".into(),
             endpoint: "/v1/responses".into(),
             support: SupportLevel::NotImplemented,
-            notes: Some("Planned — see plan/2026-03-15-API-RESPONSES.md".into()),
+            notes: Some("OpenAI Responses API not yet available in LocalRouter".into()),
         },
         EndpointSupport {
             name: "Batch Processing".into(),
             endpoint: "/v1/batches".into(),
             support: SupportLevel::NotImplemented,
-            notes: Some("Planned — see plan/2026-03-15-API-FILES-BATCHES.md".into()),
+            notes: Some("Asynchronous batch processing not yet available in LocalRouter".into()),
         },
         EndpointSupport {
             name: "Realtime (WebSocket)".into(),
             endpoint: "/v1/realtime".into(),
             support: SupportLevel::NotImplemented,
-            notes: Some("Planned — see plan/2026-03-15-API-REALTIME.md".into()),
+            notes: Some(
+                "WebSocket-based real-time audio/text streaming not yet available in LocalRouter"
+                    .into(),
+            ),
         },
     ];
 
@@ -452,7 +463,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if provider.supports_feature("function_calling") {
+                "Models can call functions/tools defined in the request".into()
+            } else {
+                "This provider's models do not support function/tool calling".into()
+            }),
         },
         FeatureSupport {
             name: "Vision".into(),
@@ -461,7 +476,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if provider.supports_feature("vision") {
+                "Models can process images alongside text".into()
+            } else {
+                "This provider's models do not accept image inputs".into()
+            }),
         },
         FeatureSupport {
             name: "Structured Outputs".into(),
@@ -470,7 +489,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if provider.supports_feature("structured_outputs") {
+                "Enforce JSON schema compliance in model responses".into()
+            } else {
+                "This provider does not support strict JSON schema enforcement".into()
+            }),
         },
         FeatureSupport {
             name: "JSON Mode".into(),
@@ -479,7 +502,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if provider.get_feature_adapter("json_mode").is_some() {
+                "Force model to output valid JSON".into()
+            } else {
+                "This provider does not support JSON-only output mode".into()
+            }),
         },
         FeatureSupport {
             name: "Log Probabilities".into(),
@@ -488,7 +515,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if provider.supports_feature("logprobs") {
+                "Return per-token log probabilities with responses".into()
+            } else {
+                "This provider does not expose token log probabilities".into()
+            }),
         },
         FeatureSupport {
             name: "Reasoning Tokens".into(),
@@ -497,7 +528,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if provider.supports_feature("reasoning_tokens") {
+                "Models use internal reasoning tokens before answering".into()
+            } else {
+                "This provider does not support reasoning token models".into()
+            }),
         },
         FeatureSupport {
             name: "Extended Thinking".into(),
@@ -506,7 +541,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if provider.supports_feature("extended_thinking") {
+                "Configurable thinking budget for deep reasoning".into()
+            } else {
+                "This provider does not support extended thinking".into()
+            }),
         },
         FeatureSupport {
             name: "Thinking Level".into(),
@@ -515,7 +554,11 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if provider.supports_feature("thinking_level") {
+                "Adjustable thinking intensity (low/medium/high)".into()
+            } else {
+                "This provider does not support thinking level control".into()
+            }),
         },
         FeatureSupport {
             name: "Prompt Caching".into(),
@@ -524,7 +567,51 @@ pub fn default_feature_support(
             } else {
                 SupportLevel::NotSupported
             },
-            notes: None,
+            notes: Some(if provider.supports_feature("prompt_caching") {
+                "Cache repeated prompt prefixes for faster/cheaper requests".into()
+            } else {
+                "This provider does not support server-side prompt caching".into()
+            }),
+        },
+        // Chat completion parameter support
+        FeatureSupport {
+            name: "N Completions".into(),
+            support: SupportLevel::NotSupported,
+            notes: Some("Generate multiple completion choices per request (n parameter)".into()),
+        },
+        FeatureSupport {
+            name: "Logit Bias".into(),
+            support: SupportLevel::NotSupported,
+            notes: Some("Modify token likelihoods by token ID".into()),
+        },
+        FeatureSupport {
+            name: "Parallel Tool Calls".into(),
+            support: SupportLevel::NotSupported,
+            notes: Some("Allow model to make multiple tool calls concurrently".into()),
+        },
+        FeatureSupport {
+            name: "Reasoning Effort".into(),
+            support: SupportLevel::NotSupported,
+            notes: Some(
+                "Control reasoning intensity (low/medium/high) for reasoning models".into(),
+            ),
+        },
+        FeatureSupport {
+            name: "Predicted Output".into(),
+            support: SupportLevel::NotSupported,
+            notes: Some(
+                "Supply predicted output for faster generation (speculative decoding)".into(),
+            ),
+        },
+        FeatureSupport {
+            name: "Service Tier".into(),
+            support: SupportLevel::NotSupported,
+            notes: Some("Select latency tier for request processing".into()),
+        },
+        FeatureSupport {
+            name: "Audio Output".into(),
+            support: SupportLevel::NotSupported,
+            notes: Some("Generate audio alongside text via modalities/audio parameters".into()),
         },
     ];
 
@@ -1985,10 +2072,8 @@ mod tests {
     #[test]
     fn test_audio_translation_response_is_same_as_transcription() {
         // AudioTranslationResponse is a type alias for AudioTranscriptionResponse
-        let response: AudioTranslationResponse = serde_json::from_str(
-            r#"{"text": "Hello in English", "language": "en"}"#,
-        )
-        .unwrap();
+        let response: AudioTranslationResponse =
+            serde_json::from_str(r#"{"text": "Hello in English", "language": "en"}"#).unwrap();
         assert_eq!(response.text, "Hello in English");
     }
 }

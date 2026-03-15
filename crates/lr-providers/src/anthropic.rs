@@ -928,10 +928,27 @@ impl ModelProvider for AnthropicProvider {
             match f.name.as_str() {
                 "Extended Thinking" => {
                     f.support = super::SupportLevel::Partial;
-                    f.notes = Some("Claude 4.5 models only".into());
+                    f.notes = Some("Only Claude 4.5 Sonnet/Opus support extended thinking with configurable budget (1K\u{2013}100K tokens); other Claude models do not".into());
                 }
-                "Function Calling" | "Vision" => {
+                "Function Calling" => {
                     f.support = super::SupportLevel::Supported;
+                    f.notes = Some("All Claude 4.x and 3.5 models support tool use".into());
+                }
+                "Vision" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes = Some("All Claude 4.x and 3.5 models can process images".into());
+                }
+                "Prompt Caching" => {
+                    f.notes = Some(
+                        "Anthropic cache_control blocks reduce cost for repeated prefixes".into(),
+                    );
+                }
+                "Structured Outputs" => {
+                    f.notes = Some("Claude supports JSON schema enforcement via tool use".into());
+                }
+                "Reasoning Effort" => {
+                    f.support = super::SupportLevel::Translated;
+                    f.notes = Some("Mapped to Anthropic's extended thinking budget_tokens; requires Claude 4.5 models".into());
                 }
                 _ => {}
             }

@@ -742,12 +742,38 @@ impl ModelProvider for GeminiProvider {
             match f.name.as_str() {
                 "Thinking Level" => {
                     f.support = super::SupportLevel::Partial;
-                    f.notes = Some("Gemini 2.0/3 models only".into());
+                    f.notes = Some("Only Gemini 2.0 Flash Thinking and Gemini 3 models support thinking level (low/medium/high); other Gemini models do not".into());
                 }
-                "Function Calling" | "Vision" => {
+                "Function Calling" => {
                     f.support = super::SupportLevel::Supported;
+                    f.notes = Some("Gemini Pro and Flash models support function calling".into());
+                }
+                "Vision" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes =
+                        Some("Gemini Pro and Flash models can process images and video".into());
+                }
+                "JSON Mode" => {
+                    f.notes = Some("Gemini supports JSON output via response MIME type".into());
+                }
+                "N Completions" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes = Some(
+                        "Gemini supports candidateCount parameter for multiple completions".into(),
+                    );
+                }
+                "Reasoning Effort" => {
+                    f.support = super::SupportLevel::Translated;
+                    f.notes = Some("Mapped to Gemini's thinking_level config; requires Gemini 2.0+ thinking models".into());
                 }
                 _ => {}
+            }
+        }
+
+        // Gemini-specific endpoint notes
+        for e in &mut support.endpoints {
+            if e.name == "Embeddings" {
+                e.notes = Some("Gemini text-embedding models; single-input only (no batch)".into());
             }
         }
 

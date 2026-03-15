@@ -172,6 +172,7 @@ function CompatibilityMatrix({ title, sectionKey, providers }: CompatibilityMatr
                             <SupportLevelBadge
                               level={cell.support}
                               notes={cell.notes}
+                              featureName={`${featureName} (${p.provider_instance})`}
                               compact
                             />
                           ) : (

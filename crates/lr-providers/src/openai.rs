@@ -1111,36 +1111,96 @@ impl ModelProvider for OpenAIProvider {
             match f.name.as_str() {
                 "Function Calling" => {
                     f.support = super::SupportLevel::Supported;
+                    f.notes =
+                        Some("GPT-4o, GPT-4 Turbo, and GPT-3.5 Turbo support tool calling".into());
                 }
                 "Vision" => {
                     f.support = super::SupportLevel::Supported;
+                    f.notes = Some("GPT-4o and GPT-4 Turbo can process images".into());
                 }
                 "Reasoning Tokens" => {
                     f.support = super::SupportLevel::Partial;
-                    f.notes = Some("o1-preview and o1-mini models only".into());
+                    f.notes = Some("Only o1-preview and o1-mini models use reasoning tokens; other models do not".into());
+                }
+                "Log Probabilities" => {
+                    f.notes =
+                        Some("Available on GPT-4o and GPT-3.5 Turbo via logprobs parameter".into());
+                }
+                "Structured Outputs" => {
+                    f.notes = Some(
+                        "GPT-4o supports strict JSON schema enforcement via response_format".into(),
+                    );
+                }
+                "JSON Mode" => {
+                    f.notes =
+                        Some("All GPT-4 and GPT-3.5 Turbo models support JSON output mode".into());
+                }
+                "N Completions" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes = Some("Generate up to 128 completion choices per request".into());
+                }
+                "Logit Bias" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes = Some("Modify token likelihoods by token ID (-100 to 100)".into());
+                }
+                "Parallel Tool Calls" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes =
+                        Some("Models can generate multiple tool calls in a single response".into());
+                }
+                "Reasoning Effort" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some(
+                        "Only o-series reasoning models support low/medium/high effort".into(),
+                    );
+                }
+                "Predicted Output" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes = Some(
+                        "Supply predicted output for faster generation via speculative decoding"
+                            .into(),
+                    );
+                }
+                "Service Tier" => {
+                    f.support = super::SupportLevel::Supported;
+                    f.notes =
+                        Some("Select 'auto' or 'default' latency tier for request routing".into());
+                }
+                "Audio Output" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some(
+                        "Audio output via modalities parameter on gpt-4o-audio-preview models only"
+                            .into(),
+                    );
                 }
                 _ => {}
             }
         }
 
-        // OpenAI will have native Responses, Batches, Moderations, Audio
+        // OpenAI endpoint-specific notes
         for e in &mut support.endpoints {
             match e.name.as_str() {
                 "Moderations" => {
                     e.support = super::SupportLevel::NotImplemented;
-                    e.notes = Some("OpenAI supports natively — planned".into());
+                    e.notes = Some("OpenAI supports natively via text-moderation-latest; LocalRouter proxy not yet built".into());
                 }
                 "Responses API" => {
                     e.support = super::SupportLevel::NotImplemented;
-                    e.notes = Some("OpenAI supports natively — planned".into());
+                    e.notes =
+                        Some("OpenAI supports natively; LocalRouter proxy not yet built".into());
                 }
                 "Batch Processing" => {
                     e.support = super::SupportLevel::NotImplemented;
-                    e.notes = Some("OpenAI supports natively — planned".into());
+                    e.notes = Some(
+                        "OpenAI supports native async batches; LocalRouter proxy not yet built"
+                            .into(),
+                    );
                 }
                 "Audio Transcription" | "Audio Speech (TTS)" => {
                     e.support = super::SupportLevel::Supported;
-                    e.notes = Some("OpenAI Whisper (STT) and TTS models".into());
+                    e.notes = Some(
+                        "Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech".into(),
+                    );
                 }
                 "Realtime (WebSocket)" => {
                     e.support = super::SupportLevel::NotImplemented;

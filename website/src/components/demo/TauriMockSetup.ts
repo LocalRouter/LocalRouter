@@ -1463,28 +1463,28 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     provider_type: 'openai',
     provider_instance: args?.instanceName || 'openai',
     endpoints: [
-      { name: 'Chat Completions', endpoint: '/v1/chat/completions', support: 'supported', notes: null },
-      { name: 'Completions (legacy)', endpoint: '/v1/completions', support: 'supported', notes: 'Converted to chat completions internally' },
-      { name: 'Streaming', endpoint: '/v1/chat/completions', support: 'supported', notes: null },
-      { name: 'Embeddings', endpoint: '/v1/embeddings', support: 'supported', notes: null },
-      { name: 'Image Generation', endpoint: '/v1/images/generations', support: 'supported', notes: null },
-      { name: 'Audio Transcription', endpoint: '/v1/audio/transcriptions', support: 'supported', notes: 'OpenAI Whisper (STT) and TTS models' },
-      { name: 'Audio Speech (TTS)', endpoint: '/v1/audio/speech', support: 'supported', notes: 'OpenAI Whisper (STT) and TTS models' },
-      { name: 'Moderations', endpoint: '/v1/moderations', support: 'not_implemented', notes: 'OpenAI supports natively — planned' },
-      { name: 'Responses API', endpoint: '/v1/responses', support: 'not_implemented', notes: 'OpenAI supports natively — planned' },
-      { name: 'Batch Processing', endpoint: '/v1/batches', support: 'not_implemented', notes: 'OpenAI supports natively — planned' },
-      { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'not_implemented', notes: 'OpenAI supports natively — planned' },
+      { name: 'Chat Completions', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Send messages and receive AI responses' },
+      { name: 'Completions (legacy)', endpoint: '/v1/completions', support: 'supported', notes: 'Converted to chat completions internally by LocalRouter' },
+      { name: 'Streaming', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Server-sent events for real-time token streaming' },
+      { name: 'Embeddings', endpoint: '/v1/embeddings', support: 'supported', notes: 'Generate vector embeddings for text' },
+      { name: 'Image Generation', endpoint: '/v1/images/generations', support: 'supported', notes: 'DALL-E 3 and DALL-E 2 image generation' },
+      { name: 'Audio Transcription', endpoint: '/v1/audio/transcriptions', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
+      { name: 'Audio Speech (TTS)', endpoint: '/v1/audio/speech', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
+      { name: 'Moderations', endpoint: '/v1/moderations', support: 'not_implemented', notes: 'OpenAI supports natively via text-moderation-latest; LocalRouter proxy not yet built' },
+      { name: 'Responses API', endpoint: '/v1/responses', support: 'not_implemented', notes: 'OpenAI supports natively; LocalRouter proxy not yet built' },
+      { name: 'Batch Processing', endpoint: '/v1/batches', support: 'not_implemented', notes: 'OpenAI supports native async batches; LocalRouter proxy not yet built' },
+      { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'not_implemented', notes: 'WebSocket-based real-time audio/text streaming not yet available in LocalRouter' },
     ],
     model_features: [
-      { name: 'Function Calling', support: 'supported', notes: null },
-      { name: 'Vision', support: 'supported', notes: null },
-      { name: 'Structured Outputs', support: 'supported', notes: null },
-      { name: 'JSON Mode', support: 'supported', notes: null },
-      { name: 'Log Probabilities', support: 'supported', notes: null },
-      { name: 'Reasoning Tokens', support: 'partial', notes: 'o1-preview and o1-mini models only' },
-      { name: 'Extended Thinking', support: 'not_supported', notes: null },
-      { name: 'Thinking Level', support: 'not_supported', notes: null },
-      { name: 'Prompt Caching', support: 'not_supported', notes: null },
+      { name: 'Function Calling', support: 'supported', notes: 'GPT-4o, GPT-4 Turbo, and GPT-3.5 Turbo support tool calling' },
+      { name: 'Vision', support: 'supported', notes: 'GPT-4o and GPT-4 Turbo can process images' },
+      { name: 'Structured Outputs', support: 'supported', notes: 'GPT-4o supports strict JSON schema enforcement via response_format' },
+      { name: 'JSON Mode', support: 'supported', notes: 'All GPT-4 and GPT-3.5 Turbo models support JSON output mode' },
+      { name: 'Log Probabilities', support: 'supported', notes: 'Available on GPT-4o and GPT-3.5 Turbo via logprobs parameter' },
+      { name: 'Reasoning Tokens', support: 'partial', notes: 'Only o1-preview and o1-mini models use reasoning tokens; other models do not' },
+      { name: 'Extended Thinking', support: 'not_supported', notes: 'OpenAI does not support extended thinking; this is an Anthropic feature' },
+      { name: 'Thinking Level', support: 'not_supported', notes: 'OpenAI does not support thinking level; this is a Gemini feature' },
+      { name: 'Prompt Caching', support: 'not_supported', notes: 'OpenAI does not support server-side prompt caching' },
     ],
     optimization_features: [
       { name: 'Guardrails', support: 'supported', notes: 'Content safety scanning on chat/completion requests' },
@@ -1507,14 +1507,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       provider_type: 'anthropic',
       provider_instance: 'anthropic',
       endpoints: openai.endpoints.map(e => {
-        if (e.name === 'Embeddings' || e.name === 'Image Generation') return { ...e, support: 'not_supported' as const, notes: null }
-        if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_implemented' as const }
+        if (e.name === 'Embeddings') return { ...e, support: 'not_supported' as const, notes: 'Anthropic does not offer an embeddings API' }
+        if (e.name === 'Image Generation') return { ...e, support: 'not_supported' as const, notes: 'Anthropic does not offer image generation' }
+        if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_implemented' as const, notes: 'Anthropic does not offer audio endpoints' }
         return e
       }),
       model_features: openai.model_features.map(f => {
-        if (f.name === 'Extended Thinking') return { ...f, support: 'partial' as const, notes: 'Claude 4.5 models only' }
-        if (f.name === 'Prompt Caching') return { ...f, support: 'supported' as const }
-        if (f.name === 'Reasoning Tokens' || f.name === 'Log Probabilities') return { ...f, support: 'not_supported' as const, notes: null }
+        if (f.name === 'Extended Thinking') return { ...f, support: 'partial' as const, notes: 'Only Claude 4.5 Sonnet/Opus support extended thinking with configurable budget (1K\u201399K tokens); other Claude models do not' }
+        if (f.name === 'Prompt Caching') return { ...f, support: 'supported' as const, notes: 'Anthropic cache_control blocks reduce cost for repeated prefixes' }
+        if (f.name === 'Reasoning Tokens') return { ...f, support: 'not_supported' as const, notes: 'Anthropic uses extended thinking instead of reasoning tokens' }
+        if (f.name === 'Log Probabilities') return { ...f, support: 'not_supported' as const, notes: 'Anthropic API does not expose token log probabilities' }
+        if (f.name === 'Function Calling') return { ...f, notes: 'All Claude 4.x and 3.5 models support tool use' }
+        if (f.name === 'Vision') return { ...f, notes: 'All Claude 4.x and 3.5 models can process images' }
+        if (f.name === 'Structured Outputs') return { ...f, notes: 'Claude supports JSON schema enforcement via tool use' }
         return f
       }),
     }
@@ -1523,9 +1528,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       ...openai,
       provider_type: 'gemini',
       provider_instance: 'gemini',
+      endpoints: openai.endpoints.map(e => {
+        if (e.name === 'Embeddings') return { ...e, notes: 'Gemini text-embedding models; single-input only (no batch)' }
+        return e
+      }),
       model_features: openai.model_features.map(f => {
-        if (f.name === 'Thinking Level') return { ...f, support: 'partial' as const, notes: 'Gemini 2.0/3 models only' }
-        if (f.name === 'Reasoning Tokens' || f.name === 'Extended Thinking' || f.name === 'Prompt Caching' || f.name === 'Log Probabilities') return { ...f, support: 'not_supported' as const, notes: null }
+        if (f.name === 'Thinking Level') return { ...f, support: 'partial' as const, notes: 'Only Gemini 2.0 Flash Thinking and Gemini 3 models support thinking level (low/medium/high); other Gemini models do not' }
+        if (f.name === 'Reasoning Tokens') return { ...f, support: 'not_supported' as const, notes: 'Gemini uses thinking level instead of reasoning tokens' }
+        if (f.name === 'Extended Thinking') return { ...f, support: 'not_supported' as const, notes: 'Gemini does not support extended thinking; uses thinking level instead' }
+        if (f.name === 'Prompt Caching') return { ...f, support: 'not_supported' as const, notes: 'Gemini does not support server-side prompt caching via the API' }
+        if (f.name === 'Log Probabilities') return { ...f, support: 'not_supported' as const, notes: 'Gemini API does not expose token log probabilities' }
+        if (f.name === 'Function Calling') return { ...f, notes: 'Gemini Pro and Flash models support function calling' }
+        if (f.name === 'Vision') return { ...f, notes: 'Gemini Pro and Flash models can process images and video' }
+        if (f.name === 'JSON Mode') return { ...f, notes: 'Gemini supports JSON output via response MIME type' }
         return f
       }),
     }
@@ -1535,12 +1550,21 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       provider_type: 'ollama',
       provider_instance: 'ollama',
       endpoints: openai.endpoints.map(e => {
-        if (e.name === 'Image Generation') return { ...e, support: 'not_supported' as const, notes: null }
-        if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_supported' as const, notes: null }
+        if (e.name === 'Image Generation') return { ...e, support: 'not_supported' as const, notes: 'Ollama does not support image generation' }
+        if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_supported' as const, notes: 'Ollama does not support audio endpoints' }
+        if (e.name === 'Embeddings') return { ...e, notes: 'Ollama supports embeddings for models that have embedding capabilities' }
         return e
       }),
       model_features: openai.model_features.map(f => {
-        if (f.name === 'Structured Outputs' || f.name === 'Log Probabilities' || f.name === 'Reasoning Tokens' || f.name === 'Extended Thinking' || f.name === 'Thinking Level' || f.name === 'Prompt Caching') return { ...f, support: 'not_supported' as const, notes: null }
+        if (f.name === 'Structured Outputs') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support strict JSON schema enforcement' }
+        if (f.name === 'Log Probabilities') return { ...f, support: 'not_supported' as const, notes: 'Ollama API does not expose token log probabilities' }
+        if (f.name === 'Reasoning Tokens') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support reasoning token models' }
+        if (f.name === 'Extended Thinking') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support extended thinking' }
+        if (f.name === 'Thinking Level') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support thinking level control' }
+        if (f.name === 'Prompt Caching') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support server-side prompt caching' }
+        if (f.name === 'Function Calling') return { ...f, notes: 'Depends on the model; some Ollama models support tool calling' }
+        if (f.name === 'Vision') return { ...f, notes: 'Depends on the model; LLaVA and similar multimodal models support vision' }
+        if (f.name === 'JSON Mode') return { ...f, notes: 'Ollama supports JSON output mode for compatible models' }
         return f
       }),
     }
