@@ -73,7 +73,7 @@ export function FeatureClientsCard({ feature, onNavigateToClient }: FeatureClien
                 <div className="flex items-center gap-2 min-w-0">
                   {onNavigateToClient ? (
                     <button
-                      onClick={() => onNavigateToClient("clients", `${s.client_id}|optimize`)}
+                      onClick={() => onNavigateToClient("clients", `${s.client_id}|models`)}
                       className="text-sm font-medium truncate hover:underline text-left"
                     >
                       {s.client_name}
@@ -96,7 +96,7 @@ export function FeatureClientsCard({ feature, onNavigateToClient }: FeatureClien
                   </Badge>
                   {onNavigateToClient && (
                     <button
-                      onClick={() => onNavigateToClient("clients", `${s.client_id}|optimize`)}
+                      onClick={() => onNavigateToClient("clients", `${s.client_id}|models`)}
                       className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity"
                       title="Go to client settings"
                     >
