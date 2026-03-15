@@ -133,6 +133,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v21(config)?;
     }
 
+    // Migrate to v22: Secret scanning config (new fields with serde defaults, no-op)
+    if config.version < 22 {
+        config = migrate_to_v22(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -609,18 +614,17 @@ fn migrate_to_v19(mut config: AppConfig) -> AppResult<AppConfig> {
         // Migrate old boolean fields to PermissionState
         // Note: mcp_sampling_enabled defaults to false, requires_approval defaults to true.
         // If both are at defaults, the client never configured sampling → default to Ask.
-        client.mcp_sampling_permission = if client.mcp_sampling_enabled
-            && !client.mcp_sampling_requires_approval
-        {
-            // Explicitly enabled without approval → Allow
-            PermissionState::Allow
-        } else if client.mcp_sampling_enabled && client.mcp_sampling_requires_approval {
-            // Explicitly enabled with approval → Ask
-            PermissionState::Ask
-        } else {
-            // Never configured (both defaults) → Ask
-            PermissionState::Ask
-        };
+        client.mcp_sampling_permission =
+            if client.mcp_sampling_enabled && !client.mcp_sampling_requires_approval {
+                // Explicitly enabled without approval → Allow
+                PermissionState::Allow
+            } else if client.mcp_sampling_enabled && client.mcp_sampling_requires_approval {
+                // Explicitly enabled with approval → Ask
+                PermissionState::Ask
+            } else {
+                // Never configured (both defaults) → Ask
+                PermissionState::Ask
+            };
 
         // Elicitation is a new feature, default to Ask
         client.mcp_elicitation_permission = PermissionState::Ask;
@@ -674,6 +678,15 @@ fn migrate_to_v20(config: AppConfig) -> AppResult<AppConfig> {
 /// ctx_search/ctx_read to IndexSearch/IndexRead for new sessions.
 fn migrate_to_v21(config: AppConfig) -> AppResult<AppConfig> {
     info!("Migrating to version 21: Indexing eligibility + configurable tool names");
+    Ok(config)
+}
+
+/// Migrate to version 22: Secret scanning configuration
+///
+/// New fields `secret_scanning` on AppConfig and `secret_scanning` on Client
+/// have serde defaults (action: Off), so this is a no-op migration.
+fn migrate_to_v22(config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 22: Secret scanning configuration");
     Ok(config)
 }
 

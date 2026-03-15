@@ -413,6 +413,69 @@ impl GuardrailDenialTracker {
     }
 }
 
+/// Tracks time-based secret scan bypasses per client
+///
+/// When a user clicks "Allow for 1 Hour" on a secret scan popup,
+/// the bypass is stored here and checked before scanning.
+#[derive(Clone, Default)]
+pub struct SecretScanApprovalTracker {
+    /// Map of client_id -> expiry_instant
+    bypasses: Arc<DashMap<String, Instant>>,
+}
+
+impl SecretScanApprovalTracker {
+    pub fn new() -> Self {
+        Self {
+            bypasses: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Check if a client has a valid time-based secret scan bypass
+    pub fn has_valid_bypass(&self, client_id: &str) -> bool {
+        if let Some(entry) = self.bypasses.get(client_id) {
+            if *entry > Instant::now() {
+                return true;
+            }
+            drop(entry);
+            self.bypasses.remove(client_id);
+        }
+        false
+    }
+
+    /// Add a time-based bypass for a client
+    pub fn add_bypass(&self, client_id: &str, duration: Duration) {
+        let expiry = Instant::now() + duration;
+        self.bypasses.insert(client_id.to_string(), expiry);
+        tracing::info!(
+            "Added secret scan bypass: client={}, duration={}s",
+            client_id,
+            duration.as_secs(),
+        );
+    }
+
+    /// Add a 1-hour bypass
+    pub fn add_1_hour_bypass(&self, client_id: &str) {
+        self.add_bypass(client_id, Duration::from_secs(3600));
+    }
+
+    /// Clean up expired bypasses
+    pub fn cleanup_expired(&self) -> usize {
+        let now = Instant::now();
+        let expired: Vec<_> = self
+            .bypasses
+            .iter()
+            .filter(|entry| *entry.value() <= now)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let count = expired.len();
+        for key in expired {
+            self.bypasses.remove(&key);
+        }
+        count
+    }
+}
+
 /// Tracks time-based model approvals for the model firewall
 ///
 /// When a user clicks "Allow for 1 Hour" on a model permission popup,
@@ -726,6 +789,12 @@ pub struct AppState {
     /// Time-based auto-router approval tracker
     pub auto_router_approval_tracker: Arc<AutoRouterApprovalTracker>,
 
+    /// Time-based secret scan bypass tracker (allow for 1 hour)
+    pub secret_scan_approval_tracker: Arc<SecretScanApprovalTracker>,
+
+    /// Secret scanning engine (swappable at runtime)
+    pub secret_scanner: Arc<RwLock<Option<Arc<lr_secret_scanner::SecretScanEngine>>>>,
+
     /// Safety engine for LLM-based content inspection (swappable at runtime)
     pub safety_engine: Arc<RwLock<Option<Arc<lr_guardrails::SafetyEngine>>>>,
 
@@ -828,6 +897,8 @@ impl AppState {
             guardrail_denial_tracker: Arc::new(GuardrailDenialTracker::new()),
             free_tier_approval_tracker: Arc::new(FreeTierApprovalTracker::new()),
             auto_router_approval_tracker: Arc::new(AutoRouterApprovalTracker::new()),
+            secret_scan_approval_tracker: Arc::new(SecretScanApprovalTracker::new()),
+            secret_scanner: Arc::new(RwLock::new(None)),
             safety_engine: Arc::new(RwLock::new(None)),
             compression_service: Arc::new(RwLock::new(None)),
             mcp_via_llm_manager: {

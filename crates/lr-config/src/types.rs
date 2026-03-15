@@ -2158,10 +2158,6 @@ pub struct SecretScanningConfig {
     #[serde(default = "default_entropy_threshold")]
     pub entropy_threshold: f32,
 
-    /// Custom user-defined rules (global only)
-    #[serde(default)]
-    pub custom_rules: Vec<CustomSecretRule>,
-
     /// Whether to scan system messages (default: false)
     #[serde(default)]
     pub scan_system_messages: bool,
@@ -2176,7 +2172,6 @@ impl Default for SecretScanningConfig {
         Self {
             action: SecretScanAction::Off,
             entropy_threshold: default_entropy_threshold(),
-            custom_rules: Vec::new(),
             scan_system_messages: false,
             allowlist: Vec::new(),
         }
@@ -2185,20 +2180,6 @@ impl Default for SecretScanningConfig {
 
 fn default_entropy_threshold() -> f32 {
     3.5
-}
-
-/// A custom secret detection rule
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CustomSecretRule {
-    pub id: String,
-    pub description: String,
-    pub regex: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entropy: Option<f32>,
-    #[serde(default)]
-    pub keywords: Vec<String>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
 }
 
 /// Per-client secret scanning configuration

@@ -1576,7 +1576,7 @@ async fn run_secret_scan_check(
         })
         .collect();
 
-    let result = scanner.scan(&texts).await;
+    let result = scanner.scan(&texts);
 
     if result.findings.is_empty() {
         return Ok(());
@@ -1632,7 +1632,6 @@ async fn handle_secret_scan_approval(
                 category: f.category.clone(),
                 matched_text: f.matched_text.clone(),
                 entropy: f.entropy,
-                ml_confidence: f.ml_confidence,
             })
             .collect(),
         scan_duration_ms: result.scan_duration_ms,

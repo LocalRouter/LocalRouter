@@ -61,6 +61,26 @@ pub struct FirewallApprovalResponse {
     pub edited_arguments: Option<serde_json::Value>,
 }
 
+/// Secret scan approval details (sent to popup)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretScanApprovalDetails {
+    /// Individual secret findings
+    pub findings: Vec<SecretFindingSummary>,
+    /// How long the scan took
+    pub scan_duration_ms: u64,
+}
+
+/// Summary of a single secret finding for the approval popup
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretFindingSummary {
+    pub rule_id: String,
+    pub rule_description: String,
+    pub category: String,
+    /// Truncated preview of matched text
+    pub matched_text: String,
+    pub entropy: f32,
+}
+
 /// Guardrail approval details (sent to popup)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardrailApprovalDetails {
@@ -122,8 +142,14 @@ pub struct FirewallApprovalSession {
     /// Whether this is an MCP via LLM request (tools are server-injected)
     pub is_mcp_via_llm_request: bool,
 
+    /// Whether this is a secret scan request
+    pub is_secret_scan_request: bool,
+
     /// Guardrail-specific details (matches, severity, etc.)
     pub guardrail_details: Option<GuardrailApprovalDetails>,
+
+    /// Secret scan details (findings, entropy, etc.)
+    pub secret_scan_details: Option<SecretScanApprovalDetails>,
 }
 
 impl FirewallApprovalSession {
@@ -161,9 +187,15 @@ pub struct PendingApprovalInfo {
     /// Whether this is an MCP via LLM request (tools are server-injected)
     #[serde(default)]
     pub is_mcp_via_llm_request: bool,
+    /// Whether this is a secret scan request
+    #[serde(default)]
+    pub is_secret_scan_request: bool,
     /// Guardrail-specific details
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guardrail_details: Option<GuardrailApprovalDetails>,
+    /// Secret scan details
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_scan_details: Option<SecretScanApprovalDetails>,
 }
 
 /// Manages firewall approval lifecycle for MCP gateway
@@ -228,7 +260,9 @@ impl FirewallManager {
             false, // not free-tier fallback
             false, // not auto-router
             false, // not MCP via LLM
+            false, // not secret scan
             full_arguments,
+            None,
             None,
         )
         .await
@@ -260,7 +294,9 @@ impl FirewallManager {
             false, // not free-tier fallback
             false, // not auto-router
             is_mcp_via_llm,
+            false, // not secret scan
             full_arguments,
+            None,
             None,
         )
         .await
@@ -291,8 +327,10 @@ impl FirewallManager {
             false, // not free-tier fallback
             false, // not auto-router
             false, // not MCP via LLM
+            false, // not secret scan
             None,
             Some(guardrail_details),
+            None,
         )
         .await
     }
@@ -316,6 +354,8 @@ impl FirewallManager {
             true,                             // free-tier fallback
             false,                            // not auto-router
             false,                            // not MCP via LLM
+            false,                            // not secret scan
+            None,
             None,
             None,
         )
@@ -343,8 +383,42 @@ impl FirewallManager {
             false,                          // not free-tier fallback
             true,                           // auto-router request
             is_mcp_via_llm,
+            false, // not secret scan
             full_arguments,
             None,
+            None,
+        )
+        .await
+    }
+
+    /// Request user approval for a secret scan detection
+    ///
+    /// Shows secret-scan-specific popup with findings, entropy, etc.
+    /// Waits indefinitely for user response (no timeout).
+    pub async fn request_secret_scan_approval(
+        &self,
+        client_id: String,
+        client_name: String,
+        model_name: String,
+        secret_scan_details: SecretScanApprovalDetails,
+        arguments_preview: String,
+    ) -> AppResult<FirewallApprovalResponse> {
+        self.request_approval_internal(
+            client_id,
+            client_name,
+            model_name,
+            "Secret Scan".to_string(),
+            arguments_preview,
+            None,  // no custom timeout — waits indefinitely (24h safety)
+            false, // not a model request
+            false, // not guardrail
+            false, // not free-tier fallback
+            false, // not auto-router
+            false, // not MCP via LLM
+            true,  // secret scan request
+            None,
+            None,
+            Some(secret_scan_details),
         )
         .await
     }
@@ -364,8 +438,10 @@ impl FirewallManager {
         is_free_tier_fallback: bool,
         is_auto_router_request: bool,
         is_mcp_via_llm_request: bool,
+        is_secret_scan_request: bool,
         full_arguments: Option<serde_json::Value>,
         guardrail_details: Option<GuardrailApprovalDetails>,
+        secret_scan_details: Option<SecretScanApprovalDetails>,
     ) -> AppResult<FirewallApprovalResponse> {
         let request_id = Uuid::new_v4().to_string();
         // Use the manager's default timeout (typically 24h) as fallback
@@ -401,7 +477,9 @@ impl FirewallManager {
             is_free_tier_fallback,
             is_auto_router_request,
             is_mcp_via_llm_request,
+            is_secret_scan_request,
             guardrail_details,
+            secret_scan_details,
         };
 
         // Store session
@@ -430,6 +508,7 @@ impl FirewallManager {
                     "is_free_tier_fallback": is_free_tier_fallback,
                     "is_auto_router_request": is_auto_router_request,
                     "is_mcp_via_llm_request": is_mcp_via_llm_request,
+                    "is_secret_scan_request": is_secret_scan_request,
                 })),
             };
 
@@ -555,7 +634,9 @@ impl FirewallManager {
                     is_free_tier_fallback: session.is_free_tier_fallback,
                     is_auto_router_request: session.is_auto_router_request,
                     is_mcp_via_llm_request: session.is_mcp_via_llm_request,
+                    is_secret_scan_request: session.is_secret_scan_request,
                     guardrail_details: session.guardrail_details.clone(),
+                    secret_scan_details: session.secret_scan_details.clone(),
                 }
             })
             .collect()
@@ -661,7 +742,9 @@ mod tests {
             is_free_tier_fallback: false,
             is_auto_router_request: false,
             is_mcp_via_llm_request: false,
+            is_secret_scan_request: false,
             guardrail_details: None,
+            secret_scan_details: None,
         };
         assert!(session.is_expired());
     }
@@ -684,7 +767,9 @@ mod tests {
             is_free_tier_fallback: false,
             is_auto_router_request: false,
             is_mcp_via_llm_request: false,
+            is_secret_scan_request: false,
             guardrail_details: None,
+            secret_scan_details: None,
         };
         assert!(!session.is_expired());
     }

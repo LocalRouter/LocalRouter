@@ -1,0 +1,20 @@
+[package]
+name = "lr-secret-scanner"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Regex + entropy based secret scanning for outbound LLM requests"
+
+[dependencies]
+lr-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+regex = { workspace = true }
+aho-corasick = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

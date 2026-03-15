@@ -316,6 +316,7 @@ impl ConfigManager {
             guardrails: ClientGuardrailsConfig::default(),
             prompt_compression: ClientPromptCompressionConfig::default(),
             json_repair: ClientJsonRepairConfig::default(),
+            secret_scanning: ClientSecretScanningConfig::default(),
             coding_agents_permissions: CodingAgentsPermissions::default(),
             coding_agent_permission: PermissionState::default(),
             coding_agent_type: None,
