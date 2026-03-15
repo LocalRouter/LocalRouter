@@ -253,7 +253,12 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
     // Apply auth layer (checks all API routes with or without /v1 prefix)
     router = router.layer(AuthLayer::new(state.clone()));
 
+    // Apply 16MB body limit to main routes BEFORE merging audio routes
+    // (audio routes need 25MB for file uploads — see below)
+    router = router.layer(RequestBodyLimitLayer::new(16 * 1024 * 1024));
+
     // Audio upload routes with 25MB body limit (audio files can be up to 25MB per OpenAI spec)
+    // Merged AFTER the 16MB limit so the global limit doesn't override the audio-specific one.
     let audio_upload_routes = Router::new()
         .route(
             "/v1/audio/transcriptions",
@@ -280,9 +285,6 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
 
     // Add DNS rebinding protection
     router = router.layer(axum::middleware::from_fn(host_validation_middleware));
-
-    // Add request body size limit (16MB)
-    router = router.layer(RequestBodyLimitLayer::new(16 * 1024 * 1024));
 
     // Add CORS if enabled
     if enable_cors {

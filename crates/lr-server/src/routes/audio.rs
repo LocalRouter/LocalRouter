@@ -147,6 +147,19 @@ pub async fn audio_transcriptions(
         }
     }
 
+    // Validate response_format if provided
+    if let Some(ref fmt) = response_format {
+        let valid_formats = ["json", "text", "srt", "verbose_json", "vtt"];
+        if !valid_formats.contains(&fmt.as_str()) {
+            return Err(ApiErrorResponse::bad_request(format!(
+                "Invalid response_format '{}'. Valid formats: {}",
+                fmt,
+                valid_formats.join(", ")
+            ))
+            .with_param("response_format"));
+        }
+    }
+
     // Validate client provider access
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &model).await?;
 
@@ -392,6 +405,18 @@ pub async fn audio_translations(
                 ApiErrorResponse::bad_request("temperature must be between 0 and 1")
                     .with_param("temperature"),
             );
+        }
+    }
+
+    if let Some(ref fmt) = response_format {
+        let valid_formats = ["json", "text", "srt", "verbose_json", "vtt"];
+        if !valid_formats.contains(&fmt.as_str()) {
+            return Err(ApiErrorResponse::bad_request(format!(
+                "Invalid response_format '{}'. Valid formats: {}",
+                fmt,
+                valid_formats.join(", ")
+            ))
+            .with_param("response_format"));
         }
     }
 
@@ -689,10 +714,11 @@ pub async fn audio_speech(
         latency_ms
     );
 
-    // Return binary audio response
+    // Return binary audio response with Content-Length
+    let audio_len = response.audio_data.len();
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, response.content_type)
-        .header(header::TRANSFER_ENCODING, "chunked")
+        .header(header::CONTENT_LENGTH, audio_len)
         .body(Body::from(response.audio_data))
         .unwrap())
 }

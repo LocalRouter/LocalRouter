@@ -511,6 +511,75 @@ async fn test_audio_transcription_validation_non_numeric_temperature() {
         .contains("temperature"));
 }
 
+#[tokio::test]
+async fn test_audio_transcription_validation_bad_response_format() {
+    let (base_url, secret) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let form = reqwest::multipart::Form::new()
+        .text("model", "whisper-1")
+        .text("response_format", "mp3") // invalid for STT
+        .part(
+            "file",
+            reqwest::multipart::Part::bytes(vec![0u8; 100])
+                .file_name("test.wav")
+                .mime_str("audio/wav")
+                .unwrap(),
+        );
+
+    let response = client
+        .post(format!("{}/v1/audio/transcriptions", base_url))
+        .bearer_auth(&secret)
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 400);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("response_format"));
+}
+
+#[tokio::test]
+async fn test_audio_transcription_valid_response_formats() {
+    let (base_url, secret) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // All valid STT response formats should not get a 400 for response_format
+    for fmt in ["json", "text", "srt", "verbose_json", "vtt"] {
+        let form = reqwest::multipart::Form::new()
+            .text("model", "whisper-1")
+            .text("response_format", fmt)
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(vec![0u8; 100])
+                    .file_name("test.wav")
+                    .mime_str("audio/wav")
+                    .unwrap(),
+            );
+
+        let response = client
+            .post(format!("{}/v1/audio/transcriptions", base_url))
+            .bearer_auth(&secret)
+            .multipart(form)
+            .send()
+            .await
+            .unwrap();
+
+        // Should NOT be 400 for response_format — it should pass validation
+        // and fail later at provider routing (502) since no provider is configured
+        assert_ne!(
+            response.status().as_u16(),
+            400,
+            "Format '{}' should be valid for STT but got 400",
+            fmt
+        );
+    }
+}
+
 // ============================================================================
 // Without-prefix route tests
 // ============================================================================
