@@ -10,7 +10,7 @@ import {
   type ApprovalAction,
   type MarketplaceListingInfo,
 } from "@/components/shared/FirewallApprovalCard"
-import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing } from "@/types/tauri-commands"
+import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing, SecretFindingSummary } from "@/types/tauri-commands"
 
 interface ApprovalDetails {
   request_id: string
@@ -26,12 +26,17 @@ interface ApprovalDetails {
   is_free_tier_fallback?: boolean
   is_auto_router_request?: boolean
   is_mcp_via_llm_request?: boolean
+  is_secret_scan_request?: boolean
   guardrail_details?: {
     verdicts: SafetyVerdict[]
     actions_required: CategoryActionRequired[]
     total_duration_ms: number
     scan_direction: "request" | "response"
     flagged_text: string
+  }
+  secret_scan_details?: {
+    findings: SecretFindingSummary[]
+    scan_duration_ms: number
   }
 }
 
@@ -479,7 +484,10 @@ export function FirewallApproval() {
     server_name: details.server_name,
     tool_name: details.tool_name,
     is_model_request: details.is_model_request,
+    is_guardrail_request: details.is_guardrail_request,
+    is_free_tier_fallback: details.is_free_tier_fallback,
     is_auto_router_request: details.is_auto_router_request,
+    is_secret_scan_request: details.is_secret_scan_request,
   })
   const isModelLike = requestType === "model" || requestType === "auto_router"
 
@@ -794,10 +802,13 @@ export function FirewallApproval() {
           isGuardrailRequest={details.is_guardrail_request}
           isFreeTierFallback={details.is_free_tier_fallback}
           isAutoRouterRequest={details.is_auto_router_request}
+          isSecretScanRequest={details.is_secret_scan_request}
           guardrailVerdicts={details.guardrail_details?.verdicts}
           guardrailDirection={details.guardrail_details?.scan_direction}
           guardrailActions={details.guardrail_details?.actions_required}
           guardrailFlaggedText={details.guardrail_details?.flagged_text}
+          secretScanFindings={details.secret_scan_details?.findings}
+          secretScanDurationMs={details.secret_scan_details?.scan_duration_ms}
           marketplaceListing={marketplaceListing}
           onAction={buttonsReady ? handleAction : undefined}
           onEdit={enterEditMode}

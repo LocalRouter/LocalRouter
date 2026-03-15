@@ -1716,39 +1716,37 @@ pub async fn set_gateway_indexing_permission(
     };
 
     config_manager
-        .update(|cfg| {
-            match level.as_str() {
-                "global" => {
-                    cfg.context_management.gateway_indexing.global = indexing_state.clone();
-                }
-                "server" => {
-                    if let Some(ref k) = key {
-                        cfg.context_management
-                            .gateway_indexing
-                            .servers
-                            .insert(k.clone(), indexing_state.clone());
-                    }
-                }
-                "tool" => {
-                    if let Some(ref k) = key {
-                        cfg.context_management
-                            .gateway_indexing
-                            .tools
-                            .insert(k.clone(), indexing_state.clone());
-                    }
-                }
-                "server_clear" => {
-                    if let Some(ref k) = key {
-                        cfg.context_management.gateway_indexing.servers.remove(k);
-                    }
-                }
-                "tool_clear" => {
-                    if let Some(ref k) = key {
-                        cfg.context_management.gateway_indexing.tools.remove(k);
-                    }
-                }
-                _ => {}
+        .update(|cfg| match level.as_str() {
+            "global" => {
+                cfg.context_management.gateway_indexing.global = indexing_state.clone();
             }
+            "server" => {
+                if let Some(ref k) = key {
+                    cfg.context_management
+                        .gateway_indexing
+                        .servers
+                        .insert(k.clone(), indexing_state.clone());
+                }
+            }
+            "tool" => {
+                if let Some(ref k) = key {
+                    cfg.context_management
+                        .gateway_indexing
+                        .tools
+                        .insert(k.clone(), indexing_state.clone());
+                }
+            }
+            "server_clear" => {
+                if let Some(ref k) = key {
+                    cfg.context_management.gateway_indexing.servers.remove(k);
+                }
+            }
+            "tool_clear" => {
+                if let Some(ref k) = key {
+                    cfg.context_management.gateway_indexing.tools.remove(k);
+                }
+            }
+            _ => {}
         })
         .map_err(|e| e.to_string())?;
 
@@ -1814,39 +1812,37 @@ pub async fn set_virtual_indexing_permission(
     };
 
     config_manager
-        .update(|cfg| {
-            match level.as_str() {
-                "global" => {
-                    cfg.context_management.virtual_indexing.global = indexing_state.clone();
-                }
-                "server" => {
-                    if let Some(ref k) = key {
-                        cfg.context_management
-                            .virtual_indexing
-                            .servers
-                            .insert(k.clone(), indexing_state.clone());
-                    }
-                }
-                "tool" => {
-                    if let Some(ref k) = key {
-                        cfg.context_management
-                            .virtual_indexing
-                            .tools
-                            .insert(k.clone(), indexing_state.clone());
-                    }
-                }
-                "server_clear" => {
-                    if let Some(ref k) = key {
-                        cfg.context_management.virtual_indexing.servers.remove(k);
-                    }
-                }
-                "tool_clear" => {
-                    if let Some(ref k) = key {
-                        cfg.context_management.virtual_indexing.tools.remove(k);
-                    }
-                }
-                _ => {}
+        .update(|cfg| match level.as_str() {
+            "global" => {
+                cfg.context_management.virtual_indexing.global = indexing_state.clone();
             }
+            "server" => {
+                if let Some(ref k) = key {
+                    cfg.context_management
+                        .virtual_indexing
+                        .servers
+                        .insert(k.clone(), indexing_state.clone());
+                }
+            }
+            "tool" => {
+                if let Some(ref k) = key {
+                    cfg.context_management
+                        .virtual_indexing
+                        .tools
+                        .insert(k.clone(), indexing_state.clone());
+                }
+            }
+            "server_clear" => {
+                if let Some(ref k) = key {
+                    cfg.context_management.virtual_indexing.servers.remove(k);
+                }
+            }
+            "tool_clear" => {
+                if let Some(ref k) = key {
+                    cfg.context_management.virtual_indexing.tools.remove(k);
+                }
+            }
+            _ => {}
         })
         .map_err(|e| e.to_string())?;
 
@@ -1952,8 +1948,8 @@ pub async fn preview_catalog_compression(
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<CatalogCompressionPreview, String> {
     use lr_mcp::gateway::{
-        build_gateway_instructions, build_preview_mock_realistic,
-        build_preview_mock_tool_catalog, compute_catalog_compression_plan,
+        build_gateway_instructions, build_preview_mock_realistic, build_preview_mock_tool_catalog,
+        compute_catalog_compression_plan,
     };
 
     let is_mock = matches!(source.as_deref(), None | Some("mock"));
@@ -2036,9 +2032,7 @@ pub async fn preview_catalog_compression(
                 .chain(server.prompt_names.iter())
             {
                 // Estimate ~200 bytes per item (name + minimal schema)
-                ctx.item_definition_sizes
-                    .entry(name.clone())
-                    .or_insert(200);
+                ctx.item_definition_sizes.entry(name.clone()).or_insert(200);
             }
         }
     }
@@ -2181,7 +2175,11 @@ pub async fn preview_catalog_compression(
     }
 
     // Compute compressed tool definitions size (subtract savings from deferred servers)
-    let deferred_savings: usize = plan.deferred_servers.iter().map(|d| d.definition_savings).sum();
+    let deferred_savings: usize = plan
+        .deferred_servers
+        .iter()
+        .map(|d| d.definition_savings)
+        .sum();
     let compressed_tool_definitions_size = tool_definitions_size.saturating_sub(deferred_savings);
 
     // Set plan and build compressed version
@@ -2875,6 +2873,8 @@ pub enum DebugFirewallType {
     CodingAgent,
     /// Guardrail approval (safety check flagged content)
     Guardrail,
+    /// Secret scan approval (secrets detected in outbound request)
+    SecretScan,
 }
 
 /// Trigger a fake firewall approval popup immediately.
@@ -2949,6 +2949,13 @@ pub async fn debug_trigger_firewall_popup(
                 false,
                 false,
             ),
+            DebugFirewallType::SecretScan => (
+                "claude-3-5-sonnet".to_string(),
+                "Secret Scan".to_string(),
+                "[Cloud Provider] AWS Access Key ID (entropy: 3.42)\n[Version Control] GitHub Personal Access Token (entropy: 4.12)".to_string(),
+                false,
+                false,
+            ),
         };
 
     // Build sessions list: 1 normally, 3 for multi-popup mode
@@ -2959,10 +2966,13 @@ pub async fn debug_trigger_firewall_popup(
         is_model_request: bool,
         is_free_tier_fallback: bool,
         is_guardrail_request: bool,
+        is_secret_scan_request: bool,
         guardrail_details: Option<lr_mcp::gateway::firewall::GuardrailApprovalDetails>,
+        secret_scan_details: Option<lr_mcp::gateway::firewall::SecretScanApprovalDetails>,
     }
 
     let is_guardrail = popup_type == DebugFirewallType::Guardrail;
+    let is_secret_scan = popup_type == DebugFirewallType::SecretScan;
     let guardrail_details = if is_guardrail {
         Some(lr_mcp::gateway::firewall::GuardrailApprovalDetails {
             verdicts: vec![serde_json::json!({
@@ -2987,6 +2997,30 @@ pub async fn debug_trigger_firewall_popup(
         None
     };
 
+    let secret_scan_details = if is_secret_scan {
+        Some(lr_mcp::gateway::firewall::SecretScanApprovalDetails {
+            findings: vec![
+                lr_mcp::gateway::firewall::SecretFindingSummary {
+                    rule_id: "aws-access-key-id".to_string(),
+                    rule_description: "AWS Access Key ID".to_string(),
+                    category: "Cloud Provider".to_string(),
+                    matched_text: "AKIA**********MPLE".to_string(),
+                    entropy: 3.42,
+                },
+                lr_mcp::gateway::firewall::SecretFindingSummary {
+                    rule_id: "github-pat".to_string(),
+                    rule_description: "GitHub Personal Access Token".to_string(),
+                    category: "Version Control".to_string(),
+                    matched_text: "ghp_AB********************ghij".to_string(),
+                    entropy: 4.12,
+                },
+            ],
+            scan_duration_ms: 1,
+        })
+    } else {
+        None
+    };
+
     let mut sessions = vec![DebugSession {
         tool_name: tool_name.clone(),
         server_name: server_name.clone(),
@@ -2994,7 +3028,9 @@ pub async fn debug_trigger_firewall_popup(
         is_model_request,
         is_free_tier_fallback,
         is_guardrail_request: is_guardrail,
+        is_secret_scan_request: is_secret_scan,
         guardrail_details: guardrail_details.clone(),
+        secret_scan_details: secret_scan_details.clone(),
     }];
 
     if send_multiple {
@@ -3006,7 +3042,9 @@ pub async fn debug_trigger_firewall_popup(
             is_model_request,
             is_free_tier_fallback,
             is_guardrail_request: is_guardrail,
+            is_secret_scan_request: is_secret_scan,
             guardrail_details: guardrail_details.clone(),
+            secret_scan_details: secret_scan_details.clone(),
         });
 
         // Session 3: different resource
@@ -3060,6 +3098,13 @@ pub async fn debug_trigger_firewall_popup(
                 false,
                 false,
             ),
+            DebugFirewallType::SecretScan => (
+                "gpt-4o".to_string(),
+                "Secret Scan".to_string(),
+                "[Database] PostgreSQL Connection URI (entropy: 3.85)".to_string(),
+                false,
+                false,
+            ),
         };
         let alt_guardrail_details = if is_guardrail {
             Some(lr_mcp::gateway::firewall::GuardrailApprovalDetails {
@@ -3082,6 +3127,20 @@ pub async fn debug_trigger_firewall_popup(
         } else {
             None
         };
+        let alt_secret_scan_details = if is_secret_scan {
+            Some(lr_mcp::gateway::firewall::SecretScanApprovalDetails {
+                findings: vec![lr_mcp::gateway::firewall::SecretFindingSummary {
+                    rule_id: "postgres-uri".to_string(),
+                    rule_description: "PostgreSQL Connection URI".to_string(),
+                    category: "Database".to_string(),
+                    matched_text: "postg...( 45 chars)...5432".to_string(),
+                    entropy: 3.85,
+                }],
+                scan_duration_ms: 0,
+            })
+        } else {
+            None
+        };
         sessions.push(DebugSession {
             tool_name: alt_tool,
             server_name: alt_server,
@@ -3089,7 +3148,9 @@ pub async fn debug_trigger_firewall_popup(
             is_model_request: alt_model,
             is_free_tier_fallback: alt_free_tier,
             is_guardrail_request: is_guardrail,
+            is_secret_scan_request: is_secret_scan,
             guardrail_details: alt_guardrail_details,
+            secret_scan_details: alt_secret_scan_details,
         });
     }
 
@@ -3116,7 +3177,9 @@ pub async fn debug_trigger_firewall_popup(
             is_model_request: debug_session.is_model_request,
             is_guardrail_request: debug_session.is_guardrail_request,
             is_free_tier_fallback: debug_session.is_free_tier_fallback,
+            is_secret_scan_request: debug_session.is_secret_scan_request,
             guardrail_details: debug_session.guardrail_details,
+            secret_scan_details: debug_session.secret_scan_details,
         };
 
         firewall_manager.insert_pending(request_id.clone(), session);
@@ -3460,6 +3523,123 @@ pub async fn rebuild_safety_engine(
     }
 
     Ok(())
+}
+
+/// Rebuild the secret scanner engine from current config.
+/// Called on startup and when secret scanning settings change.
+#[tauri::command]
+pub async fn rebuild_secret_scanner(
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let config = config_manager.get();
+    let ss_config = &config.secret_scanning;
+
+    if ss_config.action == lr_config::SecretScanAction::Off {
+        // Clear the scanner when scanning is disabled
+        *state.secret_scanner.write() = None;
+        tracing::info!("Secret scanner cleared (scanning is off)");
+        return Ok(());
+    }
+
+    let engine_config = lr_secret_scanner::SecretScanEngineConfig {
+        entropy_threshold: ss_config.entropy_threshold,
+        allowlist: ss_config.allowlist.clone(),
+        scan_system_messages: ss_config.scan_system_messages,
+    };
+
+    match lr_secret_scanner::SecretScanEngine::new(&engine_config) {
+        Ok(engine) => {
+            *state.secret_scanner.write() = Some(Arc::new(engine));
+            tracing::info!("Secret scanner rebuilt successfully");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("Failed to rebuild secret scanner: {}", e);
+            Err(format!("Failed to rebuild secret scanner: {}", e))
+        }
+    }
+}
+
+/// Get secret scanning global configuration
+#[tauri::command]
+pub async fn get_secret_scanning_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    serde_json::to_value(&config.secret_scanning).map_err(|e| e.to_string())
+}
+
+/// Update secret scanning global configuration
+#[tauri::command]
+pub async fn update_secret_scanning_config(
+    config_json: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let new_config: lr_config::SecretScanningConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    config_manager
+        .update(|config| {
+            config.secret_scanning = new_config;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rebuild the scanner with new config
+    rebuild_secret_scanner(config_manager, state).await?;
+
+    Ok(())
+}
+
+/// Test secret scanning against input text.
+/// Always works even when scanning is Off — builds a temporary scanner from current config.
+/// Accepts an optional entropy_threshold override for testing different thresholds.
+#[tauri::command]
+pub async fn test_secret_scan(
+    input: String,
+    entropy_threshold: Option<f32>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let ss_config = &config.secret_scanning;
+
+    let engine_config = lr_secret_scanner::SecretScanEngineConfig {
+        entropy_threshold: entropy_threshold.unwrap_or(ss_config.entropy_threshold),
+        allowlist: ss_config.allowlist.clone(),
+        scan_system_messages: true, // Always scan everything in test mode
+    };
+
+    let scanner = lr_secret_scanner::SecretScanEngine::new(&engine_config)
+        .map_err(|e| format!("Failed to build test scanner: {}", e))?;
+
+    let texts = vec![lr_secret_scanner::ExtractedText {
+        label: "test".to_string(),
+        text: input,
+        message_index: 0,
+    }];
+
+    let result = scanner.scan(&texts);
+    serde_json::to_value(&result).map_err(|e| e.to_string())
+}
+
+/// List all compiled secret scanning patterns (builtin + custom)
+#[tauri::command]
+pub async fn get_secret_scanning_patterns(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let ss_config = &config.secret_scanning;
+
+    let engine = lr_secret_scanner::regex_engine::RegexEngine::new(
+        ss_config.entropy_threshold,
+        &ss_config.allowlist,
+    )
+    .map_err(|e| format!("Failed to build engine: {}", e))?;
+
+    serde_json::to_value(engine.rule_metadata()).map_err(|e| e.to_string())
 }
 
 /// Test safety check against input text (runs all enabled models).

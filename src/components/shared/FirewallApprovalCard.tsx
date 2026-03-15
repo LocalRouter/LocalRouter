@@ -14,13 +14,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ProvidersIcon, McpIcon, SkillsIcon, StoreIcon } from "@/components/icons/category-icons"
-import { Shield, Coins, Bot } from "lucide-react"
+import { Coins, Bot } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
-import type { SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
+import type { SafetyVerdict, CategoryActionRequired, SecretFindingSummary } from "@/types/tauri-commands"
 
 export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
 
-export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback" | "auto_router"
+export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback" | "auto_router" | "secret_scan"
 
 /** Determine request type from server/tool names */
 export function getRequestType(details: {
@@ -30,7 +31,11 @@ export function getRequestType(details: {
   is_guardrail_request?: boolean
   is_free_tier_fallback?: boolean
   is_auto_router_request?: boolean
+  is_secret_scan_request?: boolean
 }): RequestType {
+  if (details.is_secret_scan_request) {
+    return "secret_scan"
+  }
   if (details.is_auto_router_request) {
     return "auto_router"
   }
@@ -102,7 +107,7 @@ export function getHeaderContent(requestType: RequestType) {
       }
     case "guardrail":
       return {
-        icon: <Shield className="h-5 w-5 text-red-500" />,
+        icon: <FEATURES.guardrails.icon className={`h-5 w-5 ${FEATURES.guardrails.color}`} />,
         title: "GuardRail Alert",
         description: "Content flagged by guardrail rules",
       }
@@ -111,6 +116,12 @@ export function getHeaderContent(requestType: RequestType) {
         icon: <Bot className="h-5 w-5 text-emerald-500" />,
         title: "Auto Router",
         description: "Auto-routing will select a model for this request",
+      }
+    case "secret_scan":
+      return {
+        icon: <FEATURES.secretScanning.icon className={`h-5 w-5 ${FEATURES.secretScanning.color}`} />,
+        title: "Secrets Detected",
+        description: "Potential secrets found in outbound request",
       }
     default:
       return {
@@ -156,6 +167,9 @@ export interface FirewallApprovalCardProps {
   isGuardrailRequest?: boolean
   isFreeTierFallback?: boolean
   isAutoRouterRequest?: boolean
+  isSecretScanRequest?: boolean
+  secretScanFindings?: SecretFindingSummary[]
+  secretScanDurationMs?: number
   guardrailVerdicts?: SafetyVerdict[]
   guardrailDirection?: "request" | "response"
   guardrailActions?: CategoryActionRequired[]
@@ -194,6 +208,9 @@ export function FirewallApprovalCard({
   isGuardrailRequest,
   isFreeTierFallback,
   isAutoRouterRequest,
+  isSecretScanRequest,
+  secretScanFindings,
+  secretScanDurationMs,
   guardrailVerdicts,
   guardrailDirection,
   guardrailActions,
@@ -211,9 +228,10 @@ export function FirewallApprovalCard({
     is_guardrail_request: isGuardrailRequest,
     is_free_tier_fallback: isFreeTierFallback,
     is_auto_router_request: isAutoRouterRequest,
+    is_secret_scan_request: isSecretScanRequest,
   })
   const parsedArgs = parseArguments(argumentsPreview || "")
-  const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback"
+  const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback" && requestType !== "secret_scan"
   const disabled = !onAction || submitting
 
   return (
@@ -299,6 +317,19 @@ export function FirewallApprovalCard({
                 </>
               )}
             </>
+          ) : requestType === "secret_scan" ? (
+            <>
+              <span className="text-muted-foreground">Model:</span>
+              <span className="truncate">{toolName}</span>
+              {secretScanDurationMs !== undefined && (
+                <>
+                  <span className="text-muted-foreground">Scan time:</span>
+                  <span>{secretScanDurationMs}ms</span>
+                </>
+              )}
+              <span className="text-muted-foreground">Findings:</span>
+              <span className="font-medium text-orange-500">{secretScanFindings?.length ?? 0} secret(s) detected</span>
+            </>
           ) : (
             <>
               <span className="text-muted-foreground">Tool:</span>
@@ -325,7 +356,7 @@ export function FirewallApprovalCard({
           )}
 
           {/* Arguments inline (non-guardrail, non-marketplace with listing) */}
-          {requestType !== "guardrail" && !(requestType === "marketplace" && marketplaceListing) && parsedArgs.map(({ key, value }) => (
+          {requestType !== "guardrail" && requestType !== "secret_scan" && !(requestType === "marketplace" && marketplaceListing) && parsedArgs.map(({ key, value }) => (
             <span key={key} className="contents">
               <span className="text-muted-foreground">{key}:</span>
               <span className="font-mono truncate" title={value}>
@@ -397,6 +428,30 @@ export function FirewallApprovalCard({
             )}
           </div>
         )}
+
+        {/* Secret scan findings */}
+        {requestType === "secret_scan" && secretScanFindings && secretScanFindings.length > 0 && (
+          <div className="mt-2 space-y-1.5 max-h-64 overflow-auto">
+            <span className="text-[10px] font-semibold text-muted-foreground">Detected Secrets</span>
+            {secretScanFindings.map((finding, i) => (
+              <div key={i} className="bg-muted/50 rounded px-2 py-1.5 text-xs space-y-0.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">{finding.rule_description}</span>
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-500/20 text-orange-600">
+                    {finding.category.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <div className="font-mono text-[10px] bg-background/50 rounded px-1 py-0.5 truncate" title={finding.matched_text}>
+                  {finding.matched_text}
+                </div>
+                <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                  <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
+                  <span className="ml-auto font-mono">{finding.rule_id}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Action Buttons */}
@@ -409,7 +464,7 @@ export function FirewallApprovalCard({
             onClick={() => onAction?.("deny")}
             disabled={disabled}
           >
-            Deny Once
+            {requestType === "secret_scan" ? "Block" : "Deny Once"}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -422,7 +477,7 @@ export function FirewallApprovalCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && (
+              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && (
                 <DropdownMenuItem onClick={() => onAction?.("deny_session")}>
                   Deny for Session
                 </DropdownMenuItem>
@@ -442,7 +497,17 @@ export function FirewallApprovalCard({
                   Disable Client
                 </DropdownMenuItem>
               )}
-              {!isGuardrailRequest && (
+              {isSecretScanRequest && (
+                <DropdownMenuItem onClick={() => onAction?.("disable_client")}>
+                  Disable Client
+                </DropdownMenuItem>
+              )}
+              {isSecretScanRequest && (
+                <DropdownMenuItem onClick={() => onAction?.("deny_always")}>
+                  Disable Scan for Client
+                </DropdownMenuItem>
+              )}
+              {!isGuardrailRequest && !isSecretScanRequest && (
                 <DropdownMenuItem onClick={() => onAction?.("deny_always")}>
                   Deny Always
                 </DropdownMenuItem>
@@ -470,7 +535,7 @@ export function FirewallApprovalCard({
             onClick={() => onAction?.("allow_once")}
             disabled={disabled}
           >
-            Allow Once
+            {requestType === "secret_scan" ? "Allow" : "Allow Once"}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -482,7 +547,7 @@ export function FirewallApprovalCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && (
+              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && (
                 <DropdownMenuItem onClick={() => onAction?.("allow_session")}>
                   Allow for Session
                 </DropdownMenuItem>
@@ -492,7 +557,7 @@ export function FirewallApprovalCard({
                   Allow for 1 Minute
                 </DropdownMenuItem>
               )}
-              {(isModelRequest || isGuardrailRequest || isFreeTierFallback) && (
+              {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isSecretScanRequest) && (
                 <DropdownMenuItem onClick={() => onAction?.("allow_1_hour")}>
                   Allow for 1 Hour
                 </DropdownMenuItem>
@@ -502,9 +567,11 @@ export function FirewallApprovalCard({
                   Allow Always for Categories
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={() => onAction?.("allow_permanent")}>
-                {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
-              </DropdownMenuItem>
+              {!isSecretScanRequest && (
+                <DropdownMenuItem onClick={() => onAction?.("allow_permanent")}>
+                  {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

@@ -94,7 +94,10 @@ pub async fn list_clients(
             template_id: c.template_id.clone(),
             sync_config: c.sync_config,
             guardrails_active: {
-                let effective_actions = c.guardrails.category_actions.as_deref()
+                let effective_actions = c
+                    .guardrails
+                    .category_actions
+                    .as_deref()
                     .unwrap_or(&config.guardrails.category_actions);
                 effective_actions.iter().any(|a| a.action != "allow")
             },
@@ -162,7 +165,10 @@ pub async fn create_client(
         sync_config: client.sync_config,
         guardrails_active: {
             let cfg = config_manager.get();
-            let effective_actions = client.guardrails.category_actions.as_deref()
+            let effective_actions = client
+                .guardrails
+                .category_actions
+                .as_deref()
                 .unwrap_or(&cfg.guardrails.category_actions);
             effective_actions.iter().any(|a| a.action != "allow")
         },
@@ -829,6 +835,122 @@ pub async fn get_clients_using_strategy(
 }
 
 // ============================================================================
+// Feature Client Status Commands
+// ============================================================================
+
+/// Status of one client for a specific optimize feature
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientFeatureStatus {
+    pub client_id: String,
+    pub client_name: String,
+    /// Whether the feature is effectively active for this client
+    pub active: bool,
+    /// "override" if per-client setting exists, "global" if inherited
+    pub source: String,
+}
+
+/// Get effective feature status for all clients
+#[tauri::command]
+pub async fn get_feature_clients_status(
+    feature: String,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<Vec<ClientFeatureStatus>, String> {
+    let config = config_manager.get();
+    let clients = client_manager.list_clients();
+
+    Ok(clients
+        .into_iter()
+        .filter(|c| !c.name.starts_with("_test_strategy_"))
+        .map(|c| {
+            let (active, source) = match feature.as_str() {
+                "json_repair" => (
+                    c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
+                    if c.json_repair.enabled.is_some() {
+                        "override"
+                    } else {
+                        "global"
+                    },
+                ),
+                "prompt_compression" => (
+                    c.prompt_compression
+                        .enabled
+                        .unwrap_or(config.prompt_compression.enabled),
+                    if c.prompt_compression.enabled.is_some() {
+                        "override"
+                    } else {
+                        "global"
+                    },
+                ),
+                "guardrails" => {
+                    let effective_actions = c
+                        .guardrails
+                        .category_actions
+                        .as_deref()
+                        .unwrap_or(&config.guardrails.category_actions);
+                    (
+                        effective_actions.iter().any(|a| a.action != "allow"),
+                        if c.guardrails.category_actions.is_some() {
+                            "override"
+                        } else {
+                            "global"
+                        },
+                    )
+                }
+                "secret_scanning" => {
+                    let effective_action = c
+                        .secret_scanning
+                        .action
+                        .as_ref()
+                        .unwrap_or(&config.secret_scanning.action);
+                    (
+                        *effective_action != lr_config::SecretScanAction::Off,
+                        if c.secret_scanning.action.is_some() {
+                            "override"
+                        } else {
+                            "global"
+                        },
+                    )
+                }
+                "catalog_compression" => (
+                    c.is_catalog_compression_enabled(&config.context_management),
+                    if c.catalog_compression_enabled.is_some() {
+                        "override"
+                    } else {
+                        "global"
+                    },
+                ),
+                "context_management" => (
+                    c.is_context_management_enabled(&config.context_management),
+                    if c.context_management_enabled.is_some() {
+                        "override"
+                    } else {
+                        "global"
+                    },
+                ),
+                "strong_weak" => {
+                    let strategy = config.strategies.iter().find(|s| s.id == c.strategy_id);
+                    let active = strategy
+                        .and_then(|s| s.auto_config.as_ref())
+                        .and_then(|ac| ac.routellm_config.as_ref())
+                        .map(|rc| rc.enabled)
+                        .unwrap_or(false);
+                    (active, "global")
+                }
+                _ => (false, "global"),
+            };
+
+            ClientFeatureStatus {
+                client_id: c.id.clone(),
+                client_name: c.name.clone(),
+                active,
+                source: source.to_string(),
+            }
+        })
+        .collect())
+}
+
+// ============================================================================
 // Firewall Approval Commands
 // ============================================================================
 
@@ -1042,6 +1164,15 @@ pub async fn submit_firewall_approval(
                         info.server_name,
                         info.tool_name
                     );
+                } else if info.is_secret_scan_request {
+                    // Add time-based secret scan bypass (1 hour)
+                    state
+                        .secret_scan_approval_tracker
+                        .add_1_hour_bypass(&info.client_id);
+                    tracing::info!(
+                        "Added 1-hour secret scan bypass for client {}",
+                        info.client_id
+                    );
                 }
                 // Note: Allow1Hour for MCP/skill tools is not applicable (they use AllowSession)
             } else {
@@ -1087,6 +1218,23 @@ pub async fn submit_firewall_approval(
                         lr_config::FreeTierFallback::Off,
                     )
                     .await?;
+                } else if info.is_secret_scan_request {
+                    // Disable secret scanning for this client
+                    config_manager
+                        .update(|cfg| {
+                            if let Some(client) =
+                                cfg.clients.iter_mut().find(|c| c.id == info.client_id)
+                            {
+                                client.secret_scanning.action =
+                                    Some(lr_config::SecretScanAction::Off);
+                            }
+                        })
+                        .map_err(|e| e.to_string())?;
+                    config_manager.save().await.map_err(|e| e.to_string())?;
+                    tracing::info!(
+                        "Disabled secret scanning for client {} (DenyAlways → set action to Off)",
+                        info.client_id
+                    );
                 } else if info.is_model_request {
                     // Update model permissions to Off
                     update_model_permission_for_deny_permanent(&app, &config_manager, info).await?;
@@ -1123,19 +1271,19 @@ pub async fn submit_firewall_approval(
                                 {
                                     for category in &flagged_categories {
                                         // Update or add the category action to "block"
-                                        let actions = client.guardrails.category_actions.get_or_insert_with(Vec::new);
-                                        if let Some(existing) = actions
-                                            .iter_mut()
-                                            .find(|a| a.category == *category)
+                                        let actions = client
+                                            .guardrails
+                                            .category_actions
+                                            .get_or_insert_with(Vec::new);
+                                        if let Some(existing) =
+                                            actions.iter_mut().find(|a| a.category == *category)
                                         {
                                             existing.action = "block".to_string();
                                         } else {
-                                            actions.push(
-                                                lr_config::CategoryActionEntry {
-                                                    category: category.clone(),
-                                                    action: "block".to_string(),
-                                                },
-                                            );
+                                            actions.push(lr_config::CategoryActionEntry {
+                                                category: category.clone(),
+                                                action: "block".to_string(),
+                                            });
                                         }
                                     }
                                 }
@@ -1172,19 +1320,19 @@ pub async fn submit_firewall_approval(
                                 {
                                     for category in &flagged_categories {
                                         // Update or add the category action to "allow"
-                                        let actions = client.guardrails.category_actions.get_or_insert_with(Vec::new);
-                                        if let Some(existing) = actions
-                                            .iter_mut()
-                                            .find(|a| a.category == *category)
+                                        let actions = client
+                                            .guardrails
+                                            .category_actions
+                                            .get_or_insert_with(Vec::new);
+                                        if let Some(existing) =
+                                            actions.iter_mut().find(|a| a.category == *category)
                                         {
                                             existing.action = "allow".to_string();
                                         } else {
-                                            actions.push(
-                                                lr_config::CategoryActionEntry {
-                                                    category: category.clone(),
-                                                    action: "allow".to_string(),
-                                                },
-                                            );
+                                            actions.push(lr_config::CategoryActionEntry {
+                                                category: category.clone(),
+                                                action: "allow".to_string(),
+                                            });
                                         }
                                     }
                                 }
@@ -1330,7 +1478,11 @@ pub(crate) fn reevaluate_pending_approvals(
             FirewallCheckContext::Guardrail {
                 has_time_based_bypass: guardrail_approval_tracker.has_valid_bypass(&info.client_id),
                 has_time_based_denial: guardrail_denial_tracker.has_valid_denial(&info.client_id),
-                category_actions_empty: client.guardrails.category_actions.as_ref().map_or(true, |a| a.is_empty()),
+                category_actions_empty: client
+                    .guardrails
+                    .category_actions
+                    .as_ref()
+                    .map_or(true, |a| a.is_empty()),
             }
         } else if info.is_model_request {
             FirewallCheckContext::Model {
@@ -2777,4 +2929,58 @@ pub async fn sync_client_config(
         provider_registry.inner(),
     )
     .await
+}
+
+// ============================================================================
+// Per-Client Secret Scanning Commands
+// ============================================================================
+
+/// Get the secret scanning configuration for a specific client
+#[tauri::command]
+pub async fn get_client_secret_scanning_config(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    serde_json::to_value(&client.secret_scanning).map_err(|e| e.to_string())
+}
+
+/// Update the secret scanning configuration for a specific client
+#[tauri::command]
+pub async fn update_client_secret_scanning_config(
+    client_id: String,
+    config_json: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let new_config: lr_config::ClientSecretScanningConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.secret_scanning = new_config.clone();
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
 }

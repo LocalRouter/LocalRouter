@@ -137,6 +137,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Clients
   // ============================================================================
   'list_clients': () => mockData.clients,
+  'get_feature_clients_status': () => mockData.clients.map((c: { client_id: string; name: string }) => ({
+    client_id: c.client_id,
+    client_name: c.name,
+    active: true,
+    source: 'global' as const,
+  })),
   'get_client': (args) => mockData.clients.find(c => c.id === args?.id || c.client_id === args?.clientId),
   'create_client': (args) => {
     const newClient = {
@@ -2657,7 +2663,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     ],
     default_confidence_threshold: 0.5,
     parallel_guardrails: true,
-    moderation_api_enabled: false,
+    moderation_api_enabled: true,
   }),
   'update_guardrails_config': () => {
     toast.success('GuardRails configuration saved (demo)')
@@ -2904,8 +2910,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_secret_scanning_config': () => ({
     action: 'off',
     entropy_threshold: 3.5,
-    custom_rules: [],
-    ml_verifier: null,
     scan_system_messages: false,
     allowlist: [],
   }),
@@ -2927,16 +2931,21 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         rule_id: 'aws-access-key-id',
         rule_description: 'AWS Access Key ID',
         category: 'Cloud Provider',
+        regex_pattern: '(?:^|[^A-Za-z0-9/+=])(AKIA[0-9A-Z]{16})(?:[^A-Za-z0-9/+=]|$)',
+        keywords: ['AKIA'],
+        rule_entropy_threshold: 3.0,
         message_index: 0,
         matched_text: 'AKIA**************MPLE',
         entropy: 3.42,
-        ml_confidence: null,
-        ml_verified: null,
       },
     ],
     scan_duration_ms: 1,
     rules_evaluated: 30,
   }),
+  'get_secret_scanning_patterns': () => [
+    { id: 'aws-access-key-id', description: 'AWS Access Key ID', regex: '(?:^|[^A-Za-z0-9/+=])(AKIA[0-9A-Z]{16})(?:[^A-Za-z0-9/+=]|$)', category: 'Cloud Provider', entropy_threshold: 3.0, keywords: ['AKIA'] },
+    { id: 'github-pat', description: 'GitHub Personal Access Token', regex: 'ghp_[A-Za-z0-9]{36,}', category: 'Version Control', entropy_threshold: 3.5, keywords: ['ghp_'] },
+  ],
 
   // ============================================================================
   // Free Tier

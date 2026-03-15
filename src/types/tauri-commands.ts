@@ -1686,6 +1686,22 @@ export interface GetClientsUsingStrategyParams {
   strategyId: string
 }
 
+/** Status of one client for a specific Optimize feature.
+ * Rust: src-tauri/src/ui/commands_clients.rs - ClientFeatureStatus struct */
+export interface ClientFeatureStatus {
+  client_id: string
+  client_name: string
+  /** Whether the feature is effectively active for this client */
+  active: boolean
+  /** "override" if per-client setting exists, "global" if inherited */
+  source: 'override' | 'global'
+}
+
+/** Params for get_feature_clients_status */
+export interface GetFeatureClientsStatusParams {
+  feature: 'json_repair' | 'prompt_compression' | 'guardrails' | 'secret_scanning' | 'catalog_compression' | 'context_management' | 'strong_weak'
+}
+
 // =============================================================================
 // Permission Commands
 // Rust: src-tauri/src/ui/commands_clients.rs
@@ -2947,8 +2963,6 @@ export type SecretScanAction = 'ask' | 'notify' | 'off'
 export interface SecretScanningConfig {
   action: SecretScanAction
   entropy_threshold: number
-  custom_rules: CustomSecretRule[]
-  ml_verifier: SecretMlVerifierConfig | null
   scan_system_messages: boolean
   allowlist: string[]
 }
@@ -2958,24 +2972,6 @@ export interface ClientSecretScanningConfig {
   action: SecretScanAction | null
 }
 
-/** A custom user-defined secret detection rule */
-export interface CustomSecretRule {
-  id: string
-  description: string
-  regex: string
-  entropy: number | null
-  keywords: string[]
-  enabled: boolean
-}
-
-/** ML verifier configuration for secret scanning */
-export interface SecretMlVerifierConfig {
-  enabled: boolean
-  provider_id: string
-  model_name: string
-  confidence_threshold: number
-}
-
 /** Summary of a single secret finding (for approval popup) */
 export interface SecretFindingSummary {
   rule_id: string
@@ -2983,7 +2979,6 @@ export interface SecretFindingSummary {
   category: string
   matched_text: string
   entropy: number
-  ml_confidence: number | null
 }
 
 /** Secret scan approval details (sent to popup) */
@@ -3004,11 +2999,22 @@ export interface SecretFinding {
   rule_id: string
   rule_description: string
   category: string
+  regex_pattern: string
+  keywords: string[]
+  rule_entropy_threshold: number | null
   message_index: number
   matched_text: string
   entropy: number
-  ml_confidence: number | null
-  ml_verified: boolean | null
+}
+
+/** Metadata about a compiled secret scanning rule */
+export interface SecretRuleMetadata {
+  id: string
+  description: string
+  regex: string
+  category: string
+  entropy_threshold: number | null
+  keywords: string[]
 }
 
 /** Params for get_secret_scanning_config - no params needed */

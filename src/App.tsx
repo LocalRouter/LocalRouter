@@ -18,6 +18,7 @@ import { CatalogCompressionView } from './views/catalog-compression'
 import { ResponseRagView } from './views/response-rag'
 import { CompressionView } from './views/compression'
 import { JsonRepairView } from './views/json-repair'
+import { SecretScanningView } from './views/secret-scanning'
 import { MarketplaceView } from './views/marketplace'
 import { OptimizeOverviewView } from './views/optimize-overview'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
@@ -323,6 +324,13 @@ function App() {
       case 'compression':
         return (
           <CompressionView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'secret-scanning':
+        return (
+          <SecretScanningView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />
