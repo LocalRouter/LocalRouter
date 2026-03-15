@@ -1498,6 +1498,55 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       { name: 'Cost Calculation', support: 'supported', notes: 'Based on catalog pricing data' },
     ],
   }),
+  'get_all_provider_feature_support': (): ProviderFeatureSupport[] => {
+    const mockHandlerFn = mockHandlers['get_provider_feature_support'] as (args?: InvokeArgs) => ProviderFeatureSupport
+    const openai = mockHandlerFn({ instanceName: 'openai' })
+
+    const anthropic: ProviderFeatureSupport = {
+      ...openai,
+      provider_type: 'anthropic',
+      provider_instance: 'anthropic',
+      endpoints: openai.endpoints.map(e => {
+        if (e.name === 'Embeddings' || e.name === 'Image Generation') return { ...e, support: 'not_supported' as const, notes: null }
+        if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_implemented' as const }
+        return e
+      }),
+      model_features: openai.model_features.map(f => {
+        if (f.name === 'Extended Thinking') return { ...f, support: 'partial' as const, notes: 'Claude 4.5 models only' }
+        if (f.name === 'Prompt Caching') return { ...f, support: 'supported' as const }
+        if (f.name === 'Reasoning Tokens' || f.name === 'Log Probabilities') return { ...f, support: 'not_supported' as const, notes: null }
+        return f
+      }),
+    }
+
+    const gemini: ProviderFeatureSupport = {
+      ...openai,
+      provider_type: 'gemini',
+      provider_instance: 'gemini',
+      model_features: openai.model_features.map(f => {
+        if (f.name === 'Thinking Level') return { ...f, support: 'partial' as const, notes: 'Gemini 2.0/3 models only' }
+        if (f.name === 'Reasoning Tokens' || f.name === 'Extended Thinking' || f.name === 'Prompt Caching' || f.name === 'Log Probabilities') return { ...f, support: 'not_supported' as const, notes: null }
+        return f
+      }),
+    }
+
+    const ollama: ProviderFeatureSupport = {
+      ...openai,
+      provider_type: 'ollama',
+      provider_instance: 'ollama',
+      endpoints: openai.endpoints.map(e => {
+        if (e.name === 'Image Generation') return { ...e, support: 'not_supported' as const, notes: null }
+        if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_supported' as const, notes: null }
+        return e
+      }),
+      model_features: openai.model_features.map(f => {
+        if (f.name === 'Structured Outputs' || f.name === 'Log Probabilities' || f.name === 'Reasoning Tokens' || f.name === 'Extended Thinking' || f.name === 'Thinking Level' || f.name === 'Prompt Caching') return { ...f, support: 'not_supported' as const, notes: null }
+        return f
+      }),
+    }
+
+    return [openai, anthropic, gemini, ollama]
+  },
   'get_feature_endpoint_matrix': (): FeatureEndpointMatrix => ({
     endpoints: ['Chat', 'Completions', 'Embeddings', 'Images', 'Audio', 'Moderations', 'Responses', 'Batches', 'Realtime'],
     client_modes: ['LLM Only', 'MCP Only', 'MCP & LLM', 'MCP via LLM'],

@@ -729,11 +729,42 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 })
                                 .collect();
 
+                        // Build ML verifier config if enabled
+                        let ml_verifier = ss_config.ml_verifier.as_ref().and_then(|ml| {
+                            if !ml.enabled {
+                                return None;
+                            }
+                            // Look up provider base URL
+                            let provider = app_config.providers.iter().find(|p| p.name == ml.provider_id);
+                            let base_url = provider
+                                .and_then(|p| p.provider_config.as_ref())
+                                .and_then(|cfg| cfg.get("endpoint"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("http://localhost:11434")
+                                .to_string();
+                            let api_key = provider
+                                .and_then(|p| p.provider_config.as_ref())
+                                .and_then(|cfg| cfg.get("api_key"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let use_ollama = provider.map_or(false, |p| {
+                                matches!(p.provider_type, lr_config::ProviderType::Ollama)
+                            });
+                            Some(lr_secret_scanner::MlVerifierConfig {
+                                provider_base_url: base_url,
+                                provider_api_key: api_key,
+                                model_name: ml.model_name.clone(),
+                                confidence_threshold: ml.confidence_threshold,
+                                use_ollama,
+                            })
+                        });
+
                         let engine_config = lr_secret_scanner::SecretScanEngineConfig {
                             entropy_threshold: ss_config.entropy_threshold,
                             custom_rules,
                             allowlist: ss_config.allowlist.clone(),
                             scan_system_messages: ss_config.scan_system_messages,
+                            ml_verifier,
                         };
 
                         match lr_secret_scanner::SecretScanEngine::new(&engine_config) {
@@ -1686,6 +1717,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_catalog_metadata,
             // Feature support matrix commands
             ui::commands::get_provider_feature_support,
+            ui::commands::get_all_provider_feature_support,
             ui::commands::get_feature_endpoint_matrix,
             // Server configuration commands
             ui::commands::get_server_config,

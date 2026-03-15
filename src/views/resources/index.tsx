@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
 import { ModelsPanel } from "./models-panel"
+import { CompatibilityPanel } from "./compatibility-panel"
 
 interface LlmProvidersViewProps {
   activeSubTab: string | null
@@ -129,6 +130,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="models">All Models</TabsTrigger>
+          <TabsTrigger value="compatibility">Compatibility</TabsTrigger>
         </TabsList>
 
         <TabsContent value="providers" className="flex-1 min-h-0 mt-4">
@@ -151,6 +153,10 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
             onSelect={(id) => handleItemSelect("models", id)}
             onViewChange={onTabChange}
           />
+        </TabsContent>
+
+        <TabsContent value="compatibility" className="flex-1 min-h-0 mt-4">
+          <CompatibilityPanel />
         </TabsContent>
 
       </Tabs>

@@ -1192,6 +1192,26 @@ pub async fn get_provider_feature_support(
     Ok(provider.get_feature_support(&instance_name))
 }
 
+/// Get feature support information for all provider instances.
+///
+/// Returns feature support data for every registered provider, useful for
+/// rendering a cross-provider compatibility matrix.
+#[tauri::command]
+pub async fn get_all_provider_feature_support(
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<Vec<lr_providers::ProviderFeatureSupport>, String> {
+    let providers = registry.list_providers();
+    let mut results = Vec::with_capacity(providers.len());
+
+    for info in &providers {
+        if let Some(provider) = registry.get_provider(&info.instance_name) {
+            results.push(provider.get_feature_support(&info.instance_name));
+        }
+    }
+
+    Ok(results)
+}
+
 /// Get the static feature × endpoint × client mode matrix.
 ///
 /// Returns hardcoded data showing which optimization features apply to which

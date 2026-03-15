@@ -3096,4 +3096,6 @@ export interface GetProviderFeatureSupportParams {
   instanceName: string
 }
 
+/** Params for get_all_provider_feature_support - no params needed */
+
 /** Params for get_feature_endpoint_matrix - no params needed */
