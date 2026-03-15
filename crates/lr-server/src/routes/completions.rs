@@ -73,6 +73,9 @@ pub async fn completions(
     // Validate client provider access (if using client auth)
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
 
+    // Secret scanning: check outbound request for leaked secrets (before guardrails)
+    run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
+
     // Start guardrail scan in parallel
     let guardrail_handle = {
         let state_ref = state.clone();
@@ -134,6 +137,16 @@ pub async fn completions(
         logprobs: None,
         top_logprobs: None,
         pre_computed_routing: None,
+        n: request.n,
+        logit_bias: None,
+        parallel_tool_calls: None,
+        service_tier: None,
+        store: None,
+        metadata: None,
+        modalities: None,
+        audio: None,
+        prediction: None,
+        reasoning_effort: None,
     };
 
     // Determine if we can run guardrails in parallel with the LLM request
@@ -283,7 +296,10 @@ async fn run_guardrails_scan(
     }
 
     // Resolve effective category actions: per-client override > global default
-    let effective_category_actions = client.guardrails.category_actions.as_deref()
+    let effective_category_actions = client
+        .guardrails
+        .category_actions
+        .as_deref()
         .unwrap_or(&config.guardrails.category_actions);
 
     if effective_category_actions.is_empty() {
@@ -451,6 +467,144 @@ fn build_flagged_text_preview(texts: &[lr_guardrails::text_extractor::ExtractedT
             }
         }
         None => String::new(),
+    }
+}
+
+/// Check outbound completion request for leaked secrets.
+async fn run_secret_scan_check(
+    state: &AppState,
+    client_ctx: Option<&ClientAuthContext>,
+    request: &CompletionRequest,
+) -> ApiResult<()> {
+    let Some(client_ctx) = client_ctx else {
+        return Ok(());
+    };
+    let config = state.config_manager.get();
+    let client = state.client_manager.get_client(&client_ctx.client_id);
+
+    let effective_action = client
+        .as_ref()
+        .and_then(|c| c.secret_scanning.action.as_ref())
+        .unwrap_or(&config.secret_scanning.action);
+
+    if *effective_action == lr_config::SecretScanAction::Off {
+        return Ok(());
+    }
+
+    if state
+        .secret_scan_approval_tracker
+        .has_valid_bypass(&client_ctx.client_id)
+    {
+        return Ok(());
+    }
+
+    // Clone Arc out of the RwLock to avoid holding the guard across await points
+    let scanner = {
+        let guard = state.secret_scanner.read();
+        guard.as_ref().cloned()
+    };
+    let Some(scanner) = scanner else {
+        return Ok(());
+    };
+    if !scanner.has_rules() {
+        return Ok(());
+    }
+
+    let request_json = serde_json::to_value(request).unwrap_or_default();
+    let guardrail_texts = lr_guardrails::text_extractor::extract_request_text(&request_json);
+    let texts: Vec<lr_secret_scanner::ExtractedText> = guardrail_texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| lr_secret_scanner::ExtractedText {
+            label: t.label.clone(),
+            text: t.text.clone(),
+            message_index: i,
+        })
+        .collect();
+
+    let result = scanner.scan(&texts).await;
+    if result.findings.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!(
+        "Secret scan found {} potential secrets in completion request from client {}",
+        result.findings.len(),
+        client_ctx.client_id
+    );
+
+    match effective_action {
+        lr_config::SecretScanAction::Notify => {
+            let payload =
+                serde_json::to_string(&result.findings).unwrap_or_else(|_| "[]".to_string());
+            state.emit_event("secret-scan-notify", &payload);
+            Ok(())
+        }
+        lr_config::SecretScanAction::Ask => {
+            use lr_mcp::gateway::firewall::{
+                FirewallApprovalAction, SecretFindingSummary, SecretScanApprovalDetails,
+            };
+
+            let client_name = client
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| client_ctx.client_id.clone());
+
+            let details = SecretScanApprovalDetails {
+                findings: result
+                    .findings
+                    .iter()
+                    .map(|f| SecretFindingSummary {
+                        rule_id: f.rule_id.clone(),
+                        rule_description: f.rule_description.clone(),
+                        category: f.category.clone(),
+                        matched_text: f.matched_text.clone(),
+                        entropy: f.entropy,
+                        ml_confidence: f.ml_confidence,
+                    })
+                    .collect(),
+                scan_duration_ms: result.scan_duration_ms,
+            };
+
+            let preview = result
+                .findings
+                .iter()
+                .map(|f| {
+                    format!(
+                        "[{}] {} (entropy: {:.2})",
+                        f.category, f.rule_description, f.entropy
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let response = state
+                .mcp_gateway
+                .firewall_manager
+                .request_secret_scan_approval(
+                    client_ctx.client_id.clone(),
+                    client_name,
+                    request.model.clone(),
+                    details,
+                    preview,
+                )
+                .await
+                .map_err(|e| {
+                    ApiErrorResponse::internal_error(format!("Secret scan approval failed: {}", e))
+                })?;
+
+            match response.action {
+                FirewallApprovalAction::AllowOnce
+                | FirewallApprovalAction::AllowSession
+                | FirewallApprovalAction::Allow1Minute
+                | FirewallApprovalAction::Allow1Hour
+                | FirewallApprovalAction::AllowPermanent => Ok(()),
+                _ => Err(ApiErrorResponse::forbidden(
+                    "Request blocked: potential secrets detected in outbound request",
+                )),
+            }
+        }
+        lr_config::SecretScanAction::Off => Ok(()),
     }
 }
 

@@ -21,6 +21,22 @@ use super::{
 
 const GROQ_API_BASE: &str = "https://api.groq.com/openai/v1";
 
+/// Map audio file extension to MIME type
+fn audio_mime_type(file_name: &str) -> String {
+    let ext = file_name.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "mp3" => "audio/mpeg",
+        "mp4" | "m4a" => "audio/mp4",
+        "ogg" | "oga" => "audio/ogg",
+        "wav" => "audio/wav",
+        "webm" => "audio/webm",
+        "flac" => "audio/flac",
+        "opus" => "audio/opus",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
 /// Groq provider for fast LLM inference
 pub struct GroqProvider {
     client: Client,
@@ -326,6 +342,8 @@ impl ModelProvider for GroqProvider {
                 })
                 .collect(),
             usage: groq_response.usage,
+            system_fingerprint: None,
+            service_tier: None,
             extensions: None,
             routellm_win_rate: None,
             request_usage_entries: None,
@@ -424,6 +442,213 @@ impl ModelProvider for GroqProvider {
         });
 
         Ok(Box::pin(converted_stream))
+    }
+
+    async fn transcribe(
+        &self,
+        request: super::AudioTranscriptionRequest,
+    ) -> AppResult<super::AudioTranscriptionResponse> {
+        let mut form = reqwest::multipart::Form::new();
+
+        // Add the audio file
+        let file_part = reqwest::multipart::Part::bytes(request.file)
+            .file_name(request.file_name.clone())
+            .mime_str(&audio_mime_type(&request.file_name))
+            .map_err(|e| AppError::Provider(format!("Failed to set MIME type: {}", e)))?;
+        form = form.part("file", file_part);
+
+        // Add required model field
+        form = form.text("model", request.model);
+
+        // Add optional fields
+        if let Some(language) = request.language {
+            form = form.text("language", language);
+        }
+        if let Some(prompt) = request.prompt {
+            form = form.text("prompt", prompt);
+        }
+        if let Some(response_format) = request.response_format {
+            form = form.text("response_format", response_format);
+        }
+        if let Some(temperature) = request.temperature {
+            form = form.text("temperature", temperature.to_string());
+        }
+        if let Some(granularities) = request.timestamp_granularities {
+            for granularity in granularities {
+                form = form.text("timestamp_granularities[]", granularity);
+            }
+        }
+
+        let response = self
+            .client
+            .post(format!("{}/audio/transcriptions", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Groq transcription request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                reqwest::StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!(
+                    "Groq transcription API error ({}): {}",
+                    status, error_text
+                )),
+            });
+        }
+
+        let transcription: super::AudioTranscriptionResponse =
+            response.json().await.map_err(|e| {
+                AppError::Provider(format!(
+                    "Failed to parse Groq transcription response: {}",
+                    e
+                ))
+            })?;
+
+        Ok(transcription)
+    }
+
+    async fn translate_audio(
+        &self,
+        request: super::AudioTranslationRequest,
+    ) -> AppResult<super::AudioTranslationResponse> {
+        let mut form = reqwest::multipart::Form::new();
+
+        // Add the audio file
+        let file_part = reqwest::multipart::Part::bytes(request.file)
+            .file_name(request.file_name.clone())
+            .mime_str(&audio_mime_type(&request.file_name))
+            .map_err(|e| AppError::Provider(format!("Failed to set MIME type: {}", e)))?;
+        form = form.part("file", file_part);
+
+        // Add required model field
+        form = form.text("model", request.model);
+
+        // Add optional fields (no language field — translation always outputs English)
+        if let Some(prompt) = request.prompt {
+            form = form.text("prompt", prompt);
+        }
+        if let Some(response_format) = request.response_format {
+            form = form.text("response_format", response_format);
+        }
+        if let Some(temperature) = request.temperature {
+            form = form.text("temperature", temperature.to_string());
+        }
+
+        let response = self
+            .client
+            .post(format!("{}/audio/translations", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Provider(format!("Groq audio translation request failed: {}", e))
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                reqwest::StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!(
+                    "Groq audio translation API error ({}): {}",
+                    status, error_text
+                )),
+            });
+        }
+
+        let translation: super::AudioTranslationResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!(
+                "Failed to parse Groq audio translation response: {}",
+                e
+            ))
+        })?;
+
+        Ok(translation)
+    }
+
+    async fn speech(&self, request: super::SpeechRequest) -> AppResult<super::SpeechResponse> {
+        let response = self
+            .client
+            .post(format!("{}/audio/speech", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Groq speech request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                reqwest::StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!(
+                    "Groq speech API error ({}): {}",
+                    status, error_text
+                )),
+            });
+        }
+
+        // Determine content type from response headers or requested format
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                // Fallback: derive from requested format
+                match request.response_format.as_deref() {
+                    Some("opus") => "audio/opus".to_string(),
+                    Some("aac") => "audio/aac".to_string(),
+                    Some("flac") => "audio/flac".to_string(),
+                    Some("wav") => "audio/wav".to_string(),
+                    Some("pcm") => "audio/pcm".to_string(),
+                    _ => "audio/mpeg".to_string(), // mp3 is the default
+                }
+            });
+
+        let audio_data = response
+            .bytes()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to read Groq audio data: {}", e)))?
+            .to_vec();
+
+        Ok(super::SpeechResponse {
+            audio_data,
+            content_type,
+        })
+    }
+
+    fn supports_transcription(&self) -> bool {
+        true
+    }
+
+    fn supports_audio_translation(&self) -> bool {
+        true
+    }
+
+    fn supports_speech(&self) -> bool {
+        true
     }
 }
 

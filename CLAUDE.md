@@ -121,6 +121,9 @@ export LOCALROUTER_KEYCHAIN=file  # WARNING: plain text secrets!
 | `POST /v1/chat/completions` | Chat (streaming) |
 | `POST /v1/completions` | Completions |
 | `POST /v1/embeddings` | Embeddings |
+| `POST /v1/audio/transcriptions` | Speech-to-text (STT) |
+| `POST /v1/audio/translations` | Speech-to-English translation |
+| `POST /v1/audio/speech` | Text-to-speech (TTS) |
 | `POST /mcp/*` | MCP proxy |
 | `GET /openapi.json` | OpenAPI spec |
 | `GET /health` | Health check |

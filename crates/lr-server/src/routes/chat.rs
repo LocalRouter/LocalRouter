@@ -283,6 +283,9 @@ pub async fn chat_completions(
         check_llm_access(client)?;
     }
 
+    // Secret scanning: check outbound request for leaked secrets (before guardrails)
+    run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
+
     // Start guardrail scan in parallel (only if safety engine is available)
     let guardrail_handle = if client_auth.is_some()
         && state
@@ -1262,7 +1265,10 @@ async fn run_guardrails_scan(
     }
 
     // Resolve effective category actions: per-client override > global default
-    let effective_category_actions = client.guardrails.category_actions.as_deref()
+    let effective_category_actions = client
+        .guardrails
+        .category_actions
+        .as_deref()
         .unwrap_or(&config.guardrails.category_actions);
 
     if effective_category_actions.is_empty() {
@@ -1360,8 +1366,16 @@ async fn handle_guardrail_approval(
         category_actions_empty: client
             .as_ref()
             .map(|c| {
-                c.guardrails.category_actions.as_ref().map_or(true, |a| a.is_empty())
-                    && state.config_manager.get().guardrails.category_actions.is_empty()
+                c.guardrails
+                    .category_actions
+                    .as_ref()
+                    .map_or(true, |a| a.is_empty())
+                    && state
+                        .config_manager
+                        .get()
+                        .guardrails
+                        .category_actions
+                        .is_empty()
             })
             .unwrap_or(true),
     };
@@ -1497,6 +1511,181 @@ fn build_flagged_text_preview(texts: &[lr_guardrails::text_extractor::ExtractedT
             }
         }
         None => String::new(),
+    }
+}
+
+/// Check outbound request for leaked secrets and handle based on configured action.
+///
+/// Runs synchronously before guardrails since regex+entropy is sub-millisecond.
+/// If action=Ask, blocks the request and shows a popup for user decision.
+/// If action=Notify, allows the request but emits a notification event.
+async fn run_secret_scan_check(
+    state: &AppState,
+    client_ctx: Option<&ClientAuthContext>,
+    request: &ChatCompletionRequest,
+) -> ApiResult<()> {
+    let Some(client_ctx) = client_ctx else {
+        return Ok(());
+    };
+    let config = state.config_manager.get();
+    let client = state.client_manager.get_client(&client_ctx.client_id);
+
+    // Resolve effective action: per-client override > global
+    let effective_action = client
+        .as_ref()
+        .and_then(|c| c.secret_scanning.action.as_ref())
+        .unwrap_or(&config.secret_scanning.action);
+
+    if *effective_action == lr_config::SecretScanAction::Off {
+        return Ok(());
+    }
+
+    // Check time-based bypass (from "Allow for 1 hour")
+    if state
+        .secret_scan_approval_tracker
+        .has_valid_bypass(&client_ctx.client_id)
+    {
+        return Ok(());
+    }
+
+    // Check if scanner is initialized and has rules
+    // Clone Arc out of the RwLock to avoid holding the guard across await points
+    let scanner = {
+        let guard = state.secret_scanner.read();
+        guard.as_ref().cloned()
+    };
+    let Some(scanner) = scanner else {
+        return Ok(());
+    };
+    if !scanner.has_rules() {
+        return Ok(());
+    }
+
+    // Extract text from request using guardrails text extractor
+    let request_json = serde_json::to_value(request).unwrap_or_default();
+    let guardrail_texts = lr_guardrails::text_extractor::extract_request_text(&request_json);
+
+    // Convert to secret scanner's ExtractedText type
+    let texts: Vec<lr_secret_scanner::ExtractedText> = guardrail_texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| lr_secret_scanner::ExtractedText {
+            label: t.label.clone(),
+            text: t.text.clone(),
+            message_index: i,
+        })
+        .collect();
+
+    let result = scanner.scan(&texts).await;
+
+    if result.findings.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!(
+        "Secret scan found {} potential secrets in request from client {}",
+        result.findings.len(),
+        client_ctx.client_id
+    );
+
+    match effective_action {
+        lr_config::SecretScanAction::Notify => {
+            // Emit event to UI, allow request to proceed
+            let payload =
+                serde_json::to_string(&result.findings).unwrap_or_else(|_| "[]".to_string());
+            state.emit_event("secret-scan-notify", &payload);
+            Ok(())
+        }
+        lr_config::SecretScanAction::Ask => {
+            handle_secret_scan_approval(state, client_ctx, request, result).await
+        }
+        lr_config::SecretScanAction::Off => Ok(()),
+    }
+}
+
+/// Handle a secret scan detection that requires user approval (Ask action).
+///
+/// Blocks the request and shows a popup via the FirewallManager.
+async fn handle_secret_scan_approval(
+    state: &AppState,
+    client_ctx: &ClientAuthContext,
+    request: &ChatCompletionRequest,
+    result: lr_secret_scanner::ScanResult,
+) -> ApiResult<()> {
+    use lr_mcp::gateway::firewall::{
+        FirewallApprovalAction, SecretFindingSummary, SecretScanApprovalDetails,
+    };
+
+    let client = state.client_manager.get_client(&client_ctx.client_id);
+    let client_name = client
+        .as_ref()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| client_ctx.client_id.clone());
+
+    let details = SecretScanApprovalDetails {
+        findings: result
+            .findings
+            .iter()
+            .map(|f| SecretFindingSummary {
+                rule_id: f.rule_id.clone(),
+                rule_description: f.rule_description.clone(),
+                category: f.category.clone(),
+                matched_text: f.matched_text.clone(),
+                entropy: f.entropy,
+                ml_confidence: f.ml_confidence,
+            })
+            .collect(),
+        scan_duration_ms: result.scan_duration_ms,
+    };
+
+    let preview = result
+        .findings
+        .iter()
+        .map(|f| {
+            format!(
+                "[{}] {} (entropy: {:.2})",
+                f.category, f.rule_description, f.entropy
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let response = state
+        .mcp_gateway
+        .firewall_manager
+        .request_secret_scan_approval(
+            client_ctx.client_id.clone(),
+            client_name,
+            request.model.clone(),
+            details,
+            preview,
+        )
+        .await
+        .map_err(|e| {
+            ApiErrorResponse::internal_error(format!("Secret scan approval failed: {}", e))
+        })?;
+
+    match response.action {
+        FirewallApprovalAction::AllowOnce
+        | FirewallApprovalAction::AllowSession
+        | FirewallApprovalAction::Allow1Minute
+        | FirewallApprovalAction::Allow1Hour
+        | FirewallApprovalAction::AllowPermanent => {
+            tracing::info!(
+                "Secret scan: request approved for client {}",
+                client_ctx.client_id
+            );
+            Ok(())
+        }
+        _ => {
+            tracing::warn!(
+                "Secret scan: request denied for client {}",
+                client_ctx.client_id
+            );
+            Err(ApiErrorResponse::forbidden(
+                "Request blocked: potential secrets detected in outbound request",
+            ))
+        }
     }
 }
 
@@ -1672,6 +1861,17 @@ fn convert_to_provider_request(
         // Log probabilities (Bug #6 fix)
         logprobs: request.logprobs,
         top_logprobs: request.top_logprobs,
+        // Additional OpenAI-compatible parameters (pass-through)
+        n: request.n,
+        logit_bias: request.logit_bias.clone(),
+        parallel_tool_calls: request.parallel_tool_calls,
+        service_tier: request.service_tier.clone(),
+        store: request.store,
+        metadata: request.metadata.clone(),
+        modalities: request.modalities.clone(),
+        audio: request.audio.clone(),
+        prediction: request.prediction.clone(),
+        reasoning_effort: request.reasoning_effort.clone(),
         pre_computed_routing: None,
     })
 }
@@ -1971,6 +2171,8 @@ async fn handle_mcp_via_llm(
                                 choices
                             },
                             usage: None,
+                            system_fingerprint: None,
+                            service_tier: None,
                             request_usage_entries: None,
                         };
                         let json = serde_json::to_string(&api_chunk).unwrap_or_default();
@@ -2216,6 +2418,8 @@ async fn handle_mcp_via_llm(
             prompt_tokens_details: response.usage.prompt_tokens_details.clone(),
             completion_tokens_details: response.usage.completion_tokens_details.clone(),
         },
+        system_fingerprint: response.system_fingerprint.clone(),
+        service_tier: response.service_tier.clone(),
         extensions: response.extensions.clone(),
         request_usage_entries: response.request_usage_entries.as_ref().map(|entries| {
             entries
@@ -2761,6 +2965,8 @@ async fn build_non_streaming_response(
             prompt_tokens_details: response.usage.prompt_tokens_details,
             completion_tokens_details: response.usage.completion_tokens_details,
         },
+        system_fingerprint: response.system_fingerprint,
+        service_tier: response.service_tier,
         extensions: None, // Provider-specific extensions (Phase 1)
         request_usage_entries: response.request_usage_entries.as_ref().map(|entries| {
             entries
@@ -3040,7 +3246,9 @@ async fn handle_streaming(
 
                             choices
                         },
-                        usage: None, // Not available in streaming chunks
+                        usage: None,
+                        system_fingerprint: None,
+                        service_tier: None,
                         request_usage_entries: None,
                     };
 
@@ -3481,6 +3689,8 @@ async fn handle_streaming_parallel(
                         choices
                     },
                     usage: None,
+                    system_fingerprint: None,
+                    service_tier: None,
                     request_usage_entries: None,
                 };
 
@@ -3854,6 +4064,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -3889,6 +4108,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -3918,6 +4146,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -3953,6 +4190,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -3988,6 +4234,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -4023,6 +4278,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -4058,6 +4322,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -4093,6 +4366,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -4128,6 +4410,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -4165,6 +4456,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -4202,6 +4502,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -4245,6 +4554,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -4283,6 +4601,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -4318,6 +4645,15 @@ mod tests {
             n: None,
             logprobs: None,
             top_logprobs: None,
+            parallel_tool_calls: None,
+            logit_bias: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
         };
 
         let result = convert_to_provider_request(&request);

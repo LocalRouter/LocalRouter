@@ -108,6 +108,43 @@ pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
 
+    /// Allow concurrent function calling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+
+    // Additional OpenAI-compatible parameters
+    /// Modify token likelihoods by token ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logit_bias: Option<HashMap<String, f32>>,
+
+    /// Latency tier selection ("auto", "default")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+
+    /// Store for distillation/evaluation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
+
+    /// Developer-defined tags
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, String>>,
+
+    /// Output modalities: ["text"], ["text", "audio"]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modalities: Option<Vec<String>>,
+
+    /// Audio output configuration (voice, format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<Value>,
+
+    /// Predicted output for faster generation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prediction: Option<Value>,
+
+    /// Reasoning effort level (low/medium/high) for reasoning models
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+
     // Provider-specific extensions (Layer 3)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<HashMap<String, Value>>,
@@ -258,6 +295,14 @@ pub struct ChatCompletionResponse {
 
     pub usage: TokenUsage,
 
+    /// Model version identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_fingerprint: Option<String>,
+
+    /// Tier used for request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+
     /// Provider-specific extensions in the response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<HashMap<String, Value>>,
@@ -353,6 +398,14 @@ pub struct ChatCompletionChunk {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
+
+    /// Model version identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_fingerprint: Option<String>,
+
+    /// Tier used for request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 
     /// Per-iteration token usage breakdown (only present on final chunk when multiple LLM calls were made)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -823,6 +876,8 @@ impl From<&lr_providers::ModelInfo> for ModelData {
                     Capability::Embedding => "embedding",
                     Capability::Vision => "vision",
                     Capability::FunctionCalling => "function_calling",
+                    Capability::Audio => "audio",
+                    Capability::TextToSpeech => "text_to_speech",
                 }
                 .to_string()
             })
@@ -933,4 +988,72 @@ pub struct ImageData {
     /// The prompt that was used to generate the image (dall-e-3 may revise the prompt)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revised_prompt: Option<String>,
+}
+
+// ==================== Audio ====================
+
+/// Audio transcription response (verbose_json format)
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(
+    title = "Audio Transcription Response",
+    description = "Response from audio transcription API"
+)]
+pub struct AudioTranscriptionResponse {
+    /// The transcribed text
+    pub text: String,
+
+    /// The task type
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+
+    /// The detected language
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+
+    /// The duration of the audio in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+
+    /// Word-level timestamps
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<lr_providers::TranscriptionWord>>,
+
+    /// Segment-level timestamps
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segments: Option<Vec<lr_providers::TranscriptionSegment>>,
+}
+
+/// Text-to-Speech request
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(
+    title = "Speech Request",
+    description = "Request for text-to-speech API",
+    example = json!({
+        "model": "tts-1",
+        "input": "Hello, world!",
+        "voice": "alloy"
+    })
+)]
+pub struct SpeechRequest {
+    /// The TTS model to use
+    #[schema(example = "tts-1")]
+    pub model: String,
+
+    /// The text to synthesize (max 4096 characters)
+    #[schema(example = "Hello, world!")]
+    pub input: String,
+
+    /// The voice to use
+    #[schema(example = "alloy")]
+    pub voice: String,
+
+    /// Audio output format: mp3, opus, aac, flac, wav, pcm
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "mp3")]
+    pub response_format: Option<String>,
+
+    /// Speech speed (0.25 to 4.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 0.25, maximum = 4.0)]
+    pub speed: Option<f64>,
 }

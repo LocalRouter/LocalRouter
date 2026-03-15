@@ -31,6 +31,11 @@ use utoipa::OpenApi;
         // Embeddings endpoints
         crate::routes::embeddings::embeddings,
 
+        // Audio endpoints
+        crate::routes::audio::audio_transcriptions,
+        crate::routes::audio::audio_translations,
+        crate::routes::audio::audio_speech,
+
         // Models endpoints
         crate::routes::models::list_models,
         crate::routes::models::get_model,
@@ -111,6 +116,12 @@ use utoipa::OpenApi;
             crate::types::EmbeddingVector,
             crate::types::EmbeddingUsage,
 
+            // Audio types
+            crate::types::AudioTranscriptionResponse,
+            crate::types::SpeechRequest,
+            lr_providers::TranscriptionWord,
+            lr_providers::TranscriptionSegment,
+
             // Provider types (for model capabilities and metrics)
             lr_providers::ModelCapabilities,
             lr_providers::PerformanceMetrics,
@@ -145,6 +156,7 @@ use utoipa::OpenApi;
         (name = "chat", description = "Chat completion endpoints"),
         (name = "completions", description = "Text completion endpoints"),
         (name = "embeddings", description = "Embeddings endpoints"),
+        (name = "audio", description = "Audio endpoints (STT + TTS)"),
         (name = "models", description = "Model management and information"),
         (name = "monitoring", description = "Usage tracking and monitoring"),
         (name = "mcp", description = "MCP server proxy endpoints"),
@@ -239,6 +251,9 @@ mod tests {
             .paths
             .contains_key("/v1/models/{provider}/{model}/pricing"));
         assert!(spec.paths.paths.contains_key("/v1/generation"));
+        assert!(spec.paths.paths.contains_key("/v1/audio/transcriptions"));
+        assert!(spec.paths.paths.contains_key("/v1/audio/translations"));
+        assert!(spec.paths.paths.contains_key("/v1/audio/speech"));
         assert!(!spec.paths.paths.contains_key("/mcp/{server_id}"));
         assert!(!spec.paths.paths.contains_key("/mcp/{server_id}/stream"));
         assert!(spec.paths.paths.contains_key("/health"));

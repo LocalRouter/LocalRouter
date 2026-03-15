@@ -11,7 +11,9 @@ use tracing::{debug, error, info, warn};
 use lr_config::{ConfigManager, FreeTierFallback, FreeTierKind};
 use lr_providers::registry::ProviderRegistry;
 use lr_providers::{
-    CompletionChunk, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
+    AudioTranscriptionRequest, AudioTranscriptionResponse, AudioTranslationRequest,
+    AudioTranslationResponse, CompletionChunk, CompletionRequest, CompletionResponse,
+    EmbeddingRequest, EmbeddingResponse, SpeechRequest, SpeechResponse,
 };
 use lr_types::{AppError, AppResult};
 
@@ -2004,6 +2006,312 @@ impl Router {
         self.execute_embedding_request(client_id, &final_provider, &final_model, request)
             .await
     }
+
+    // ==================== Audio Routing ====================
+
+    /// Execute a transcription request on a specific provider
+    async fn execute_transcription_request(
+        &self,
+        client_id: &str,
+        provider: &str,
+        model: &str,
+        request: AudioTranscriptionRequest,
+    ) -> AppResult<AudioTranscriptionResponse> {
+        let provider_instance = self
+            .provider_registry
+            .get_provider(provider)
+            .ok_or_else(|| {
+                AppError::Router(format!(
+                    "Provider '{}' not found or disabled in registry",
+                    provider
+                ))
+            })?;
+
+        let modified_request = AudioTranscriptionRequest {
+            model: model.to_string(),
+            ..request
+        };
+
+        let response = match provider_instance.transcribe(modified_request).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                let router_error = RouterError::classify(&e, provider, model);
+                if matches!(router_error, RouterError::Unreachable { .. }) {
+                    self.report_provider_failure(provider, &e.to_string());
+                }
+                return Err(e);
+            }
+        };
+
+        // Record minimal usage for rate limiting
+        let usage = UsageInfo {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        };
+        if let Err(e) = self
+            .rate_limiter
+            .record_api_key_usage(client_id, &usage)
+            .await
+        {
+            warn!("Failed to record usage for client '{}': {}", client_id, e);
+        }
+
+        Ok(response)
+    }
+
+    /// Route a transcription request to the appropriate provider
+    pub async fn transcribe(
+        &self,
+        client_id: &str,
+        request: AudioTranscriptionRequest,
+    ) -> AppResult<AudioTranscriptionResponse> {
+        debug!(
+            "Routing transcription request for client '{}', model '{}'",
+            client_id, request.model
+        );
+
+        #[cfg(debug_assertions)]
+        if client_id == "internal-test" {
+            let (provider, model) = Self::parse_model_string(&request.model);
+            if provider.is_empty() {
+                return Err(AppError::Router(
+                    "Internal test requires provider/model format".into(),
+                ));
+            }
+            return self
+                .execute_transcription_request(client_id, &provider, &model, request)
+                .await;
+        }
+
+        #[cfg(not(debug_assertions))]
+        if client_id == "internal-test" {
+            return Err(AppError::Unauthorized);
+        }
+
+        let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
+        self.check_client_rate_limits(client_id).await?;
+        self.check_strategy_rate_limits(&strategy, "", "")?;
+
+        let (provider, model) = Self::parse_model_string(&request.model);
+        let (final_provider, final_model) = if provider.is_empty() {
+            self.find_provider_for_model(&model, &strategy).await?
+        } else {
+            if !strategy.is_model_allowed(&provider, &model) {
+                return Err(AppError::Router(format!(
+                    "Model '{}/{}' is not allowed by this strategy",
+                    provider, model
+                )));
+            }
+            (provider, model)
+        };
+
+        self.execute_transcription_request(client_id, &final_provider, &final_model, request)
+            .await
+    }
+
+    /// Execute a translation request on a specific provider
+    async fn execute_translation_request(
+        &self,
+        client_id: &str,
+        provider: &str,
+        model: &str,
+        request: AudioTranslationRequest,
+    ) -> AppResult<AudioTranslationResponse> {
+        let provider_instance = self
+            .provider_registry
+            .get_provider(provider)
+            .ok_or_else(|| {
+                AppError::Router(format!(
+                    "Provider '{}' not found or disabled in registry",
+                    provider
+                ))
+            })?;
+
+        let modified_request = AudioTranslationRequest {
+            model: model.to_string(),
+            ..request
+        };
+
+        let response = match provider_instance.translate_audio(modified_request).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                let router_error = RouterError::classify(&e, provider, model);
+                if matches!(router_error, RouterError::Unreachable { .. }) {
+                    self.report_provider_failure(provider, &e.to_string());
+                }
+                return Err(e);
+            }
+        };
+
+        let usage = UsageInfo {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        };
+        if let Err(e) = self
+            .rate_limiter
+            .record_api_key_usage(client_id, &usage)
+            .await
+        {
+            warn!("Failed to record usage for client '{}': {}", client_id, e);
+        }
+
+        Ok(response)
+    }
+
+    /// Route an audio translation request to the appropriate provider
+    pub async fn translate_audio(
+        &self,
+        client_id: &str,
+        request: AudioTranslationRequest,
+    ) -> AppResult<AudioTranslationResponse> {
+        debug!(
+            "Routing audio translation request for client '{}', model '{}'",
+            client_id, request.model
+        );
+
+        #[cfg(debug_assertions)]
+        if client_id == "internal-test" {
+            let (provider, model) = Self::parse_model_string(&request.model);
+            if provider.is_empty() {
+                return Err(AppError::Router(
+                    "Internal test requires provider/model format".into(),
+                ));
+            }
+            return self
+                .execute_translation_request(client_id, &provider, &model, request)
+                .await;
+        }
+
+        #[cfg(not(debug_assertions))]
+        if client_id == "internal-test" {
+            return Err(AppError::Unauthorized);
+        }
+
+        let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
+        self.check_client_rate_limits(client_id).await?;
+        self.check_strategy_rate_limits(&strategy, "", "")?;
+
+        let (provider, model) = Self::parse_model_string(&request.model);
+        let (final_provider, final_model) = if provider.is_empty() {
+            self.find_provider_for_model(&model, &strategy).await?
+        } else {
+            if !strategy.is_model_allowed(&provider, &model) {
+                return Err(AppError::Router(format!(
+                    "Model '{}/{}' is not allowed by this strategy",
+                    provider, model
+                )));
+            }
+            (provider, model)
+        };
+
+        self.execute_translation_request(client_id, &final_provider, &final_model, request)
+            .await
+    }
+
+    /// Execute a speech request on a specific provider
+    async fn execute_speech_request(
+        &self,
+        client_id: &str,
+        provider: &str,
+        model: &str,
+        request: SpeechRequest,
+    ) -> AppResult<SpeechResponse> {
+        let provider_instance = self
+            .provider_registry
+            .get_provider(provider)
+            .ok_or_else(|| {
+                AppError::Router(format!(
+                    "Provider '{}' not found or disabled in registry",
+                    provider
+                ))
+            })?;
+
+        let modified_request = SpeechRequest {
+            model: model.to_string(),
+            input: request.input,
+            voice: request.voice,
+            response_format: request.response_format,
+            speed: request.speed,
+        };
+
+        let response = match provider_instance.speech(modified_request).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                let router_error = RouterError::classify(&e, provider, model);
+                if matches!(router_error, RouterError::Unreachable { .. }) {
+                    self.report_provider_failure(provider, &e.to_string());
+                }
+                return Err(e);
+            }
+        };
+
+        let usage = UsageInfo {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        };
+        if let Err(e) = self
+            .rate_limiter
+            .record_api_key_usage(client_id, &usage)
+            .await
+        {
+            warn!("Failed to record usage for client '{}': {}", client_id, e);
+        }
+
+        Ok(response)
+    }
+
+    /// Route a speech (TTS) request to the appropriate provider
+    pub async fn speech(
+        &self,
+        client_id: &str,
+        request: SpeechRequest,
+    ) -> AppResult<SpeechResponse> {
+        debug!(
+            "Routing speech request for client '{}', model '{}'",
+            client_id, request.model
+        );
+
+        #[cfg(debug_assertions)]
+        if client_id == "internal-test" {
+            let (provider, model) = Self::parse_model_string(&request.model);
+            if provider.is_empty() {
+                return Err(AppError::Router(
+                    "Internal test requires provider/model format".into(),
+                ));
+            }
+            return self
+                .execute_speech_request(client_id, &provider, &model, request)
+                .await;
+        }
+
+        #[cfg(not(debug_assertions))]
+        if client_id == "internal-test" {
+            return Err(AppError::Unauthorized);
+        }
+
+        let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
+        self.check_client_rate_limits(client_id).await?;
+        self.check_strategy_rate_limits(&strategy, "", "")?;
+
+        let (provider, model) = Self::parse_model_string(&request.model);
+        let (final_provider, final_model) = if provider.is_empty() {
+            self.find_provider_for_model(&model, &strategy).await?
+        } else {
+            if !strategy.is_model_allowed(&provider, &model) {
+                return Err(AppError::Router(format!(
+                    "Model '{}/{}' is not allowed by this strategy",
+                    provider, model
+                )));
+            }
+            (provider, model)
+        };
+
+        self.execute_speech_request(client_id, &final_provider, &final_model, request)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -2082,6 +2390,16 @@ mod tests {
             response_format: None,
             tool_choice: None,
             tools: None,
+            n: None,
+            logit_bias: None,
+            parallel_tool_calls: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
             pre_computed_routing: None,
         };
 

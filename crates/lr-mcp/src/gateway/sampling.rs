@@ -54,6 +54,16 @@ pub fn convert_sampling_to_chat_request(
         tool_choice: None,
         extensions: None,
         pre_computed_routing: None,
+        n: None,
+        logit_bias: None,
+        parallel_tool_calls: None,
+        service_tier: None,
+        store: None,
+        metadata: None,
+        modalities: None,
+        audio: None,
+        prediction: None,
+        reasoning_effort: None,
     })
 }
 

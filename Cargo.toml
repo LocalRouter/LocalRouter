@@ -22,6 +22,7 @@ members = [
     "crates/lr-json-repair",
     "crates/lr-mcp-via-llm",
     "crates/lr-context",
+    "crates/lr-secret-scanner",
 ]
 resolver = "2"
 
@@ -55,6 +56,7 @@ lr-compression = { path = "crates/lr-compression" }
 lr-json-repair = { path = "crates/lr-json-repair" }
 lr-mcp-via-llm = { path = "crates/lr-mcp-via-llm" }
 lr-context = { path = "crates/lr-context" }
+lr-secret-scanner = { path = "crates/lr-secret-scanner" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
@@ -62,12 +64,12 @@ tokio-stream = "0.1"
 tokio-util = "0.7"
 
 # Web framework
-axum = { version = "0.7", features = ["macros", "ws"] }
+axum = { version = "0.7", features = ["macros", "ws", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

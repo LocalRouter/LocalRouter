@@ -1,5 +1,6 @@
 //! API route handlers
 
+pub mod audio;
 pub mod chat;
 pub mod completions;
 pub mod embeddings;
@@ -11,6 +12,7 @@ pub mod mcp_ws;
 pub mod models;
 pub mod oauth;
 
+pub use audio::{audio_speech, audio_transcriptions, audio_translations};
 pub use chat::chat_completions;
 pub use completions::completions;
 pub use embeddings::embeddings;

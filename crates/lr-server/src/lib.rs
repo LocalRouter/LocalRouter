@@ -59,6 +59,9 @@ impl Default for ServerConfig {
 /// - POST /v1/chat/completions (OpenAI)
 /// - POST /v1/completions (OpenAI)
 /// - POST /v1/embeddings (OpenAI)
+/// - POST /v1/audio/transcriptions (OpenAI)
+/// - POST /v1/audio/translations (OpenAI)
+/// - POST /v1/audio/speech (OpenAI)
 /// - GET /v1/models (OpenAI)
 /// - GET /v1/generation (OpenAI)
 /// - POST / (MCP unified gateway)
@@ -222,6 +225,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/v1/completions", post(routes::completions))
         .route("/v1/embeddings", post(routes::embeddings))
         .route("/v1/images/generations", post(routes::image_generations))
+        .route("/v1/audio/speech", post(routes::audio_speech))
         .route("/v1/models", get(routes::list_models))
         .route("/v1/models/:id", get(routes::get_model))
         .route(
@@ -234,6 +238,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/completions", post(routes::completions))
         .route("/embeddings", post(routes::embeddings))
         .route("/images/generations", post(routes::image_generations))
+        .route("/audio/speech", post(routes::audio_speech))
         .route("/models", get(routes::list_models))
         .route("/models/:id", get(routes::get_model))
         .route(
@@ -245,6 +250,21 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
 
     // Apply auth layer (checks all API routes with or without /v1 prefix)
     router = router.layer(AuthLayer::new(state.clone()));
+
+    // Audio upload routes with 25MB body limit (audio files can be up to 25MB per OpenAI spec)
+    let audio_upload_routes = Router::new()
+        .route(
+            "/v1/audio/transcriptions",
+            post(routes::audio_transcriptions),
+        )
+        .route("/v1/audio/translations", post(routes::audio_translations))
+        .route("/audio/transcriptions", post(routes::audio_transcriptions))
+        .route("/audio/translations", post(routes::audio_translations))
+        .with_state(state.clone())
+        .layer(AuthLayer::new(state.clone()))
+        .layer(RequestBodyLimitLayer::new(25 * 1024 * 1024));
+
+    router = router.merge(audio_upload_routes);
 
     // Merge OAuth routes (no auth required - these ARE the auth endpoints)
     router = router.merge(oauth_routes);
