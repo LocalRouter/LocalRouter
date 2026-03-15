@@ -69,12 +69,25 @@ where
             // Check if this is a protected route
             let path = req.uri().path();
 
-            // Protected routes (with or without /v1 prefix)
+            // Protected API routes require Bearer token authentication.
+            //
+            // All /v1/* routes are protected by the blanket prefix check below.
+            // Non-prefixed routes must be listed explicitly because the root namespace
+            // is shared with MCP (/mcp/*), OAuth (/oauth/*), and public routes (/health,
+            // /openapi.*), each with their own auth logic.
+            //
+            // IMPORTANT: When adding a new non-prefixed API route in lib.rs, add a
+            // corresponding entry here. The test `test_all_api_routes_require_auth`
+            // will catch any omissions.
             let is_protected = path.starts_with("/v1/")
                 || path == "/chat/completions"
                 || path == "/completions"
                 || path == "/embeddings"
+                || path == "/moderations"
                 || path == "/models"
+                || path.starts_with("/models/")
+                || path.starts_with("/images/")
+                || path.starts_with("/audio/")
                 || path.starts_with("/generation");
 
             if !is_protected {

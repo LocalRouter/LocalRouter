@@ -354,6 +354,71 @@ async fn test_deprecated_endpoints_removed() {
     );
 }
 
+/// Verifies that every API route requires authentication, both with and without /v1 prefix.
+///
+/// If you add a new API route in lib.rs, add it here. This test will fail if the route
+/// is reachable without a Bearer token, catching missing entries in auth_layer.rs.
+#[tokio::test]
+async fn test_all_api_routes_require_auth() {
+    let (base_url, _handle) = start_test_server().await;
+
+    let client = reqwest::Client::new();
+
+    // Every API route that must require auth, listed as (method, path).
+    // Each non-prefixed path is tested alongside its /v1 counterpart.
+    let protected_routes: Vec<(&str, &str)> = vec![
+        // Chat completions
+        ("POST", "/chat/completions"),
+        ("POST", "/v1/chat/completions"),
+        // Completions
+        ("POST", "/completions"),
+        ("POST", "/v1/completions"),
+        // Embeddings
+        ("POST", "/embeddings"),
+        ("POST", "/v1/embeddings"),
+        // Moderations
+        ("POST", "/moderations"),
+        ("POST", "/v1/moderations"),
+        // Images
+        ("POST", "/images/generations"),
+        ("POST", "/v1/images/generations"),
+        // Audio
+        ("POST", "/audio/speech"),
+        ("POST", "/v1/audio/speech"),
+        ("POST", "/audio/transcriptions"),
+        ("POST", "/v1/audio/transcriptions"),
+        ("POST", "/audio/translations"),
+        ("POST", "/v1/audio/translations"),
+        // Models
+        ("GET", "/models"),
+        ("GET", "/v1/models"),
+        ("GET", "/models/test-model"),
+        ("GET", "/v1/models/test-model"),
+        // Generation
+        ("GET", "/generation"),
+        ("GET", "/v1/generation"),
+    ];
+
+    for (method, path) in &protected_routes {
+        let url = format!("{}{}", base_url, path);
+        let response = match *method {
+            "GET" => client.get(&url).send().await,
+            "POST" => client.post(&url).json(&serde_json::json!({})).send().await,
+            _ => panic!("Unsupported method: {}", method),
+        }
+        .unwrap_or_else(|_| panic!("Failed to {} {}", method, path));
+
+        assert_eq!(
+            response.status(),
+            401,
+            "{} {} should require auth but got {}",
+            method,
+            path,
+            response.status()
+        );
+    }
+}
+
 #[tokio::test]
 async fn test_cors_headers() {
     let (base_url, _handle) = start_test_server().await;

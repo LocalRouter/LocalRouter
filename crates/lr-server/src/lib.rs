@@ -220,7 +220,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         // OpenAPI specification endpoints
         .route("/openapi.json", get(serve_openapi_json))
         .route("/openapi.yaml", get(serve_openapi_yaml))
-        // Routes with /v1 prefix
+        // Routes with /v1 prefix (all protected by blanket `/v1/` check in auth layer)
         .route("/v1/chat/completions", post(routes::chat_completions))
         .route("/v1/completions", post(routes::completions))
         .route("/v1/embeddings", post(routes::embeddings))
@@ -235,6 +235,10 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         )
         .route("/v1/generation", get(routes::get_generation))
         // Routes without /v1 prefix (for compatibility)
+        // IMPORTANT: Each non-prefixed route MUST also be added to the auth layer's
+        // `is_protected` check in middleware/auth_layer.rs — the /v1/ blanket match
+        // does NOT cover these. The test `test_all_api_routes_require_auth` will catch
+        // any missing entries.
         .route("/chat/completions", post(routes::chat_completions))
         .route("/completions", post(routes::completions))
         .route("/embeddings", post(routes::embeddings))
@@ -259,6 +263,8 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
 
     // Audio upload routes with 25MB body limit (audio files can be up to 25MB per OpenAI spec)
     // Merged AFTER the 16MB limit so the global limit doesn't override the audio-specific one.
+    // NOTE: Non-prefixed /audio/* routes are covered by the `starts_with("/audio/")` check
+    // in middleware/auth_layer.rs — no additional entry needed for new /audio/* sub-routes.
     let audio_upload_routes = Router::new()
         .route(
             "/v1/audio/transcriptions",
