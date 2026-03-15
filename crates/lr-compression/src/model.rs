@@ -105,10 +105,7 @@ impl CompressorModel {
                 word_positions.push((word_start, text.len()));
             }
         }
-        let words: Vec<&str> = word_positions
-            .iter()
-            .map(|&(s, e)| &text[s..e])
-            .collect();
+        let words: Vec<&str> = word_positions.iter().map(|&(s, e)| &text[s..e]).collect();
         if words.is_empty() {
             return Ok((text.to_string(), 0, 0, vec![], vec![]));
         }

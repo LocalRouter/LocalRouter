@@ -1,7 +1,9 @@
 //! Tauri commands for AI coding agents management.
 
 use lr_coding_agents::manager::CodingAgentManager;
-use lr_config::{CodingAgentApprovalMode, CodingAgentType, CodingPermissionMode, ConfigManager, PermissionState};
+use lr_config::{
+    CodingAgentApprovalMode, CodingAgentType, CodingPermissionMode, ConfigManager, PermissionState,
+};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Emitter, State};

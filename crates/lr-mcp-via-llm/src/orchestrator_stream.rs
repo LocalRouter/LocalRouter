@@ -485,10 +485,7 @@ async fn streaming_loop(
 
                     let result_content = if tool_name == orchestrator::RESOURCE_READ_TOOL_NAME {
                         // resource_read tool — read MCP resource or skill file
-                        let name = arguments
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
                         match execute_resource_read_background(
                             &gateway,
                             client_id,

@@ -56,7 +56,8 @@ pub struct McpGateway {
     pub firewall_manager: Arc<FirewallManager>,
 
     /// Coding agent approval manager for agent tool/question approvals
-    pub coding_agent_approval_manager: Arc<super::coding_agent_approval::CodingAgentApprovalManager>,
+    pub coding_agent_approval_manager:
+        Arc<super::coding_agent_approval::CodingAgentApprovalManager>,
 
     /// Virtual MCP servers (skills, marketplace, coding agents)
     pub(crate) virtual_servers: parking_lot::RwLock<Vec<Arc<dyn VirtualMcpServer>>>,
@@ -104,12 +105,12 @@ impl McpGateway {
 
         // Create coding agent approval manager with broadcast support if available
         let coding_agent_approval_manager = match &notification_broadcast {
-            Some(broadcast) => {
-                Arc::new(super::coding_agent_approval::CodingAgentApprovalManager::new_with_broadcast(
+            Some(broadcast) => Arc::new(
+                super::coding_agent_approval::CodingAgentApprovalManager::new_with_broadcast(
                     120,
                     broadcast.clone(),
-                ))
-            }
+                ),
+            ),
             None => Arc::new(super::coding_agent_approval::CodingAgentApprovalManager::new(120)),
         };
 

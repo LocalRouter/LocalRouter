@@ -40,12 +40,7 @@ pub struct AskPopupApprovalService {
 /// Implemented by the gateway layer that has access to the broadcast channel.
 pub trait PopupTrigger: Send + Sync {
     fn trigger_tool_approval(&self, approval_id: &str, tool_name: &str);
-    fn trigger_question_approval(
-        &self,
-        approval_id: &str,
-        tool_name: &str,
-        question_count: usize,
-    );
+    fn trigger_question_approval(&self, approval_id: &str, tool_name: &str, question_count: usize);
 }
 
 impl AskPopupApprovalService {
@@ -90,10 +85,8 @@ impl ExecutorApprovalService for AskPopupApprovalService {
     async fn create_tool_approval(&self, tool_name: &str) -> Result<String, ExecutorApprovalError> {
         let approval_id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
-        self.pending_tool_senders
-            .insert(approval_id.clone(), tx);
-        self.pending_tool_receivers
-            .insert(approval_id.clone(), rx);
+        self.pending_tool_senders.insert(approval_id.clone(), tx);
+        self.pending_tool_receivers.insert(approval_id.clone(), rx);
 
         if let Some(ref trigger) = self.popup_callback {
             trigger.trigger_tool_approval(&approval_id, tool_name);
@@ -225,7 +218,9 @@ mod tests {
     fn test_describe_mode() {
         assert!(describe_mode(lr_config::CodingAgentApprovalMode::Allow).contains("Auto-approve"));
         assert!(describe_mode(lr_config::CodingAgentApprovalMode::Ask).contains("popup"));
-        assert!(describe_mode(lr_config::CodingAgentApprovalMode::Elicitation).contains("elicitation"));
+        assert!(
+            describe_mode(lr_config::CodingAgentApprovalMode::Elicitation).contains("elicitation")
+        );
     }
 
     #[tokio::test]
@@ -234,10 +229,7 @@ mod tests {
 
         let service_clone = service.clone();
         let handle = tokio::spawn(async move {
-            let id = service_clone
-                .create_tool_approval("Edit")
-                .await
-                .unwrap();
+            let id = service_clone.create_tool_approval("Edit").await.unwrap();
             let cancel = CancellationToken::new();
             service_clone.wait_tool_approval(&id, cancel).await
         });
@@ -266,13 +258,8 @@ mod tests {
         let service_clone = service.clone();
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
-            let id = service_clone
-                .create_tool_approval("Edit")
-                .await
-                .unwrap();
-            service_clone
-                .wait_tool_approval(&id, cancel_clone)
-                .await
+            let id = service_clone.create_tool_approval("Edit").await.unwrap();
+            service_clone.wait_tool_approval(&id, cancel_clone).await
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

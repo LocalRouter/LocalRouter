@@ -36,63 +36,227 @@ pub fn known_tools_for_template(template_id: &str) -> Vec<KnownToolEntry> {
 fn claude_code_tools() -> Vec<KnownToolEntry> {
     vec![
         // Indexable tools (produce useful content)
-        KnownToolEntry { name: "Read", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "Glob", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "Grep", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "WebFetch", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "WebSearch", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "LSP", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "TaskOutput", default_state: IndexingState::Enable, indexable: true },
+        KnownToolEntry {
+            name: "Read",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "Glob",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "Grep",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "WebFetch",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "WebSearch",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "LSP",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "TaskOutput",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
         // Action tools (not indexable)
-        KnownToolEntry { name: "Write", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "Edit", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "Bash", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "Agent", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "NotebookEdit", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "AskUserQuestion", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "Skill", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "TaskCreate", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "TaskGet", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "TaskList", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "TaskStop", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "TaskUpdate", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "TodoWrite", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "CronCreate", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "CronDelete", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "CronList", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "EnterPlanMode", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "ExitPlanMode", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "EnterWorktree", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "ExitWorktree", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "ToolSearch", default_state: IndexingState::Disable, indexable: false },
+        KnownToolEntry {
+            name: "Write",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "Edit",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "Bash",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "Agent",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "NotebookEdit",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "AskUserQuestion",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "Skill",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "TaskCreate",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "TaskGet",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "TaskList",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "TaskStop",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "TaskUpdate",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "TodoWrite",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "CronCreate",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "CronDelete",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "CronList",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "EnterPlanMode",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "ExitPlanMode",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "EnterWorktree",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "ExitWorktree",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "ToolSearch",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
     ]
 }
 
 fn codex_tools() -> Vec<KnownToolEntry> {
     vec![
-        KnownToolEntry { name: "read_file", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "file_read", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "list_directory", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "shell", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "write_file", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "file_write", default_state: IndexingState::Disable, indexable: false },
+        KnownToolEntry {
+            name: "read_file",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "file_read",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "list_directory",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "shell",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "write_file",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "file_write",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
     ]
 }
 
 fn aider_tools() -> Vec<KnownToolEntry> {
     vec![
-        KnownToolEntry { name: "read_file", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "run_command", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "write_file", default_state: IndexingState::Disable, indexable: false },
+        KnownToolEntry {
+            name: "read_file",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "run_command",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "write_file",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
     ]
 }
 
 fn goose_tools() -> Vec<KnownToolEntry> {
     vec![
-        KnownToolEntry { name: "read_file", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "search", default_state: IndexingState::Enable, indexable: true },
-        KnownToolEntry { name: "shell", default_state: IndexingState::Disable, indexable: false },
-        KnownToolEntry { name: "write_file", default_state: IndexingState::Disable, indexable: false },
+        KnownToolEntry {
+            name: "read_file",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "search",
+            default_state: IndexingState::Enable,
+            indexable: true,
+        },
+        KnownToolEntry {
+            name: "shell",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
+        KnownToolEntry {
+            name: "write_file",
+            default_state: IndexingState::Disable,
+            indexable: false,
+        },
     ]
 }
 

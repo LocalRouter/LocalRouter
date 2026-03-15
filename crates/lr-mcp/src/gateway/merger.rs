@@ -3443,9 +3443,7 @@ mod tests {
                     name: "many tools".to_string(),
                     description: Some("D".repeat(300)),
                     instructions: None,
-                    tool_names: (0..20)
-                        .map(|i| format!("many-tools__tool_{}", i))
-                        .collect(),
+                    tool_names: (0..20).map(|i| format!("many-tools__tool_{}", i)).collect(),
                     resource_names: vec![],
                     prompt_names: vec![],
                 },
@@ -3626,9 +3624,7 @@ mod tests {
                     name: "big".to_string(),
                     description: Some("B".repeat(1000)),
                     instructions: Some("I".repeat(1000)),
-                    tool_names: (0..10)
-                        .map(|i| format!("big__tool_{}", i))
-                        .collect(),
+                    tool_names: (0..10).map(|i| format!("big__tool_{}", i)).collect(),
                     resource_names: vec![],
                     prompt_names: vec![],
                 },
@@ -3834,9 +3830,7 @@ mod tests {
                 name: "github".to_string(),
                 description: Some("Full GitHub server description".to_string()),
                 instructions: Some("Full GitHub instructions".to_string()),
-                tool_names: (0..10)
-                    .map(|i| format!("github__tool_{}", i))
-                    .collect(),
+                tool_names: (0..10).map(|i| format!("github__tool_{}", i)).collect(),
                 resource_names: vec![],
                 prompt_names: vec![],
             }],

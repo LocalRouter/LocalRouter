@@ -57,7 +57,9 @@ fn action_from_tool(name: &str, prefix: &str) -> Option<&'static str> {
     for suffix in TOOL_SUFFIXES {
         if alphanumeric_prefix {
             // PascalCase: compare case-insensitively (all suffixes are ASCII lowercase)
-            if rest.eq_ignore_ascii_case(suffix) && rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+            if rest.eq_ignore_ascii_case(suffix)
+                && rest.starts_with(|c: char| c.is_ascii_uppercase())
+            {
                 return Some(suffix);
             }
         } else if rest == *suffix {
@@ -406,7 +408,10 @@ mod tests {
     #[test]
     fn test_all_tool_names() {
         let names = all_tool_names("Agent");
-        assert_eq!(names, vec!["AgentStart", "AgentSay", "AgentStatus", "AgentList"]);
+        assert_eq!(
+            names,
+            vec!["AgentStart", "AgentSay", "AgentStatus", "AgentList"]
+        );
     }
 
     // ── action_from_tool ──
@@ -430,8 +435,12 @@ mod tests {
             return;
         }
 
-        let tools =
-            build_coding_agent_tools(&manager, &PermissionState::Allow, Some(installed[0]), "Agent");
+        let tools = build_coding_agent_tools(
+            &manager,
+            &PermissionState::Allow,
+            Some(installed[0]),
+            "Agent",
+        );
         assert_eq!(tools.len(), 4);
 
         for tool in &tools {

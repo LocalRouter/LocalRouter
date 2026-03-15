@@ -187,7 +187,10 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
     }
 
     fn all_tool_names(&self) -> Vec<String> {
-        vec!["marketplace__search".to_string(), "marketplace__install".to_string()]
+        vec![
+            "marketplace__search".to_string(),
+            "marketplace__install".to_string(),
+        ]
     }
 
     fn is_tool_indexable(&self, tool_name: &str) -> bool {

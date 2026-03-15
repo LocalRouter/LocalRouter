@@ -438,10 +438,7 @@ pub async fn run_agentic_loop(
 
                     let result_content = if tool_name == RESOURCE_READ_TOOL_NAME {
                         // resource_read tool — read MCP resource or skill file
-                        let name = arguments
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
                         execute_resource_read(&gw_client, name).await
                     } else if let Some(prompt_name) = prompt_tools.get(tool_name.as_str()) {
                         // Synthetic prompt tool — get the prompt and format as text
@@ -653,8 +650,10 @@ pub async fn resume_after_mixed(
                     cm_state_for_indexing
                 {
                     if cm_enabled
-                        && client
-                            .is_client_tool_indexing_eligible(&tc.function.name, context_management_config)
+                        && client.is_client_tool_indexing_eligible(
+                            &tc.function.name,
+                            context_management_config,
+                        )
                     {
                         if let ChatMessageContent::Text(ref text) = client_result.content {
                             // Use a stable incrementing counter keyed by tool name

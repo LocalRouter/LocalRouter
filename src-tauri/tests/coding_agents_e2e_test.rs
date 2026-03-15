@@ -288,14 +288,7 @@ async fn run_agent_e2e_list_and_interrupt(
     initialize_gateway(&gateway, client_id, agent_type).await;
 
     // List sessions — should be empty
-    let list_result = call_tool(
-        &gateway,
-        client_id,
-        agent_type,
-        "AgentList",
-        json!({}),
-    )
-    .await;
+    let list_result = call_tool(&gateway, client_id, agent_type, "AgentList", json!({})).await;
     let sessions = list_result["sessions"].as_array().unwrap();
     assert!(
         sessions.is_empty(),
@@ -318,14 +311,7 @@ async fn run_agent_e2e_list_and_interrupt(
     eprintln!("{display_name} session started: {session_id}");
 
     // List sessions — should have one
-    let list_result = call_tool(
-        &gateway,
-        client_id,
-        agent_type,
-        "AgentList",
-        json!({}),
-    )
-    .await;
+    let list_result = call_tool(&gateway, client_id, agent_type, "AgentList", json!({})).await;
     let sessions = list_result["sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 1, "{display_name}: should have one session");
 

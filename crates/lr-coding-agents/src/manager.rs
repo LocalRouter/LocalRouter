@@ -7,7 +7,9 @@ use crate::types::*;
 use dashmap::DashMap;
 use executors::env::{ExecutionEnv, RepoContext};
 use executors::executors::{CodingAgent, SpawnedChild, StandardCodingAgentExecutor};
-use lr_config::{CodingAgentApprovalMode, CodingAgentType, CodingAgentsConfig, CodingPermissionMode};
+use lr_config::{
+    CodingAgentApprovalMode, CodingAgentType, CodingAgentsConfig, CodingPermissionMode,
+};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -971,7 +973,10 @@ mod tests {
     #[test]
     fn test_truncate_prompt() {
         assert_eq!(truncate_prompt("short", 10), "short");
-        assert_eq!(truncate_prompt("a long prompt that exceeds", 10), "a long ...");
+        assert_eq!(
+            truncate_prompt("a long prompt that exceeds", 10),
+            "a long ..."
+        );
         assert_eq!(truncate_prompt("line1\nline2", 20), "line1");
     }
 }

@@ -219,9 +219,7 @@ async fn test_skills_e2e_all_tool_commands() {
         .await
         .expect("skill_read should succeed");
 
-    let result = response
-        .result
-        .expect("skill_read should have a result");
+    let result = response.result.expect("skill_read should have a result");
     let content = result["content"]
         .as_array()
         .expect("skill_read should have content array");

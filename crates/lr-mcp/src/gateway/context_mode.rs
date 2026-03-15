@@ -410,7 +410,8 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             .expect("wrong state type for ContextModeVirtualServer");
 
         state.enabled = client.is_context_management_enabled(&config);
-        state.catalog_compression_enabled = state.enabled && client.is_catalog_compression_enabled(&config);
+        state.catalog_compression_enabled =
+            state.enabled && client.is_catalog_compression_enabled(&config);
         state.catalog_threshold_bytes = config.catalog_threshold_bytes;
         state.response_threshold_bytes = config.response_threshold_bytes;
         state.search_tool_name = config.search_tool_name.clone();
@@ -422,7 +423,10 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 
     fn all_tool_names(&self) -> Vec<String> {
         let config = self.config.read().unwrap();
-        vec![config.search_tool_name.clone(), config.read_tool_name.clone()]
+        vec![
+            config.search_tool_name.clone(),
+            config.read_tool_name.clone(),
+        ]
     }
 
     fn is_tool_indexable(&self, _tool_name: &str) -> bool {
@@ -586,9 +590,7 @@ fn handle_index_read_blocking(
                     let state_update: Box<
                         dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send,
                     > = Box::new(move |s| {
-                        if let Some(cm) =
-                            s.as_any_mut().downcast_mut::<ContextModeSessionState>()
-                        {
+                        if let Some(cm) = s.as_any_mut().downcast_mut::<ContextModeSessionState>() {
                             match item_type_clone {
                                 CatalogItemType::Tool => {
                                     cm.activated_tools.insert(name_owned);

@@ -408,8 +408,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                     // Catalog Compression toggle (per-client override)
                     {
                         let is_inherited = client.catalog_compression_enabled.is_none();
-                        let effective =
-                            client.is_catalog_compression_enabled(&global_ctx_config);
+                        let effective = client.is_catalog_compression_enabled(&global_ctx_config);
                         let label = if effective {
                             if is_inherited {
                                 "✓  Catalog Compression (default)".to_string()
