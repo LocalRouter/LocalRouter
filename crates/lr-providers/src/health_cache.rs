@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -187,6 +188,8 @@ pub struct HealthCacheManager {
     last_marked_unhealthy: Arc<RwLock<HashMap<String, Instant>>>,
     /// Notifier for recovery task - signaled when a provider is marked unhealthy
     recovery_notify: Arc<Notify>,
+    /// Runtime flag for periodic health checks (toggled without restart)
+    periodic_enabled: Arc<AtomicBool>,
 }
 
 impl HealthCacheManager {
@@ -197,6 +200,7 @@ impl HealthCacheManager {
             app_handle: Arc::new(RwLock::new(None)),
             last_marked_unhealthy: Arc::new(RwLock::new(HashMap::new())),
             recovery_notify: Arc::new(Notify::new()),
+            periodic_enabled: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -346,6 +350,25 @@ impl HealthCacheManager {
         self.recovery_notify.clone()
     }
 
+    /// Check if periodic health checks are enabled at runtime
+    pub fn is_periodic_enabled(&self) -> bool {
+        self.periodic_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Set whether periodic health checks are enabled at runtime
+    pub fn set_periodic_enabled(&self, enabled: bool) {
+        self.periodic_enabled.store(enabled, Ordering::Relaxed);
+        info!(
+            "Periodic health checks {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+    }
+
+    /// Get the periodic_enabled flag (for the periodic background task)
+    pub fn periodic_enabled_flag(&self) -> Arc<AtomicBool> {
+        self.periodic_enabled.clone()
+    }
+
     /// Get names of currently unhealthy providers
     pub fn get_unhealthy_providers(&self) -> Vec<String> {
         let cache = self.cache.read();
@@ -440,6 +463,7 @@ impl Clone for HealthCacheManager {
             app_handle: self.app_handle.clone(),
             last_marked_unhealthy: self.last_marked_unhealthy.clone(),
             recovery_notify: self.recovery_notify.clone(),
+            periodic_enabled: self.periodic_enabled.clone(),
         }
     }
 }

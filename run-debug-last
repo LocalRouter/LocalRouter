@@ -45,9 +45,9 @@ if [ ! -f "./target/debug/localrouter" ]; then
     exit 1
 fi
 
-# Start frontend dev server
-echo -e "${BLUE}Starting frontend dev server...${NC}"
-npm run dev &
+# Start frontend dev server (no HMR/watch to match run-debug-once behavior)
+echo -e "${BLUE}Starting frontend dev server (no HMR)...${NC}"
+VITE_NO_HMR=1 npm run dev &
 FRONTEND_PID=$!
 echo -e "${GREEN}Frontend started (PID: $FRONTEND_PID)${NC}"
 
