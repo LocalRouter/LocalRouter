@@ -130,7 +130,7 @@ export const mockData = {
       instance_name: "gemini-google",
       provider_type: "gemini",
       enabled: true,
-      display_name: "Google Gemini",
+      display_name: "Gemini",
       api_key_set: true,
     },
     {
@@ -191,7 +191,7 @@ export const mockData = {
     },
     {
       provider_type: "gemini",
-      display_name: "Google Gemini",
+      display_name: "Gemini",
       category: "first_party",
       description: "Gemini Pro, Gemini Ultra, and other Google models",
       setup_parameters: [
@@ -588,7 +588,7 @@ export const mockData = {
       "openai-primary": { status: "healthy" as const, name: "OpenAI (Primary)", latency_ms: 245, last_check: new Date().toISOString() },
       "anthropic-main": { status: "healthy" as const, name: "Anthropic", latency_ms: 312, last_check: new Date().toISOString() },
       "ollama-local": { status: "healthy" as const, name: "Ollama (Local)", latency_ms: 45, last_check: new Date().toISOString() },
-      "gemini-google": { status: "healthy" as const, name: "Google Gemini", latency_ms: 198, last_check: new Date().toISOString() },
+      "gemini-google": { status: "healthy" as const, name: "Gemini", latency_ms: 198, last_check: new Date().toISOString() },
       "groq-fast": { status: "healthy" as const, name: "Groq (Fast)", latency_ms: 89, last_check: new Date().toISOString() },
       "openrouter-backup": { status: "unknown" as const, name: "OpenRouter (Backup)", latency_ms: null, last_check: null },
     },

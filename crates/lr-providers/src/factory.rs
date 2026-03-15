@@ -435,7 +435,7 @@ impl ProviderFactory for AnthropicProviderFactory {
     }
 }
 
-/// Factory for Google Gemini providers
+/// Factory for Gemini providers
 pub struct GeminiProviderFactory;
 
 impl ProviderFactory for GeminiProviderFactory {
@@ -444,7 +444,7 @@ impl ProviderFactory for GeminiProviderFactory {
     }
 
     fn display_name(&self) -> &str {
-        "Google Gemini"
+        "Gemini"
     }
 
     fn category(&self) -> ProviderCategory {
@@ -452,7 +452,7 @@ impl ProviderFactory for GeminiProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "Google Gemini API for multimodal AI models"
+        "Gemini API for multimodal AI models"
     }
 
     fn default_free_tier(&self) -> FreeTierKind {

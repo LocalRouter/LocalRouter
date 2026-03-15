@@ -1889,7 +1889,7 @@ pub struct GuardrailsConfig {
     /// Enable the /v1/moderations API endpoint.
     /// When enabled, uses configured safety models to serve moderation requests
     /// in OpenAI-compatible format. Requires auth.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub moderation_api_enabled: bool,
 }
 
@@ -1907,7 +1907,7 @@ impl Default for GuardrailsConfig {
             category_actions: vec![],
             default_confidence_threshold: default_confidence_threshold(),
             parallel_guardrails: true,
-            moderation_api_enabled: false,
+            moderation_api_enabled: true,
         }
     }
 }
@@ -3022,7 +3022,7 @@ pub enum ProviderType {
     OpenRouter,
     /// Anthropic API
     Anthropic,
-    /// Google Gemini API
+    /// Gemini API
     Gemini,
     /// Groq API
     Groq,

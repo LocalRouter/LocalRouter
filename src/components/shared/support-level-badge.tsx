@@ -37,15 +37,15 @@ const SUPPORT_CONFIG: Record<SupportLevel, {
   },
   not_supported: {
     icon: MinusCircle,
-    label: "Not Supported",
+    label: "\u2014",
     description: "Not available for this provider",
     className: "text-muted-foreground/50",
     shortLabel: "\u2014",
   },
   not_implemented: {
     icon: CircleDashed,
-    label: "Not Yet Implemented",
-    description: "Planned but not yet built",
+    label: "\u2014",
+    description: "Planned but not yet built in LocalRouter",
     className: "text-muted-foreground/40",
     shortLabel: "\u2014",
   },
@@ -63,7 +63,9 @@ export function SupportLevelBadge({ level, notes, compact = false, featureName }
   const config = SUPPORT_CONFIG[level]
   const Icon = config.icon
 
-  const badge = compact ? (
+  const isUnsupported = level === "not_supported" || level === "not_implemented"
+
+  const badge = compact || isUnsupported ? (
     <span className={`text-xs font-medium ${config.className}`}>
       {config.shortLabel}
     </span>

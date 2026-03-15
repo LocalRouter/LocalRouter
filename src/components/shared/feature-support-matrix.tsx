@@ -1,4 +1,9 @@
-import { TooltipProvider } from "@/components/ui/tooltip"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { SupportLevelBadge } from "@/components/shared/support-level-badge"
 import type {
   EndpointSupport,
@@ -21,15 +26,34 @@ export function ProviderFeatureTable({ title, items }: ProviderFeatureTableProps
       <h4 className="text-xs font-medium text-muted-foreground mb-2">{title}</h4>
       <TooltipProvider>
         <div className="border rounded-md divide-y">
-          {items.map((item) => (
-            <div
-              key={item.name}
-              className="flex items-center justify-between px-3 py-1.5 text-sm"
-            >
-              <span className="truncate mr-2">{item.name}</span>
-              <SupportLevelBadge level={item.support} notes={item.notes} featureName={item.name} />
-            </div>
-          ))}
+          {items.map((item) => {
+            const endpoint = 'endpoint' in item ? (item as EndpointSupport).endpoint : undefined
+            return (
+              <div
+                key={item.name}
+                className="flex items-center justify-between px-3 py-1.5 text-sm"
+              >
+                {item.notes ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="truncate mr-2 cursor-help border-b border-dotted border-muted-foreground/30">
+                        {item.name}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs">
+                      <p className="text-xs">{item.notes}</p>
+                      {endpoint && (
+                        <p className="text-xs text-muted-foreground mt-0.5 font-mono">{endpoint}</p>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <span className="truncate mr-2">{item.name}</span>
+                )}
+                <SupportLevelBadge level={item.support} notes={item.notes} featureName={item.name} />
+              </div>
+            )
+          })}
         </div>
       </TooltipProvider>
     </div>
