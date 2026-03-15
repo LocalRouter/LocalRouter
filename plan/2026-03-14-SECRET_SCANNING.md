@@ -1,218 +1,83 @@
-# Secret Scanning for LLM Calls
+# Secret Scanning for LLM Calls - Implementation Plan
 
-**Date**: 2026-03-14
-**Status**: Planning
-**Category**: Optimize Feature
+## Context
 
-## Goal
+Developers often paste code, configs, or logs into LLM conversations. This risks accidentally exfiltrating secrets (API keys, tokens, passwords, connection strings) to third-party LLM providers. Secret scanning intercepts outbound requests before they reach providers, detecting potential secrets via regex patterns + Shannon entropy filtering (with optional ML verification), and either asks the user for approval or notifies them.
 
-Add a new "Secret Scanning" optimize feature that scans outbound LLM request messages for leaked secrets (API keys, tokens, passwords, connection strings, etc.) before they reach providers. This prevents accidental secret exfiltration through LLM conversations — a real risk when developers paste code, configs, or logs into AI tools.
+This plan updates `plan/2026-03-14-SECRET_SCANNING.md` with simplified action model, interactive popup approval, and clear per-client vs global config boundaries.
 
-## Architecture Overview
+---
 
-```
-Client Request
-    ↓
-┌─────────────────────────────────────────────────┐
-│              Secret Scanner                      │
-│                                                  │
-│  1. Regex Engine (fast, first pass)              │
-│     ├── Built-in patterns (betterleaks-derived)  │
-│     ├── Additional curated sources (toggleable)  │
-│     └── User custom regex rules                  │
-│                                                  │
-│  2. Entropy Filter (Shannon entropy on matches)  │
-│     └── Configurable threshold per rule          │
-│                                                  │
-│  3. Optional: ML Model (DistilBERT, second pass) │
-│     └── Runs only on regex matches for precision │
-│     └── Provider-routed (like guardrails)        │
-│                                                  │
-│  Actions: block / mask / notify / allow          │
-└─────────────────────────────────────────────────┘
-    ↓
-Guardrails → Compression → Provider
-```
+## Key Design Decisions
 
-## Detailed Design
+1. **Three actions only: Ask / Notify / Off** - No auto-block (always human-in-the-loop), no masking (would confuse LLMs)
+2. **One global action** - No per-category overrides, no per-rule overrides. Single action applies to all detections.
+3. **Per-client: only action override** (Default/Ask/Notify/Off) - Entropy, ML, custom rules, allowlist are global-only.
+4. **Blocks outbound requests** - Scanning happens before the request is sent to the provider. Does NOT scan responses.
+5. **Runs synchronously before guardrails** - Regex+entropy is sub-millisecond. No point spawning parallel work that might be wasted if the request is blocked.
+6. **Reuses FirewallManager** - Same oneshot channel + popup window pattern as guardrails, auto-routing, model firewall.
 
-### 1. New Crate: `lr-secret-scanner`
+---
 
-```
-crates/lr-secret-scanner/
-├── Cargo.toml
-└── src/
-    ├── lib.rs              # Public API
-    ├── engine.rs           # SecretScanEngine - orchestrates scan pipeline
-    ├── regex_engine.rs     # Compiled regex set, pattern matching
-    ├── entropy.rs          # Shannon entropy calculator + token efficiency
-    ├── patterns/
-    │   ├── mod.rs          # Pattern source registry
-    │   ├── builtin.rs      # Embedded betterleaks-derived patterns (TOML)
-    │   └── custom.rs       # User-defined custom rules
-    ├── ml_verifier.rs      # Optional ML model verification (provider-routed)
-    ├── actions.rs          # Action resolution (block/mask/notify/allow)
-    └── types.rs            # SecretFinding, ScanResult, etc.
-```
-
-#### Core Types
+## 1. Core Types (`crates/lr-secret-scanner/src/types.rs`)
 
 ```rust
-/// A single secret detection rule
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretScanAction {
+    Ask,    // Block request, show popup, wait for user decision
+    Notify, // Allow request, show notification
+    #[default]
+    Off,    // No scanning
+}
+
+pub enum SecretCategory {
+    CloudProvider, AIService, VersionControl, Database,
+    Financial, OAuth, Generic, Custom,
+}
+
 pub struct SecretRule {
     pub id: String,
     pub description: String,
-    pub regex: String,              // Compiled at load time
-    pub secret_group: usize,        // Capture group containing the secret (default: 0)
-    pub entropy: Option<f32>,       // Minimum Shannon entropy threshold
-    pub keywords: Vec<String>,      // Fast pre-filter keywords
-    pub category: SecretCategory,   // For grouping in UI
-    pub enabled: bool,
+    pub compiled_regex: regex::Regex,
+    pub secret_group: usize,
+    pub entropy_threshold: Option<f32>,
+    pub keywords: Vec<String>,
+    pub category: SecretCategory,
 }
 
-/// Categories of secrets (maps to betterleaks rule IDs)
-pub enum SecretCategory {
-    CloudProvider,      // AWS, GCP, Azure
-    AIService,          // OpenAI, Anthropic, Groq, etc.
-    VersionControl,     // GitHub, GitLab tokens
-    Database,           // Connection strings, passwords
-    Financial,          // Stripe, Coinbase
-    OAuth,              // OAuth tokens, refresh tokens
-    Generic,            // Generic API keys, passwords
-    Custom,             // User-defined
+pub struct SecretFinding {
+    pub rule_id: String,
+    pub rule_description: String,
+    pub category: SecretCategory,
+    pub message_index: usize,
+    pub matched_text: String,        // truncated ~40 chars for popup display
+    pub entropy: f32,
+    pub ml_confidence: Option<f32>,  // None if ML not run
+    pub ml_verified: Option<bool>,
 }
 
-/// Result of scanning a single message
 pub struct ScanResult {
     pub findings: Vec<SecretFinding>,
     pub scan_duration_ms: u64,
     pub rules_evaluated: usize,
 }
-
-pub struct SecretFinding {
-    pub rule_id: String,
-    pub category: SecretCategory,
-    pub message_index: usize,       // Which message in the conversation
-    pub char_range: (usize, usize), // Location in message content
-    pub matched_text: String,       // The matched secret (for masking)
-    pub entropy: f32,               // Calculated entropy
-    pub confidence: f32,            // 0.0-1.0, boosted by ML if available
-    pub ml_verified: Option<bool>,  // None if ML not run, Some(true/false)
-}
-
-/// What to do when a secret is found
-pub enum SecretAction {
-    /// Block the request entirely (return error to client)
-    Block,
-    /// Replace the secret with [REDACTED] or a placeholder
-    Mask,
-    /// Allow but emit a notification/event to the UI
-    Notify,
-    /// Allow without any action
-    Allow,
-}
 ```
 
-#### Regex Engine
+---
 
-- **Compile once**: All enabled patterns compiled into a `RegexSet` at startup/config-reload for O(n) scanning where n = input length
-- **Keyword pre-filter**: Before regex, check if any rule keywords appear in the text (fast string search via `aho-corasick`). Skip rules whose keywords don't match.
-- **Pattern sources**:
-  1. **Built-in (betterleaks-derived)**: ~200 rules embedded as a TOML constant, covering AWS, GCP, Azure, GitHub, GitLab, Anthropic, OpenAI, Stripe, database URIs, generic API keys, etc.
-  2. **Additional sources** (future): Could add gitleaks, trufflehog pattern sets as toggleable sources
-  3. **Custom rules**: Users define via config YAML with same schema
+## 2. Configuration
 
-#### Entropy Calculator
+### Global Config (add to `AppConfig` in `crates/lr-config/src/types.rs`)
 
 ```rust
-/// Shannon entropy of a string (bits per character)
-pub fn shannon_entropy(s: &str) -> f32 {
-    let mut freq = [0u32; 256];
-    let len = s.len() as f32;
-    for &b in s.as_bytes() {
-        freq[b as usize] += 1;
-    }
-    freq.iter()
-        .filter(|&&c| c > 0)
-        .map(|&c| {
-            let p = c as f32 / len;
-            -p * p.log2()
-        })
-        .sum()
-}
-```
-
-- Each rule can specify a minimum entropy threshold (typically 3.0-4.5)
-- Matches below the threshold are discarded (likely false positives — placeholder values, example tokens)
-- Default entropy threshold: 3.5 (configurable globally)
-
-#### ML Verifier (Optional Add-on)
-
-Follows the same pattern as guardrails — routes inference through an external LLM provider:
-
-- **Model**: DistilBERT-based secret classifier (e.g., `betterleaks/distilbert-secret-masker` or similar HuggingFace model)
-- **When**: Only runs on regex matches (not on all text) — keeps cost/latency low
-- **How**: Provider-routed via the same `ModelExecutor` pattern from `lr-guardrails`
-- **Result**: Binary classification (secret/not-secret) with confidence score
-- **Configuration**: Optional — regex+entropy alone provides good baseline
-
-The ML verifier is configured similarly to guardrails safety models:
-```yaml
-secret_scanning:
-  ml_verifier:
-    enabled: false
-    provider_id: "ollama"
-    model_name: "betterleaks/distilbert-secret-masker"
-```
-
-### 2. Configuration
-
-#### Global Config (`AppConfig`)
-
-```rust
-/// Secret scanning configuration
 pub struct SecretScanningConfig {
-    /// Master enable/disable
-    pub enabled: bool,                          // default: false
-
-    /// Default action when a secret is detected
-    pub default_action: SecretAction,           // default: Notify
-
-    /// Minimum Shannon entropy for a match to be considered valid
-    pub default_entropy_threshold: f32,         // default: 3.5
-
-    /// Built-in pattern sources and their enabled state
-    pub pattern_sources: Vec<PatternSourceConfig>,
-
-    /// Per-category action overrides
-    pub category_actions: Vec<SecretCategoryAction>,
-
-    /// Custom user-defined rules
-    pub custom_rules: Vec<CustomSecretRule>,
-
-    /// ML verifier configuration (optional precision boost)
-    pub ml_verifier: Option<SecretMlVerifierConfig>,
-
-    /// Whether to scan system messages (may contain intentional secrets)
+    pub action: SecretScanAction,               // default: Off
+    pub entropy_threshold: f32,                 // default: 3.5 (global only)
+    pub custom_rules: Vec<CustomSecretRule>,     // global only
+    pub ml_verifier: Option<SecretMlVerifierConfig>, // global only
     pub scan_system_messages: bool,             // default: false
-
-    /// Whether to scan tool/function call results
-    pub scan_tool_results: bool,                // default: true
-
-    /// Allowlist patterns (regexes that exclude matches)
-    pub allowlist: Vec<String>,
-}
-
-pub struct PatternSourceConfig {
-    pub id: String,         // e.g., "betterleaks"
-    pub name: String,       // Display name
-    pub enabled: bool,
-    pub version: String,    // Pattern set version
-}
-
-pub struct SecretCategoryAction {
-    pub category: SecretCategory,
-    pub action: SecretAction,
+    pub allowlist: Vec<String>,                 // global only, regex patterns
 }
 
 pub struct CustomSecretRule {
@@ -221,7 +86,6 @@ pub struct CustomSecretRule {
     pub regex: String,
     pub entropy: Option<f32>,
     pub keywords: Vec<String>,
-    pub action: Option<SecretAction>,  // None = use default_action
     pub enabled: bool,
 }
 
@@ -229,274 +93,437 @@ pub struct SecretMlVerifierConfig {
     pub enabled: bool,
     pub provider_id: String,
     pub model_name: String,
-    pub confidence_threshold: f32,     // default: 0.7
+    pub confidence_threshold: f32,  // default: 0.7
 }
 ```
 
-#### Per-Client Config
+### Per-Client Config (add to `Client` in `crates/lr-config/src/types.rs`)
 
 ```rust
 pub struct ClientSecretScanningConfig {
-    /// None = inherit global, Some(true) = force on, Some(false) = force off
-    pub enabled: Option<bool>,
-
-    /// Override default action for this client
-    pub default_action: Option<SecretAction>,
-
-    /// Per-category action overrides for this client
-    pub category_actions: Option<Vec<SecretCategoryAction>>,
+    pub action: Option<SecretScanAction>,  // None = inherit global
 }
 ```
 
-#### YAML Config Example
+This is the ONLY per-client option. Resolution: `client.action.unwrap_or(global.action)`.
+
+### YAML Example
 
 ```yaml
 secret_scanning:
-  enabled: true
-  default_action: notify
-  default_entropy_threshold: 3.5
+  action: ask
+  entropy_threshold: 3.5
   scan_system_messages: false
-  scan_tool_results: true
-
-  pattern_sources:
-    - id: betterleaks
-      name: "Betterleaks Patterns"
-      enabled: true
-      version: "2026.03"
-
-  category_actions:
-    - category: cloud_provider
-      action: block
-    - category: ai_service
-      action: mask
-    - category: database
-      action: block
-    - category: generic
-      action: notify
-
+  allowlist:
+    - "sk-ant-api03-example.*"
   custom_rules:
     - id: internal-api-key
       description: "Internal API key format"
       regex: 'INTERNAL_[A-Za-z0-9]{32}'
       entropy: 3.0
       keywords: ["INTERNAL_"]
-      action: block
       enabled: true
 
-  ml_verifier:
-    enabled: false
-    provider_id: ollama
-    model_name: "betterleaks/distilbert-secret-masker"
-    confidence_threshold: 0.7
-
-  allowlist:
-    - "sk-ant-api03-example.*"
-    - "AKIA0000000000EXAMPLE"
-
-# Per-client override
 clients:
   - name: "cursor"
     secret_scanning:
-      enabled: true
-      default_action: mask
-      category_actions:
-        - category: ai_service
-          action: allow   # Cursor legitimately sends AI keys
+      action: notify  # or: ask, off, null (= default)
 ```
 
-### 3. Integration Points
+### Config Migration
 
-#### Request Pipeline (`chat.rs`)
+Bump `CONFIG_VERSION` to next version. No-op migration since all new fields have serde defaults.
 
-Secret scanning runs **in parallel** with guardrails and compression (all are independent pre-processing steps):
+---
 
+## 3. Crate: `crates/lr-secret-scanner/`
+
+```
+crates/lr-secret-scanner/
+├── Cargo.toml
+└── src/
+    ├── lib.rs              # Public API: SecretScanEngine
+    ├── engine.rs           # Orchestrates: keywords -> regex -> entropy -> optional ML
+    ├── regex_engine.rs     # RegexSet compiled from builtin + custom rules
+    ├── entropy.rs          # Shannon entropy calculator
+    ├── patterns/
+    │   ├── mod.rs          # Pattern registry
+    │   └── builtin.rs      # Embedded betterleaks-derived patterns (const TOML)
+    ├── ml_verifier.rs      # Optional ML verification via provider routing
+    └── types.rs            # SecretRule, SecretFinding, ScanResult, etc.
+```
+
+**SecretScanEngine API:**
 ```rust
-// In handle_chat_completions (non-streaming path)
-let (guardrails_result, compression_result, secret_scan_result) = tokio::join!(
-    run_guardrails_scan(&state, &config, &request, client_context.as_ref()),
-    run_prompt_compression(&state, &config, &request, client_context.as_ref()),
-    run_secret_scan(&state, &config, &request, client_context.as_ref()),
-);
-
-// Process secret scan result
-match secret_scan_result? {
-    Some(result) if result.has_blocking_findings() => {
-        return Err(/* 400 with details of blocked secrets */);
-    }
-    Some(result) if result.has_masking_findings() => {
-        request = result.apply_masking(request);
-        // Also emit notification event
-    }
-    Some(result) if result.has_notify_findings() => {
-        // Emit event to UI only
-        emit_secret_scan_event(&state, &result);
-    }
-    _ => {} // No findings or scanning disabled
+impl SecretScanEngine {
+    pub fn new(config: &SecretScanningConfig) -> Result<Self>;
+    pub async fn scan(&self, texts: &[ExtractedText]) -> ScanResult;
+    pub fn has_rules(&self) -> bool;
 }
 ```
 
-#### AppState
+**Scan pipeline:**
+1. Keyword pre-filter (aho-corasick) - skip rules whose keywords don't appear
+2. RegexSet match on text
+3. For each match: compute Shannon entropy, discard if below `entropy_threshold`
+4. If ML verifier enabled: run on surviving matches for precision boost
+5. Return `ScanResult` with findings
+
+Reuses `lr_guardrails::text_extractor::extract_request_text()` to extract scannable text from the request JSON.
+
+---
+
+## 4. Integration into Request Pipeline
+
+### Position in `chat.rs` (and `completions.rs`)
+
+Secret scanning inserts **after rate limits / client mode checks, before guardrail spawn** (around line 284 in `chat.rs`):
 
 ```rust
-pub struct AppState {
-    // ... existing fields ...
-    pub secret_scanner: Arc<RwLock<Option<Arc<lr_secret_scanner::SecretScanEngine>>>>,
+// ... existing: rate limits, client mode check ...
+
+// === Secret Scanning (blocks outbound request if action=Ask) ===
+run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
+
+// Start guardrail scan in parallel (existing code, line 286)
+let guardrail_handle = ...
+```
+
+### `run_secret_scan_check` function
+
+```rust
+async fn run_secret_scan_check(
+    state: &AppState,
+    client_ctx: Option<&ClientAuthContext>,
+    request: &ChatCompletionRequest,
+) -> ApiResult<()> {
+    let Some(client_ctx) = client_ctx else { return Ok(()) };
+    let config = state.config_manager.get();
+    let client = state.client_manager.get_client(&client_ctx.client_id);
+
+    // Resolve effective action: per-client override > global
+    let effective_action = client.as_ref()
+        .and_then(|c| c.secret_scanning.action.as_ref())
+        .unwrap_or(&config.secret_scanning.action);
+
+    if *effective_action == SecretScanAction::Off {
+        return Ok(());
+    }
+
+    // Check time-based bypass (from "Allow for 1 hour")
+    if state.secret_scan_approval_tracker.has_valid_bypass(&client_ctx.client_id) {
+        return Ok(());
+    }
+
+    // Run the scan
+    let scanner = state.secret_scanner.read();
+    let Some(scanner) = scanner.as_ref() else { return Ok(()) };
+    if !scanner.has_rules() { return Ok(()) }
+
+    let request_json = serde_json::to_value(request).unwrap_or_default();
+    let texts = lr_guardrails::text_extractor::extract_request_text(&request_json);
+    let result = scanner.scan(&texts).await;
+
+    if result.findings.is_empty() {
+        return Ok(());
+    }
+
+    match effective_action {
+        SecretScanAction::Notify => {
+            state.emit_event("secret-scan-notify", &result.findings);
+            Ok(())  // Allow request to proceed
+        }
+        SecretScanAction::Ask => {
+            handle_secret_scan_approval(state, client_ctx, request, result).await
+        }
+        SecretScanAction::Off => Ok(()),
+    }
 }
 ```
 
-#### Events (UI Notifications)
+---
 
-When `action: notify`, emit a Tauri event so the UI can show a toast/alert:
+## 5. Approval Flow (Ask Action)
+
+Reuses the existing `FirewallManager` oneshot-channel pattern.
+
+### New fields on `FirewallApprovalSession` and `PendingApprovalInfo`
 
 ```rust
-pub struct SecretScanEvent {
-    pub client_id: String,
+pub is_secret_scan_request: bool,
+pub secret_scan_details: Option<SecretScanApprovalDetails>,
+```
+
+### New struct: `SecretScanApprovalDetails`
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretScanApprovalDetails {
     pub findings: Vec<SecretFindingSummary>,
-    pub action_taken: String,  // "blocked", "masked", "notified"
-    pub timestamp: String,
+    pub scan_duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretFindingSummary {
+    pub rule_id: String,
+    pub rule_description: String,
+    pub category: String,
+    pub matched_text: String,       // truncated preview
+    pub entropy: f32,
+    pub ml_confidence: Option<f32>, // None if ML not used
 }
 ```
 
-### 4. UI Changes
+### New method: `FirewallManager::request_secret_scan_approval`
 
-#### Optimize Overview Page
+Follows exact same pattern as `request_guardrail_approval`:
+- Creates session with `is_secret_scan_request: true`
+- Sets `secret_scan_details`
+- No timeout (waits indefinitely like guardrails)
+- Calls `request_approval_internal`
 
-Add a 7th card to the optimize overview grid:
-
-```
-┌─────────────────────────────────┐
-│ 🔒 Secret Scanning             │
-│                                 │
-│ [Toggle: On/Off]                │
-│                                 │
-│ Regex-based secret detection    │
-│ with entropy filtering          │
-│                                 │
-│ [Configure →]                   │
-└─────────────────────────────────┘
-```
-
-- Icon: `KeyRound` or `ShieldAlert` (Lucide) in orange/rose color
-- Toggle for quick enable/disable
-- "Configure" button navigates to dedicated settings view
-
-#### Secret Scanning Settings View (`src/views/secret-scanning/`)
-
-Tabbed interface:
-
-**Tab 1: General**
-- Enable/disable toggle
-- Default action selector (Block / Mask / Notify / Allow)
-- Entropy threshold slider (2.0 - 5.0)
-- Checkboxes: Scan system messages, Scan tool results
-
-**Tab 2: Pattern Sources**
-- List of available pattern sources with toggles
-  - Betterleaks Patterns (200+ rules) — [Enabled]
-  - (Future: Gitleaks, TruffleHog patterns)
-- Expandable sections showing categories within each source
-- Per-category action override dropdowns
-
-**Tab 3: Custom Rules**
-- Table of user-defined rules
-- Add/Edit/Delete with form:
-  - ID, Description, Regex (with live tester), Keywords, Entropy threshold, Action
-- Import/Export as TOML
-
-**Tab 4: ML Verifier (Advanced)**
-- Enable/disable ML precision boost
-- Provider + Model selector (same pattern as guardrails model config)
-- Confidence threshold slider
-- Test button to verify model availability
-
-**Tab 5: Allowlist**
-- Regex patterns that exclude matches
-- Common presets (example tokens, test fixtures)
-
-#### Per-Client Override
-
-In the client edit view, add a "Secret Scanning" section:
-
-```
-Secret Scanning: [Default ▾] [On] [Off]
-                 └─ When "On" or "Default":
-                    Default Action: [Inherit Global ▾] [Block] [Mask] [Notify]
-                    Category Overrides: [Configure →]
-```
-
-#### OptimizeDiagram Update
-
-Add "Secret Scan" node in the LLM pipeline, positioned before GuardRails:
-
-```
-Client → [Secret Scan] → [GuardRails] → [Compress] → [Strong/Weak] → Provider
-```
-
-### 5. Tauri Commands
+### `handle_secret_scan_approval` in `chat.rs`
 
 ```rust
-// Get/update global config
-#[tauri::command]
-pub async fn get_secret_scanning_config() -> Result<SecretScanningConfig, String>
+async fn handle_secret_scan_approval(
+    state: &AppState,
+    client_ctx: &ClientAuthContext,
+    request: &ChatCompletionRequest,
+    result: ScanResult,
+) -> ApiResult<()> {
+    let client = state.client_manager.get_client(&client_ctx.client_id);
+    let client_name = client.map(|c| c.name.clone()).unwrap_or_default();
 
-#[tauri::command]
-pub async fn update_secret_scanning_config(config: SecretScanningConfig) -> Result<(), String>
+    let details = SecretScanApprovalDetails {
+        findings: result.findings.iter().map(|f| SecretFindingSummary {
+            rule_id: f.rule_id.clone(),
+            rule_description: f.rule_description.clone(),
+            category: format!("{:?}", f.category),
+            matched_text: f.matched_text.clone(), // already truncated in engine
+            entropy: f.entropy,
+            ml_confidence: f.ml_confidence,
+        }).collect(),
+        scan_duration_ms: result.scan_duration_ms,
+    };
 
-// Pattern source management
-#[tauri::command]
-pub async fn get_secret_scanning_sources() -> Result<Vec<PatternSourceInfo>, String>
+    let response = state.mcp_gateway.firewall_manager
+        .request_secret_scan_approval(
+            client_ctx.client_id.clone(),
+            client_name,
+            request.model.clone(),
+            details,
+            /* preview string for tray menu */
+        ).await.map_err(|e| ApiErrorResponse::internal_error(...))?;
 
-// Custom rule management
-#[tauri::command]
-pub async fn test_secret_rule(regex: String, test_input: String) -> Result<Vec<TestMatch>, String>
-
-// Manual scan for testing
-#[tauri::command]
-pub async fn test_secret_scan(input: String) -> Result<ScanResult, String>
-
-// Get scan statistics/history
-#[tauri::command]
-pub async fn get_secret_scan_stats() -> Result<ScanStats, String>
+    match response.action {
+        AllowOnce | AllowSession | Allow1Minute | Allow1Hour | AllowPermanent => Ok(()),
+        _ => Err(ApiErrorResponse::forbidden("Request blocked: secrets detected")),
+    }
+}
 ```
 
-### 6. Implementation Phases
+### Popup User Actions → FirewallApprovalAction Mapping
 
-#### Phase 1: Core Engine + Regex Scanning
-- Create `lr-secret-scanner` crate
-- Implement regex engine with betterleaks-derived patterns
-- Implement Shannon entropy filtering
-- Implement keyword pre-filtering with aho-corasick
-- Add `SecretScanningConfig` and `ClientSecretScanningConfig` to config types
-- Config migration to v22
-- Integrate into chat request pipeline (parallel with guardrails)
-- Action handling: block, mask, notify, allow
-- Unit tests for pattern matching and entropy
+| Popup Button | FirewallApprovalAction | Backend Effect |
+|---|---|---|
+| **Block** | `Deny` | Return 403 to client |
+| **Allow** | `AllowOnce` | Let this request proceed |
+| **Allow for 1 hour** | `Allow1Hour` | Add to `SecretScanApprovalTracker`, skip popups for 1hr |
+| **Disable Client** (in dropdown) | `DisableClient` | Disable client + deny request |
+| **Disable Scan for Client** (in dropdown) | `DenyAlways` | Set client `secret_scanning.action = Some(Off)` + deny request |
 
-#### Phase 2: UI + Configuration
-- Optimize overview card
-- Secret scanning settings view (General, Sources, Custom Rules, Allowlist tabs)
-- Per-client override in client edit view
-- Tauri commands for config CRUD
-- TypeScript types for all config/response types
-- Demo mock handlers
-- OptimizeDiagram update
+### Action handling in `submit_firewall_approval` (commands_clients.rs)
 
-#### Phase 3: ML Verifier Add-on
-- ML verifier integration using provider-routed inference
-- Settings UI tab for ML configuration
-- Confidence threshold tuning
-- Test/validate model availability command
+Add `is_secret_scan_request` handling alongside existing `is_guardrail_request`:
 
-#### Phase 4: Polish + Advanced Features
-- Scan statistics and history tracking
-- Allowlist presets (test tokens, example values)
-- Rule import/export (TOML format)
-- Pattern source auto-update mechanism (future)
-- Response scanning (scan provider responses for leaked secrets echoed back)
+- `Allow1Hour` + `is_secret_scan_request` → `state.secret_scan_approval_tracker.add_1_hour_bypass(client_id)`
+- `DenyAlways` + `is_secret_scan_request` → set `client.secret_scanning.action = Some(Off)` in config, save
+- `DisableClient` → already handled generically (disables client)
 
-### 7. Files to Create/Modify
+---
 
-**New Files:**
+## 6. Time-Based Tracker
+
+### `SecretScanApprovalTracker` in `state.rs`
+
+Identical structure to `GuardrailApprovalTracker`:
+
+```rust
+#[derive(Clone, Default)]
+pub struct SecretScanApprovalTracker {
+    bypasses: Arc<DashMap<String, Instant>>,
+}
+
+impl SecretScanApprovalTracker {
+    pub fn new() -> Self { ... }
+    pub fn has_valid_bypass(&self, client_id: &str) -> bool { ... }
+    pub fn add_1_hour_bypass(&self, client_id: &str) { ... }
+    pub fn add_bypass(&self, client_id: &str, duration: Duration) { ... }
+    pub fn cleanup_expired(&self) { ... }
+}
+```
+
+Add to `AppState`:
+```rust
+pub secret_scan_approval_tracker: Arc<SecretScanApprovalTracker>,
+pub secret_scanner: Arc<RwLock<Option<Arc<lr_secret_scanner::SecretScanEngine>>>>,
+```
+
+---
+
+## 7. Frontend Changes
+
+### 7a. Popup UI (Firewall Approval)
+
+**`src/components/shared/FirewallApprovalCard.tsx`:**
+- Add `"secret_scan"` to request type detection (check `is_secret_scan_request`)
+- Header: icon `KeyRound` (lucide), title "Secrets Detected", description "Potential secrets found in outbound request"
+- Body: findings table showing for each finding:
+  - Rule description (e.g. "AWS Access Key ID")
+  - Category badge (e.g. "Cloud Provider")
+  - Matched text (truncated, monospace)
+  - Entropy value
+  - ML confidence (if present, with badge)
+- No edit mode (`canEdit` excludes `secret_scan`)
+- Action buttons:
+  - Left (destructive): **Block** button, with dropdown: "Disable Client", "Disable Scan for Client"
+  - Right (green): **Allow** button, with dropdown: "Allow for 1 Hour"
+
+**`src/views/firewall-approval.tsx`:**
+- Add `is_secret_scan_request` and `secret_scan_details` to `ApprovalDetails` interface
+- Pass findings to `FirewallApprovalCard`
+
+### 7b. Global Settings
+
+**`src/views/settings/secret-scanning-tab.tsx`** (new file):
+- Action dropdown: Off / Ask / Notify
+- When action != Off, show:
+  - Entropy threshold slider (2.0 - 5.0, default 3.5)
+  - Scan system messages checkbox
+  - Custom rules table (add/edit/delete with regex, keywords, entropy override, enabled toggle)
+  - Allowlist textarea (one regex per line)
+  - ML Verifier section (enable toggle, provider + model selector, confidence threshold slider)
+
+### 7c. Per-Client Settings
+
+In client edit tabs, add a "Secret Scanning" section (or new tab `secret-scanning-tab.tsx`):
+- Single dropdown: Default (shows current global in parens) / Ask / Notify / Off
+- No other options
+
+### 7d. TypeScript Types (`src/types/tauri-commands.ts`)
+
+```typescript
+export interface SecretScanningConfig {
+  action: "ask" | "notify" | "off"
+  entropy_threshold: number
+  custom_rules: CustomSecretRule[]
+  ml_verifier: SecretMlVerifierConfig | null
+  scan_system_messages: boolean
+  allowlist: string[]
+}
+
+export interface ClientSecretScanningConfig {
+  action: "ask" | "notify" | "off" | null  // null = default
+}
+
+export interface CustomSecretRule {
+  id: string
+  description: string
+  regex: string
+  entropy: number | null
+  keywords: string[]
+  enabled: boolean
+}
+
+export interface SecretMlVerifierConfig {
+  enabled: boolean
+  provider_id: string
+  model_name: string
+  confidence_threshold: number
+}
+
+export interface SecretFindingSummary {
+  rule_id: string
+  rule_description: string
+  category: string
+  matched_text: string
+  entropy: number
+  ml_confidence: number | null
+}
+
+export interface SecretScanApprovalDetails {
+  findings: SecretFindingSummary[]
+  scan_duration_ms: number
+}
+```
+
+### 7e. Demo Mock (`website/src/components/demo/TauriMockSetup.ts`)
+
+Add mock handlers for:
+- `get_secret_scanning_config` → default config
+- `update_secret_scanning_config` → no-op
+- `get_client_secret_scanning_config` → `{ action: null }`
+- `update_client_secret_scanning_config` → no-op
+- `test_secret_scan` → mock findings
+- `rebuild_secret_scanner` → no-op
+
+---
+
+## 8. Tauri Commands
+
+```rust
+// Global config
+get_secret_scanning_config() -> SecretScanningConfig
+update_secret_scanning_config(config_json: String) -> ()
+
+// Per-client config
+get_client_secret_scanning_config(client_id: String) -> ClientSecretScanningConfig
+update_client_secret_scanning_config(client_id: String, config_json: String) -> ()
+
+// Testing
+test_secret_scan(input: String) -> ScanResult
+test_secret_rule(regex: String, test_input: String) -> Vec<TestMatch>
+
+// Engine management
+rebuild_secret_scanner() -> ()
+```
+
+---
+
+## 9. Implementation Phases
+
+### Phase 1: Core Engine + Config + Pipeline
+1. Create `crates/lr-secret-scanner/` with regex engine, entropy, builtin patterns
+2. Add `SecretScanningConfig`, `ClientSecretScanningConfig`, `SecretScanAction` to `lr-config/types.rs`
+3. Config migration (no-op)
+4. Add `SecretScanApprovalTracker` + `secret_scanner` to `AppState`
+5. Add `is_secret_scan_request`, `secret_scan_details`, `request_secret_scan_approval` to `FirewallManager`
+6. Add `SecretScanApprovalDetails`, `SecretFindingSummary` to `firewall.rs`
+7. Integrate `run_secret_scan_check` into `chat.rs` and `completions.rs` (after rate limits, before guardrail spawn)
+8. Handle `is_secret_scan_request` in `submit_firewall_approval`
+9. Initialize `SecretScanEngine` at startup + on config reload
+10. Unit tests for pattern matching, entropy, scan pipeline
+
+### Phase 2: Frontend
+1. TypeScript types in `tauri-commands.ts`
+2. Tauri commands (get/update config, test scan, rebuild)
+3. Firewall approval card: `secret_scan` request type with findings display + action buttons
+4. Firewall approval view: handle `is_secret_scan_request` + `secret_scan_details`
+5. Settings tab: `secret-scanning-tab.tsx` (global config only)
+6. Per-client dropdown in client edit view
+7. Demo mock handlers
+8. Register commands in `main.rs`
+
+### Phase 3: ML Verifier (Optional, Later)
+1. ML verifier integration using provider-routed inference
+2. ML config UI section in settings tab
+3. Display ML confidence in popup findings
+
+---
+
+## 10. Files to Create/Modify
+
+### New Files
 - `crates/lr-secret-scanner/Cargo.toml`
 - `crates/lr-secret-scanner/src/lib.rs`
 - `crates/lr-secret-scanner/src/engine.rs`
@@ -504,48 +531,35 @@ pub async fn get_secret_scan_stats() -> Result<ScanStats, String>
 - `crates/lr-secret-scanner/src/entropy.rs`
 - `crates/lr-secret-scanner/src/patterns/mod.rs`
 - `crates/lr-secret-scanner/src/patterns/builtin.rs`
-- `crates/lr-secret-scanner/src/patterns/custom.rs`
 - `crates/lr-secret-scanner/src/ml_verifier.rs`
-- `crates/lr-secret-scanner/src/actions.rs`
 - `crates/lr-secret-scanner/src/types.rs`
-- `src/views/secret-scanning/index.tsx`
-- `src/views/secret-scanning/GeneralTab.tsx`
-- `src/views/secret-scanning/SourcesTab.tsx`
-- `src/views/secret-scanning/CustomRulesTab.tsx`
-- `src/views/secret-scanning/AllowlistTab.tsx`
-- `src/views/secret-scanning/MlVerifierTab.tsx`
+- `src/views/settings/secret-scanning-tab.tsx`
+- `src/views/clients/tabs/secret-scanning-tab.tsx`
 
-**Modified Files:**
-- `Cargo.toml` (workspace member)
-- `crates/lr-config/src/types.rs` (add SecretScanningConfig, ClientSecretScanningConfig)
-- `crates/lr-config/src/migration.rs` (v22 migration)
-- `crates/lr-server/Cargo.toml` (add lr-secret-scanner dep)
-- `crates/lr-server/src/state.rs` (add secret_scanner to AppState)
-- `crates/lr-server/src/routes/chat.rs` (integrate scanning in pipeline)
-- `src-tauri/src/ui/commands.rs` or new `commands_secret_scanning.rs` (Tauri commands)
-- `src-tauri/Cargo.toml` (add lr-secret-scanner dep)
-- `src-tauri/src/main.rs` (register commands, initialize engine)
-- `src/views/optimize-overview/index.tsx` (add card)
-- `src/views/optimize-overview/OptimizeDiagram.tsx` (add node)
-- `src/views/optimize-overview/constants.ts` (add color)
-- `src/types/tauri-commands.ts` (add TS types)
-- `website/src/components/demo/TauriMockSetup.ts` (add mock handlers)
-- `src/App.tsx` or router config (add route)
+### Modified Files
+- `Cargo.toml` — add workspace member + dependency
+- `crates/lr-config/src/types.rs` — add `SecretScanningConfig`, `ClientSecretScanningConfig`, `SecretScanAction`; add fields to `AppConfig` and `Client`
+- `crates/lr-config/src/migration.rs` — bump version, add no-op migration
+- `crates/lr-server/src/state.rs` — add `SecretScanApprovalTracker`, add fields to `AppState`
+- `crates/lr-server/src/routes/chat.rs` — insert `run_secret_scan_check` + `handle_secret_scan_approval`
+- `crates/lr-server/src/routes/completions.rs` — same integration as chat.rs
+- `crates/lr-mcp/src/gateway/firewall.rs` — add `is_secret_scan_request`, `secret_scan_details`, `SecretScanApprovalDetails`, `SecretFindingSummary`, `request_secret_scan_approval()`
+- `src-tauri/src/ui/commands_clients.rs` — handle `is_secret_scan_request` in `submit_firewall_approval`; add new Tauri commands
+- `src-tauri/src/main.rs` — register commands, initialize engine
+- `src-tauri/Cargo.toml` — add `lr-secret-scanner` dep
+- `crates/lr-server/Cargo.toml` — add `lr-secret-scanner` dep
+- `src/components/shared/FirewallApprovalCard.tsx` — add `secret_scan` request type
+- `src/views/firewall-approval.tsx` — add `is_secret_scan_request` + `secret_scan_details`
+- `src/types/tauri-commands.ts` — add all TS types + command params
+- `website/src/components/demo/TauriMockSetup.ts` — add mock handlers
 
-### 8. Key Design Decisions
+---
 
-1. **Regex-first, ML-optional**: Regex+entropy provides fast, reliable detection with no external dependencies. ML model is a precision add-on for users who want fewer false positives.
+## 11. Verification
 
-2. **Betterleaks patterns embedded, not fetched**: Ship a snapshot of betterleaks patterns as a compiled-in TOML constant. No network dependency. Can update with app releases. Future: optional auto-update.
-
-3. **Provider-routed ML** (same as guardrails): The ML verifier routes through existing LLM providers (Ollama, etc.) rather than embedding a model. This keeps the binary small and leverages existing infrastructure.
-
-4. **Parallel execution**: Secret scanning runs in parallel with guardrails and compression — no additional latency in the happy path (no secrets found).
-
-5. **Action hierarchy**: Global default → per-category override → per-rule override → per-client override. Most specific wins.
-
-6. **Scan position**: Before guardrails in the pipeline. Secrets should be caught before any other processing to minimize exposure.
-
-7. **Masking strategy**: Replace matched text with `[REDACTED:category]` (e.g., `[REDACTED:aws_key]`). Preserves message structure while removing the secret. The original is never logged.
-
-8. **No secret storage**: Findings are ephemeral — used only for action resolution and event emission. Matched secret text is never persisted to disk or logs.
+1. **Unit tests**: Pattern matching against known secret formats, entropy thresholds, allowlist exclusions
+2. **Integration test**: Send a chat completion request containing a known AWS key → verify popup appears (Ask mode) or notification emits (Notify mode)
+3. **Per-client override**: Set one client to Off, another to Ask → verify one is scanned, other isn't
+4. **Time-based bypass**: Click "Allow for 1 hour" → verify subsequent requests skip scanning for that client
+5. **Disable scan for client**: Click "Disable Scan for Client" → verify client config updated to Off
+6. **Build**: `cargo test && cargo clippy && npx tsc --noEmit`
