@@ -2933,3 +2933,167 @@ export interface DiscoverProviderResult {
   added: string[]
   skipped: string[]
 }
+
+// =============================================================================
+// Secret Scanning Types
+// Rust: crates/lr-config/src/types.rs, crates/lr-mcp/src/gateway/firewall.rs
+// =============================================================================
+
+/** Secret scan action: what to do when a secret is detected */
+export type SecretScanAction = 'ask' | 'notify' | 'off'
+
+/** Rust: crates/lr-config/src/types.rs - SecretScanningConfig */
+export interface SecretScanningConfig {
+  action: SecretScanAction
+  entropy_threshold: number
+  custom_rules: CustomSecretRule[]
+  ml_verifier: SecretMlVerifierConfig | null
+  scan_system_messages: boolean
+  allowlist: string[]
+}
+
+/** Per-client secret scanning configuration */
+export interface ClientSecretScanningConfig {
+  action: SecretScanAction | null
+}
+
+/** A custom user-defined secret detection rule */
+export interface CustomSecretRule {
+  id: string
+  description: string
+  regex: string
+  entropy: number | null
+  keywords: string[]
+  enabled: boolean
+}
+
+/** ML verifier configuration for secret scanning */
+export interface SecretMlVerifierConfig {
+  enabled: boolean
+  provider_id: string
+  model_name: string
+  confidence_threshold: number
+}
+
+/** Summary of a single secret finding (for approval popup) */
+export interface SecretFindingSummary {
+  rule_id: string
+  rule_description: string
+  category: string
+  matched_text: string
+  entropy: number
+  ml_confidence: number | null
+}
+
+/** Secret scan approval details (sent to popup) */
+export interface SecretScanApprovalDetails {
+  findings: SecretFindingSummary[]
+  scan_duration_ms: number
+}
+
+/** Result of a secret scan */
+export interface SecretScanResult {
+  findings: SecretFinding[]
+  scan_duration_ms: number
+  rules_evaluated: number
+}
+
+/** A single secret finding */
+export interface SecretFinding {
+  rule_id: string
+  rule_description: string
+  category: string
+  message_index: number
+  matched_text: string
+  entropy: number
+  ml_confidence: number | null
+  ml_verified: boolean | null
+}
+
+/** Params for get_secret_scanning_config - no params needed */
+
+/** Params for update_secret_scanning_config */
+export interface UpdateSecretScanningConfigParams {
+  configJson: string
+}
+
+/** Params for get_client_secret_scanning_config */
+export interface GetClientSecretScanningConfigParams {
+  clientId: string
+}
+
+/** Params for update_client_secret_scanning_config */
+export interface UpdateClientSecretScanningConfigParams {
+  clientId: string
+  configJson: string
+}
+
+/** Params for test_secret_scan */
+export interface TestSecretScanParams {
+  input: string
+}
+
+// =============================================================================
+// Feature Support Matrix Types
+// Rust: crates/lr-providers/src/lib.rs
+// =============================================================================
+
+/** Level of support for a feature or endpoint */
+export type SupportLevel = 'supported' | 'partial' | 'translated' | 'not_supported' | 'not_implemented'
+
+/** Support information for a single API endpoint */
+export interface EndpointSupport {
+  name: string
+  endpoint: string
+  support: SupportLevel
+  notes: string | null
+}
+
+/** Support information for a single feature */
+export interface FeatureSupport {
+  name: string
+  support: SupportLevel
+  notes: string | null
+}
+
+/** Complete feature support information for a provider */
+export interface ProviderFeatureSupport {
+  provider_type: string
+  provider_instance: string
+  endpoints: EndpointSupport[]
+  model_features: FeatureSupport[]
+  optimization_features: FeatureSupport[]
+}
+
+/** A cell in the feature-endpoint matrix */
+export interface MatrixCell {
+  support: SupportLevel
+  notes: string | null
+}
+
+/** A row in the feature × endpoint matrix */
+export interface FeatureEndpointRow {
+  feature_name: string
+  cells: MatrixCell[]
+}
+
+/** A row in the feature/endpoint × client mode matrix */
+export interface FeatureModeRow {
+  name: string
+  cells: MatrixCell[]
+}
+
+/** Static matrix of optimization features × endpoints × client modes */
+export interface FeatureEndpointMatrix {
+  endpoints: string[]
+  client_modes: string[]
+  feature_rows: FeatureEndpointRow[]
+  mode_rows: FeatureModeRow[]
+}
+
+/** Params for get_provider_feature_support */
+export interface GetProviderFeatureSupportParams {
+  instanceName: string
+}
+
+/** Params for get_feature_endpoint_matrix - no params needed */

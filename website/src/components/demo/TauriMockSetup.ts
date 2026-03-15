@@ -22,7 +22,7 @@ import type { InvokeArgs } from '@tauri-apps/api/core'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
-import type { RouteLLMTestResult, GraphData } from '@app/types/tauri-commands'
+import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix } from '@app/types/tauri-commands'
 
 // Track warned commands to avoid spam (only warn once per command)
 const warnedCommands = new Set<string>()
@@ -1457,6 +1457,95 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
 
   // ============================================================================
+  // Feature Support Matrix
+  // ============================================================================
+  'get_provider_feature_support': (args): ProviderFeatureSupport => ({
+    provider_type: 'openai',
+    provider_instance: args?.instanceName || 'openai',
+    endpoints: [
+      { name: 'Chat Completions', endpoint: '/v1/chat/completions', support: 'supported', notes: null },
+      { name: 'Completions (legacy)', endpoint: '/v1/completions', support: 'supported', notes: 'Converted to chat completions internally' },
+      { name: 'Streaming', endpoint: '/v1/chat/completions', support: 'supported', notes: null },
+      { name: 'Embeddings', endpoint: '/v1/embeddings', support: 'supported', notes: null },
+      { name: 'Image Generation', endpoint: '/v1/images/generations', support: 'supported', notes: null },
+      { name: 'Audio Transcription', endpoint: '/v1/audio/transcriptions', support: 'supported', notes: 'OpenAI Whisper (STT) and TTS models' },
+      { name: 'Audio Speech (TTS)', endpoint: '/v1/audio/speech', support: 'supported', notes: 'OpenAI Whisper (STT) and TTS models' },
+      { name: 'Moderations', endpoint: '/v1/moderations', support: 'not_implemented', notes: 'OpenAI supports natively — planned' },
+      { name: 'Responses API', endpoint: '/v1/responses', support: 'not_implemented', notes: 'OpenAI supports natively — planned' },
+      { name: 'Batch Processing', endpoint: '/v1/batches', support: 'not_implemented', notes: 'OpenAI supports natively — planned' },
+      { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'not_implemented', notes: 'OpenAI supports natively — planned' },
+    ],
+    model_features: [
+      { name: 'Function Calling', support: 'supported', notes: null },
+      { name: 'Vision', support: 'supported', notes: null },
+      { name: 'Structured Outputs', support: 'supported', notes: null },
+      { name: 'JSON Mode', support: 'supported', notes: null },
+      { name: 'Log Probabilities', support: 'supported', notes: null },
+      { name: 'Reasoning Tokens', support: 'partial', notes: 'o1-preview and o1-mini models only' },
+      { name: 'Extended Thinking', support: 'not_supported', notes: null },
+      { name: 'Thinking Level', support: 'not_supported', notes: null },
+      { name: 'Prompt Caching', support: 'not_supported', notes: null },
+    ],
+    optimization_features: [
+      { name: 'Guardrails', support: 'supported', notes: 'Content safety scanning on chat/completion requests' },
+      { name: 'Prompt Compression', support: 'supported', notes: 'LLMLingua-2 token-level compression for chat requests' },
+      { name: 'JSON Repair', support: 'supported', notes: 'Automatic fix of malformed JSON responses' },
+      { name: 'RouteLLM Routing', support: 'supported', notes: 'Strong/weak model routing based on request complexity' },
+      { name: 'Secret Scanning', support: 'supported', notes: 'Detect potential secrets in outbound requests' },
+      { name: 'Rate Limiting', support: 'supported', notes: 'Available for all endpoints' },
+      { name: 'Model Firewall', support: 'supported', notes: 'Available for all LLM endpoints' },
+      { name: 'Generation Tracking', support: 'supported', notes: 'Available for all endpoints' },
+      { name: 'Cost Calculation', support: 'supported', notes: 'Based on catalog pricing data' },
+    ],
+  }),
+  'get_feature_endpoint_matrix': (): FeatureEndpointMatrix => ({
+    endpoints: ['Chat', 'Completions', 'Embeddings', 'Images', 'Audio', 'Moderations', 'Responses', 'Batches', 'Realtime'],
+    client_modes: ['LLM Only', 'MCP Only', 'MCP & LLM', 'MCP via LLM'],
+    feature_rows: [
+      { feature_name: 'Guardrails', cells: [
+        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'translated', notes: 'Per-request in translated batch mode' }, { support: 'not_supported', notes: null },
+      ]},
+      { feature_name: 'Prompt Compression', cells: [
+        { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'translated', notes: 'Per-request in translated batch mode' }, { support: 'not_supported', notes: null },
+      ]},
+      { feature_name: 'JSON Repair', cells: [
+        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null },
+      ]},
+      { feature_name: 'RouteLLM Routing', cells: [
+        { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null },
+      ]},
+      { feature_name: 'Secret Scanning', cells: [
+        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'partial', notes: 'TTS input text only; audio binary not scannable' }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'translated', notes: 'Per-request in translated batch mode' }, { support: 'not_supported', notes: null },
+      ]},
+      { feature_name: 'Rate Limiting', cells: [
+        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'partial', notes: 'Connection-time only, no per-message' },
+      ]},
+      { feature_name: 'Model Firewall', cells: [
+        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'partial', notes: 'Approve at batch creation time' }, { support: 'supported', notes: null },
+      ]},
+      { feature_name: 'Generation Tracking', cells: [
+        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'partial', notes: 'Per-session aggregation' },
+      ]},
+      { feature_name: 'Cost Calculation', cells: [
+        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null },
+      ]},
+    ],
+    mode_rows: [
+      { name: 'Chat Completions', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
+      { name: 'Completions', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }] },
+      { name: 'Embeddings', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }] },
+      { name: 'Image Generation', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }] },
+      { name: 'Audio (STT/TTS)', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }] },
+      { name: 'MCP Gateway', cells: [{ support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }] },
+      { name: 'MCP \u2192 LLM Tools', cells: [{ support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }] },
+      { name: 'Guardrails', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
+      { name: 'RouteLLM', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
+      { name: 'Secret Scanning', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
+      { name: 'Context Management', cells: [{ support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
+    ],
+  }),
+
+  // ============================================================================
   // Stats & Health
   // ============================================================================
   'get_aggregate_stats': () => {
@@ -2734,6 +2823,46 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       repairs: wasModified ? ['syntax_repaired'] : [],
     }
   },
+
+  // ============================================================================
+  // Secret Scanning
+  // ============================================================================
+  'get_secret_scanning_config': () => ({
+    action: 'off',
+    entropy_threshold: 3.5,
+    custom_rules: [],
+    ml_verifier: null,
+    scan_system_messages: false,
+    allowlist: [],
+  }),
+  'update_secret_scanning_config': () => {
+    toast.success('Secret scanning configuration saved (demo)')
+    return null
+  },
+  'rebuild_secret_scanner': () => null,
+  'get_client_secret_scanning_config': () => ({
+    action: null,
+  }),
+  'update_client_secret_scanning_config': () => {
+    toast.success('Client secret scanning configuration saved (demo)')
+    return null
+  },
+  'test_secret_scan': () => ({
+    findings: [
+      {
+        rule_id: 'aws-access-key-id',
+        rule_description: 'AWS Access Key ID',
+        category: 'Cloud Provider',
+        message_index: 0,
+        matched_text: 'AKIA**************MPLE',
+        entropy: 3.42,
+        ml_confidence: null,
+        ml_verified: null,
+      },
+    ],
+    scan_duration_ms: 1,
+    rules_evaluated: 30,
+  }),
 
   // ============================================================================
   // Free Tier

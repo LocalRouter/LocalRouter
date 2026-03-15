@@ -303,6 +303,8 @@ impl ModelProvider for OpenRouterProvider {
                 })
                 .collect(),
             usage: openrouter_response.usage,
+            system_fingerprint: None,
+            service_tier: None,
             extensions: None,
             routellm_win_rate: None,
             request_usage_entries: None,
@@ -419,6 +421,10 @@ impl ModelProvider for OpenRouterProvider {
         });
 
         Ok(Box::pin(stream))
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        true
     }
 
     async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {

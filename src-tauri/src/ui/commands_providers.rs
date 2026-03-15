@@ -753,12 +753,17 @@ pub async fn get_periodic_health_enabled(
 /// Set whether periodic health checks are enabled
 ///
 /// When disabled, only on-failure and user-triggered health checks run.
-/// Requires a server restart to take effect.
+/// Takes effect immediately without requiring a server restart.
 #[tauri::command]
 pub async fn set_periodic_health_enabled(
     enabled: bool,
     config_manager: State<'_, ConfigManager>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
+    // Update runtime flag immediately (no restart needed)
+    app_state.health_cache.set_periodic_enabled(enabled);
+
+    // Persist to config
     config_manager
         .update(|config| {
             config.health_check.periodic_enabled = enabled;
@@ -1165,4 +1170,33 @@ pub async fn list_all_models_detailed(
         .collect();
 
     Ok(detailed_models)
+}
+
+// ============================================================================
+// Feature Support Matrix Commands
+// ============================================================================
+
+/// Get feature support information for a specific provider instance.
+///
+/// Returns endpoint support, model feature support, and optimization feature
+/// support for the given provider, computed from trait methods and capabilities.
+#[tauri::command]
+pub async fn get_provider_feature_support(
+    instance_name: String,
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<lr_providers::ProviderFeatureSupport, String> {
+    let provider = registry
+        .get_provider(&instance_name)
+        .ok_or_else(|| format!("Provider instance '{}' not found", instance_name))?;
+
+    Ok(provider.get_feature_support(&instance_name))
+}
+
+/// Get the static feature × endpoint × client mode matrix.
+///
+/// Returns hardcoded data showing which optimization features apply to which
+/// endpoints and client modes. This does not change per provider.
+#[tauri::command]
+pub async fn get_feature_endpoint_matrix() -> Result<lr_providers::FeatureEndpointMatrix, String> {
+    Ok(lr_providers::build_feature_endpoint_matrix())
 }

@@ -215,6 +215,26 @@ struct OpenAIChatRequest {
     tool_choice: Option<super::ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<super::ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logit_bias: Option<std::collections::HashMap<String, f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    store: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<std::collections::HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modalities: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prediction: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,6 +245,10 @@ struct OpenAIChatResponse {
     model: String,
     choices: Vec<OpenAIChoice>,
     usage: OpenAIUsage,
+    #[serde(default)]
+    system_fingerprint: Option<String>,
+    #[serde(default)]
+    service_tier: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -307,6 +331,23 @@ struct OpenAIEmbedding {
 struct OpenAIEmbeddingUsage {
     prompt_tokens: u32,
     total_tokens: u32,
+}
+
+/// Determine MIME type for an audio file based on its extension.
+fn audio_mime_type(file_name: &str) -> String {
+    let ext = file_name.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "mp3" => "audio/mpeg",
+        "mp4" | "m4a" => "audio/mp4",
+        "mpeg" => "audio/mpeg",
+        "mpga" => "audio/mpeg",
+        "ogg" | "oga" => "audio/ogg",
+        "wav" => "audio/wav",
+        "webm" => "audio/webm",
+        "flac" => "audio/flac",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }
 
 #[async_trait]
@@ -479,6 +520,16 @@ impl ModelProvider for OpenAIProvider {
             tools: request.tools,
             tool_choice: request.tool_choice,
             response_format: request.response_format,
+            n: request.n,
+            logit_bias: request.logit_bias,
+            parallel_tool_calls: request.parallel_tool_calls,
+            service_tier: request.service_tier,
+            store: request.store,
+            metadata: request.metadata,
+            modalities: request.modalities,
+            audio: request.audio,
+            prediction: request.prediction,
+            reasoning_effort: request.reasoning_effort,
         };
 
         let response = self
@@ -533,6 +584,8 @@ impl ModelProvider for OpenAIProvider {
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
             },
+            system_fingerprint: openai_response.system_fingerprint,
+            service_tier: openai_response.service_tier,
             extensions: None,
             routellm_win_rate: None,
             request_usage_entries: None,
@@ -556,6 +609,16 @@ impl ModelProvider for OpenAIProvider {
             tools: request.tools,
             tool_choice: request.tool_choice,
             response_format: request.response_format,
+            n: request.n,
+            logit_bias: request.logit_bias,
+            parallel_tool_calls: request.parallel_tool_calls,
+            service_tier: request.service_tier,
+            store: request.store,
+            metadata: request.metadata,
+            modalities: request.modalities,
+            audio: request.audio,
+            prediction: request.prediction,
+            reasoning_effort: request.reasoning_effort,
         };
 
         let response = self
@@ -815,6 +878,199 @@ impl ModelProvider for OpenAIProvider {
         Ok(super::ImageGenerationResponse { created, data })
     }
 
+    async fn transcribe(
+        &self,
+        request: super::AudioTranscriptionRequest,
+    ) -> AppResult<super::AudioTranscriptionResponse> {
+        let mut form = reqwest::multipart::Form::new();
+
+        // Add the audio file
+        let mime_type = audio_mime_type(&request.file_name);
+        let file_part = reqwest::multipart::Part::bytes(request.file)
+            .file_name(request.file_name)
+            .mime_str(&mime_type)
+            .map_err(|e| AppError::Provider(format!("Failed to set MIME type: {}", e)))?;
+        form = form.part("file", file_part);
+
+        // Add required model field
+        form = form.text("model", request.model);
+
+        // Add optional fields
+        if let Some(language) = request.language {
+            form = form.text("language", language);
+        }
+        if let Some(prompt) = request.prompt {
+            form = form.text("prompt", prompt);
+        }
+        if let Some(response_format) = request.response_format {
+            form = form.text("response_format", response_format);
+        }
+        if let Some(temperature) = request.temperature {
+            form = form.text("temperature", temperature.to_string());
+        }
+        if let Some(granularities) = request.timestamp_granularities {
+            for granularity in granularities {
+                form = form.text("timestamp_granularities[]", granularity);
+            }
+        }
+
+        let response = self
+            .client
+            .post(format!("{}/audio/transcriptions", OPENAI_API_BASE))
+            .header("Authorization", self.auth_header())
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status {
+                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
+            });
+        }
+
+        let transcription: super::AudioTranscriptionResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
+
+        Ok(transcription)
+    }
+
+    async fn translate_audio(
+        &self,
+        request: super::AudioTranslationRequest,
+    ) -> AppResult<super::AudioTranslationResponse> {
+        let mut form = reqwest::multipart::Form::new();
+
+        // Add the audio file
+        let mime_type = audio_mime_type(&request.file_name);
+        let file_part = reqwest::multipart::Part::bytes(request.file)
+            .file_name(request.file_name)
+            .mime_str(&mime_type)
+            .map_err(|e| AppError::Provider(format!("Failed to set MIME type: {}", e)))?;
+        form = form.part("file", file_part);
+
+        // Add required model field
+        form = form.text("model", request.model);
+
+        // Add optional fields (no language field — translation always outputs English)
+        if let Some(prompt) = request.prompt {
+            form = form.text("prompt", prompt);
+        }
+        if let Some(response_format) = request.response_format {
+            form = form.text("response_format", response_format);
+        }
+        if let Some(temperature) = request.temperature {
+            form = form.text("temperature", temperature.to_string());
+        }
+
+        let response = self
+            .client
+            .post(format!("{}/audio/translations", OPENAI_API_BASE))
+            .header("Authorization", self.auth_header())
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status {
+                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
+            });
+        }
+
+        let translation: super::AudioTranslationResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
+
+        Ok(translation)
+    }
+
+    async fn speech(&self, request: super::SpeechRequest) -> AppResult<super::SpeechResponse> {
+        let response = self
+            .client
+            .post(format!("{}/audio/speech", OPENAI_API_BASE))
+            .header("Authorization", self.auth_header())
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status {
+                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
+            });
+        }
+
+        // Determine content type from response headers or requested format
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                // Fallback: derive from requested format
+                match request.response_format.as_deref() {
+                    Some("opus") => "audio/opus".to_string(),
+                    Some("aac") => "audio/aac".to_string(),
+                    Some("flac") => "audio/flac".to_string(),
+                    Some("wav") => "audio/wav".to_string(),
+                    Some("pcm") => "audio/pcm".to_string(),
+                    _ => "audio/mpeg".to_string(), // mp3 is the default
+                }
+            });
+
+        let audio_data = response
+            .bytes()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to read audio data: {}", e)))?
+            .to_vec();
+
+        Ok(super::SpeechResponse {
+            audio_data,
+            content_type,
+        })
+    }
+
+    fn supports_transcription(&self) -> bool {
+        true
+    }
+
+    fn supports_audio_translation(&self) -> bool {
+        true
+    }
+
+    fn supports_speech(&self) -> bool {
+        true
+    }
+
     fn supports_feature(&self, feature: &str) -> bool {
         matches!(
             feature,
@@ -837,6 +1093,64 @@ impl ModelProvider for OpenAIProvider {
             "json_mode" => Some(Box::new(crate::features::json_mode::JsonModeAdapter)),
             _ => None,
         }
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        true
+    }
+
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
+        let mut support = super::default_feature_support(self, instance_name);
+
+        // Override model features with OpenAI-specific notes
+        for f in &mut support.model_features {
+            match f.name.as_str() {
+                "Function Calling" => {
+                    f.support = super::SupportLevel::Supported;
+                }
+                "Vision" => {
+                    f.support = super::SupportLevel::Supported;
+                }
+                "Reasoning Tokens" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some("o1-preview and o1-mini models only".into());
+                }
+                _ => {}
+            }
+        }
+
+        // OpenAI will have native Responses, Batches, Moderations, Audio
+        for e in &mut support.endpoints {
+            match e.name.as_str() {
+                "Moderations" => {
+                    e.support = super::SupportLevel::NotImplemented;
+                    e.notes = Some("OpenAI supports natively — planned".into());
+                }
+                "Responses API" => {
+                    e.support = super::SupportLevel::NotImplemented;
+                    e.notes = Some("OpenAI supports natively — planned".into());
+                }
+                "Batch Processing" => {
+                    e.support = super::SupportLevel::NotImplemented;
+                    e.notes = Some("OpenAI supports natively — planned".into());
+                }
+                "Audio Transcription" | "Audio Speech (TTS)" => {
+                    e.support = super::SupportLevel::Supported;
+                    e.notes = Some("OpenAI Whisper (STT) and TTS models".into());
+                }
+                "Realtime (WebSocket)" => {
+                    e.support = super::SupportLevel::NotImplemented;
+                    e.notes = Some("OpenAI supports natively — planned".into());
+                }
+                _ => {}
+            }
+        }
+
+        support
     }
 }
 

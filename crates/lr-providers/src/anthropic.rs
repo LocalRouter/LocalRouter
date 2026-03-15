@@ -605,6 +605,8 @@ impl ModelProvider for AnthropicProvider {
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
             },
+            system_fingerprint: None,
+            service_tier: None,
             extensions: None,
             routellm_win_rate: None,
             request_usage_entries: None,
@@ -917,6 +919,25 @@ impl ModelProvider for AnthropicProvider {
             "json_mode" => Some(Box::new(crate::features::json_mode::JsonModeAdapter)),
             _ => None,
         }
+    }
+
+    fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
+        let mut support = super::default_feature_support(self, instance_name);
+
+        for f in &mut support.model_features {
+            match f.name.as_str() {
+                "Extended Thinking" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some("Claude 4.5 models only".into());
+                }
+                "Function Calling" | "Vision" => {
+                    f.support = super::SupportLevel::Supported;
+                }
+                _ => {}
+            }
+        }
+
+        support
     }
 }
 

@@ -51,8 +51,9 @@ import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import ProviderIcon from "@/components/ProviderIcon"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { cn } from "@/lib/utils"
-import type { FreeTierKind, ProviderFreeTierStatus } from "@/types/tauri-commands"
+import type { FreeTierKind, ProviderFreeTierStatus, ProviderFeatureSupport, GetProviderFeatureSupportParams } from "@/types/tauri-commands"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
+import { ProviderFeatureTable } from "@/components/shared/feature-support-matrix"
 
 const FREE_TIER_LABELS: Record<string, string> = {
   none: 'No Free Tier',
@@ -148,6 +149,9 @@ export function ProvidersPanel({
   // Detail tab state
   const [detailTab, setDetailTab] = useState("info")
 
+  // Feature support state
+  const [featureSupport, setFeatureSupport] = useState<ProviderFeatureSupport | null>(null)
+
   // Free tier state
   const [freeTierStatus, setFreeTierStatus] = useState<Record<string, ProviderFreeTierStatus>>({})
   const [freeTierOverrideEditing, setFreeTierOverrideEditing] = useState(false)
@@ -201,6 +205,17 @@ export function ProvidersPanel({
       return
     }
     setDetailTab("info")
+    setFeatureSupport(null)
+  }, [selectedId])
+
+  // Load feature support when a provider is selected
+  useEffect(() => {
+    if (!selectedId) return
+    invoke<ProviderFeatureSupport>("get_provider_feature_support", {
+      instanceName: selectedId,
+    } satisfies GetProviderFeatureSupportParams)
+      .then(setFeatureSupport)
+      .catch((err) => console.error("Failed to load feature support:", err))
   }, [selectedId])
 
   // Load providers and initialize health checks (only on first load)
@@ -706,6 +721,20 @@ export function ProvidersPanel({
                           })()}
                         </CardContent>
                       </Card>
+
+                      {/* Feature Support */}
+                      {featureSupport && (
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm">Feature Support</CardTitle>
+                          </CardHeader>
+                          <CardContent className="space-y-4">
+                            <ProviderFeatureTable title="API Endpoints" items={featureSupport.endpoints} />
+                            <ProviderFeatureTable title="Model Features" items={featureSupport.model_features} />
+                            <ProviderFeatureTable title="Optimization Features" items={featureSupport.optimization_features} />
+                          </CardContent>
+                        </Card>
+                      )}
                     </div>
                   </TabsContent>
 

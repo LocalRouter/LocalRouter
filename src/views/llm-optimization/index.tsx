@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { Zap, Wrench, Minimize2, Cpu, Shield, ArrowRight, CheckCircle2, XCircle, Loader2, Download } from "lucide-react"
+import { Zap, Wrench, Minimize2, Cpu, Shield, ArrowRight, CheckCircle2, XCircle, Loader2, Download, KeyRound } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
-import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
+import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, RouteLLMStatus, RouteLLMState, FeatureEndpointMatrix } from "@/types/tauri-commands"
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
+import { MatrixGrid } from "@/components/shared/feature-support-matrix"
 
 interface LlmOptimizationViewProps {
   activeSubTab?: string | null
@@ -38,6 +39,7 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
   const [routellmStatus, setRoutellmStatus] = useState<RouteLLMStatus | null>(null)
   const [savingJsonRepair, setSavingJsonRepair] = useState(false)
   const [savingCompression, setSavingCompression] = useState(false)
+  const [featureMatrix, setFeatureMatrix] = useState<FeatureEndpointMatrix | null>(null)
 
   const loadJsonRepairConfig = useCallback(async () => {
     try {
@@ -80,6 +82,9 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
     loadCompressionConfig()
     loadCompressionStatus()
     loadRoutellmStatus()
+    invoke<FeatureEndpointMatrix>("get_feature_endpoint_matrix")
+      .then(setFeatureMatrix)
+      .catch((err) => console.error("Failed to load feature matrix:", err))
 
     const unlistenConfig = listen('config-changed', () => {
       loadJsonRepairConfig()
@@ -151,6 +156,26 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
           </CardHeader>
           <CardContent className="pt-0">
             <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("guardrails")}>
+              Configure
+              <ArrowRight className="h-3 w-3" />
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Secret Scanning Section */}
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-orange-500" />
+              <CardTitle className="text-base">Secret Scanning</CardTitle>
+            </div>
+            <CardDescription>
+              Detect potential secrets (API keys, tokens, passwords) in outbound requests
+              before they reach providers. Regex-based detection with entropy filtering.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("secret-scanning")}>
               Configure
               <ArrowRight className="h-3 w-3" />
             </Button>
@@ -269,6 +294,31 @@ export function LlmOptimizationView({ onTabChange }: LlmOptimizationViewProps) {
             </div>
           </CardContent>
         </Card>
+
+        {/* Feature Support Matrix */}
+        {featureMatrix && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Feature Support Matrix</CardTitle>
+              <CardDescription>
+                Shows which optimization features apply to each endpoint and client mode. Hover for details.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <MatrixGrid
+                title="Feature × Endpoint"
+                columnHeaders={featureMatrix.endpoints}
+                rows={featureMatrix.feature_rows}
+              />
+              <MatrixGrid
+                title="Client Mode Compatibility"
+                description="Which endpoints and features are available in each client mode."
+                columnHeaders={featureMatrix.client_modes}
+                rows={featureMatrix.mode_rows}
+              />
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   )

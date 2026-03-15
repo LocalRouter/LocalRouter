@@ -483,6 +483,8 @@ impl ModelProvider for GeminiProvider {
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
             },
+            system_fingerprint: None,
+            service_tier: None,
             extensions: None,
             routellm_win_rate: None,
             request_usage_entries: None,
@@ -723,6 +725,33 @@ impl ModelProvider for GeminiProvider {
             "json_mode" => Some(Box::new(crate::features::json_mode::JsonModeAdapter)),
             _ => None,
         }
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        true
+    }
+
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
+        let mut support = super::default_feature_support(self, instance_name);
+
+        for f in &mut support.model_features {
+            match f.name.as_str() {
+                "Thinking Level" => {
+                    f.support = super::SupportLevel::Partial;
+                    f.notes = Some("Gemini 2.0/3 models only".into());
+                }
+                "Function Calling" | "Vision" => {
+                    f.support = super::SupportLevel::Supported;
+                }
+                _ => {}
+            }
+        }
+
+        support
     }
 
     async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {

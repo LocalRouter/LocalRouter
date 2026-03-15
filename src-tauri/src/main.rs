@@ -710,6 +710,46 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     }
                 }
 
+                // Initialize secret scanner if scanning is enabled
+                {
+                    let app_config = config_manager.get();
+                    let ss_config = &app_config.secret_scanning;
+                    if ss_config.action != lr_config::SecretScanAction::Off {
+                        let custom_rules: Vec<lr_secret_scanner::regex_engine::CustomRuleDef> =
+                            ss_config
+                                .custom_rules
+                                .iter()
+                                .map(|r| lr_secret_scanner::regex_engine::CustomRuleDef {
+                                    id: r.id.clone(),
+                                    description: r.description.clone(),
+                                    regex: r.regex.clone(),
+                                    entropy: r.entropy,
+                                    keywords: r.keywords.clone(),
+                                    enabled: r.enabled,
+                                })
+                                .collect();
+
+                        let engine_config = lr_secret_scanner::SecretScanEngineConfig {
+                            entropy_threshold: ss_config.entropy_threshold,
+                            custom_rules,
+                            allowlist: ss_config.allowlist.clone(),
+                            scan_system_messages: ss_config.scan_system_messages,
+                        };
+
+                        match lr_secret_scanner::SecretScanEngine::new(&engine_config) {
+                            Ok(engine) => {
+                                *app_state.secret_scanner.write() = Some(Arc::new(engine));
+                                info!("Secret scanner initialized");
+                            }
+                            Err(e) => {
+                                error!("Failed to initialize secret scanner: {}", e);
+                            }
+                        }
+                    } else {
+                        info!("Secret scanning disabled");
+                    }
+                }
+
                 // Set app handle on AppState for event emission
                 app_state.set_app_handle(app.handle().clone());
 
@@ -1213,11 +1253,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     mcp_server_manager.list_configs().len()
                 );
 
-                // Start periodic health check task if configured
+                // Start periodic health check task (always spawned, checks enabled flag dynamically)
                 let health_check_config = config_manager.get().health_check.clone();
-                if health_check_config.mode == config::HealthCheckMode::Periodic
-                    && health_check_config.periodic_enabled
-                {
+                if health_check_config.mode == config::HealthCheckMode::Periodic {
+                    // Set the initial runtime flag from config
+                    state.health_cache.set_periodic_enabled(health_check_config.periodic_enabled);
+                    let periodic_enabled_flag = state.health_cache.periodic_enabled_flag();
+
                     let health_cache_for_task = state.health_cache.clone();
                     let provider_registry_for_task = provider_registry.clone();
                     let mcp_server_manager_for_task = mcp_server_manager.clone();
@@ -1226,12 +1268,19 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
                     tokio::spawn(async move {
                         use providers::health_cache::ItemHealth;
+                        use std::sync::atomic::Ordering;
 
                         let mut interval =
                             tokio::time::interval(std::time::Duration::from_secs(interval_secs));
 
                         loop {
                             interval.tick().await;
+
+                            // Check runtime flag - skip if disabled
+                            if !periodic_enabled_flag.load(Ordering::Relaxed) {
+                                continue;
+                            }
+
                             debug!("Running periodic health checks...");
 
                             // Check all providers
@@ -1327,11 +1376,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         }
                     });
                     info!(
-                        "Started periodic health check task (interval: {}s)",
-                        interval_secs
+                        "Started periodic health check task (interval: {}s, initially {})",
+                        interval_secs,
+                        if health_check_config.periodic_enabled { "enabled" } else { "disabled" }
                     );
-                } else if !health_check_config.periodic_enabled {
-                    info!("Periodic health checks disabled by user setting");
                 } else {
                     info!("Health check mode is on-failure, skipping periodic task");
                 }
@@ -1636,6 +1684,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::refresh_models_incremental,
             ui::commands::get_catalog_stats,
             ui::commands::get_catalog_metadata,
+            // Feature support matrix commands
+            ui::commands::get_provider_feature_support,
+            ui::commands::get_feature_endpoint_matrix,
             // Server configuration commands
             ui::commands::get_server_config,
             ui::commands::update_server_config,
@@ -1802,6 +1853,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::update_guardrails_config,
             ui::commands::rebuild_safety_engine,
             ui::commands::test_safety_check,
+            // Secret Scanning commands
+            ui::commands::rebuild_secret_scanner,
+            ui::commands::get_secret_scanning_config,
+            ui::commands::update_secret_scanning_config,
+            ui::commands::test_secret_scan,
+            ui::commands_clients::get_client_secret_scanning_config,
+            ui::commands_clients::update_client_secret_scanning_config,
             // Prompt Compression commands
             ui::commands::get_client_compression_config,
             ui::commands::update_client_compression_config,

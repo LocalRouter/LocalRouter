@@ -89,6 +89,14 @@ struct OpenAIChatRequest {
     tool_choice: Option<super::ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<super::ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logit_bias: Option<std::collections::HashMap<String, f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,6 +302,10 @@ impl ModelProvider for OpenAICompatibleProvider {
             tools: request.tools,
             tool_choice: request.tool_choice,
             response_format: request.response_format,
+            n: request.n,
+            logit_bias: request.logit_bias,
+            parallel_tool_calls: request.parallel_tool_calls,
+            reasoning_effort: request.reasoning_effort,
         };
 
         let mut req = self
@@ -362,6 +374,8 @@ impl ModelProvider for OpenAICompatibleProvider {
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
             },
+            system_fingerprint: None,
+            service_tier: None,
             extensions: None,
             routellm_win_rate: None,
             request_usage_entries: None,
@@ -385,6 +399,10 @@ impl ModelProvider for OpenAICompatibleProvider {
             tools: request.tools,
             tool_choice: request.tool_choice,
             response_format: request.response_format,
+            n: request.n,
+            logit_bias: request.logit_bias,
+            parallel_tool_calls: request.parallel_tool_calls,
+            reasoning_effort: request.reasoning_effort,
         };
 
         let mut req = self
@@ -493,6 +511,30 @@ impl ModelProvider for OpenAICompatibleProvider {
         });
 
         Ok(Box::pin(stream))
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        true
+    }
+
+    fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
+        let mut support = super::default_feature_support(self, instance_name);
+
+        // OpenAI-compatible providers — support depends on upstream server
+        for f in &mut support.model_features {
+            if f.support == super::SupportLevel::NotSupported {
+                f.support = super::SupportLevel::Partial;
+                f.notes = Some("Depends on upstream server".into());
+            }
+        }
+        for e in &mut support.endpoints {
+            if e.support == super::SupportLevel::NotImplemented {
+                e.support = super::SupportLevel::Partial;
+                e.notes = Some("Depends on upstream server".into());
+            }
+        }
+
+        support
     }
 
     async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {

@@ -516,6 +516,8 @@ impl ModelProvider for OllamaProvider {
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
             },
+            system_fingerprint: None,
+            service_tier: None,
             extensions: None,
             routellm_win_rate: None,
             request_usage_entries: None,
@@ -773,6 +775,10 @@ impl ModelProvider for OllamaProvider {
         });
 
         Ok(Box::pin(stream))
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        true
     }
 
     async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {

@@ -13,6 +13,100 @@ use utoipa::ToSchema;
 
 use lr_types::{AppError, AppResult};
 
+// ==================== FEATURE SUPPORT MATRIX TYPES ====================
+
+/// Level of support for a feature or endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportLevel {
+    /// Full native support
+    Supported,
+    /// Some models/configurations only
+    Partial,
+    /// Supported via LocalRouter translation layer
+    Translated,
+    /// Not available for this provider
+    NotSupported,
+    /// Planned but not yet implemented
+    NotImplemented,
+}
+
+/// Support information for a single API endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EndpointSupport {
+    /// Human-readable endpoint name (e.g., "Chat Completions")
+    pub name: String,
+    /// API path (e.g., "/v1/chat/completions")
+    pub endpoint: String,
+    /// Level of support
+    pub support: SupportLevel,
+    /// Hover tooltip text
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// Support information for a single feature.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FeatureSupport {
+    /// Feature name (e.g., "Guardrails", "Extended Thinking")
+    pub name: String,
+    /// Level of support
+    pub support: SupportLevel,
+    /// Hover tooltip text
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// Complete feature support information for a provider.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProviderFeatureSupport {
+    /// Provider type identifier (e.g., "openai")
+    pub provider_type: String,
+    /// Provider instance name (e.g., "My OpenAI")
+    pub provider_instance: String,
+    /// API endpoint support
+    pub endpoints: Vec<EndpointSupport>,
+    /// Model feature support
+    pub model_features: Vec<FeatureSupport>,
+    /// Optimization feature support
+    pub optimization_features: Vec<FeatureSupport>,
+}
+
+/// A cell in the feature-endpoint matrix.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatrixCell {
+    pub support: SupportLevel,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// A row in the feature × endpoint matrix.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureEndpointRow {
+    pub feature_name: String,
+    pub cells: Vec<MatrixCell>,
+}
+
+/// A row in the feature/endpoint × client mode matrix.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureModeRow {
+    pub name: String,
+    pub cells: Vec<MatrixCell>,
+}
+
+/// Static matrix showing which optimization features apply to which endpoints and client modes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureEndpointMatrix {
+    /// Column headers for the feature × endpoint table
+    pub endpoints: Vec<String>,
+    /// Column headers for the client mode table
+    pub client_modes: Vec<String>,
+    /// Feature × endpoint rows
+    pub feature_rows: Vec<FeatureEndpointRow>,
+    /// Feature/endpoint × client mode rows
+    pub mode_rows: Vec<FeatureModeRow>,
+}
+
 // ==================== MODEL PULL TYPES ====================
 
 /// Progress event for model pull/download operations.
@@ -143,6 +237,87 @@ pub trait ModelProvider: Send + Sync {
         None
     }
 
+    /// Whether this provider supports embeddings.
+    /// Default: false. Override to true in providers that implement embed().
+    fn supports_embeddings(&self) -> bool {
+        false
+    }
+
+    /// Whether this provider supports image generation.
+    /// Default: false. Override to true in providers that implement generate_image().
+    fn supports_image_generation(&self) -> bool {
+        false
+    }
+
+    /// Transcribe audio to text (Speech-to-Text)
+    ///
+    /// Used by: POST /v1/audio/transcriptions endpoint
+    ///
+    /// Default implementation returns an error indicating transcription is not supported.
+    /// Providers that support STT should override this method.
+    async fn transcribe(
+        &self,
+        _request: AudioTranscriptionRequest,
+    ) -> AppResult<AudioTranscriptionResponse> {
+        Err(AppError::Provider(format!(
+            "Provider '{}' does not support audio transcription",
+            self.name()
+        )))
+    }
+
+    /// Translate audio to English text (Speech-to-Text translation)
+    ///
+    /// Used by: POST /v1/audio/translations endpoint
+    ///
+    /// Default implementation returns an error indicating audio translation is not supported.
+    /// Providers that support STT translation should override this method.
+    async fn translate_audio(
+        &self,
+        _request: AudioTranslationRequest,
+    ) -> AppResult<AudioTranslationResponse> {
+        Err(AppError::Provider(format!(
+            "Provider '{}' does not support audio translation",
+            self.name()
+        )))
+    }
+
+    /// Generate speech from text (Text-to-Speech)
+    ///
+    /// Used by: POST /v1/audio/speech endpoint
+    ///
+    /// Default implementation returns an error indicating TTS is not supported.
+    /// Providers that support TTS should override this method.
+    async fn speech(&self, _request: SpeechRequest) -> AppResult<SpeechResponse> {
+        Err(AppError::Provider(format!(
+            "Provider '{}' does not support text-to-speech",
+            self.name()
+        )))
+    }
+
+    /// Whether this provider supports audio transcription (STT).
+    /// Default: false. Override to true in providers that implement transcribe().
+    fn supports_transcription(&self) -> bool {
+        false
+    }
+
+    /// Whether this provider supports audio translation.
+    /// Default: false. Override to true in providers that implement translate_audio().
+    fn supports_audio_translation(&self) -> bool {
+        false
+    }
+
+    /// Whether this provider supports text-to-speech.
+    /// Default: false. Override to true in providers that implement speech().
+    fn supports_speech(&self) -> bool {
+        false
+    }
+
+    /// Returns feature support information for this provider.
+    /// Default calls `default_feature_support()`. Override to customize.
+    fn get_feature_support(&self, instance_name: &str) -> ProviderFeatureSupport {
+        default_feature_support(self, instance_name)
+    }
+
     /// Whether this provider supports pulling (downloading) models on demand.
     ///
     /// Providers that return true must also implement `pull_model()`.
@@ -163,6 +338,270 @@ pub trait ModelProvider: Send + Sync {
             "Provider '{}' does not support model pulling",
             self.name()
         )))
+    }
+}
+
+/// Default feature support builder. Used by the trait default and called by
+/// providers that want to start from the default and then customize.
+pub fn default_feature_support(
+    provider: &(impl ModelProvider + ?Sized),
+    instance_name: &str,
+) -> ProviderFeatureSupport {
+    let has_chat = true;
+    let has_embeddings = provider.supports_embeddings();
+    let has_images = provider.supports_image_generation();
+
+    let endpoints = vec![
+        EndpointSupport {
+            name: "Chat Completions".into(),
+            endpoint: "/v1/chat/completions".into(),
+            support: SupportLevel::Supported,
+            notes: None,
+        },
+        EndpointSupport {
+            name: "Completions (legacy)".into(),
+            endpoint: "/v1/completions".into(),
+            support: SupportLevel::Supported,
+            notes: Some("Converted to chat completions internally".into()),
+        },
+        EndpointSupport {
+            name: "Streaming".into(),
+            endpoint: "/v1/chat/completions".into(),
+            support: SupportLevel::Supported,
+            notes: None,
+        },
+        EndpointSupport {
+            name: "Embeddings".into(),
+            endpoint: "/v1/embeddings".into(),
+            support: if has_embeddings {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        EndpointSupport {
+            name: "Image Generation".into(),
+            endpoint: "/v1/images/generations".into(),
+            support: if has_images {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        EndpointSupport {
+            name: "Audio Transcription".into(),
+            endpoint: "/v1/audio/transcriptions".into(),
+            support: if provider.supports_transcription() {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotImplemented
+            },
+            notes: if provider.supports_transcription() {
+                None
+            } else {
+                Some("Planned — see plan/2026-03-15-API-AUDIO.md".into())
+            },
+        },
+        EndpointSupport {
+            name: "Audio Speech (TTS)".into(),
+            endpoint: "/v1/audio/speech".into(),
+            support: if provider.supports_speech() {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotImplemented
+            },
+            notes: if provider.supports_speech() {
+                None
+            } else {
+                Some("Planned — see plan/2026-03-15-API-AUDIO.md".into())
+            },
+        },
+        EndpointSupport {
+            name: "Moderations".into(),
+            endpoint: "/v1/moderations".into(),
+            support: SupportLevel::NotImplemented,
+            notes: Some("Planned — see plan/2026-03-15-API-MODERATIONS.md".into()),
+        },
+        EndpointSupport {
+            name: "Responses API".into(),
+            endpoint: "/v1/responses".into(),
+            support: SupportLevel::NotImplemented,
+            notes: Some("Planned — see plan/2026-03-15-API-RESPONSES.md".into()),
+        },
+        EndpointSupport {
+            name: "Batch Processing".into(),
+            endpoint: "/v1/batches".into(),
+            support: SupportLevel::NotImplemented,
+            notes: Some("Planned — see plan/2026-03-15-API-FILES-BATCHES.md".into()),
+        },
+        EndpointSupport {
+            name: "Realtime (WebSocket)".into(),
+            endpoint: "/v1/realtime".into(),
+            support: SupportLevel::NotImplemented,
+            notes: Some("Planned — see plan/2026-03-15-API-REALTIME.md".into()),
+        },
+    ];
+
+    let model_features = vec![
+        FeatureSupport {
+            name: "Function Calling".into(),
+            support: if provider.supports_feature("function_calling") {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        FeatureSupport {
+            name: "Vision".into(),
+            support: if provider.supports_feature("vision") {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        FeatureSupport {
+            name: "Structured Outputs".into(),
+            support: if provider.supports_feature("structured_outputs") {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        FeatureSupport {
+            name: "JSON Mode".into(),
+            support: if provider.get_feature_adapter("json_mode").is_some() {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        FeatureSupport {
+            name: "Log Probabilities".into(),
+            support: if provider.supports_feature("logprobs") {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        FeatureSupport {
+            name: "Reasoning Tokens".into(),
+            support: if provider.supports_feature("reasoning_tokens") {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        FeatureSupport {
+            name: "Extended Thinking".into(),
+            support: if provider.supports_feature("extended_thinking") {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        FeatureSupport {
+            name: "Thinking Level".into(),
+            support: if provider.supports_feature("thinking_level") {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+        FeatureSupport {
+            name: "Prompt Caching".into(),
+            support: if provider.supports_feature("prompt_caching") {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: None,
+        },
+    ];
+
+    let optimization_features = vec![
+        FeatureSupport {
+            name: "Guardrails".into(),
+            support: if has_chat {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some("Content safety scanning on chat/completion requests".into()),
+        },
+        FeatureSupport {
+            name: "Prompt Compression".into(),
+            support: if has_chat {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some("LLMLingua-2 token-level compression for chat requests".into()),
+        },
+        FeatureSupport {
+            name: "JSON Repair".into(),
+            support: if has_chat {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some("Automatic fix of malformed JSON responses".into()),
+        },
+        FeatureSupport {
+            name: "RouteLLM Routing".into(),
+            support: if has_chat {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some("Strong/weak model routing based on request complexity".into()),
+        },
+        FeatureSupport {
+            name: "Secret Scanning".into(),
+            support: if has_chat {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some("Detect potential secrets in outbound requests".into()),
+        },
+        FeatureSupport {
+            name: "Rate Limiting".into(),
+            support: SupportLevel::Supported,
+            notes: Some("Available for all endpoints".into()),
+        },
+        FeatureSupport {
+            name: "Model Firewall".into(),
+            support: SupportLevel::Supported,
+            notes: Some("Available for all LLM endpoints".into()),
+        },
+        FeatureSupport {
+            name: "Generation Tracking".into(),
+            support: SupportLevel::Supported,
+            notes: Some("Available for all endpoints".into()),
+        },
+        FeatureSupport {
+            name: "Cost Calculation".into(),
+            support: SupportLevel::Supported,
+            notes: Some("Based on catalog pricing data".into()),
+        },
+    ];
+
+    ProviderFeatureSupport {
+        provider_type: provider.name().to_string(),
+        provider_instance: instance_name.to_string(),
+        endpoints,
+        model_features,
+        optimization_features,
     }
 }
 
@@ -304,6 +743,8 @@ pub enum Capability {
     Embedding,
     Vision,
     FunctionCalling,
+    Audio,
+    TextToSpeech,
 }
 
 /// Core capability categories (for backward compatibility)
@@ -545,6 +986,38 @@ pub struct CompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_logprobs: Option<u32>,
 
+    // Additional OpenAI-compatible parameters (pass-through)
+    /// Number of completions to generate (default: 1)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    /// Modify token likelihoods by token ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logit_bias: Option<std::collections::HashMap<String, f32>>,
+    /// Allow concurrent function calling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    /// Latency tier selection ("auto", "default")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    /// Store for distillation/evaluation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
+    /// Developer-defined tags
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<std::collections::HashMap<String, String>>,
+    /// Output modalities: ["text"], ["text", "audio"]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modalities: Option<Vec<String>>,
+    /// Audio output configuration (voice, format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<serde_json::Value>,
+    /// Predicted output for faster generation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prediction: Option<serde_json::Value>,
+    /// Reasoning effort level (low/medium/high) for reasoning models
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+
     /// Pre-computed RouteLLM routing (set by chat pipeline, never serialized)
     #[serde(skip)]
     pub pre_computed_routing: Option<PreComputedRouting>,
@@ -730,6 +1203,12 @@ pub struct CompletionResponse {
     pub choices: Vec<CompletionChoice>,
     /// Token usage information
     pub usage: TokenUsage,
+    /// Model version identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_fingerprint: Option<String>,
+    /// Tier used for request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     /// Provider-specific extensions (Phase 3)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
@@ -1045,6 +1524,119 @@ pub struct GeneratedImage {
     pub revised_prompt: Option<String>,
 }
 
+// ==================== Audio Types ====================
+
+/// Audio transcription request (Speech-to-Text)
+#[derive(Debug, Clone)]
+pub struct AudioTranscriptionRequest {
+    /// The audio file data
+    pub file: Vec<u8>,
+    /// Original filename of the audio file
+    pub file_name: String,
+    /// The model to use (e.g., "whisper-1")
+    pub model: String,
+    /// The language of the audio in ISO-639-1 format
+    pub language: Option<String>,
+    /// Optional prompt to guide the model's style
+    pub prompt: Option<String>,
+    /// Response format: json, text, srt, verbose_json, vtt
+    pub response_format: Option<String>,
+    /// Sampling temperature (0 to 1)
+    pub temperature: Option<f32>,
+    /// Timestamp granularities: word, segment
+    pub timestamp_granularities: Option<Vec<String>>,
+}
+
+/// Audio transcription response
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AudioTranscriptionResponse {
+    /// The transcribed text
+    pub text: String,
+    /// The task type (always "transcribe")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// The detected language
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// The duration of the audio in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    /// Word-level timestamps (when requested)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<TranscriptionWord>>,
+    /// Segment-level timestamps (when requested)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segments: Option<Vec<TranscriptionSegment>>,
+}
+
+/// Word with timestamp from transcription
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TranscriptionWord {
+    pub word: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+/// Segment with timestamp from transcription
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TranscriptionSegment {
+    pub id: u32,
+    pub seek: u32,
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+    pub tokens: Vec<u32>,
+    pub temperature: f64,
+    pub avg_logprob: f64,
+    pub compression_ratio: f64,
+    pub no_speech_prob: f64,
+}
+
+/// Audio translation request (Speech-to-English)
+#[derive(Debug, Clone)]
+pub struct AudioTranslationRequest {
+    /// The audio file data
+    pub file: Vec<u8>,
+    /// Original filename of the audio file
+    pub file_name: String,
+    /// The model to use (e.g., "whisper-1")
+    pub model: String,
+    /// Optional prompt to guide the model's style
+    pub prompt: Option<String>,
+    /// Response format: json, text, srt, verbose_json, vtt
+    pub response_format: Option<String>,
+    /// Sampling temperature (0 to 1)
+    pub temperature: Option<f32>,
+}
+
+/// Audio translation response (same structure as transcription)
+pub type AudioTranslationResponse = AudioTranscriptionResponse;
+
+/// Text-to-Speech request
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SpeechRequest {
+    /// The model to use (e.g., "tts-1", "tts-1-hd")
+    pub model: String,
+    /// The text to synthesize (max 4096 characters)
+    pub input: String,
+    /// The voice to use (alloy, echo, fable, onyx, nova, shimmer)
+    pub voice: String,
+    /// Audio output format: mp3, opus, aac, flac, wav, pcm
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<String>,
+    /// Speech speed (0.25 to 4.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+}
+
+/// Text-to-Speech response (binary audio data)
+pub struct SpeechResponse {
+    /// The raw audio data
+    pub audio_data: Vec<u8>,
+    /// The content type (e.g., "audio/mpeg", "audio/opus")
+    pub content_type: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1271,5 +1863,364 @@ mod tests {
         assert!(obj.contains_key("prompt_tokens"));
         assert!(obj.contains_key("completion_tokens"));
         assert!(obj.contains_key("total_tokens"));
+    }
+}
+
+// ==================== FEATURE ENDPOINT MATRIX BUILDER ====================
+
+/// Helper to create a MatrixCell.
+fn cell(support: SupportLevel, notes: Option<&str>) -> MatrixCell {
+    MatrixCell {
+        support,
+        notes: notes.map(|s| s.to_string()),
+    }
+}
+
+/// Build the static feature × endpoint × client mode matrix.
+/// This is hardcoded data that doesn't change per provider.
+pub fn build_feature_endpoint_matrix() -> FeatureEndpointMatrix {
+    use SupportLevel::*;
+
+    let endpoints = vec![
+        "Chat".into(),
+        "Completions".into(),
+        "Embeddings".into(),
+        "Images".into(),
+        "Audio".into(),
+        "Moderations".into(),
+        "Responses".into(),
+        "Batches".into(),
+        "Realtime".into(),
+    ];
+
+    let client_modes = vec![
+        "LLM Only".into(),
+        "MCP Only".into(),
+        "MCP & LLM".into(),
+        "MCP via LLM".into(),
+    ];
+
+    //                          Chat       Compl      Embed      Images     Audio      Mod        Resp       Batches    Realtime
+    let feature_rows = vec![
+        FeatureEndpointRow {
+            feature_name: "Guardrails".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(Translated, Some("Via translation to chat completions")),
+                cell(Translated, Some("Per-request in translated batch mode")),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureEndpointRow {
+            feature_name: "Prompt Compression".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(Translated, Some("Via translation to chat completions")),
+                cell(Translated, Some("Per-request in translated batch mode")),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureEndpointRow {
+            feature_name: "JSON Repair".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(Translated, Some("Via translation to chat completions")),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureEndpointRow {
+            feature_name: "RouteLLM Routing".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureEndpointRow {
+            feature_name: "Secret Scanning".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(
+                    Partial,
+                    Some("TTS input text only; audio binary not scannable"),
+                ),
+                cell(NotSupported, None),
+                cell(Translated, Some("Via translation to chat completions")),
+                cell(Translated, Some("Per-request in translated batch mode")),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureEndpointRow {
+            feature_name: "Rate Limiting".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Partial, Some("Connection-time only, no per-message")),
+            ],
+        },
+        FeatureEndpointRow {
+            feature_name: "Model Firewall".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Partial, Some("Approve at batch creation time")),
+                cell(Supported, None),
+            ],
+        },
+        FeatureEndpointRow {
+            feature_name: "Generation Tracking".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Partial, Some("Per-session aggregation")),
+            ],
+        },
+        FeatureEndpointRow {
+            feature_name: "Cost Calculation".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+    ];
+
+    //                                        LLM Only   MCP Only   MCP&LLM    MCP via LLM
+    let mode_rows = vec![
+        FeatureModeRow {
+            name: "Chat Completions".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Completions".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Embeddings".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Image Generation".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Audio (STT/TTS)".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Moderations".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Responses API".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Batch Processing".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Realtime".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "MCP Gateway".into(),
+            cells: vec![
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "MCP WebSocket".into(),
+            cells: vec![
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(NotSupported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "MCP → LLM Tools".into(),
+            cells: vec![
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Guardrails".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Prompt Compression".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "JSON Repair".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "RouteLLM".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Secret Scanning".into(),
+            cells: vec![
+                cell(Supported, None),
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Context Management".into(),
+            cells: vec![
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Catalog Compression".into(),
+            cells: vec![
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+        FeatureModeRow {
+            name: "Response RAG".into(),
+            cells: vec![
+                cell(NotSupported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+                cell(Supported, None),
+            ],
+        },
+    ];
+
+    FeatureEndpointMatrix {
+        endpoints,
+        client_modes,
+        feature_rows,
+        mode_rows,
     }
 }
