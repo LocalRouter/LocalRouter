@@ -45,6 +45,7 @@ pub async fn run_agentic_loop_streaming(
     allowed_servers: Vec<String>,
     pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
     guardrail_gate: Option<crate::manager::GuardrailGate>,
+    memory_service: Option<Arc<lr_memory::MemoryService>>,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
 {
     let started_at = Instant::now();
@@ -176,6 +177,7 @@ pub async fn run_agentic_loop_streaming(
             max_iterations,
             pending_executions,
             guardrail_gate,
+            memory_service,
         )
         .await;
 
@@ -212,6 +214,7 @@ async fn streaming_loop(
     max_iterations: u32,
     pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
     mut guardrail_gate: Option<crate::manager::GuardrailGate>,
+    memory_service: Option<Arc<lr_memory::MemoryService>>,
 ) -> Result<(), McpViaLlmError> {
     let mut iteration: u32 = 0;
     loop {
@@ -573,6 +576,31 @@ async fn streaming_loop(
             "MCP via LLM streaming: completed after {} iterations",
             iteration + 1
         );
+
+        // Memory: write transcript exchange (fire-and-forget)
+        if let Some(ref svc) = memory_service {
+            if let Some(path) = session.read().transcript_path.clone() {
+                let user_text = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == "user")
+                    .map(|m| m.content.as_text())
+                    .unwrap_or_default();
+                let assistant_text = accumulated_message.content.as_text();
+                if !user_text.is_empty() && !assistant_text.is_empty() {
+                    let svc = svc.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            svc.transcript.append_exchange(&path, &user_text, &assistant_text).await
+                        {
+                            tracing::warn!("Memory: failed to write streaming transcript: {}", e);
+                        }
+                        svc.touch_session(&path);
+                    });
+                }
+            }
+        }
 
         // Store final history
         {

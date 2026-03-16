@@ -16,6 +16,7 @@ import { StrongWeakView } from './views/strong-weak'
 import { CodingAgentsView } from './views/coding-agents'
 import { CatalogCompressionView } from './views/catalog-compression'
 import { ResponseRagView } from './views/response-rag'
+import { MemoryView } from './views/memory'
 import { CompressionView } from './views/compression'
 import { JsonRepairView } from './views/json-repair'
 import { SecretScanningView } from './views/secret-scanning'
@@ -293,6 +294,8 @@ function App() {
             onTabChange={handleChildViewChange}
           />
         )
+      case 'memory':
+        return <MemoryView />
       case 'coding-agents':
         return (
           <CodingAgentsView

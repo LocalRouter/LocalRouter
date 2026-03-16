@@ -2679,6 +2679,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.info('Would open memory folder (demo)')
     return null
   },
+  'get_client_memory_config': () => ({
+    memory_enabled: null,
+  }),
+  'update_client_memory_config': () => {
+    toast.success('Client memory config updated (demo)')
+    return null
+  },
 
   // ============================================================================
   // GuardRails - LLM-based Safety Models

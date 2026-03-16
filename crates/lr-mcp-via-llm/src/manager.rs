@@ -365,6 +365,45 @@ impl McpViaLlmManager {
     > {
         let config = self.config();
         let session = self.get_or_create_session(&client.id);
+        let memory_svc = self.memory_service();
+
+        // Initialize memory transcript for streaming (same logic as non-streaming)
+        if let Some(ref svc) = memory_svc {
+            if client.memory_enabled.unwrap_or(false) {
+                let needs_init = session.read().transcript_path.is_none();
+                if needs_init {
+                    if let Ok(client_dir) = svc.ensure_client_dir(&client.id) {
+                        let sessions_dir = client_dir.join("sessions");
+                        let (session_id, file_path, is_new) = svc
+                            .session_manager
+                            .get_or_create_session(&client.id, &sessions_dir);
+                        if is_new {
+                            let mcp_session_id = session.read().session_id.clone();
+                            if let Err(e) = svc
+                                .transcript
+                                .create_session_file(&sessions_dir, &session_id, &client.id)
+                                .await
+                            {
+                                tracing::warn!("Failed to create memory transcript: {}", e);
+                            }
+                            let timestamp = chrono::Utc::now().format("%H:%M").to_string();
+                            let _ = svc
+                                .transcript
+                                .append_conversation_header(
+                                    &file_path,
+                                    &mcp_session_id[..8.min(mcp_session_id.len())],
+                                    &timestamp,
+                                )
+                                .await;
+                        }
+                        session.write().transcript_path = Some(file_path);
+                        if let Err(e) = svc.start_daemon(&client.id).await {
+                            tracing::warn!("Failed to start memsearch daemon: {}", e);
+                        }
+                    }
+                }
+            }
+        }
 
         // Check if this is a resume from a pending mixed execution (streaming variant)
         if let Some((pending, client_tool_results)) =
@@ -420,6 +459,7 @@ impl McpViaLlmManager {
             allowed_servers,
             self.pending_executions.clone(),
             guardrail_gate,
+            memory_svc,
         )
         .await
     }

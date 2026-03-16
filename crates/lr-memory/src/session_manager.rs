@@ -228,35 +228,46 @@ impl SessionManager {
     }
 
     /// Close expired sessions and return them for compaction.
+    /// Collects expired session keys first, then removes them one by one
+    /// so we can return the removed values.
     pub fn close_expired_sessions(&self) -> Vec<(String, ActiveSession)> {
         let config = self.config.read().clone();
-        let expired = Vec::new();
 
-        self.active_sessions.retain(|client_id, session| {
-            let expired_inactivity = session.last_activity.elapsed() > config.inactivity_timeout;
-            let expired_duration = session.started_at.elapsed() > config.max_duration;
+        // First pass: collect keys of expired sessions
+        let expired_keys: Vec<String> = self
+            .active_sessions
+            .iter()
+            .filter(|entry| {
+                let session = entry.value();
+                session.last_activity.elapsed() > config.inactivity_timeout
+                    || session.started_at.elapsed() > config.max_duration
+            })
+            .map(|entry| entry.key().clone())
+            .collect();
 
-            if expired_inactivity || expired_duration {
-                tracing::info!(
-                    "Memory session expired for client {} (session={}, age={:.0}s, idle={:.0}s)",
-                    &client_id[..8.min(client_id.len())],
-                    &session.session_id[..8.min(session.session_id.len())],
-                    session.started_at.elapsed().as_secs_f64(),
-                    session.last_activity.elapsed().as_secs_f64(),
-                );
-                false // Will be removed; we collect below
-            } else {
-                true
+        // Second pass: remove and collect the expired sessions
+        let mut expired = Vec::with_capacity(expired_keys.len());
+        for key in expired_keys {
+            if let Some((client_id, session)) = self.active_sessions.remove(&key) {
+                // Double-check it's still expired (could have been touched between passes)
+                let still_expired = session.last_activity.elapsed() > config.inactivity_timeout
+                    || session.started_at.elapsed() > config.max_duration;
+                if still_expired {
+                    tracing::info!(
+                        "Memory session expired for client {} (session={}, age={:.0}s, idle={:.0}s)",
+                        &client_id[..8.min(client_id.len())],
+                        &session.session_id[..8.min(session.session_id.len())],
+                        session.started_at.elapsed().as_secs_f64(),
+                        session.last_activity.elapsed().as_secs_f64(),
+                    );
+                    expired.push((client_id, session));
+                } else {
+                    // Was touched between passes — put it back
+                    self.active_sessions.insert(key, session);
+                }
             }
-        });
+        }
 
-        // DashMap::retain doesn't give us the removed values, so we need to
-        // re-check and remove manually for expired ones we want to compact
-        // Actually, retain already removed them. We need a different approach.
-        // Let's collect first, then remove.
-
-        // NOTE: The retain above already removed them. In practice, we'd need
-        // to collect before removing. Let's restructure:
         expired
     }
 }

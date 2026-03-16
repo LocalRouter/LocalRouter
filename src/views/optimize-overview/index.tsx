@@ -401,6 +401,27 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
             </Button>
           </CardContent>
         </Card>
+
+        {/* Memory Section */}
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <FEATURES.memory.icon className={`h-4 w-4 ${FEATURES.memory.color}`} />
+              <CardTitle className="text-base">Memory</CardTitle>
+            </div>
+            <CardDescription>
+              Persistent conversation memory for LLM sessions. Automatically captures
+              conversations and makes them searchable via the MemoryRecall tool.
+              Powered by Zillis memsearch with hybrid vector search.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("memory")}>
+              Configure
+              <ArrowRight className="h-3 w-3" />
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     </div>
   )

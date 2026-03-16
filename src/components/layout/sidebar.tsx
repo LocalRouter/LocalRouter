@@ -47,7 +47,7 @@ interface HealthCacheState {
 
 export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'catalog-compression' | 'response-rag' | 'skills'
   | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair'
-  | 'secret-scanning' | 'optimize-overview' | 'settings' | 'debug'
+  | 'secret-scanning' | 'memory' | 'optimize-overview' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -103,6 +103,7 @@ const resourceNavEntries: NavEntry[] = [
       { id: FEATURES.routing.viewId as View, icon: FEATURES.routing.icon, label: FEATURES.routing.shortName },
       { id: FEATURES.catalogCompression.viewId as View, icon: FEATURES.catalogCompression.icon, label: FEATURES.catalogCompression.shortName },
       { id: FEATURES.responseRag.viewId as View, icon: FEATURES.responseRag.icon, label: FEATURES.responseRag.shortName },
+      { id: FEATURES.memory.viewId as View, icon: FEATURES.memory.icon, label: FEATURES.memory.shortName },
     ],
   },
 ]
@@ -525,7 +526,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
                 ) : (
                   <div className={cn(
                     "h-2 w-2 rounded-full transition-colors",
-                    getStatusColor(healthState?.aggregate_status)
+                    getStatusColor(healthState?.server_running === false ? 'red' : healthState?.aggregate_status)
                   )} />
                 )}
               </button>

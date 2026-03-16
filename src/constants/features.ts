@@ -1,4 +1,4 @@
-import { Shield, KeyRound, Wrench, Minimize2, Cpu, BookText, Database } from "lucide-react"
+import { Shield, KeyRound, Wrench, Minimize2, Cpu, BookText, Database, Brain } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
 export interface FeatureDefinition {
@@ -18,6 +18,7 @@ export const FEATURES = {
   routing:            { icon: Cpu,       color: "text-purple-500",  borderColor: "border-purple-500/30",  name: "Strong/Weak Routing", shortName: "Strong/Weak",     viewId: "strong-weak" },
   catalogCompression: { icon: BookText,  color: "text-teal-500",    borderColor: "border-teal-500/30",    name: "Catalog Compression", shortName: "Catalog",         viewId: "catalog-compression" },
   responseRag:        { icon: Database,  color: "text-emerald-500", borderColor: "border-emerald-500/30", name: "Response RAG",        shortName: "RAG",             viewId: "response-rag" },
+  memory:             { icon: Brain,    color: "text-pink-500",    borderColor: "border-pink-500/30",    name: "Memory",              shortName: "Memory",          viewId: "memory" },
 } as const satisfies Record<string, FeatureDefinition>
 
 export type FeatureKey = keyof typeof FEATURES

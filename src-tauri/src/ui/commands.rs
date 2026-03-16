@@ -4544,6 +4544,43 @@ pub async fn memory_setup(
     Ok(())
 }
 
+/// Get per-client memory configuration
+#[tauri::command]
+pub async fn get_client_memory_config(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    Ok(serde_json::json!({
+        "memory_enabled": client.memory_enabled,
+    }))
+}
+
+/// Update per-client memory enabled state
+#[tauri::command]
+pub async fn update_client_memory_config(
+    client_id: String,
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    config_manager
+        .update(|config| {
+            if let Some(client) = config.clients.iter_mut().find(|c| c.id == client_id) {
+                client.memory_enabled = Some(enabled);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Open the memory storage directory in the system file manager
 #[tauri::command]
 pub async fn open_memory_folder(

@@ -6,7 +6,6 @@ import { UpdatesTab } from "./updates-tab"
 import { AppearanceTab } from "./appearance-tab"
 import { HealthChecksTab } from "./health-checks-tab"
 import { LicensesTab } from "./licenses-tab"
-import { MemoryTab } from "./memory-tab"
 
 interface SettingsViewProps {
   activeSubTab: string | null
@@ -38,7 +37,6 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
           <TabsTrigger value="appearance"><TAB_ICONS.appearance className={TAB_ICON_CLASS} />Appearance</TabsTrigger>
           <TabsTrigger value="health-checks"><TAB_ICONS.healthChecks className={TAB_ICON_CLASS} />Health Checks</TabsTrigger>
           <TabsTrigger value="logs"><TAB_ICONS.logs className={TAB_ICON_CLASS} />Logs</TabsTrigger>
-          <TabsTrigger value="memory"><TAB_ICONS.memory className={TAB_ICON_CLASS} />Memory</TabsTrigger>
           <TabsTrigger value="updates"><TAB_ICONS.updates className={TAB_ICON_CLASS} />Updates</TabsTrigger>
           <TabsTrigger value="licenses"><TAB_ICONS.licenses className={TAB_ICON_CLASS} />Licenses</TabsTrigger>
         </TabsList>
@@ -53,10 +51,6 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
 
         <TabsContent value="logs">
           <LoggingTab />
-        </TabsContent>
-
-        <TabsContent value="memory">
-          <MemoryTab />
         </TabsContent>
 
         <TabsContent value="updates">

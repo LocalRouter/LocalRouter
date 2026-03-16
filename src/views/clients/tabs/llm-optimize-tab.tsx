@@ -1,6 +1,7 @@
 import { ClientGuardrailsTab } from "./guardrails-tab"
 import { ClientCompressionTab } from "./compression-tab"
 import { ClientSecretScanningTab } from "./secret-scanning-tab"
+import { ClientMemoryTab } from "./memory-tab"
 
 interface Client {
   id: string
@@ -20,6 +21,7 @@ export function ClientLlmOptimizeTab({ client, onUpdate, onViewChange }: LlmOpti
       <ClientCompressionTab client={client} onUpdate={onUpdate} onViewChange={onViewChange} />
       <ClientGuardrailsTab client={client} onUpdate={onUpdate} onViewChange={onViewChange} />
       <ClientSecretScanningTab client={client} onUpdate={onUpdate} onViewChange={onViewChange} />
+      <ClientMemoryTab client={client} onUpdate={onUpdate} onViewChange={onViewChange} />
     </div>
   )
 }

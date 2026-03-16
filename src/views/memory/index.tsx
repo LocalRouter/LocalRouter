@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/Input"
 import { Button } from "@/components/ui/Button"
 import { Switch } from "@/components/ui/Toggle"
 import { AlertTriangle, CheckCircle2, Circle, FolderOpen, Loader2, XCircle } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 import type { MemoryConfig, MemorySetupProgress, MemoryStatus, UpdateMemoryConfigParams } from "@/types/tauri-commands"
 
 type SetupStepStatus = "idle" | "checking" | "installing" | "ok" | "error"
@@ -28,7 +29,7 @@ const defaultConfig: MemoryConfig = {
   compaction: null,
 }
 
-export function MemoryTab() {
+export function MemoryView() {
   const [config, setConfig] = useState<MemoryConfig>(defaultConfig)
   const [isLoading, setIsLoading] = useState(true)
   const [, setIsSaving] = useState(false)
@@ -149,8 +150,20 @@ export function MemoryTab() {
     )
   }
 
+  const MemoryIcon = FEATURES.memory.icon
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 max-w-5xl">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <MemoryIcon className={`h-6 w-6 ${FEATURES.memory.color}`} />
+          Memory
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Persistent conversation memory for LLM sessions via memsearch
+        </p>
+      </div>
+
       {/* Privacy Warning */}
       <Card className="border-amber-500/30 bg-amber-50/5">
         <CardContent className="pt-4 pb-3">

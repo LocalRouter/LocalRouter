@@ -9,6 +9,9 @@ pub mod daemon;
 pub mod session_manager;
 pub mod transcript;
 
+#[cfg(test)]
+mod tests;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
