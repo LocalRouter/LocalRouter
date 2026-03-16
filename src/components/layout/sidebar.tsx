@@ -620,15 +620,13 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
                   key={item.view}
                   onClick={() => onViewChange(item.view)}
                   className={cn(
-                    "flex items-center rounded-md transition-colors h-8 w-full whitespace-nowrap px-2 gap-1.5",
+                    "flex items-center rounded-md transition-colors h-8 w-full whitespace-nowrap px-2 gap-2",
                     isActive
                       ? "bg-accent text-accent-foreground"
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   )}
                 >
-                  <span className="inline-flex items-center justify-center shrink-0 opacity-70" style={{ width: 18, height: 18 }}>
-                    <StaticIcon className="h-2.5 w-2.5" />
-                  </span>
+                  <StaticIcon className="h-4 w-4 shrink-0" />
                   <span className="truncate text-left text-sm">{item.label}</span>
                 </button>
               )
@@ -640,7 +638,7 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
                   key={child.subTab}
                   onClick={() => onViewChange(groupId, child.subTab)}
                   className={cn(
-                    "flex items-center rounded-md transition-colors h-8 w-full whitespace-nowrap px-2 gap-1.5",
+                    "flex items-center rounded-md transition-colors h-8 w-full whitespace-nowrap px-2 gap-2",
                     isActive
                       ? "bg-accent text-accent-foreground"
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -648,7 +646,7 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
                 >
                   {child.iconService && (
                     <span className="shrink-0 grayscale dark:invert opacity-70 [&_span]:!bg-transparent">
-                      <ServiceIcon service={child.iconService} size={10} fallbackToServerIcon={groupId === 'mcp-servers'} />
+                      <ServiceIcon service={child.iconService} size={16} fallbackToServerIcon={groupId === 'mcp-servers'} />
                     </span>
                   )}
                   <span className="truncate text-left text-sm">{child.label}</span>
@@ -674,7 +672,7 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
       <aside
         className={cn(
           "group/sidebar relative flex h-full flex-col border-r bg-background transition-[width] duration-200 ease-in-out",
-          expanded ? "w-40" : "w-12"
+          expanded ? "w-48" : "w-12"
         )}
       >
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
