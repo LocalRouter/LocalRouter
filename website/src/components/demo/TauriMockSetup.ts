@@ -1837,6 +1837,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     client_tools_indexing_default: 'enable',
     search_tool_name: 'IndexSearch',
     read_tool_name: 'IndexRead',
+    vector_search_enabled: true,
   }),
   'list_virtual_mcp_indexing_info': () => ([
     {
@@ -2698,7 +2699,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     session_inactivity_minutes: 180,
     max_session_minutes: 480,
     recall_tool_name: 'MemorySearch',
-    vector_search_enabled: true,
   }),
   'update_memory_config': () => {
     toast.success('Memory configuration saved (demo)')

@@ -54,18 +54,26 @@ pub enum CatalogItemType {
 pub struct ContextModeVirtualServer {
     /// Global context management config (read at session creation time).
     config: std::sync::RwLock<lr_config::ContextManagementConfig>,
+    /// Optional embedding service for hybrid vector search on session stores.
+    embedding_service: std::sync::RwLock<Option<Arc<lr_embeddings::EmbeddingService>>>,
 }
 
 impl ContextModeVirtualServer {
     pub fn new(config: lr_config::ContextManagementConfig) -> Self {
         Self {
             config: std::sync::RwLock::new(config),
+            embedding_service: std::sync::RwLock::new(None),
         }
     }
 
     /// Update the global config (called when settings change).
     pub fn update_config(&self, config: lr_config::ContextManagementConfig) {
         *self.config.write().unwrap() = config;
+    }
+
+    /// Set or clear the embedding service for hybrid vector search.
+    pub fn set_embedding_service(&self, service: Option<Arc<lr_embeddings::EmbeddingService>>) {
+        *self.embedding_service.write().unwrap() = service;
     }
 }
 
@@ -375,6 +383,13 @@ impl VirtualMcpServer for ContextModeVirtualServer {
         let enabled = client.is_context_management_enabled(&config);
 
         let store = Arc::new(ContentStore::new().expect("Failed to create in-memory ContentStore"));
+
+        // Attach embedding service for hybrid vector search (if globally enabled)
+        if config.vector_search_enabled {
+            if let Some(ref es) = *self.embedding_service.read().unwrap() {
+                store.set_embedding_service(Arc::clone(es));
+            }
+        }
 
         Box::new(ContextModeSessionState {
             enabled,

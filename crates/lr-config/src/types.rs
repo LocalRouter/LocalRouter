@@ -1509,6 +1509,12 @@ pub struct ContextManagementConfig {
     /// Read tool name (default: "IndexRead")
     #[serde(default = "default_read_tool_name")]
     pub read_tool_name: String,
+
+    /// Enable semantic vector search (hybrid FTS5 + embeddings) globally.
+    /// When true and the embedding model is downloaded, all ContentStore instances
+    /// (session + memory) use both keyword (FTS5) and vector (cosine similarity) matching.
+    #[serde(default = "default_vector_search_enabled")]
+    pub vector_search_enabled: bool,
 }
 
 /// Per-client context management overrides passed through the gateway API.
@@ -1539,6 +1545,7 @@ impl Default for ContextManagementConfig {
             client_tools_indexing_default: IndexingState::default(),
             search_tool_name: default_search_tool_name(),
             read_tool_name: default_read_tool_name(),
+            vector_search_enabled: default_vector_search_enabled(),
         }
     }
 }
@@ -2223,13 +2230,10 @@ pub struct MemoryConfig {
     #[serde(default = "default_memory_recall_tool_name")]
     pub recall_tool_name: String,
 
-    /// Enable semantic vector search (hybrid FTS5 + embeddings).
-    /// When true and the embedding model is downloaded, search uses both
-    /// keyword (FTS5) and vector (cosine similarity) matching with RRF merge.
-    #[serde(default = "default_vector_search_enabled")]
-    pub vector_search_enabled: bool,
-
     // Legacy fields — kept for backwards-compatible deserialization, ignored at runtime.
+    // vector_search_enabled moved to ContextManagementConfig (global setting).
+    #[serde(default, skip_serializing)]
+    pub vector_search_enabled: Option<bool>,
     #[serde(default, skip_serializing)]
     pub embedding_model: Option<String>,
     #[serde(default, skip_serializing)]
@@ -2248,7 +2252,7 @@ impl Default for MemoryConfig {
             session_inactivity_minutes: default_session_inactivity_minutes(),
             max_session_minutes: default_max_session_minutes(),
             recall_tool_name: default_memory_recall_tool_name(),
-            vector_search_enabled: default_vector_search_enabled(),
+            vector_search_enabled: None,
             embedding_model: None,
             embedding: None,
             compaction: None,
@@ -2919,7 +2923,7 @@ pub enum FreeTierKind {
         #[serde(default)]
         max_monthly_tokens: u64,
     },
-    /// Credit-based free tier (e.g. OpenRouter, xAI, DeepInfra, Perplexity)
+    /// Credit-based free tier (e.g. OpenRouter, xAI, DeepInfra)
     CreditBased {
         /// Budget in USD
         budget_usd: f64,
@@ -2954,7 +2958,7 @@ pub enum FreeTierResetPeriod {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CreditDetection {
-    /// All accounting is local (Together, DeepInfra, Perplexity, startup grants)
+    /// All accounting is local (Together, DeepInfra, startup grants)
     LocalOnly,
     /// Use provider's built-in API (OpenRouter `/api/v1/key`)
     ProviderApi,

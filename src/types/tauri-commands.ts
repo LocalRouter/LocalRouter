@@ -702,6 +702,8 @@ export interface ContextManagementConfig {
   client_tools_indexing_default: IndexingState
   search_tool_name: string
   read_tool_name: string
+  /** Enable semantic vector search globally (hybrid FTS5 + embeddings) */
+  vector_search_enabled: boolean
 }
 
 /** Params for update_context_management_config */
@@ -712,6 +714,7 @@ export interface UpdateContextManagementConfigParams {
   searchToolName?: string
   readToolName?: string
   clientToolsIndexingDefault?: string
+  vectorSearchEnabled?: boolean
 }
 
 /** Rust: src-tauri/src/ui/commands.rs - CatalogCompressionPreview */
@@ -3143,8 +3146,6 @@ export interface MemoryConfig {
   max_session_minutes: number
   /** Tool name for search (default: "MemorySearch"). Read tool is derived as "MemoryRead". */
   recall_tool_name: string
-  /** Enable semantic vector search (hybrid FTS5 + embeddings) */
-  vector_search_enabled: boolean
 }
 
 /** Params for update_memory_config */

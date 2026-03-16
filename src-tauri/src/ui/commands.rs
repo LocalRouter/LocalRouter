@@ -1658,6 +1658,7 @@ pub async fn update_context_management_config(
     search_tool_name: Option<String>,
     read_tool_name: Option<String>,
     client_tools_indexing_default: Option<String>,
+    vector_search_enabled: Option<bool>,
     config_manager: State<'_, ConfigManager>,
     context_mode_vs: State<'_, Arc<lr_mcp::gateway::context_mode::ContextModeVirtualServer>>,
     mcp_via_llm_manager: State<'_, Arc<lr_mcp_via_llm::McpViaLlmManager>>,
@@ -1688,6 +1689,9 @@ pub async fn update_context_management_config(
                     "disable" => lr_config::IndexingState::Disable,
                     _ => lr_config::IndexingState::Enable,
                 };
+            }
+            if let Some(v) = vector_search_enabled {
+                cfg.context_management.vector_search_enabled = v;
             }
         })
         .map_err(|e| e.to_string())?;

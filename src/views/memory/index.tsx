@@ -22,7 +22,6 @@ const defaultConfig: MemoryConfig = {
   session_inactivity_minutes: 180,
   max_session_minutes: 480,
   recall_tool_name: "MemorySearch",
-  vector_search_enabled: true,
 }
 
 interface MemoryViewProps {

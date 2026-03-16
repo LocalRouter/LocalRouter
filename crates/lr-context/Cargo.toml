@@ -20,3 +20,13 @@ regex = { workspace = true }
 parking_lot = { workspace = true }
 once_cell = { workspace = true }
 lr-embeddings = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+lr-embeddings = { workspace = true }
+dirs = { workspace = true }
+
+[[bench]]
+name = "vector_search"
+harness = false
+required-features = ["vector"]

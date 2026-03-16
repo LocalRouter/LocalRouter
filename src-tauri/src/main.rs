@@ -569,12 +569,49 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 app_state.mcp_gateway.register_virtual_server(skills_vs);
                 info!("Skills virtual server registered");
 
+                // Capture vector search setting before moving config
+                let vector_search_enabled = context_management_config.vector_search_enabled;
+
                 // Register context-mode virtual server
                 let context_mode_vs = Arc::new(
                     lr_mcp::gateway::context_mode::ContextModeVirtualServer::new(
                         context_management_config,
                     ),
                 );
+                // Initialize embedding service for semantic vector search.
+                // The service is always created (for status/download UI), but only
+                // used for actual search when vector_search_enabled is true.
+                let embedding_service: Option<Arc<lr_embeddings::EmbeddingService>> = {
+                    match lr_utils::paths::config_dir() {
+                        Ok(base_dir) => {
+                            let service = Arc::new(lr_embeddings::EmbeddingService::new(&base_dir));
+                            *app_state.embedding_service.write() = Some(service.clone());
+                            // Auto-load if already downloaded and vector search is enabled
+                            if vector_search_enabled && service.is_downloaded() {
+                                if let Err(e) = service.ensure_loaded() {
+                                    tracing::warn!("Failed to auto-load embedding model: {}", e);
+                                }
+                            }
+                            info!("Embedding service initialized (downloaded: {}, loaded: {}, vector_search_enabled: {})",
+                                service.is_downloaded(), service.is_loaded(), vector_search_enabled);
+                            if vector_search_enabled {
+                                Some(service)
+                            } else {
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to determine config dir for embeddings: {}", e);
+                            None
+                        }
+                    }
+                };
+
+                // Pass embedding service to context-mode virtual server for session stores
+                if let Some(ref es) = embedding_service {
+                    context_mode_vs.set_embedding_service(Some(Arc::clone(es)));
+                }
+
                 app_state
                     .mcp_gateway
                     .register_virtual_server(context_mode_vs.clone());
@@ -593,29 +630,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         .register_virtual_server(marketplace_vs);
                     info!("Marketplace virtual server registered");
                 }
-
-                // Initialize embedding service for semantic vector search
-                let embedding_service: Option<Arc<lr_embeddings::EmbeddingService>> = {
-                    match lr_utils::paths::config_dir() {
-                        Ok(base_dir) => {
-                            let service = Arc::new(lr_embeddings::EmbeddingService::new(&base_dir));
-                            *app_state.embedding_service.write() = Some(service.clone());
-                            // Auto-load if already downloaded (non-blocking attempt)
-                            if service.is_downloaded() {
-                                if let Err(e) = service.ensure_loaded() {
-                                    tracing::warn!("Failed to auto-load embedding model: {}", e);
-                                }
-                            }
-                            info!("Embedding service initialized (downloaded: {}, loaded: {})",
-                                service.is_downloaded(), service.is_loaded());
-                            Some(service)
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to determine config dir for embeddings: {}", e);
-                            None
-                        }
-                    }
-                };
 
                 // Initialize memory service (per-client enablement checked at runtime)
                 {
