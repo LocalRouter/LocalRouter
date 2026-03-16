@@ -216,6 +216,187 @@ pub async fn delete_client(
     Ok(())
 }
 
+/// Generate a clone name with dedup suffix
+/// "Clone of Foo" -> if exists -> "Clone of Foo (2)" -> "Clone of Foo (3)" etc.
+fn generate_clone_name(original_name: &str, existing_names: &[&str]) -> String {
+    let base = format!("Clone of {}", original_name);
+    if !existing_names.contains(&base.as_str()) {
+        return base;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{} ({})", base, n);
+        if !existing_names.contains(&candidate.as_str()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Clone an existing client (deep copy with new identity)
+///
+/// Creates a new client by cloning all settings from an existing client.
+/// The clone gets:
+/// - A new UUID
+/// - A new name ("Clone of {name}", with "(N)" suffix if duplicates exist)
+/// - Its own secret in the keychain (independent from source)
+/// - Its own strategy (deep-cloned from source)
+/// - sync_config = false (to avoid conflicts with source)
+/// - Fresh created_at timestamp, last_used = None
+#[tauri::command]
+pub async fn clone_client(
+    client_id: String,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(String, ClientInfo), String> {
+    tracing::info!("Cloning client: {}", client_id);
+
+    let config = config_manager.get();
+
+    // Find the source client
+    let source_client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?
+        .clone();
+
+    // Find the source strategy
+    let source_strategy = config
+        .strategies
+        .iter()
+        .find(|s| s.id == source_client.strategy_id)
+        .cloned();
+
+    // Generate clone name with dedup
+    let existing_names: Vec<&str> = config.clients.iter().map(|c| c.name.as_str()).collect();
+    let clone_name = generate_clone_name(&source_client.name, &existing_names);
+
+    // Create new IDs
+    let new_client_id = uuid::Uuid::new_v4().to_string();
+    let new_strategy_id = uuid::Uuid::new_v4().to_string();
+
+    // Clone the strategy
+    let new_strategy = if let Some(src_strategy) = source_strategy {
+        lr_config::Strategy {
+            id: new_strategy_id.clone(),
+            name: lr_config::client_strategy_name(&clone_name),
+            parent: Some(new_client_id.clone()),
+            allowed_models: src_strategy.allowed_models.clone(),
+            auto_config: src_strategy.auto_config.clone(),
+            rate_limits: src_strategy.rate_limits.clone(),
+            free_tier_only: src_strategy.free_tier_only,
+            free_tier_fallback: src_strategy.free_tier_fallback.clone(),
+        }
+    } else {
+        lr_config::Strategy::new_for_client(new_client_id.clone(), clone_name.clone())
+    };
+
+    // Clone the client with modifications
+    let new_client = lr_config::Client {
+        id: new_client_id.clone(),
+        name: clone_name,
+        enabled: source_client.enabled,
+        strategy_id: new_strategy_id,
+        allowed_llm_providers: Vec::new(),
+        mcp_server_access: lr_config::McpServerAccess::None,
+        context_management_enabled: source_client.context_management_enabled,
+        catalog_compression_enabled: source_client.catalog_compression_enabled,
+        client_tools_indexing: source_client.client_tools_indexing.clone(),
+        skills_access: lr_config::SkillsAccess::None,
+        created_at: chrono::Utc::now(),
+        last_used: None,
+        roots: source_client.roots.clone(),
+        mcp_sampling_permission: source_client.mcp_sampling_permission.clone(),
+        mcp_elicitation_permission: source_client.mcp_elicitation_permission.clone(),
+        mcp_sampling_max_tokens: source_client.mcp_sampling_max_tokens,
+        mcp_sampling_rate_limit: source_client.mcp_sampling_rate_limit,
+        mcp_sampling_enabled: false,
+        mcp_sampling_requires_approval: true,
+        firewall: source_client.firewall.clone(),
+        marketplace_enabled: false,
+        mcp_permissions: source_client.mcp_permissions.clone(),
+        skills_permissions: source_client.skills_permissions.clone(),
+        model_permissions: source_client.model_permissions.clone(),
+        marketplace_permission: source_client.marketplace_permission.clone(),
+        coding_agents_permissions: lr_config::CodingAgentsPermissions::default(),
+        coding_agent_permission: source_client.coding_agent_permission.clone(),
+        coding_agent_type: source_client.coding_agent_type,
+        client_mode: source_client.client_mode.clone(),
+        template_id: source_client.template_id.clone(),
+        sync_config: false, // Disabled for clones to avoid conflicts
+        guardrails_enabled: None,
+        guardrails: source_client.guardrails.clone(),
+        prompt_compression: source_client.prompt_compression.clone(),
+        json_repair: source_client.json_repair.clone(),
+        secret_scanning: source_client.secret_scanning.clone(),
+        memory_enabled: source_client.memory_enabled,
+    };
+
+    // Add to config
+    config_manager
+        .update(|cfg| {
+            cfg.clients.push(new_client.clone());
+            cfg.strategies.push(new_strategy);
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Store new secret in keychain
+    let secret = client_manager
+        .add_client_with_secret(new_client.clone())
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Emit events
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
+    }
+
+    let client_info = ClientInfo {
+        id: new_client.id.clone(),
+        name: new_client.name.clone(),
+        client_id: new_client.id.clone(),
+        enabled: new_client.enabled,
+        strategy_id: new_client.strategy_id.clone(),
+        context_management_enabled: new_client.context_management_enabled,
+        created_at: new_client.created_at.to_rfc3339(),
+        last_used: None,
+        mcp_permissions: new_client.mcp_permissions.clone(),
+        skills_permissions: new_client.skills_permissions.clone(),
+        coding_agent_permission: new_client.coding_agent_permission.clone(),
+        coding_agent_type: new_client.coding_agent_type,
+        model_permissions: new_client.model_permissions.clone(),
+        marketplace_permission: new_client.marketplace_permission.clone(),
+        mcp_sampling_permission: new_client.mcp_sampling_permission.clone(),
+        mcp_elicitation_permission: new_client.mcp_elicitation_permission.clone(),
+        client_mode: new_client.client_mode.clone(),
+        template_id: new_client.template_id.clone(),
+        sync_config: false,
+        guardrails_active: {
+            let cfg = config_manager.get();
+            let effective_actions = new_client
+                .guardrails
+                .category_actions
+                .as_deref()
+                .unwrap_or(&cfg.guardrails.category_actions);
+            effective_actions.iter().any(|a| a.action != "allow")
+        },
+    };
+
+    Ok((secret, client_info))
+}
+
 /// Update client name
 #[tauri::command]
 pub async fn update_client_name(

@@ -134,7 +134,11 @@ fn process_auth_config(
                 header_refs.insert(name, ref_key);
             }
 
-            tracing::debug!("Stored {} custom header(s) in keychain for server {}", header_refs.len(), server_id);
+            tracing::debug!(
+                "Stored {} custom header(s) in keychain for server {}",
+                header_refs.len(),
+                server_id
+            );
 
             McpAuthConfig::CustomHeaders { header_refs }
         }
@@ -174,11 +178,17 @@ fn process_auth_config(
                 let ref_key = uuid::Uuid::new_v4().to_string();
                 keychain
                     .store(lr_config::MCP_KEYRING_SERVICE, &ref_key, &value)
-                    .map_err(|e| format!("Failed to store env var '{}' in keychain: {}", name, e))?;
+                    .map_err(|e| {
+                        format!("Failed to store env var '{}' in keychain: {}", name, e)
+                    })?;
                 env_refs.insert(name, ref_key);
             }
 
-            tracing::debug!("Stored {} env var(s) in keychain for server {}", env_refs.len(), server_id);
+            tracing::debug!(
+                "Stored {} env var(s) in keychain for server {}",
+                env_refs.len(),
+                server_id
+            );
 
             McpAuthConfig::EnvVars { env_refs }
         }
@@ -433,6 +443,226 @@ pub async fn delete_mcp_server(
     Ok(())
 }
 
+/// Clone an existing MCP server (deep copy with new identity)
+///
+/// Creates a new MCP server that is a copy of the source server, with a new UUID,
+/// a "Clone of {name}" name, and independent keychain entries for all secrets.
+///
+/// # Arguments
+/// * `server_id` - The source server ID to clone
+///
+/// # Returns
+/// * The cloned server info
+#[tauri::command]
+pub async fn clone_mcp_server(
+    server_id: String,
+    config_manager: State<'_, ConfigManager>,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    server_manager: State<'_, Arc<ServerManager>>,
+    app: tauri::AppHandle,
+) -> Result<McpServerInfo, String> {
+    tracing::info!("Cloning MCP server: {}", server_id);
+
+    let config = config_manager.get();
+
+    // Find the source server
+    let source = config
+        .mcp_servers
+        .iter()
+        .find(|s| s.id == server_id)
+        .ok_or_else(|| format!("MCP server not found: {}", server_id))?
+        .clone();
+
+    // Generate clone name
+    let existing_names: Vec<&str> = config.mcp_servers.iter().map(|s| s.name.as_str()).collect();
+    let clone_name = generate_clone_name(&source.name, &existing_names);
+
+    let new_id = uuid::Uuid::new_v4().to_string();
+
+    // Clone auth config with new keychain entries
+    let new_auth_config = clone_mcp_auth_config(&source.auth_config, &server_id, &new_id)?;
+
+    let new_server = McpServerConfig {
+        id: new_id.clone(),
+        name: clone_name,
+        transport: source.transport,
+        transport_config: source.transport_config.clone(),
+        auth_config: new_auth_config,
+        discovered_oauth: source.discovered_oauth.clone(),
+        oauth_config: source.oauth_config.clone(),
+        enabled: source.enabled,
+        created_at: chrono::Utc::now(),
+    };
+
+    // Add to config
+    config_manager
+        .update(|cfg| {
+            cfg.mcp_servers.push(new_server.clone());
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Add to manager
+    mcp_manager.add_config(new_server.clone());
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Emit event
+    if let Err(e) = app.emit("mcp-servers-changed", ()) {
+        tracing::error!("Failed to emit mcp-servers-changed event: {}", e);
+    }
+
+    // Build proxy/gateway URLs
+    let port = server_manager.get_actual_port().unwrap_or(3625);
+    let base_url = format!("http://localhost:{}", port);
+    let proxy_url = format!("{}/mcp/{}", base_url, new_id);
+    let gateway_url = base_url;
+
+    Ok(McpServerInfo {
+        id: new_server.id,
+        name: new_server.name,
+        enabled: new_server.enabled,
+        transport: format!("{:?}", new_server.transport),
+        transport_config: new_server.transport_config,
+        auth_config: new_server.auth_config,
+        running: false,
+        created_at: new_server.created_at.to_rfc3339(),
+        url: Some(proxy_url.clone()),
+        proxy_url,
+        gateway_url,
+    })
+}
+
+/// Clone MCP auth config, re-keying secrets to new keychain entries
+fn clone_mcp_auth_config(
+    auth: &Option<McpAuthConfig>,
+    _old_server_id: &str,
+    new_server_id: &str,
+) -> Result<Option<McpAuthConfig>, String> {
+    let auth = match auth {
+        Some(a) => a,
+        None => return Ok(None),
+    };
+
+    let keychain = lr_api_keys::CachedKeychain::auto()
+        .map_err(|e| format!("Failed to access keychain: {}", e))?;
+
+    match auth {
+        McpAuthConfig::None => Ok(Some(McpAuthConfig::None)),
+
+        McpAuthConfig::BearerToken { token_ref } => {
+            let new_ref = format!("{}_bearer_token", new_server_id);
+            if let Ok(Some(token)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, token_ref) {
+                keychain
+                    .store(lr_config::MCP_KEYRING_SERVICE, &new_ref, &token)
+                    .map_err(|e| format!("Failed to store cloned bearer token: {}", e))?;
+            }
+            Ok(Some(McpAuthConfig::BearerToken { token_ref: new_ref }))
+        }
+
+        McpAuthConfig::CustomHeaders { header_refs } => {
+            let mut new_refs = std::collections::HashMap::new();
+            for (name, old_ref) in header_refs {
+                let new_ref = uuid::Uuid::new_v4().to_string();
+                if let Ok(Some(value)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, old_ref) {
+                    keychain
+                        .store(lr_config::MCP_KEYRING_SERVICE, &new_ref, &value)
+                        .map_err(|e| format!("Failed to store cloned header '{}': {}", name, e))?;
+                }
+                new_refs.insert(name.clone(), new_ref);
+            }
+            Ok(Some(McpAuthConfig::CustomHeaders {
+                header_refs: new_refs,
+            }))
+        }
+
+        McpAuthConfig::OAuth {
+            client_id,
+            client_secret_ref,
+            auth_url,
+            token_url,
+            scopes,
+        } => {
+            let new_ref = format!("{}_oauth_secret", new_server_id);
+            if let Ok(Some(secret)) =
+                keychain.get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)
+            {
+                keychain
+                    .store(lr_config::MCP_KEYRING_SERVICE, &new_ref, &secret)
+                    .map_err(|e| format!("Failed to store cloned OAuth secret: {}", e))?;
+            }
+            Ok(Some(McpAuthConfig::OAuth {
+                client_id: client_id.clone(),
+                client_secret_ref: new_ref,
+                auth_url: auth_url.clone(),
+                token_url: token_url.clone(),
+                scopes: scopes.clone(),
+            }))
+        }
+
+        McpAuthConfig::OAuthBrowser {
+            client_id,
+            client_secret_ref,
+            auth_url,
+            token_url,
+            scopes,
+            redirect_uri,
+        } => {
+            let new_ref = format!("{}_oauth_browser_secret", new_server_id);
+            if let Ok(Some(secret)) =
+                keychain.get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)
+            {
+                keychain
+                    .store(lr_config::MCP_KEYRING_SERVICE, &new_ref, &secret)
+                    .map_err(|e| format!("Failed to store cloned OAuth browser secret: {}", e))?;
+            }
+            Ok(Some(McpAuthConfig::OAuthBrowser {
+                client_id: client_id.clone(),
+                client_secret_ref: new_ref,
+                auth_url: auth_url.clone(),
+                token_url: token_url.clone(),
+                scopes: scopes.clone(),
+                redirect_uri: redirect_uri.clone(),
+            }))
+        }
+
+        McpAuthConfig::EnvVars { env_refs } => {
+            let mut new_refs = std::collections::HashMap::new();
+            for (name, old_ref) in env_refs {
+                let new_ref = uuid::Uuid::new_v4().to_string();
+                if let Ok(Some(value)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, old_ref) {
+                    keychain
+                        .store(lr_config::MCP_KEYRING_SERVICE, &new_ref, &value)
+                        .map_err(|e| format!("Failed to store cloned env var '{}': {}", name, e))?;
+                }
+                new_refs.insert(name.clone(), new_ref);
+            }
+            Ok(Some(McpAuthConfig::EnvVars { env_refs: new_refs }))
+        }
+    }
+}
+
+/// Generate a clone name with dedup suffix
+fn generate_clone_name(original_name: &str, existing_names: &[&str]) -> String {
+    let base = format!("Clone of {}", original_name);
+    if !existing_names.contains(&base.as_str()) {
+        return base;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{} ({})", base, n);
+        if !existing_names.contains(&candidate.as_str()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 /// Start an MCP server
 ///
 /// # Arguments
@@ -529,6 +759,7 @@ pub struct McpHealthCheckResult {
 pub async fn start_mcp_health_checks(
     app: tauri::AppHandle,
     mcp_manager: State<'_, Arc<McpServerManager>>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<Vec<String>, String> {
     let server_ids: Vec<String> = mcp_manager
         .list_configs()
@@ -538,6 +769,7 @@ pub async fn start_mcp_health_checks(
 
     let mcp_manager = mcp_manager.inner().clone();
     let app_handle = app.clone();
+    let health_cache = app_state.health_cache.clone();
 
     // Spawn health checks for each server in parallel
     tokio::spawn(async move {
@@ -547,6 +779,7 @@ pub async fn start_mcp_health_checks(
         for config in configs {
             let mcp_manager = mcp_manager.clone();
             let app_handle = app_handle.clone();
+            let health_cache = health_cache.clone();
             let server_id = config.id.clone();
             let server_name = config.name.clone();
             let enabled = config.enabled;
@@ -555,30 +788,52 @@ pub async fn start_mcp_health_checks(
                 // If server is disabled, emit disabled status without running health check
                 if !enabled {
                     let result = McpHealthCheckResult {
-                        server_id,
-                        server_name,
+                        server_id: server_id.clone(),
+                        server_name: server_name.clone(),
                         status: "disabled".to_string(),
                         latency_ms: None,
                         error: None,
                     };
                     let _ = app_handle.emit("mcp-health-check", result);
+                    health_cache.update_mcp_server(
+                        &server_id,
+                        lr_providers::health_cache::ItemHealth::disabled(server_name),
+                    );
                     return;
                 }
 
                 let health = mcp_manager.get_server_health(&server_id).await;
-                let result = McpHealthCheckResult {
-                    server_id: health.server_id,
-                    server_name: health.server_name,
-                    status: match health.status {
-                        lr_mcp::manager::HealthStatus::Healthy => "healthy".to_string(),
-                        lr_mcp::manager::HealthStatus::Ready => "ready".to_string(),
-                        lr_mcp::manager::HealthStatus::Unhealthy => "unhealthy".to_string(),
-                        lr_mcp::manager::HealthStatus::Unknown => "unknown".to_string(),
-                    },
-                    latency_ms: health.latency_ms,
-                    error: health.error,
+                let status_str = match health.status {
+                    lr_mcp::manager::HealthStatus::Healthy => "healthy",
+                    lr_mcp::manager::HealthStatus::Ready => "ready",
+                    lr_mcp::manager::HealthStatus::Unhealthy => "unhealthy",
+                    lr_mcp::manager::HealthStatus::Unknown => "unknown",
                 };
-                let _ = app_handle.emit("mcp-health-check", result);
+                let result = McpHealthCheckResult {
+                    server_id: health.server_id.clone(),
+                    server_name: health.server_name.clone(),
+                    status: status_str.to_string(),
+                    latency_ms: health.latency_ms,
+                    error: health.error.clone(),
+                };
+                let _ = app_handle.emit("mcp-health-check", &result);
+
+                // Update centralized health cache so aggregate status (tray + sidebar) recalculates
+                use lr_providers::health_cache::ItemHealth;
+                let item_health = match health.status {
+                    lr_mcp::manager::HealthStatus::Ready => {
+                        ItemHealth::ready(health.server_name)
+                    }
+                    lr_mcp::manager::HealthStatus::Healthy => {
+                        ItemHealth::healthy(health.server_name, health.latency_ms)
+                    }
+                    lr_mcp::manager::HealthStatus::Unhealthy
+                    | lr_mcp::manager::HealthStatus::Unknown => ItemHealth::unhealthy(
+                        health.server_name,
+                        health.error.unwrap_or_else(|| "Unhealthy".to_string()),
+                    ),
+                };
+                health_cache.update_mcp_server(&result.server_id, item_health);
             });
             handles.push(handle);
         }

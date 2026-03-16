@@ -161,10 +161,8 @@ pub async fn create_provider_instance(
     }
 
     // Build config for disk persistence WITHOUT api_key
-    let config_for_disk: HashMap<String, String> = config
-        .into_iter()
-        .filter(|(k, _)| k != "api_key")
-        .collect();
+    let config_for_disk: HashMap<String, String> =
+        config.into_iter().filter(|(k, _)| k != "api_key").collect();
 
     // Save to config file for persistence
     config_manager
@@ -252,10 +250,8 @@ pub async fn update_provider_instance(
     }
 
     // Build config for disk persistence WITHOUT api_key
-    let config_for_disk: HashMap<String, String> = config
-        .into_iter()
-        .filter(|(k, _)| k != "api_key")
-        .collect();
+    let config_for_disk: HashMap<String, String> =
+        config.into_iter().filter(|(k, _)| k != "api_key").collect();
 
     // Update in config file (without api_key)
     config_manager
@@ -345,14 +341,26 @@ pub async fn rename_provider_instance(
     match lr_providers::key_storage::get_provider_key(&instance_name) {
         Ok(Some(api_key)) => {
             if let Err(e) = lr_providers::key_storage::store_provider_key(&new_name, &api_key) {
-                tracing::warn!("Failed to store API key under new name '{}': {}", new_name, e);
+                tracing::warn!(
+                    "Failed to store API key under new name '{}': {}",
+                    new_name,
+                    e
+                );
             } else if let Err(e) = lr_providers::key_storage::delete_provider_key(&instance_name) {
-                tracing::warn!("Failed to delete old API key for '{}': {}", instance_name, e);
+                tracing::warn!(
+                    "Failed to delete old API key for '{}': {}",
+                    instance_name,
+                    e
+                );
             }
         }
         Ok(None) => {} // No key to migrate (e.g., local provider)
         Err(e) => {
-            tracing::warn!("Failed to check API key for '{}' during rename: {}", instance_name, e);
+            tracing::warn!(
+                "Failed to check API key for '{}' during rename: {}",
+                instance_name,
+                e
+            );
         }
     }
 
@@ -403,6 +411,22 @@ pub async fn get_provider_api_key(
         .unwrap_or(instance_name);
 
     lr_providers::key_storage::get_provider_key(&key_ref).map_err(|e| e.to_string())
+}
+
+/// Generate a unique clone name for a provider
+fn generate_clone_name(original_name: &str, existing_names: &[&str]) -> String {
+    let base = format!("Clone of {}", original_name);
+    if !existing_names.contains(&base.as_str()) {
+        return base;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{} ({})", base, n);
+        if !existing_names.contains(&candidate.as_str()) {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 /// Helper function to convert provider type string to enum
@@ -456,7 +480,8 @@ pub async fn remove_provider_instance(
     if let Err(e) = lr_providers::key_storage::delete_provider_key(&instance_name) {
         tracing::warn!(
             "Failed to delete API key for provider '{}' from keychain: {}",
-            instance_name, e
+            instance_name,
+            e
         );
     }
 
@@ -472,6 +497,110 @@ pub async fn remove_provider_instance(
 
     // Remove from health cache (this emits health-status-changed event)
     app_state.health_cache.remove_provider(&instance_name);
+
+    // Notify frontend that providers and models changed
+    let _ = app.emit("providers-changed", ());
+    let _ = app.emit("models-changed", ());
+
+    Ok(())
+}
+
+/// Clone an existing provider instance (deep copy with new identity)
+///
+/// Creates a new provider instance with the same configuration as the source,
+/// including copying the API key from the keychain. The clone gets a unique
+/// name like "Clone of {name}" (with dedup suffix if needed).
+///
+/// # Arguments
+/// * `instance_name` - Name of the provider instance to clone
+///
+/// # Returns
+/// * `Ok(())` if the provider was cloned successfully
+/// * `Err(String)` if the source provider doesn't exist or cloning failed
+#[tauri::command]
+pub async fn clone_provider_instance(
+    instance_name: String,
+    registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Cloning provider instance: {}", instance_name);
+
+    let config = config_manager.get();
+
+    // Find the source provider config
+    let source = config
+        .providers
+        .iter()
+        .find(|p| p.name == instance_name)
+        .ok_or_else(|| format!("Provider not found: {}", instance_name))?
+        .clone();
+
+    // Get the provider_type string from the registry (matches factory key)
+    let instances = registry.list_providers();
+    let provider_type_str = instances
+        .iter()
+        .find(|i| i.instance_name == instance_name)
+        .map(|i| i.provider_type.clone())
+        .ok_or_else(|| format!("Provider '{}' not found in registry", instance_name))?;
+
+    // Generate clone name
+    let existing_names: Vec<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
+    let clone_name = generate_clone_name(&source.name, &existing_names);
+
+    // Get the API key from the old provider (if any)
+    let key_ref = source.api_key_ref.as_deref().unwrap_or(&source.name);
+    let api_key = lr_providers::key_storage::get_provider_key(key_ref)
+        .ok()
+        .flatten();
+
+    // Build config map for creating the new provider
+    // Start with existing provider_config
+    let mut config_map: HashMap<String, String> = if let Some(ref pc) = source.provider_config {
+        if let Some(obj) = pc.as_object() {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        } else {
+            HashMap::new()
+        }
+    } else {
+        HashMap::new()
+    };
+
+    // Include the API key for the registry creation
+    if let Some(ref key) = api_key {
+        config_map.insert("api_key".to_string(), key.clone());
+    }
+
+    // Create provider in registry (in-memory)
+    registry
+        .create_provider(clone_name.clone(), provider_type_str, config_map)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Store API key in keychain under new name
+    if let Some(ref key) = api_key {
+        lr_providers::key_storage::store_provider_key(&clone_name, key)
+            .map_err(|e| format!("Failed to store API key for clone: {}", e))?;
+    }
+
+    // Save to config file
+    config_manager
+        .update(|cfg| {
+            cfg.providers.push(lr_config::ProviderConfig {
+                name: clone_name.clone(),
+                provider_type: source.provider_type,
+                enabled: source.enabled,
+                provider_config: source.provider_config.clone(),
+                api_key_ref: None, // Uses clone_name for keyring lookup
+                free_tier: source.free_tier.clone(),
+            });
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
