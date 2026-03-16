@@ -2863,6 +2863,14 @@ export interface CompressionStatus {
   model_repo: string
 }
 
+/** Embedding model status (semantic vector search) */
+export interface EmbeddingStatus {
+  downloaded: boolean
+  loaded: boolean
+  model_name: string
+  model_size_mb: number | null
+}
+
 /** Compression test result (from compress_prompt tool) */
 export interface CompressionTestResult {
   compressed_text: string

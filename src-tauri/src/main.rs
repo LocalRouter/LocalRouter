@@ -300,7 +300,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 Err(e) => {
                     tracing::warn!(
                         "Failed to retrieve API key for provider '{}' from keychain: {}",
-                        provider_config.name, e
+                        provider_config.name,
+                        e
                     );
                 }
             }
@@ -593,20 +594,46 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     info!("Marketplace virtual server registered");
                 }
 
+                // Initialize embedding service for semantic vector search
+                let embedding_service: Option<Arc<lr_embeddings::EmbeddingService>> = {
+                    match lr_utils::paths::config_dir() {
+                        Ok(base_dir) => {
+                            let service = Arc::new(lr_embeddings::EmbeddingService::new(&base_dir));
+                            *app_state.embedding_service.write() = Some(service.clone());
+                            // Auto-load if already downloaded (non-blocking attempt)
+                            if service.is_downloaded() {
+                                if let Err(e) = service.ensure_loaded() {
+                                    tracing::warn!("Failed to auto-load embedding model: {}", e);
+                                }
+                            }
+                            info!("Embedding service initialized (downloaded: {}, loaded: {})",
+                                service.is_downloaded(), service.is_loaded());
+                            Some(service)
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to determine config dir for embeddings: {}", e);
+                            None
+                        }
+                    }
+                };
+
                 // Initialize memory service (per-client enablement checked at runtime)
                 {
                     let memory_config = config_manager.get().memory.clone();
-                    let server_port = config_manager.get().server.port;
-                    let memory_secret = app_state.memory_secret.as_str().to_string();
                     match lr_utils::paths::config_dir() {
                         Ok(base_dir) => {
                             let memory_dir = base_dir.join("memory");
-                            let service = Arc::new(lr_memory::MemoryService::new(
-                                memory_config,
-                                memory_dir,
-                                server_port,
-                                memory_secret,
-                            ));
+                            let service = Arc::new(match embedding_service {
+                                Some(ref es) => lr_memory::MemoryService::with_embedding_service(
+                                    memory_config,
+                                    memory_dir,
+                                    Arc::clone(es),
+                                ),
+                                None => lr_memory::MemoryService::new(
+                                    memory_config,
+                                    memory_dir,
+                                ),
+                            });
                             *app_state.memory_service.write() = Some(service.clone());
                             app_state
                                 .mcp_via_llm_manager
@@ -1916,12 +1943,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Memory commands
             ui::commands::get_memory_config,
             ui::commands::update_memory_config,
-            ui::commands::get_memory_status,
-            ui::commands::memory_setup,
             ui::commands::open_memory_folder,
             ui::commands::memory_test_index,
             ui::commands::memory_test_search,
-            ui::commands::memory_test_compact,
             ui::commands::memory_test_reset,
             ui::commands::get_client_memory_config,
             ui::commands::update_client_memory_config,
@@ -1942,6 +1966,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::install_compression,
             ui::commands::rebuild_compression_engine,
             ui::commands::test_compression,
+            // Embedding commands
+            ui::commands::get_embedding_status,
+            ui::commands::install_embedding_model,
             // JSON Repair commands
             ui::commands::get_json_repair_config,
             ui::commands::update_json_repair_config,

@@ -2197,17 +2197,10 @@ pub struct ClientSecretScanningConfig {
 
 /// Global memory configuration. Memory is enabled per-client, not globally.
 ///
-/// Embedding and LLM calls are routed through LocalRouter's own endpoints
-/// using a transient internal bearer token. Users select models from their
-/// configured providers.
+/// Memory uses native FTS5 full-text search (no external dependencies).
+/// Transcripts are indexed automatically and searchable immediately.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryConfig {
-    /// Embedding model for memsearch indexing/search, routed through LocalRouter.
-    /// Format: "provider/model" (e.g., "ollama/nomic-embed-text").
-    /// None = memory indexing disabled (recall tool won't return results).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embedding_model: Option<String>,
-
     /// Compaction LLM model for session summarization, routed through LocalRouter.
     /// Format: "provider/model" (e.g., "anthropic/claude-haiku-4-5-20251001").
     /// None = compaction disabled (raw transcripts kept).
@@ -2230,7 +2223,15 @@ pub struct MemoryConfig {
     #[serde(default = "default_memory_recall_tool_name")]
     pub recall_tool_name: String,
 
+    /// Enable semantic vector search (hybrid FTS5 + embeddings).
+    /// When true and the embedding model is downloaded, search uses both
+    /// keyword (FTS5) and vector (cosine similarity) matching with RRF merge.
+    #[serde(default = "default_vector_search_enabled")]
+    pub vector_search_enabled: bool,
+
     // Legacy fields — kept for backwards-compatible deserialization, ignored at runtime.
+    #[serde(default, skip_serializing)]
+    pub embedding_model: Option<String>,
     #[serde(default, skip_serializing)]
     pub embedding: Option<serde_json::Value>,
     #[serde(default, skip_serializing)]
@@ -2242,12 +2243,13 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            embedding_model: None,
             compaction_model: None,
             search_top_k: default_memory_top_k(),
             session_inactivity_minutes: default_session_inactivity_minutes(),
             max_session_minutes: default_max_session_minutes(),
             recall_tool_name: default_memory_recall_tool_name(),
+            vector_search_enabled: default_vector_search_enabled(),
+            embedding_model: None,
             embedding: None,
             compaction: None,
             auto_start_daemon: None,
@@ -2269,6 +2271,10 @@ fn default_max_session_minutes() -> u64 {
 
 fn default_memory_recall_tool_name() -> String {
     "MemoryRecall".to_string()
+}
+
+fn default_vector_search_enabled() -> bool {
+    true
 }
 
 /// MCP via LLM configuration (experimental agentic orchestrator)

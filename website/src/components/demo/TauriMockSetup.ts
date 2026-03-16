@@ -2880,6 +2880,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return null
   },
   'rebuild_compression_engine': () => null,
+  'get_embedding_status': () => ({
+    downloaded: false,
+    loaded: false,
+    model_name: 'all-MiniLM-L6-v2',
+    model_size_mb: null,
+  }),
+  'install_embedding_model': () => {
+    toast.success('Embedding model downloaded (demo)')
+    return 'Embedding model downloaded and loaded successfully'
+  },
   'test_compression': (args) => {
     const text = args?.text || ''
     const rate = args?.rate || 0.5

@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+vector = ["lr-embeddings"]
+
 [dependencies]
 rusqlite = { workspace = true }
 serde = { workspace = true }
@@ -15,3 +19,4 @@ tracing = { workspace = true }
 regex = { workspace = true }
 parking_lot = { workspace = true }
 once_cell = { workspace = true }
+lr-embeddings = { workspace = true, optional = true }

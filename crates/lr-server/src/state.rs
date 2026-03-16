@@ -801,11 +801,11 @@ pub struct AppState {
     /// Prompt compression service (LLMLingua-2 via Candle)
     pub compression_service: Arc<RwLock<Option<Arc<lr_compression::CompressionService>>>>,
 
-    /// Memory service for persistent conversation memory (Zillis memsearch)
+    /// Memory service for persistent conversation memory (native FTS5)
     pub memory_service: Arc<RwLock<Option<Arc<lr_memory::MemoryService>>>>,
 
-    /// Transient bearer token for memsearch to call LocalRouter's endpoints
-    pub memory_secret: Arc<String>,
+    /// Embedding service for semantic vector search (all-MiniLM-L6-v2)
+    pub embedding_service: Arc<RwLock<Option<Arc<lr_embeddings::EmbeddingService>>>>,
 
     /// MCP via LLM agentic orchestrator (experimental)
     pub mcp_via_llm_manager: Arc<McpViaLlmManager>,
@@ -908,7 +908,7 @@ impl AppState {
             safety_engine: Arc::new(RwLock::new(None)),
             compression_service: Arc::new(RwLock::new(None)),
             memory_service: Arc::new(RwLock::new(None)),
-            memory_secret: Arc::new(format!("lr-memory-{}", Uuid::new_v4().simple())),
+            embedding_service: Arc::new(RwLock::new(None)),
             mcp_via_llm_manager: {
                 let manager = McpViaLlmManager::new(mcp_via_llm_config);
                 manager.update_context_management_config(context_management_config);

@@ -763,7 +763,7 @@ fn flush_virtual_lines(
 // Auto-detect and chunk
 // ─────────────────────────────────────────────────────────
 
-pub(crate) fn chunk_content(content: &str) -> Vec<Chunk> {
+pub fn chunk_content(content: &str) -> Vec<Chunk> {
     let format = detect_format(content);
     let chunks = match format {
         ContentFormat::Markdown => chunk_markdown(content),

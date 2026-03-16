@@ -70,7 +70,7 @@ pub enum MatchLayer {
 // ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub(crate) struct Chunk {
+pub struct Chunk {
     pub title: String,
     pub content: String,
     pub content_type: ContentType,

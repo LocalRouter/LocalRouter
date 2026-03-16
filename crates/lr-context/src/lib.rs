@@ -7,13 +7,16 @@
 
 mod chunk;
 mod fuzzy;
+#[cfg(feature = "vector")]
+mod hybrid;
 mod search;
 mod truncate;
 mod types;
 
+pub use chunk::chunk_content;
 pub use types::format_search_results;
 pub use types::{
-    BatchIndexResult, BatchItemSummary, BatchResult, ChunkToc, ContentType, ContextError,
+    BatchIndexResult, BatchItemSummary, BatchResult, Chunk, ChunkToc, ContentType, ContextError,
     IndexResult, MatchLayer, ReadRequest, ReadResult, SearchHit, SearchResult, SourceInfo,
     SEARCH_OUTPUT_CAP,
 };
@@ -66,6 +69,24 @@ static WORD_SPLIT_RE: Lazy<Regex> =
 
 pub struct ContentStore {
     conn: Arc<Mutex<Connection>>,
+    /// Optional embedding service for hybrid (FTS5 + vector) search.
+    #[cfg(feature = "vector")]
+    embedding_service: Mutex<Option<Arc<lr_embeddings::EmbeddingService>>>,
+    /// In-memory vector index, rebuilt from FTS5 content.
+    #[cfg(feature = "vector")]
+    vector_entries: Mutex<Vec<VectorEntry>>,
+}
+
+/// An in-memory vector entry for cosine similarity search.
+#[cfg(feature = "vector")]
+struct VectorEntry {
+    source: String,
+    title: String,
+    content: String,
+    embedding: Vec<f32>,
+    content_type: ContentType,
+    line_start: usize,
+    line_end: usize,
 }
 
 impl ContentStore {
@@ -75,6 +96,39 @@ impl ContentStore {
         Self::init_schema(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            #[cfg(feature = "vector")]
+            embedding_service: Mutex::new(None),
+            #[cfg(feature = "vector")]
+            vector_entries: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Open a persistent content store backed by a SQLite file on disk.
+    ///
+    /// Creates the database file (and parent directories) if it doesn't exist.
+    /// Uses WAL journal mode for concurrent read performance.
+    pub fn open(path: &std::path::Path) -> Result<Self, ContextError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ContextError::Database(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                    Some(format!("Failed to create parent directory: {}", e)),
+                ))
+            })?;
+        }
+        let conn = Connection::open(path)?;
+        // journal_mode returns a result row, so use prepare+query
+        let _ = conn
+            .prepare("PRAGMA journal_mode=WAL")?
+            .query_row([], |_| Ok(()));
+        conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
+        Self::init_schema(&conn)?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            #[cfg(feature = "vector")]
+            embedding_service: Mutex::new(None),
+            #[cfg(feature = "vector")]
+            vector_entries: Mutex::new(Vec::new()),
         })
     }
 
@@ -191,6 +245,16 @@ impl ContentStore {
         match result {
             Ok(source_id) => {
                 conn.execute_batch("COMMIT")?;
+                // Drop the connection lock before embedding (which may be slow)
+                drop(conn);
+
+                // Update vector entries for hybrid search (if embedding service is attached)
+                #[cfg(feature = "vector")]
+                {
+                    self.delete_vectors(label);
+                    self.index_vectors(label, &chunks);
+                }
+
                 Ok(IndexResult {
                     source_id,
                     label: label.to_string(),
@@ -288,9 +352,21 @@ impl ContentStore {
         max_snippet_len: usize,
     ) -> Result<Vec<SearchResult>, ContextError> {
         let conn = self.conn.lock();
-        let results = queries
+        let results: Vec<SearchResult> = queries
             .iter()
-            .map(|q| search::search_with_fallback(&conn, q, limit, source, max_snippet_len))
+            .map(|q| {
+                #[allow(unused_mut)]
+                let mut sr = search::search_with_fallback(&conn, q, limit, source, max_snippet_len);
+
+                // Hybrid: merge vector search results via RRF (if available)
+                #[cfg(feature = "vector")]
+                {
+                    let fts_hits = std::mem::take(&mut sr.hits);
+                    sr.hits = self.vector_search_and_merge(q, fts_hits, limit);
+                }
+
+                sr
+            })
             .collect();
         Ok(results)
     }
@@ -446,6 +522,11 @@ impl ContentStore {
             params![label],
         )?;
         let deleted = conn.execute("DELETE FROM sources WHERE label = ?1", params![label])?;
+        drop(conn);
+
+        #[cfg(feature = "vector")]
+        self.delete_vectors(label);
+
         Ok(deleted > 0)
     }
 
@@ -487,6 +568,216 @@ impl ContentStore {
             );
         }
     }
+
+    // ── Vector search (optional, feature-gated) ──
+
+    /// Attach an embedding service to enable hybrid (FTS5 + vector) search.
+    ///
+    /// Can be called after construction. Existing indexed content is NOT
+    /// retroactively embedded — call `rebuild_vectors()` for that.
+    #[cfg(feature = "vector")]
+    pub fn set_embedding_service(&self, service: Arc<lr_embeddings::EmbeddingService>) {
+        *self.embedding_service.lock() = Some(service);
+    }
+
+    /// Whether vector search is available (embedding service attached and loaded).
+    #[cfg(feature = "vector")]
+    pub fn has_vector_search(&self) -> bool {
+        self.embedding_service
+            .lock()
+            .as_ref()
+            .is_some_and(|s| s.is_loaded() || s.is_downloaded())
+    }
+
+    /// Rebuild vector index from all currently indexed FTS5 content.
+    ///
+    /// Call this after attaching an embedding service to an existing store,
+    /// or after bulk indexing to populate the vector index.
+    #[cfg(feature = "vector")]
+    pub fn rebuild_vectors(&self) -> Result<(), ContextError> {
+        let service = {
+            let guard = self.embedding_service.lock();
+            match guard.as_ref() {
+                Some(s) => Arc::clone(s),
+                None => return Ok(()), // No service → no-op
+            }
+        };
+
+        if let Err(e) = service.ensure_loaded() {
+            tracing::warn!("Cannot rebuild vectors: {}", e);
+            return Ok(()); // Graceful degradation
+        }
+
+        // Read all chunks from FTS5
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT c.title, c.content, c.content_type, c.line_start, c.line_end, s.label
+             FROM chunks c
+             JOIN sources s ON CAST(s.id AS TEXT) = c.source_id
+             ORDER BY c.rowid",
+        )?;
+        let rows: Vec<(String, String, String, i64, i64, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        drop(conn);
+
+        if rows.is_empty() {
+            *self.vector_entries.lock() = Vec::new();
+            return Ok(());
+        }
+
+        // Batch embed all chunks
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|(title, content, _, _, _, _)| format!("{}\n{}", title, content))
+            .collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = service
+            .embed_batch(&text_refs)
+            .map_err(|e| ContextError::InvalidParams(format!("Embedding failed: {}", e)))?;
+
+        let mut entries = Vec::with_capacity(rows.len());
+        for (i, (title, content, ct, ls, le, label)) in rows.into_iter().enumerate() {
+            entries.push(VectorEntry {
+                source: label,
+                title,
+                content,
+                embedding: embeddings[i].clone(),
+                content_type: ContentType::parse(&ct),
+                line_start: ls as usize,
+                line_end: le as usize,
+            });
+        }
+
+        *self.vector_entries.lock() = entries;
+        tracing::debug!("Rebuilt vector index: {} entries", texts.len());
+        Ok(())
+    }
+
+    /// Embed and store vectors for chunks of newly indexed content.
+    #[cfg(feature = "vector")]
+    fn index_vectors(&self, source_label: &str, chunks: &[crate::types::Chunk]) {
+        let service = {
+            let guard = self.embedding_service.lock();
+            match guard.as_ref() {
+                Some(s) => Arc::clone(s),
+                None => return,
+            }
+        };
+
+        if service.ensure_loaded().is_err() {
+            return; // Graceful degradation
+        }
+
+        let texts: Vec<String> = chunks
+            .iter()
+            .map(|c| format!("{}\n{}", c.title, c.content))
+            .collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = match service.embed_batch(&text_refs) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Embedding failed during index: {}", e);
+                return;
+            }
+        };
+
+        let mut entries = self.vector_entries.lock();
+        for (i, chunk) in chunks.iter().enumerate() {
+            entries.push(VectorEntry {
+                source: source_label.to_string(),
+                title: chunk.title.clone(),
+                content: chunk.content.clone(),
+                embedding: embeddings[i].clone(),
+                content_type: chunk.content_type,
+                line_start: chunk.line_start,
+                line_end: chunk.line_end,
+            });
+        }
+    }
+
+    /// Remove vector entries for a given source label.
+    #[cfg(feature = "vector")]
+    fn delete_vectors(&self, source_label: &str) {
+        let mut entries = self.vector_entries.lock();
+        entries.retain(|e| e.source != source_label);
+    }
+
+    /// Run vector search and merge with FTS5 results via RRF.
+    #[cfg(feature = "vector")]
+    fn vector_search_and_merge(
+        &self,
+        query: &str,
+        fts_hits: Vec<SearchHit>,
+        limit: usize,
+    ) -> Vec<SearchHit> {
+        let service = {
+            let guard = self.embedding_service.lock();
+            match guard.as_ref() {
+                Some(s) => Arc::clone(s),
+                None => return fts_hits,
+            }
+        };
+
+        let query_embedding = match service.embed(query) {
+            Ok(e) => e,
+            Err(_) => return fts_hits,
+        };
+
+        let entries = self.vector_entries.lock();
+        if entries.is_empty() {
+            return fts_hits;
+        }
+
+        // Brute-force cosine similarity (vectors are L2-normalized, so dot product = cosine)
+        let mut scored: Vec<(usize, f32)> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let score = dot_product(&query_embedding, &entry.embedding);
+                (i, score)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Take top results for RRF merge
+        let vector_limit = limit * 2; // Over-fetch for better merge quality
+        let vector_hits: Vec<hybrid::VectorSearchHit> = scored
+            .into_iter()
+            .take(vector_limit)
+            .map(|(i, score)| {
+                let entry = &entries[i];
+                hybrid::VectorSearchHit {
+                    source: entry.source.clone(),
+                    title: entry.title.clone(),
+                    content: entry.content.clone(),
+                    score,
+                    content_type: entry.content_type,
+                    line_start: entry.line_start,
+                    line_end: entry.line_end,
+                }
+            })
+            .collect();
+
+        hybrid::rrf_merge(&fts_hits, &vector_hits, limit)
+    }
+}
+
+/// Dot product of two vectors (for L2-normalized vectors, this equals cosine similarity).
+#[cfg(feature = "vector")]
+fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
 /// Find the starting position in the virtual line list for the given offset.

@@ -5,15 +5,17 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Persistent memory for LLM conversations via Zillis memsearch"
+description = "Persistent memory for LLM conversations using native FTS5 search"
 
 [dependencies]
 lr-types = { workspace = true }
 lr-config = { workspace = true }
+lr-context = { workspace = true, features = ["vector"] }
+lr-embeddings = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true, features = ["process", "fs", "time"] }
+tokio = { workspace = true, features = ["fs", "time"] }
 chrono = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
