@@ -1110,6 +1110,14 @@ pub async fn get_feature_clients_status(
                         "global"
                     },
                 ),
+                "memory" => (
+                    c.memory_enabled.unwrap_or(false),
+                    if c.memory_enabled.is_some() {
+                        "override"
+                    } else {
+                        "global"
+                    },
+                ),
                 "strong_weak" => {
                     let strategy = config.strategies.iter().find(|s| s.id == c.strategy_id);
                     let active = strategy

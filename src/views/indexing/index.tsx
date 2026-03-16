@@ -7,8 +7,6 @@ import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
-import { Input } from "@/components/ui/Input"
-import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { EmbeddingStatus, ContextManagementConfig, MemoryConfig, UpdateContextManagementConfigParams } from "@/types/tauri-commands"
 
@@ -224,53 +222,6 @@ export function IndexingView({ activeSubTab, onTabChange }: IndexingViewProps) {
         <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
           {ctxConfig && (
             <div className="space-y-4 max-w-2xl">
-              {/* Tool Names */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm">Tool Names</CardTitle>
-                  <CardDescription>
-                    Customize the names of the search and read tools exposed to the LLM.
-                    These apply to both catalog and response indexing.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs">Search tool</Label>
-                      <Input
-                        value={ctxConfig.search_tool_name}
-                        onBlur={(e) => {
-                          const v = e.target.value.trim()
-                          if (v && v !== ctxConfig.search_tool_name) {
-                            updateField("searchToolName", v)
-                          }
-                        }}
-                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
-                        onChange={(e) => setCtxConfig({ ...ctxConfig, search_tool_name: e.target.value })}
-                        className="h-8 text-sm"
-                        placeholder="IndexSearch"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs">Read tool</Label>
-                      <Input
-                        value={ctxConfig.read_tool_name}
-                        onBlur={(e) => {
-                          const v = e.target.value.trim()
-                          if (v && v !== ctxConfig.read_tool_name) {
-                            updateField("readToolName", v)
-                          }
-                        }}
-                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
-                        onChange={(e) => setCtxConfig({ ...ctxConfig, read_tool_name: e.target.value })}
-                        className="h-8 text-sm"
-                        placeholder="IndexRead"
-                      />
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
               {/* Vector Search */}
               <Card>
                 <CardHeader className="pb-3">

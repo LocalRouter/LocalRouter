@@ -1707,7 +1707,7 @@ export interface ClientFeatureStatus {
 
 /** Params for get_feature_clients_status */
 export interface GetFeatureClientsStatusParams {
-  feature: 'json_repair' | 'prompt_compression' | 'guardrails' | 'secret_scanning' | 'catalog_compression' | 'context_management' | 'strong_weak'
+  feature: 'json_repair' | 'prompt_compression' | 'guardrails' | 'secret_scanning' | 'catalog_compression' | 'context_management' | 'memory' | 'strong_weak'
 }
 
 // =============================================================================

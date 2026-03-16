@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
+import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import { ContentStorePreview } from "@/components/shared/ContentStorePreview"
 import type { MemoryConfig, UpdateMemoryConfigParams } from "@/types/tauri-commands"
 
@@ -227,6 +228,8 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 </p>
               </CardContent>
             </Card>
+
+            <FeatureClientsCard feature="memory" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 
