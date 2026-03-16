@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { listenSafe } from '@/hooks/useTauriListener'
 
 export interface Model {
   id: string
@@ -58,12 +58,12 @@ export function useIncrementalModels(
       refresh()
     }
 
-    const unsubscribers = [
-      listen<ModelsRefreshStartedPayload>('models-refresh-started', (event) => {
+    const listeners = [
+      listenSafe<ModelsRefreshStartedPayload>('models-refresh-started', (event) => {
         if (!mountedRef.current) return
         setLoadingProviders(new Set(event.payload.providers))
       }),
-      listen<ProviderModelsPayload>('models-provider-loaded', (event) => {
+      listenSafe<ProviderModelsPayload>('models-provider-loaded', (event) => {
         if (!mountedRef.current) return
         const { provider, models: providerModels } = event.payload
         setModels(prev => [
@@ -76,7 +76,7 @@ export function useIncrementalModels(
           return next
         })
       }),
-      listen('models-changed', () => {
+      listenSafe('models-changed', () => {
         if (!mountedRef.current) return
         setLoadingProviders(new Set())
       }),
@@ -84,9 +84,7 @@ export function useIncrementalModels(
 
     return () => {
       mountedRef.current = false
-      unsubscribers.forEach((unsub) => {
-        unsub.then((fn) => fn()).catch(() => {})
-      })
+      listeners.forEach(l => l.cleanup())
     }
   }, [])
 

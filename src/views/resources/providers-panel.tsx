@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { open } from "@tauri-apps/plugin-shell"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import {
   Tooltip,
@@ -10,18 +11,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { ProvidersIcon } from "@/components/icons/category-icons"
+
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/Toggle"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from "@/components/ui/resizable"
+
 import { Input } from "@/components/ui/Input"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -72,6 +69,21 @@ const FREE_TIER_DESCRIPTIONS: Record<string, string> = {
   rate_limited_free: 'Free access within rate limits (requests per minute/day, tokens per minute/day, monthly caps). The router tracks usage against these limits and skips the provider when any limit is reached. Used by Gemini, Groq, Cerebras, Mistral, and Cohere.',
   credit_based: 'Dollar-budget credits that are consumed per request. The router estimates cost from token usage and compares against the budget. When credits run out, the provider is skipped. Used by OpenRouter, xAI, DeepInfra, and Perplexity.',
   free_models_only: 'Only specific models from this provider are free. The router checks each model ID against the configured patterns. Models that don\'t match are treated as paid and skipped in free-tier mode. Used by Together AI.',
+}
+
+const PROVIDER_STATUS_PAGES: Record<string, string> = {
+  openai: "https://status.openai.com",
+  anthropic: "https://status.anthropic.com",
+  gemini: "https://www.google.com/appsstatus/dashboard/",
+  mistral: "https://status.mistral.ai",
+  cohere: "https://status.cohere.io",
+  xai: "https://status.x.ai",
+  openrouter: "https://status.openrouter.ai",
+  groq: "https://groqstatus.com",
+  togetherai: "https://status.together.ai",
+  perplexity: "https://status.perplexity.com",
+  deepinfra: "https://status.deepinfra.com",
+  cerebras: "https://status.cerebras.ai",
 }
 
 interface Provider {
@@ -189,12 +201,12 @@ export function ProvidersPanel({
     loadProviderTypes()
 
     // Listen for provider changes
-    const unsubProviders = listen("providers-changed", () => {
+    const l = listenSafe("providers-changed", () => {
       loadProvidersOnly()
     })
 
     return () => {
-      unsubProviders.then((fn) => fn())
+      l.cleanup()
     }
   }, [])
 
@@ -355,6 +367,16 @@ export function ProvidersPanel({
     }
   }
 
+  const handleCloneProvider = async (e: React.MouseEvent, provider: Provider) => {
+    e.stopPropagation()
+    try {
+      await invoke("clone_provider_instance", { instanceName: provider.instance_name })
+      toast.success(`Cloned "${provider.instance_name}"`)
+    } catch (error) {
+      toast.error(`Failed to clone provider: ${error}`)
+    }
+  }
+
   const handleCreateProvider = async (instanceName: string, config: Record<string, string>) => {
     setIsSubmitting(true)
     try {
@@ -493,98 +515,7 @@ export function ProvidersPanel({
 
   return (
     <>
-      <ResizablePanelGroup direction="horizontal" className="h-full rounded-lg border">
-        {/* List Panel */}
-        <ResizablePanel defaultSize={21} minSize={15}>
-          <div className="flex flex-col h-full">
-            <div className="p-4 border-b">
-              <div className="flex items-center gap-2">
-                <Input
-                  placeholder="Search providers..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="flex-1"
-                />
-                <Button size="icon" onClick={() => setCreateDialogOpen(true)}>
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-            <ScrollArea className="flex-1">
-              <div className="p-2 space-y-1">
-                {loading ? (
-                  <p className="text-sm text-muted-foreground p-4">Loading...</p>
-                ) : filteredProviders.length === 0 ? (
-                  <p className="text-sm text-muted-foreground p-4">No providers found</p>
-                ) : (
-                  filteredProviders.map((provider) => {
-                    const health = healthStatus[provider.instance_name]
-                    const formatLatency = (ms?: number) => {
-                      if (ms == null) return ""
-                      return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
-                    }
-                    return (
-                      <div
-                        key={provider.instance_name}
-                        onClick={() => onSelect(provider.instance_name)}
-                        className={cn(
-                          "flex items-center gap-3 p-3 rounded-md cursor-pointer",
-                          selectedId === provider.instance_name
-                            ? "bg-accent"
-                            : "hover:bg-muted"
-                        )}
-                      >
-                        <ProviderIcon providerId={provider.provider_type.toLowerCase()} size={20} />
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium truncate">{provider.instance_name}</p>
-                          <p className="text-xs text-muted-foreground">{provider.provider_type}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {health && health.latency_ms != null && health.status !== "pending" && (
-                            <span className="text-xs text-muted-foreground">
-                              {formatLatency(health.latency_ms)}
-                            </span>
-                          )}
-                          {health?.status === "pending" ? (
-                            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                          ) : (
-                            <div
-                              className={cn(
-                                "h-2 w-2 rounded-full",
-                                !health && "bg-gray-400",
-                                health?.status === "healthy" && "bg-green-500",
-                                health?.status === "degraded" && "bg-yellow-500",
-                                health?.status === "unhealthy" && "bg-red-500",
-                                health?.status === "disabled" && "bg-gray-400"
-                              )}
-                              title={
-                                health?.status === "healthy"
-                                  ? health.latency_ms != null
-                                    ? `Healthy (${formatLatency(health.latency_ms)})`
-                                    : "Healthy"
-                                  : health?.status === "degraded"
-                                  ? `Degraded: ${health.error}`
-                                  : health?.status === "disabled"
-                                  ? "Disabled"
-                                  : health?.error
-                              }
-                            />
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })
-                )}
-              </div>
-            </ScrollArea>
-          </div>
-        </ResizablePanel>
-
-        <ResizableHandle withHandle />
-
-        {/* Detail Panel */}
-        <ResizablePanel defaultSize={79}>
-          {selectedProvider ? (
+      {selectedProvider ? (
             <ScrollArea className="h-full">
               <div className="p-6 space-y-6">
                 <div className="flex items-start justify-between">
@@ -635,18 +566,37 @@ export function ProvidersPanel({
                         <CardHeader className="pb-3">
                           <div className="flex items-center justify-between">
                             <CardTitle className="text-sm">Health Status</CardTitle>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6"
-                              onClick={() => onRefreshHealth(selectedProvider.instance_name)}
-                              disabled={healthStatus[selectedProvider.instance_name]?.status === "pending"}
-                            >
-                              <RefreshCw className={cn(
-                                "h-3 w-3",
-                                healthStatus[selectedProvider.instance_name]?.status === "pending" && "animate-spin"
-                              )} />
-                            </Button>
+                            <div className="flex items-center gap-1">
+                              {PROVIDER_STATUS_PAGES[selectedProvider.provider_type] && (
+                                <TooltipProvider delayDuration={300}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-6 w-6"
+                                        onClick={() => open(PROVIDER_STATUS_PAGES[selectedProvider.provider_type])}
+                                      >
+                                        <ExternalLink className="h-3 w-3" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Status page</TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={() => onRefreshHealth(selectedProvider.instance_name)}
+                                disabled={healthStatus[selectedProvider.instance_name]?.status === "pending"}
+                              >
+                                <RefreshCw className={cn(
+                                  "h-3 w-3",
+                                  healthStatus[selectedProvider.instance_name]?.status === "pending" && "animate-spin"
+                                )} />
+                              </Button>
+                            </div>
                           </div>
                         </CardHeader>
                         <CardContent>
@@ -1456,19 +1406,109 @@ export function ProvidersPanel({
 
               </div>
             </ScrollArea>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-              <ProvidersIcon className="h-12 w-12 opacity-30" />
-              <div className="text-center">
-                <p className="font-medium">Select a provider to view details</p>
-                <p className="text-sm">
-                  or add a new one with the + button
-                </p>
-              </div>
+      ) : (
+        <div className="flex flex-col h-full rounded-lg border">
+          <div className="p-4 border-b">
+            <div className="flex items-center gap-2">
+              <Input
+                placeholder="Search providers..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="flex-1"
+              />
+              <Button size="icon" onClick={() => setCreateDialogOpen(true)}>
+                <Plus className="h-4 w-4" />
+              </Button>
             </div>
-          )}
-        </ResizablePanel>
-      </ResizablePanelGroup>
+          </div>
+          <ScrollArea className="flex-1">
+            <div className="p-2 space-y-1">
+              {loading ? (
+                <p className="text-sm text-muted-foreground p-4">Loading...</p>
+              ) : filteredProviders.length === 0 ? (
+                <p className="text-sm text-muted-foreground p-4">No providers found</p>
+              ) : (
+                filteredProviders.map((provider) => {
+                  const health = healthStatus[provider.instance_name]
+                  const formatLatency = (ms?: number) => {
+                    if (ms == null) return ""
+                    return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+                  }
+                  return (
+                    <div
+                      key={provider.instance_name}
+                      onClick={() => onSelect(provider.instance_name)}
+                      className="group flex items-center gap-3 p-3 rounded-md cursor-pointer hover:bg-muted"
+                    >
+                      <ProviderIcon providerId={provider.provider_type.toLowerCase()} size={20} />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium truncate">{provider.instance_name}</p>
+                        <p className="text-xs text-muted-foreground">{provider.provider_type}</p>
+                      </div>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          title="Clone provider"
+                          onClick={(e) => handleCloneProvider(e, provider)}
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-destructive hover:text-destructive"
+                          title="Delete provider"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setProviderToDelete(provider)
+                            setDeleteDialogOpen(true)
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {health && health.latency_ms != null && health.status !== "pending" && (
+                          <span className="text-xs text-muted-foreground">
+                            {formatLatency(health.latency_ms)}
+                          </span>
+                        )}
+                        {health?.status === "pending" ? (
+                          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                        ) : (
+                          <div
+                            className={cn(
+                              "h-2 w-2 rounded-full",
+                              !health && "bg-gray-400",
+                              health?.status === "healthy" && "bg-green-500",
+                              health?.status === "degraded" && "bg-yellow-500",
+                              health?.status === "unhealthy" && "bg-red-500",
+                              health?.status === "disabled" && "bg-gray-400"
+                            )}
+                            title={
+                              health?.status === "healthy"
+                                ? health.latency_ms != null
+                                  ? `Healthy (${formatLatency(health.latency_ms)})`
+                                  : "Healthy"
+                                : health?.status === "degraded"
+                                ? `Degraded: ${health.error}`
+                                : health?.status === "disabled"
+                                ? "Disabled"
+                                : health?.error
+                            }
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </ScrollArea>
+        </div>
+      )}
 
       {/* Create Provider Dialog */}
       <Dialog open={createDialogOpen} onOpenChange={(open) => {

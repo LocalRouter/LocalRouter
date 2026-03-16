@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { Globe, ChevronDown, ChevronUp } from "lucide-react"
 import { FEATURES } from "@/constants/features"
@@ -84,15 +84,13 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
 
   // Listen for load error events
   useEffect(() => {
-    const unlisteners: (() => void)[] = []
-
-    listen<{ model_id: string; error: string }>("safety-model-load-failed", (event) => {
+    const l = listenSafe<{ model_id: string; error: string }>("safety-model-load-failed", (event) => {
       const { model_id, error } = event.payload
       setLoadErrors(prev => ({ ...prev, [model_id]: error }))
       toast.error(`Safety model "${model_id}" failed to load: ${error}`)
-    }).then(unlisten => unlisteners.push(unlisten))
+    })
 
-    return () => { unlisteners.forEach(fn => fn()) }
+    return () => { l.cleanup() }
   }, [])
 
   const rebuildEngine = useCallback(async () => {
@@ -326,7 +324,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
               </CardContent>
             </Card>
 
-            <FeatureClientsCard feature="guardrails" onNavigateToClient={onTabChange} />
+            <FeatureClientsCard feature="guardrails" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

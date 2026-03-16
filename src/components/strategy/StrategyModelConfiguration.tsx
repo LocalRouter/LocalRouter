@@ -16,7 +16,7 @@
 
 import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
-import {listen} from "@tauri-apps/api/event"
+import {listenSafe} from "@/hooks/useTauriListener"
 import {toast} from "sonner"
 import {Bot, Brain, Download, ExternalLink, Info, Loader2, MessageSquareWarning} from "lucide-react"
 import {useIncrementalModels} from "@/hooks/useIncrementalModels"
@@ -36,6 +36,7 @@ import { PermissionStateButton } from "@/components/permissions"
 import {DragThresholdModelSelector, ModelPricingInfo} from "./DragThresholdModelSelector"
 import type { FreeTierKind, ProviderFreeTierStatus } from "@/types/tauri-commands"
 import {ThresholdSelector} from "@/components/routellm/ThresholdSelector"
+import {ExperimentalBadge} from "@/components/shared/ExperimentalBadge"
 import {ROUTELLM_REQUIREMENTS, RouteLLMStatus} from "@/components/routellm/types"
 
 // Strategy configuration types
@@ -168,13 +169,13 @@ export function StrategyModelConfiguration({
         loadRouteLLMStatus()
 
         // Listen for download progress events
-        const unlistenProgress = listen("routellm-download-progress", (event: any) => {
+        const lProgress = listenSafe("routellm-download-progress", (event: any) => {
             const { progress } = event.payload
             setDownloadProgress(progress * 100)
         })
 
         // Listen for download events to update status
-        const unlistenComplete = listen("routellm-download-complete", () => {
+        const lComplete = listenSafe("routellm-download-complete", () => {
             setIsDownloading(false)
             setDownloadProgress(100)
             loadRouteLLMStatus()
@@ -182,7 +183,7 @@ export function StrategyModelConfiguration({
         })
 
         // Listen for download failures
-        const unlistenFailed = listen("routellm-download-failed", (event: any) => {
+        const lFailed = listenSafe("routellm-download-failed", (event: any) => {
             setIsDownloading(false)
             toast.error(`Download failed: ${event.payload.error}`)
         })
@@ -195,9 +196,9 @@ export function StrategyModelConfiguration({
         }, 1000)
 
         return () => {
-            unlistenProgress.then((fn) => fn())
-            unlistenComplete.then((fn) => fn())
-            unlistenFailed.then((fn) => fn())
+            lProgress.cleanup()
+            lComplete.cleanup()
+            lFailed.cleanup()
             clearInterval(interval)
         }
     }, [routellmStatus?.state])
@@ -670,9 +671,7 @@ export function StrategyModelConfiguration({
                                                         <div>
                                                             <CardTitle className="text-base flex items-center gap-2">
                                                                 Weak Model
-                                                                <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-900 dark:text-purple-300 font-medium">
-                                                                    EXPERIMENTAL
-                                                                </span>
+                                                                <ExperimentalBadge />
                                                             </CardTitle>
                                                             <CardDescription>
                                                                 Use weaker models for simpler prompts for faster and cheaper results.

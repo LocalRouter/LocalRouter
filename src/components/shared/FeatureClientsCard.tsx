@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { Users, ExternalLink } from "lucide-react"
@@ -8,10 +8,12 @@ import type { ClientFeatureStatus, GetFeatureClientsStatusParams } from "@/types
 
 interface FeatureClientsCardProps {
   feature: GetFeatureClientsStatusParams['feature']
+  /** Which client tab to navigate to (default: "models") */
+  clientTab?: string
   onNavigateToClient?: (view: string, subTab?: string | null) => void
 }
 
-export function FeatureClientsCard({ feature, onNavigateToClient }: FeatureClientsCardProps) {
+export function FeatureClientsCard({ feature, clientTab = "models", onNavigateToClient }: FeatureClientsCardProps) {
   const [statuses, setStatuses] = useState<ClientFeatureStatus[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -31,13 +33,13 @@ export function FeatureClientsCard({ feature, onNavigateToClient }: FeatureClien
   useEffect(() => {
     load()
 
-    const unsubs = [
-      listen("clients-changed", load),
-      listen("config-changed", load),
+    const listeners = [
+      listenSafe("clients-changed", load),
+      listenSafe("config-changed", load),
     ]
 
     return () => {
-      unsubs.forEach((p) => p.then((fn) => fn()))
+      listeners.forEach(l => l.cleanup())
     }
   }, [load])
 
@@ -73,7 +75,7 @@ export function FeatureClientsCard({ feature, onNavigateToClient }: FeatureClien
                 <div className="flex items-center gap-2 min-w-0">
                   {onNavigateToClient ? (
                     <button
-                      onClick={() => onNavigateToClient("clients", `${s.client_id}|models`)}
+                      onClick={() => onNavigateToClient("clients", `${s.client_id}|${clientTab}`)}
                       className="text-sm font-medium truncate hover:underline text-left"
                     >
                       {s.client_name}
@@ -96,7 +98,7 @@ export function FeatureClientsCard({ feature, onNavigateToClient }: FeatureClien
                   </Badge>
                   {onNavigateToClient && (
                     <button
-                      onClick={() => onNavigateToClient("clients", `${s.client_id}|models`)}
+                      onClick={() => onNavigateToClient("clients", `${s.client_id}|${clientTab}`)}
                       className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity"
                       title="Go to client settings"
                     >

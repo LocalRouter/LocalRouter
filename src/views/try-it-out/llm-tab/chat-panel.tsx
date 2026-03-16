@@ -36,6 +36,12 @@ interface ModelParameters {
   temperature: number
   maxTokens: number
   topP: number
+  frequencyPenalty: number
+  presencePenalty: number
+  seed: number | null
+  topK: number | null
+  repetitionPenalty: number | null
+  reasoningEffort: string | null
 }
 
 interface ChatPanelProps {
@@ -193,6 +199,13 @@ export function ChatPanel({
       }
 
       // Use OpenAI SDK for streaming chat completion
+      // Build optional parameters - only include when set
+      const optionalParams: Record<string, unknown> = {}
+      if (parameters.seed !== null) optionalParams.seed = parameters.seed
+      if (parameters.topK !== null) optionalParams.top_k = parameters.topK
+      if (parameters.repetitionPenalty !== null) optionalParams.repetition_penalty = parameters.repetitionPenalty
+      if (parameters.reasoningEffort !== null) optionalParams.reasoning_effort = parameters.reasoningEffort
+
       const stream = await openaiClient.chat.completions.create(
         {
           model: selectedModel,
@@ -201,10 +214,13 @@ export function ChatPanel({
           temperature: parameters.temperature,
           max_tokens: parameters.maxTokens,
           top_p: parameters.topP,
+          frequency_penalty: parameters.frequencyPenalty,
+          presence_penalty: parameters.presencePenalty,
           stream_options: { include_usage: true },
         },
         {
           signal: abortControllerRef.current.signal,
+          body: optionalParams,
         }
       )
 

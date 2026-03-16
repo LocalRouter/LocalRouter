@@ -2,6 +2,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Info } from "lucide-react"
+import { FEATURES } from "@/constants/features"
 import { TriStateButton } from "@/components/ui/TriStateButton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ClientToolsIndexingTree } from "@/components/permissions/ClientToolsIndexingTree"
@@ -100,10 +101,8 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <CardTitle className="text-base">Context Management</CardTitle>
-              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-900 dark:text-purple-300 font-medium">
-                EXPERIMENTAL
-              </span>
+              <FEATURES.responseRag.icon className={`h-5 w-5 ${FEATURES.responseRag.color}`} />
+              <CardTitle className="text-base">Response RAG</CardTitle>
             </div>
             <TriStateButton
               value={contextManagement}
@@ -126,7 +125,10 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <CardTitle className="text-base">Catalog Compression</CardTitle>
+            <div className="flex items-center gap-2">
+              <FEATURES.catalogCompression.icon className={`h-5 w-5 ${FEATURES.catalogCompression.color}`} />
+              <CardTitle className="text-base">Catalog Compression</CardTitle>
+            </div>
             <TriStateButton
               value={catalogCompression}
               onChange={handleCatalogCompressionChange}
@@ -177,7 +179,10 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
       {/* Client Tools Indexing (MCP via LLM only) */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Client Tools Indexing</CardTitle>
+          <div className="flex items-center gap-2">
+            <FEATURES.responseRag.icon className={`h-5 w-5 ${FEATURES.responseRag.color}`} />
+            <CardTitle className="text-base">Client Tools Indexing</CardTitle>
+          </div>
           <CardDescription>
             Select which client tool responses get indexed into FTS5 for context search.
           </CardDescription>

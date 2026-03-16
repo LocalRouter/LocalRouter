@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { listenSafe } from '@/hooks/useTauriListener'
 import type { Client, Provider, McpServer, Skill, CodingAgent, GraphStrategy, HealthCacheState, UseGraphDataResult } from '../types'
 
 // How long to show a client as "connected" after last activity (ms)
@@ -110,90 +110,38 @@ export function useGraphData(): UseGraphDataResult {
 
   // Subscribe to events
   useEffect(() => {
-    const unlisteners: Array<() => void> = []
-
-    // Health status changes
-    const setupHealthListener = async () => {
-      const unlisten = await listen<HealthCacheState>('health-status-changed', (event) => {
+    const listeners = [
+      listenSafe<HealthCacheState>('health-status-changed', (event) => {
         setHealthState(event.payload)
-      })
-      unlisteners.push(unlisten)
-    }
-
-    // SSE connection opened (persistent connection)
-    const setupConnectionOpenedListener = async () => {
-      const unlisten = await listen<string>('sse-connection-opened', (event) => {
+      }),
+      listenSafe<string>('sse-connection-opened', (event) => {
         sseConnectionsRef.current.add(event.payload)
         computeActiveConnections()
-      })
-      unlisteners.push(unlisten)
-    }
-
-    // SSE connection closed - but keep showing as active for 10 more seconds
-    const setupConnectionClosedListener = async () => {
-      const unlisten = await listen<string>('sse-connection-closed', (event) => {
+      }),
+      listenSafe<string>('sse-connection-closed', (event) => {
         sseConnectionsRef.current.delete(event.payload)
-        // Record activity to keep showing for 10 more seconds
         recordActivity(event.payload)
-      })
-      unlisteners.push(unlisten)
-    }
-
-    // Client activity (HTTP requests)
-    const setupActivityListener = async () => {
-      const unlisten = await listen<string>('client-activity', (event) => {
+      }),
+      listenSafe<string>('client-activity', (event) => {
         console.log('[ConnectionGraph] client-activity event:', event.payload)
         recordActivity(event.payload)
-      })
-      unlisteners.push(unlisten)
-    }
-
-    // Config changes (clients, providers, MCP servers updated)
-    const setupConfigListener = async () => {
-      const unlisten = await listen('config-changed', () => {
+      }),
+      listenSafe('config-changed', () => {
         fetchData()
-      })
-      unlisteners.push(unlisten)
-    }
-
-    // Clients changed
-    const setupClientsListener = async () => {
-      const unlisten = await listen('clients-changed', () => {
+      }),
+      listenSafe('clients-changed', () => {
         fetchData()
-      })
-      unlisteners.push(unlisten)
-    }
-
-    // Skills changed
-    const setupSkillsListener = async () => {
-      const unlisten = await listen('skills-changed', () => {
+      }),
+      listenSafe('skills-changed', () => {
         fetchData()
-      })
-      unlisteners.push(unlisten)
-    }
-
-    // Coding agents changed
-    const setupCodingAgentsListener = async () => {
-      const unlisten = await listen('coding-agents-changed', () => {
+      }),
+      listenSafe('coding-agents-changed', () => {
         fetchData()
-      })
-      unlisteners.push(unlisten)
-    }
-
-    // Set up all listeners
-    Promise.all([
-      setupHealthListener(),
-      setupConnectionOpenedListener(),
-      setupConnectionClosedListener(),
-      setupActivityListener(),
-      setupConfigListener(),
-      setupClientsListener(),
-      setupSkillsListener(),
-      setupCodingAgentsListener(),
-    ])
+      }),
+    ]
 
     return () => {
-      unlisteners.forEach(unlisten => unlisten())
+      listeners.forEach(l => l.cleanup())
     }
   }, [fetchData, computeActiveConnections, recordActivity])
 

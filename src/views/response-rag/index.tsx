@@ -4,7 +4,7 @@ import { toast } from "sonner"
 import { Search, Loader2, BookOpen, Wrench } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { FEATURES } from "@/constants/features"
-import { Badge } from "@/components/ui/Badge"
+import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
@@ -188,7 +188,7 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
             <FEATURES.responseRag.icon className={`h-6 w-6 ${FEATURES.responseRag.color}`} />
             {FEATURES.responseRag.name}
           </h1>
-          <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
+          <ExperimentalBadge />
         </div>
         <p className="text-sm text-muted-foreground">
           Index and compress tool responses using FTS5 search indexing

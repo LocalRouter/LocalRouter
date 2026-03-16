@@ -268,7 +268,7 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
               </CardContent>
             </Card>
 
-            <FeatureClientsCard feature="json_repair" onNavigateToClient={onTabChange} />
+            <FeatureClientsCard feature="json_repair" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

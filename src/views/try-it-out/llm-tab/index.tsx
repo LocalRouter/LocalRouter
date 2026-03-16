@@ -73,6 +73,12 @@ interface ModelParameters {
   temperature: number
   maxTokens: number
   topP: number
+  frequencyPenalty: number
+  presencePenalty: number
+  seed: number | null
+  topK: number | null
+  repetitionPenalty: number | null
+  reasoningEffort: string | null
 }
 
 // DEPRECATED: "strategy" mode hidden - 1:1 client-to-strategy relationship
@@ -307,6 +313,12 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
     temperature: 1.0,
     maxTokens: 2048,
     topP: 1.0,
+    frequencyPenalty: 0,
+    presencePenalty: 0,
+    seed: null,
+    topK: null,
+    repetitionPenalty: null,
+    reasoningEffort: null,
   })
 
   // Initialize: load server config and data
@@ -690,7 +702,8 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent className="pt-4">
-              <div className="grid grid-cols-3 gap-6">
+              <div className="grid grid-cols-3 gap-x-6 gap-y-4">
+                {/* Row 1: Temperature, Max Tokens, Top P */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Label className="text-sm">Temperature</Label>
@@ -728,6 +741,87 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
                     min={0}
                     max={1}
                     step={0.01}
+                  />
+                </div>
+
+                {/* Row 2: Frequency Penalty, Presence Penalty, Reasoning Effort */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm">Frequency Penalty</Label>
+                    <span className="text-sm text-muted-foreground">{parameters.frequencyPenalty.toFixed(2)}</span>
+                  </div>
+                  <Slider
+                    value={[parameters.frequencyPenalty]}
+                    onValueChange={(values: number[]) => setParameters(p => ({ ...p, frequencyPenalty: values[0] }))}
+                    min={-2}
+                    max={2}
+                    step={0.01}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm">Presence Penalty</Label>
+                    <span className="text-sm text-muted-foreground">{parameters.presencePenalty.toFixed(2)}</span>
+                  </div>
+                  <Slider
+                    value={[parameters.presencePenalty]}
+                    onValueChange={(values: number[]) => setParameters(p => ({ ...p, presencePenalty: values[0] }))}
+                    min={-2}
+                    max={2}
+                    step={0.01}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm">Reasoning Effort</Label>
+                  <Select
+                    value={parameters.reasoningEffort ?? "none"}
+                    onValueChange={(v) => setParameters(p => ({ ...p, reasoningEffort: v === "none" ? null : v }))}
+                  >
+                    <SelectTrigger className="w-full h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Not set</SelectItem>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Row 3: Seed, Top K, Repetition Penalty */}
+                <div className="space-y-2">
+                  <Label className="text-sm">Seed</Label>
+                  <input
+                    type="number"
+                    placeholder="Not set"
+                    value={parameters.seed ?? ""}
+                    onChange={(e) => setParameters(p => ({ ...p, seed: e.target.value === "" ? null : parseInt(e.target.value, 10) }))}
+                    className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm">Top K</Label>
+                  <input
+                    type="number"
+                    placeholder="Not set"
+                    min={1}
+                    value={parameters.topK ?? ""}
+                    onChange={(e) => setParameters(p => ({ ...p, topK: e.target.value === "" ? null : parseInt(e.target.value, 10) }))}
+                    className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm">Repetition Penalty</Label>
+                  <input
+                    type="number"
+                    placeholder="Not set"
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    value={parameters.repetitionPenalty ?? ""}
+                    onChange={(e) => setParameters(p => ({ ...p, repetitionPenalty: e.target.value === "" ? null : parseFloat(e.target.value) }))}
+                    className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   />
                 </div>
               </div>

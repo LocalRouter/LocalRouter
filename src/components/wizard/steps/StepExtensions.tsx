@@ -8,7 +8,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { Server, Sparkles, Bot, Store, ChevronDown } from "lucide-react"
 import { McpPermissionTree, SkillsPermissionTree, PermissionStateButton } from "@/components/permissions"
@@ -106,8 +106,8 @@ export function StepExtensions({
 
   useEffect(() => {
     loadAgents()
-    const unsubscribe = listen("coding-agents-changed", () => loadAgents())
-    return () => { unsubscribe.then((fn) => fn()) }
+    const l = listenSafe("coding-agents-changed", () => loadAgents())
+    return () => { l.cleanup() }
   }, [loadAgents])
 
   const handleCodingAgentPermissionChange = async (state: PermissionState) => {

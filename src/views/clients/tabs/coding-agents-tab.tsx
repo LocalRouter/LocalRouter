@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { PermissionStateButton } from "@/components/permissions"
@@ -53,12 +53,12 @@ export function ClientCodingAgentsTab({ client, onUpdate }: CodingAgentsTabProps
   useEffect(() => {
     loadAgents()
 
-    const unsubscribe = listen("coding-agents-changed", () => {
+    const l = listenSafe("coding-agents-changed", () => {
       loadAgents()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [loadAgents])
 

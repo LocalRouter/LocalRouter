@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Switch } from "@/components/ui/Toggle"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
+import { cn } from "@/lib/utils"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import type {
@@ -28,6 +28,12 @@ const ACTION_LABELS: Record<SecretScanAction, { label: string; description: stri
   off: { label: "Off", description: "No scanning" },
   ask: { label: "Ask", description: "Block the request and show a popup for user decision" },
   notify: { label: "Notify", description: "Allow the request but show a notification" },
+}
+
+const BUTTON_STYLES: Record<SecretScanAction, string> = {
+  ask: "bg-amber-500 text-white",
+  notify: "bg-blue-500 text-white",
+  off: "bg-red-500 text-white",
 }
 
 const DEFAULT_TEST_INPUT = [
@@ -181,19 +187,28 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
-                <Select
-                  value={config.action}
-                  onValueChange={(value: SecretScanAction) => updateConfig({ action: value })}
-                >
-                  <SelectTrigger className="w-48">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="off">Off</SelectItem>
-                    <SelectItem value="ask">Ask</SelectItem>
-                    <SelectItem value="notify">Notify</SelectItem>
-                  </SelectContent>
-                </Select>
+                <div className="inline-flex rounded-md border border-border bg-muted/50">
+                  {(Object.keys(ACTION_LABELS) as SecretScanAction[]).map((key, i, arr) => {
+                    const isActive = config.action === key
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => updateConfig({ action: key })}
+                        className={cn(
+                          "px-3 py-1 text-sm transition-colors font-medium",
+                          isActive
+                            ? BUTTON_STYLES[key]
+                            : "text-muted-foreground hover:text-foreground hover:bg-muted",
+                          i === 0 && "rounded-l-md",
+                          i === arr.length - 1 && "rounded-r-md"
+                        )}
+                      >
+                        {ACTION_LABELS[key].label}
+                      </button>
+                    )
+                  })}
+                </div>
                 <div className="text-xs text-muted-foreground space-y-1">
                   {Object.entries(ACTION_LABELS).map(([key, { label, description }]) => (
                     <p key={key}><strong>{label}</strong> &mdash; {description}</p>
@@ -276,7 +291,7 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
               </CardContent>
             </Card>
 
-            <FeatureClientsCard feature="secret_scanning" onNavigateToClient={onTabChange} />
+            <FeatureClientsCard feature="secret_scanning" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { open } from "@tauri-apps/plugin-dialog"
 
 import { toast } from "sonner"
@@ -104,12 +104,12 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   useEffect(() => {
     loadData()
 
-    const unsubscribe = listen("skills-changed", () => {
+    const l = listenSafe("skills-changed", () => {
       loadData()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [])
 

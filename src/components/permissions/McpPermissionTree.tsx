@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { PermissionTreeSelector } from "./PermissionTreeSelector"
 import { PermissionStateButton } from "./PermissionStateButton"
@@ -68,12 +68,12 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
   useEffect(() => {
     loadServers()
 
-    const unsubscribe = listen("mcp-servers-changed", () => {
+    const l = listenSafe("mcp-servers-changed", () => {
       loadServers()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [loadServers])
 

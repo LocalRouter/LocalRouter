@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
@@ -346,20 +346,20 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     init()
 
     // Listen for MCP server and skills status changes
-    const unsubServers = listen("mcp-servers-changed", () => {
+    const lServers = listenSafe("mcp-servers-changed", () => {
       invoke<McpServer[]>("list_mcp_servers").then((servers) => {
         setMcpServers(servers.filter((s) => s.enabled))
       })
     })
-    const unsubSkills = listen("skills-changed", () => {
+    const lSkills = listenSafe("skills-changed", () => {
       invoke<SkillInfo[]>("list_skills").then((skillsList) => {
         setSkills(skillsList.filter(s => s.enabled))
       })
     })
 
     return () => {
-      unsubServers.then((fn) => fn()).catch(() => {})
-      unsubSkills.then((fn) => fn()).catch(() => {})
+      lServers.cleanup()
+      lSkills.cleanup()
       // Cleanup: disconnect client on unmount
       doDisconnect()
     }

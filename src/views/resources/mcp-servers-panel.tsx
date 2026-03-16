@@ -1,21 +1,18 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Blocks, Grid, Store, ArrowLeft, Settings2 } from "lucide-react"
+import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Grid, Store, ArrowLeft, Settings2, Copy, Trash2 } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import McpServerIcon from "@/components/McpServerIcon"
+import { SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from "@/components/ui/resizable"
+
 import { Input } from "@/components/ui/Input"
 import {
   Dialog,
@@ -89,6 +86,7 @@ export function McpServersPanel({
   onHealthInit,
   onRefreshHealth,
   initialAddTemplateId,
+  onViewChange,
 }: McpServersPanelProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [loading, setLoading] = useState(true)
@@ -145,12 +143,12 @@ export function McpServersPanel({
   useEffect(() => {
     loadServers()
 
-    const unsubscribe = listen("mcp-servers-changed", () => {
+    const l = listenSafe("mcp-servers-changed", () => {
       loadServersOnly()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [])
 
@@ -442,6 +440,16 @@ export function McpServersPanel({
     }
   }
 
+  const handleCloneServer = async (e: React.MouseEvent, server: McpServer) => {
+    e.stopPropagation()
+    try {
+      const cloned = await invoke<{ name: string }>("clone_mcp_server", { serverId: server.id })
+      toast.success(`Cloned as "${cloned.name}"`)
+    } catch (error) {
+      toast.error(`Failed to clone server: ${error}`)
+    }
+  }
+
   const checkOAuthStatus = async (serverId: string) => {
     try {
       const isValid = await invoke<boolean>("test_mcp_oauth_connection", { serverId })
@@ -548,96 +556,7 @@ export function McpServersPanel({
 
   return (
     <>
-    <ResizablePanelGroup direction="horizontal" className="h-full rounded-lg border">
-      {/* List Panel */}
-      <ResizablePanel defaultSize={21} minSize={15}>
-        <div className="flex flex-col h-full">
-          <div className="p-4 border-b">
-            <div className="flex gap-2">
-              <Input
-                placeholder="Search MCP..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="flex-1"
-              />
-              <Button size="icon" onClick={() => setShowCreateModal(true)} title="Add MCP">
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <ScrollArea className="flex-1">
-            <div className="p-2 space-y-1">
-              {loading ? (
-                <p className="text-sm text-muted-foreground p-4">Loading...</p>
-              ) : filteredServers.length === 0 ? (
-                <p className="text-sm text-muted-foreground p-4">No MCP found</p>
-              ) : (
-                filteredServers.map((server) => {
-                  const health = healthStatus[server.id]
-                  const formatLatency = (ms?: number) => {
-                    if (ms == null) return ""
-                    return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
-                  }
-                  return (
-                    <div
-                      key={server.id}
-                      onClick={() => onSelect(server.id)}
-                      className={cn(
-                        "flex items-center gap-3 p-3 rounded-md cursor-pointer",
-                        selectedId === server.id ? "bg-accent" : "hover:bg-muted"
-                      )}
-                    >
-                      <McpServerIcon serverName={server.name} size={20} />
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium truncate">{server.name}</p>
-                        <p className="text-xs text-muted-foreground capitalize">
-                          {server.transport === "Stdio" ? "STDIO" : "HTTP SSE"}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {health && health.latency_ms != null && health.status !== "pending" && (
-                          <span className="text-xs text-muted-foreground">
-                            {formatLatency(health.latency_ms)}
-                          </span>
-                        )}
-                        {(!health || health.status === "pending") ? (
-                          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                        ) : (
-                          <div
-                            className={cn(
-                              "h-2 w-2 rounded-full",
-                              (health.status === "healthy" || health.status === "ready") && "bg-green-500",
-                              (health.status === "unhealthy" || health.status === "unknown") && "bg-red-500",
-                              health.status === "disabled" && "bg-gray-400"
-                            )}
-                            title={
-                              health.status === "healthy"
-                                ? health.latency_ms != null
-                                  ? `Running (${formatLatency(health.latency_ms)})`
-                                  : "Running"
-                                : health.status === "ready"
-                                ? "Ready to start"
-                                : health.status === "disabled"
-                                ? "Disabled"
-                                : health.error || "Unhealthy"
-                            }
-                          />
-                        )}
-                      </div>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          </ScrollArea>
-        </div>
-      </ResizablePanel>
-
-      <ResizableHandle withHandle />
-
-      {/* Detail Panel */}
-      <ResizablePanel defaultSize={79}>
-        {selectedServer ? (
+    {selectedServer ? (
           <ScrollArea className="h-full">
             <div className="p-6 space-y-6">
               <div className="flex items-start justify-between">
@@ -1033,16 +952,133 @@ export function McpServersPanel({
 
             </div>
           </ScrollArea>
-        ) : (
-          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-            <Blocks className="h-12 w-12 opacity-30" />
-            <div className="text-center">
-              <p className="font-medium">Select an MCP to view details</p>
-            </div>
+    ) : (
+      <div className="flex flex-col h-full rounded-lg border">
+        <div className="p-4 border-b">
+          <div className="flex gap-2">
+            <Input
+              placeholder="Search MCP..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="flex-1"
+            />
+            <Button size="icon" onClick={() => setShowCreateModal(true)} title="Add MCP">
+              <Plus className="h-4 w-4" />
+            </Button>
           </div>
-        )}
-      </ResizablePanel>
-    </ResizablePanelGroup>
+        </div>
+        <ScrollArea className="flex-1">
+          <div className="p-2 space-y-1">
+            {(() => {
+              const builtInItems = [
+                { id: 'skills' as const, name: 'Skills', icon: SkillsIcon, view: 'skills' },
+                { id: 'coding-agents' as const, name: 'Coding Agents', icon: CodingAgentsIcon, view: 'coding-agents' },
+                { id: 'marketplace' as const, name: 'Marketplace', icon: StoreIcon, view: 'marketplace' },
+              ].filter(item =>
+                !search || item.name.toLowerCase().includes(search.toLowerCase())
+              )
+              return builtInItems.map((item) => {
+                const Icon = item.icon
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => onViewChange?.(item.view)}
+                    className="group flex items-center gap-3 p-3 rounded-md cursor-pointer hover:bg-muted"
+                  >
+                    <span className="inline-flex items-center justify-center shrink-0 text-muted-foreground" style={{ width: 28, height: 28 }}>
+                      <Icon className="h-5 w-5" />
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium truncate">{item.name}</p>
+                      <p className="text-xs text-muted-foreground">BUILT-IN</p>
+                    </div>
+                  </div>
+                )
+              })
+            })()}
+            {loading ? (
+              <p className="text-sm text-muted-foreground p-4">Loading...</p>
+            ) : (
+              filteredServers.map((server) => {
+                const health = healthStatus[server.id]
+                const formatLatency = (ms?: number) => {
+                  if (ms == null) return ""
+                  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+                }
+                return (
+                  <div
+                    key={server.id}
+                    onClick={() => onSelect(server.id)}
+                    className="group flex items-center gap-3 p-3 rounded-md cursor-pointer hover:bg-muted"
+                  >
+                    <McpServerIcon serverName={server.name} size={20} />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium truncate">{server.name}</p>
+                      <p className="text-xs text-muted-foreground capitalize">
+                        {server.transport === "Stdio" ? "STDIO" : "HTTP SSE"}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title="Clone server"
+                        onClick={(e) => handleCloneServer(e, server)}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive"
+                        title="Delete server"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setServerToDelete(server)
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {health && health.latency_ms != null && health.status !== "pending" && (
+                        <span className="text-xs text-muted-foreground">
+                          {formatLatency(health.latency_ms)}
+                        </span>
+                      )}
+                      {(!health || health.status === "pending") ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                      ) : (
+                        <div
+                          className={cn(
+                            "h-2 w-2 rounded-full",
+                            (health.status === "healthy" || health.status === "ready") && "bg-green-500",
+                            (health.status === "unhealthy" || health.status === "unknown") && "bg-red-500",
+                            health.status === "disabled" && "bg-gray-400"
+                          )}
+                          title={
+                            health.status === "healthy"
+                              ? health.latency_ms != null
+                                ? `Running (${formatLatency(health.latency_ms)})`
+                                : "Running"
+                              : health.status === "ready"
+                              ? "Ready to start"
+                              : health.status === "disabled"
+                              ? "Disabled"
+                              : health.error || "Unhealthy"
+                          }
+                        />
+                      )}
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </ScrollArea>
+      </div>
+    )}
 
     {/* Create MCP Modal */}
     <Dialog

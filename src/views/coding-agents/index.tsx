@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { Loader2, Copy, Check, Terminal, CheckCircle2, XCircle, ExternalLink, Square } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -109,9 +109,9 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
 
   // Parse activeSubTab
   const parseSubTab = (subTab: string | null) => {
-    if (!subTab) return { mainTab: "agents", agentId: null }
+    if (!subTab) return { mainTab: "info", agentId: null }
     const parts = subTab.split("/")
-    const mainTab = parts[0] || "agents"
+    const mainTab = parts[0] || "info"
     const agentId = parts[1] || null
     return { mainTab, agentId }
   }
@@ -168,13 +168,13 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     loadSessions()
     loadMaxSessions()
 
-    const unsubscribe = listen("coding-agents-changed", () => {
+    const l = listenSafe("coding-agents-changed", () => {
       loadAgents()
       loadSessions()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [loadAgents, loadSessions, loadMaxSessions])
 

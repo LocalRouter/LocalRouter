@@ -13,7 +13,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen, AlertTriangle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
-import { Badge } from "@/components/ui/Badge"
+import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -383,9 +383,7 @@ function QuickSetupTab({
             <TabsTrigger value="auto" className="text-xs gap-1">
               <RefreshCcw className="h-3 w-3" />
               Auto
-              <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400 ml-1 text-[10px] px-1.5 py-0">
-                EXPERIMENTAL
-              </Badge>
+              <ExperimentalBadge className="ml-1 text-[10px] px-1.5 py-0" />
             </TabsTrigger>
           )}
           {supportsTryItOut && (

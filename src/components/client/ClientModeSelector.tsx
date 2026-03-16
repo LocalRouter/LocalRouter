@@ -11,6 +11,8 @@
 
 import type { ClientMode } from "@/types/tauri-commands"
 import type { ClientTemplate } from "@/components/client/ClientTemplates"
+import { EXPERIMENTAL } from "@/constants/features"
+import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 
 // ── Custom arrow icons ──────────────────────────────────────────────────
 
@@ -66,7 +68,7 @@ const MODE_OPTIONS: {
   label: string
   description: string
   Icon: React.ComponentType<{ className?: string }>
-  experimental?: boolean
+  experimentalKey?: keyof typeof EXPERIMENTAL
 }[] = [
   {
     value: "both",
@@ -79,7 +81,7 @@ const MODE_OPTIONS: {
     label: "MCP via LLM",
     description: "MCP servers injected into LLM requests (tool call requests intercepted and handled)",
     Icon: BothViaLlmIcon,
-    experimental: true,
+    experimentalKey: "mcpViaLlm",
   },
   {
     value: "llm_only",
@@ -137,10 +139,8 @@ export function ClientModeSelector({ mode, onModeChange, template }: ClientModeS
             <div className="min-w-0">
               <p className="text-sm font-medium flex items-center gap-2">
                 {option.label}
-                {option.experimental && (
-                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
-                    Experimental
-                  </span>
+                {option.experimentalKey && EXPERIMENTAL[option.experimentalKey] && (
+                  <ExperimentalBadge />
                 )}
               </p>
               <p className="text-xs text-muted-foreground mt-0.5">

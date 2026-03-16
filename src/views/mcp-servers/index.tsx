@@ -6,7 +6,9 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
+import { ArrowLeft } from "lucide-react"
+import { Button } from "@/components/ui/Button"
 import { McpIcon } from "@/components/icons/category-icons"
 import { McpServersPanel, McpHealthStatus, McpHealthCheckEvent } from "../resources/mcp-servers-panel"
 
@@ -62,7 +64,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
 
   // Listen for health check events
   useEffect(() => {
-    const unsubHealth = listen<McpHealthCheckEvent>("mcp-health-check", (event) => {
+    const lHealth = listenSafe<McpHealthCheckEvent>("mcp-health-check", (event) => {
       const { server_id, status, latency_ms, error } = event.payload
       setHealthStatus((prev) => ({
         ...prev,
@@ -83,7 +85,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
     interface HealthCacheState {
       mcp_servers: Record<string, ItemHealth>
     }
-    const unsubCacheChanged = listen<HealthCacheState>("health-status-changed", (event) => {
+    const lCacheChanged = listenSafe<HealthCacheState>("health-status-changed", (event) => {
       const { mcp_servers } = event.payload
       if (!mcp_servers) return
       setHealthStatus((prev) => {
@@ -100,8 +102,8 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
     })
 
     return () => {
-      unsubHealth.then((fn) => fn())
-      unsubCacheChanged.then((fn) => fn())
+      lHealth.cleanup()
+      lCacheChanged.cleanup()
     }
   }, [])
 
@@ -111,12 +113,21 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
 
   return (
     <div className="flex flex-col h-full min-h-0 max-w-5xl">
-      <div className="flex-shrink-0 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><McpIcon className="h-6 w-6" />MCP</h1>
-        <p className="text-sm text-muted-foreground">
-          Connect to external MCP servers and aggregate their tools, prompts, and resources into the unified MCP gateway that clients connect to.
-        </p>
-      </div>
+      {selectedId ? (
+        <div className="flex-shrink-0 pb-2">
+          <Button variant="ghost" size="sm" className="gap-1 -ml-2" onClick={() => handleSelect(null)}>
+            <ArrowLeft className="h-3 w-3" />
+            Back to MCPs
+          </Button>
+        </div>
+      ) : (
+        <div className="flex-shrink-0 pb-4">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><McpIcon className="h-6 w-6" />MCP</h1>
+          <p className="text-sm text-muted-foreground">
+            Connect to external MCP servers and aggregate their tools, prompts, and resources into the unified MCP gateway that clients connect to.
+          </p>
+        </div>
+      )}
 
       <McpServersPanel
         selectedId={selectedId}

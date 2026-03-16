@@ -1,7 +1,7 @@
 import * as React from "react"
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { Sidebar, type View } from "./sidebar"
 import { Header } from "./header"
 import { CommandPalette } from "./command-palette"
@@ -13,6 +13,7 @@ interface Client {
   name: string
   client_id: string
   enabled: boolean
+  template_id?: string | null
 }
 
 interface ProviderInstance {
@@ -51,7 +52,7 @@ interface AppShellProps {
 export function AppShell({
   children,
   activeView,
-  activeSubTab: _activeSubTab,
+  activeSubTab,
   onViewChange,
 }: AppShellProps) {
   const [commandOpen, setCommandOpen] = useState(false)
@@ -68,19 +69,16 @@ export function AppShell({
     loadData()
 
     // Subscribe to data changes (models handled by useIncrementalModels hook)
-    const unsubscribers = [
-      listen('clients-changed', loadClients),
-      listen('providers-changed', loadProviders),
-      listen('mcp-servers-changed', loadMcpServers),
+    const listeners = [
+      listenSafe('clients-changed', loadClients),
+      listenSafe('providers-changed', loadProviders),
+      listenSafe('mcp-servers-changed', loadMcpServers),
       // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
-      // listen('strategies-changed', loadStrategies),
+      // listenSafe('strategies-changed', loadStrategies),
     ]
 
     return () => {
-      unsubscribers.forEach(async (unsub) => {
-        const fn = await unsub
-        fn()
-      })
+      listeners.forEach(l => l.cleanup())
     }
   }, [])
 
@@ -163,7 +161,16 @@ export function AppShell({
   return (
     <div className="flex h-full w-full bg-background overflow-hidden">
       {/* Sidebar */}
-      <Sidebar activeView={activeView} onViewChange={handleViewChange} />
+      <Sidebar
+        activeView={activeView}
+        activeSubTab={activeSubTab}
+        onViewChange={handleViewChange}
+        dynamicGroups={{
+          clients: clients.map(c => ({ subTab: c.client_id, label: c.name, iconService: c.template_id ?? undefined })),
+          providers: providers.map(p => ({ subTab: `providers/${p.instance_name}`, label: p.instance_name, iconService: p.provider_type })),
+          mcpServers: mcpServers.map(s => ({ subTab: s.id, label: s.name, iconService: s.name })),
+        }}
+      />
 
       {/* Main content area */}
       <div className="flex flex-1 flex-col min-h-0 overflow-hidden">

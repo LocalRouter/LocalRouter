@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { FolderOpen, Search, X } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
@@ -94,30 +94,23 @@ export function LoggingTab() {
   useEffect(() => {
     if (!config.enabled) return
 
-    let llmUnlisten: (() => void) | undefined
-    let mcpUnlisten: (() => void) | undefined
-
-    listen<LLMLogEntry>("llm-log-entry", (event) => {
+    const lLlm = listenSafe<LLMLogEntry>("llm-log-entry", (event) => {
       setLlmLogs((prev) => {
         const newLogs = [event.payload, ...prev].slice(0, limit)
         return newLogs
       })
-    }).then((unlisten) => {
-      llmUnlisten = unlisten
     })
 
-    listen<MCPLogEntry>("mcp-log-entry", (event) => {
+    const lMcp = listenSafe<MCPLogEntry>("mcp-log-entry", (event) => {
       setMcpLogs((prev) => {
         const newLogs = [event.payload, ...prev].slice(0, limit)
         return newLogs
       })
-    }).then((unlisten) => {
-      mcpUnlisten = unlisten
     })
 
     return () => {
-      if (llmUnlisten) llmUnlisten()
-      if (mcpUnlisten) mcpUnlisten()
+      lLlm.cleanup()
+      lMcp.cleanup()
     }
   }, [config.enabled, limit])
 

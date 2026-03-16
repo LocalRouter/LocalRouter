@@ -1,23 +1,28 @@
 import { useState, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
-import { Plus, Users } from "lucide-react"
+import { listenSafe } from "@/hooks/useTauriListener"
+import { toast } from "sonner"
+import { Plus, Users, ArrowLeft, Copy, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from "@/components/ui/resizable"
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { ClientDetail } from "./client-detail"
 import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
 import { ServerTab } from "@/views/settings/server-tab"
-import { cn } from "@/lib/utils"
+
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
-import type { CodingAgentType } from "@/types/tauri-commands"
+import type { CodingAgentType, ClientInfo, CloneClientParams, DeleteClientParams } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -50,16 +55,40 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardTemplateId, setWizardTemplateId] = useState<string | null>(null)
   const [search, setSearch] = useState("")
+  const [clientToDelete, setClientToDelete] = useState<Client | null>(null)
+
+  const handleCloneClient = async (e: React.MouseEvent, client: Client) => {
+    e.stopPropagation()
+    try {
+      const [, cloned] = await invoke<[string, ClientInfo]>("clone_client", { clientId: client.client_id } satisfies CloneClientParams)
+      toast.success(`Cloned as "${cloned.name}"`)
+    } catch (error) {
+      toast.error(`Failed to clone client: ${error}`)
+    }
+  }
+
+  const handleDeleteClient = async () => {
+    if (!clientToDelete) return
+    try {
+      await invoke("delete_client", { clientId: clientToDelete.client_id } satisfies DeleteClientParams)
+      toast.success("Client deleted")
+      loadClients()
+    } catch (error) {
+      toast.error(`Failed to delete client: ${error}`)
+    } finally {
+      setClientToDelete(null)
+    }
+  }
 
   useEffect(() => {
     loadClients()
 
-    const unsubscribe = listen("clients-changed", () => {
+    const l = listenSafe("clients-changed", () => {
       loadClients()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [])
 
@@ -142,28 +171,48 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
 
   return (
     <div className="flex flex-col h-full min-h-0 max-w-5xl">
-      <div className="flex-shrink-0 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Users className="h-6 w-6" />Clients</h1>
-        <p className="text-sm text-muted-foreground">
-          Give access to your LLM-powered applications by creating a client
-        </p>
-      </div>
+      {selectedClient ? (
+        // SPOKE: Full-screen client detail
+        <>
+          <div className="flex-shrink-0 pb-2">
+            <Button variant="ghost" size="sm" className="gap-1 -ml-2" onClick={handleDeselectClient}>
+              <ArrowLeft className="h-3 w-3" />
+              Back to Clients
+            </Button>
+          </div>
+          <div className="flex-1 min-h-0">
+            <ClientDetail
+              clientId={selectedClient.client_id}
+              client={selectedClient}
+              initialTab={innerTab}
+              initialMode={mode as "forced" | "multi" | "prioritized" | null}
+              onDeselect={handleDeselectClient}
+              onViewChange={onTabChange}
+            />
+          </div>
+        </>
+      ) : (
+        // HUB: Overview with card list
+        <>
+          <div className="flex-shrink-0 pb-4">
+            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Users className="h-6 w-6" />Clients</h1>
+            <p className="text-sm text-muted-foreground">
+              Give access to your LLM-powered applications by creating a client
+            </p>
+          </div>
 
-      <Tabs
-        value={topTab}
-        onValueChange={handleTopTabChange}
-        className="flex flex-col flex-1 min-h-0"
-      >
-        <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="client"><TAB_ICONS.client className={TAB_ICON_CLASS} />Client</TabsTrigger>
-          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
-        </TabsList>
+          <Tabs
+            value={topTab}
+            onValueChange={handleTopTabChange}
+            className="flex flex-col flex-1 min-h-0"
+          >
+            <TabsList className="flex-shrink-0 w-fit">
+              <TabsTrigger value="client"><TAB_ICONS.client className={TAB_ICON_CLASS} />Client</TabsTrigger>
+              <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
+            </TabsList>
 
-        <TabsContent value="client" className="flex-1 min-h-0 mt-4">
-          <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0 rounded-lg border">
-            {/* List Panel */}
-            <ResizablePanel defaultSize={21} minSize={15}>
-              <div className="flex flex-col h-full">
+            <TabsContent value="client" className="flex-1 min-h-0 mt-4">
+              <div className="flex flex-col h-full rounded-lg border">
                 <div className="p-4 border-b">
                   <div className="flex items-center gap-2">
                     <Input
@@ -177,73 +226,63 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
                     </Button>
                   </div>
                 </div>
-                <ScrollArea className="flex-1">
-                  <div className="p-2 space-y-1">
-                    {loading ? (
-                      <p className="text-sm text-muted-foreground p-4">Loading...</p>
-                    ) : filteredClients.length === 0 ? (
-                      <p className="text-sm text-muted-foreground p-4">No clients found</p>
-                    ) : (
-                      filteredClients.map((client) => (
-                        <div
-                          key={client.client_id}
-                          onClick={() => handleSelectClient(client.client_id)}
-                          className={cn(
-                            "flex items-center gap-3 p-3 rounded-md cursor-pointer",
-                            selectedClientId === client.client_id
-                              ? "bg-accent"
-                              : "hover:bg-muted"
-                          )}
-                        >
-                          <div className="flex-1 min-w-0">
-                            <p className="font-medium truncate">{client.name}</p>
-                            <p className="text-xs text-muted-foreground truncate">
-                              {client.client_id.slice(0, 16)}...
-                            </p>
-                          </div>
-                          {!client.enabled && (
-                            <span className="text-xs text-muted-foreground shrink-0">Disabled</span>
-                          )}
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                  {loading ? (
+                    <p className="text-sm text-muted-foreground p-4">Loading...</p>
+                  ) : filteredClients.length === 0 ? (
+                    <p className="text-sm text-muted-foreground p-4">No clients found</p>
+                  ) : (
+                    filteredClients.map((client) => (
+                      <div
+                        key={client.client_id}
+                        onClick={() => handleSelectClient(client.client_id)}
+                        className="group flex items-center gap-3 p-3 rounded-md cursor-pointer hover:bg-muted"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium truncate">{client.name}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {client.client_id.slice(0, 16)}...
+                          </p>
                         </div>
-                      ))
-                    )}
-                  </div>
-                </ScrollArea>
-              </div>
-            </ResizablePanel>
-
-            <ResizableHandle withHandle />
-
-            {/* Detail Panel */}
-            <ResizablePanel defaultSize={79}>
-              {selectedClient ? (
-                <ClientDetail
-                  clientId={selectedClient.client_id}
-                  client={selectedClient}
-                  initialTab={innerTab}
-                  initialMode={mode as "forced" | "multi" | "prioritized" | null}
-                  onDeselect={handleDeselectClient}
-                  onViewChange={onTabChange}
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-                  <Users className="h-12 w-12 opacity-30" />
-                  <div className="text-center">
-                    <p className="font-medium">Select a client to view details</p>
-                    <p className="text-sm">
-                      or add a new one with the + button
-                    </p>
-                  </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            title="Clone client"
+                            onClick={(e) => handleCloneClient(e, client)}
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            title="Delete client"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setClientToDelete(client)
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                        {!client.enabled && (
+                          <span className="text-xs text-muted-foreground shrink-0">Disabled</span>
+                        )}
+                      </div>
+                    ))
+                  )}
                 </div>
-              )}
-            </ResizablePanel>
-          </ResizablePanelGroup>
-        </TabsContent>
+              </div>
+            </TabsContent>
 
-        <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
-          <ServerTab hideResourceLimits />
-        </TabsContent>
-      </Tabs>
+            <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+              <ServerTab hideResourceLimits />
+            </TabsContent>
+          </Tabs>
+        </>
+      )}
 
       <ClientCreationWizard
         open={wizardOpen}
@@ -257,6 +296,24 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
         onComplete={handleWizardComplete}
         initialTemplateId={wizardTemplateId}
       />
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={!!clientToDelete} onOpenChange={(open) => !open && setClientToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Client</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{clientToDelete?.name}"? This will also delete its routing strategy. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteClient} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

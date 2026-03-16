@@ -1,7 +1,7 @@
 
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -69,6 +69,8 @@ export function ClientDetail({
   const showTryItOutLlm = clientMode !== "mcp_only"
   // MCP via LLM clients speak only OpenAI protocol — no direct MCP try-it-out
   const showTryItOutMcp = clientMode !== "llm_only" && clientMode !== "mcp_via_llm"
+  const showTryItOut = showTryItOutLlm || showTryItOutMcp
+  const [trySubTab, setTrySubTab] = useState(showTryItOutLlm ? "llm" : "mcp")
 
   useEffect(() => {
     if (!initialClient) {
@@ -84,12 +86,12 @@ export function ClientDetail({
 
   // Listen for clients-changed events to refresh data
   useEffect(() => {
-    const unsubscribe = listen("clients-changed", () => {
+    const l = listenSafe("clients-changed", () => {
       loadClient()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [clientId])
 
@@ -103,9 +105,8 @@ export function ClientDetail({
   useEffect(() => {
     if (activeTab === "models" && !showModelsTab) setActiveTab("info")
     if (activeTab === "mcp" && !showMcpTab) setActiveTab("info")
-    if (activeTab === "try-llm" && !showTryItOutLlm) setActiveTab("info")
-    if (activeTab === "try-mcp" && !showTryItOutMcp) setActiveTab("info")
-  }, [clientMode, activeTab, showModelsTab, showMcpTab, showTryItOutLlm, showTryItOutMcp])
+    if (activeTab === "try" && !showTryItOut) setActiveTab("info")
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showTryItOut])
 
   const loadClient = async () => {
     try {
@@ -154,17 +155,8 @@ export function ClientDetail({
             <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
               <TabsTrigger value="info"><TAB_ICONS.overview className={TAB_ICON_CLASS} />Overview</TabsTrigger>
               <TabsTrigger value="connect"><TAB_ICONS.connect className={TAB_ICON_CLASS} />Connect</TabsTrigger>
+              {showTryItOut && <TabsTrigger value="try"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
             </div>
-
-            {(showTryItOutLlm || showTryItOutMcp) && (
-              <div>
-                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">Try It Out</div>
-                <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
-                  {showTryItOutLlm && <TabsTrigger value="try-llm"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM</TabsTrigger>}
-                  {showTryItOutMcp && <TabsTrigger value="try-mcp"><TAB_ICONS.mcp className={TAB_ICON_CLASS} />MCP</TabsTrigger>}
-                </div>
-              </div>
-            )}
 
             {(showModelsTab || showMcpTab) && (
               <div>
@@ -190,25 +182,46 @@ export function ClientDetail({
             <ClientConfigTab client={client} onUpdate={loadClient} />
           </TabsContent>
 
-          {showTryItOutLlm && (
-            <TabsContent value="try-llm">
-              <LlmTab
-                initialMode="client"
-                initialClientId={client.client_id}
-                hideModeSwitcher
-              />
-            </TabsContent>
-          )}
-
-          {showTryItOutMcp && (
-            <TabsContent value="try-mcp">
-              <McpTab
-                initialMode="client"
-                initialClientId={client.client_id}
-                hideModeSwitcher
-                innerPath={mcpInnerPath}
-                onPathChange={setMcpInnerPath}
-              />
+          {showTryItOut && (
+            <TabsContent value="try">
+              {showTryItOutLlm && showTryItOutMcp ? (
+                <Tabs value={trySubTab} onValueChange={setTrySubTab}>
+                  <TabsList className="bg-muted h-9 p-1 rounded-lg mb-4">
+                    <TabsTrigger value="llm"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM</TabsTrigger>
+                    <TabsTrigger value="mcp"><TAB_ICONS.mcp className={TAB_ICON_CLASS} />MCP</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="llm">
+                    <LlmTab
+                      initialMode="client"
+                      initialClientId={client.client_id}
+                      hideModeSwitcher
+                    />
+                  </TabsContent>
+                  <TabsContent value="mcp">
+                    <McpTab
+                      initialMode="client"
+                      initialClientId={client.client_id}
+                      hideModeSwitcher
+                      innerPath={mcpInnerPath}
+                      onPathChange={setMcpInnerPath}
+                    />
+                  </TabsContent>
+                </Tabs>
+              ) : showTryItOutLlm ? (
+                <LlmTab
+                  initialMode="client"
+                  initialClientId={client.client_id}
+                  hideModeSwitcher
+                />
+              ) : (
+                <McpTab
+                  initialMode="client"
+                  initialClientId={client.client_id}
+                  hideModeSwitcher
+                  innerPath={mcpInnerPath}
+                  onPathChange={setMcpInnerPath}
+                />
+              )}
             </TabsContent>
           )}
 

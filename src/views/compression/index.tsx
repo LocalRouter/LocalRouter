@@ -5,6 +5,7 @@ import { RefreshCw, CheckCircle2, XCircle, Loader2, Download } from "lucide-reac
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Badge } from "@/components/ui/Badge"
+import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
@@ -151,7 +152,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
             <FEATURES.compression.icon className={`h-6 w-6 ${FEATURES.compression.color}`} />
             Prompt Compression
           </h1>
-          <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
+          <ExperimentalBadge />
         </div>
         <p className="text-sm text-muted-foreground">
           Reduce input tokens using LLMLingua-2 extractive compression for the OpenAI-compatible proxy
@@ -276,7 +277,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
               </Card>
             )}
 
-            <FeatureClientsCard feature="prompt_compression" onNavigateToClient={onTabChange} />
+            <FeatureClientsCard feature="prompt_compression" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

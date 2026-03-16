@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { Loader2 } from "lucide-react"
 import {
   Tooltip,
@@ -55,8 +55,8 @@ export function CompatibilityPanel() {
 
   useEffect(() => {
     loadData()
-    const unlisten = listen("providers-changed", () => loadData())
-    return () => { unlisten.then((fn) => fn()) }
+    const l = listenSafe("providers-changed", () => loadData())
+    return () => { l.cleanup() }
   }, [])
 
   if (loading) {

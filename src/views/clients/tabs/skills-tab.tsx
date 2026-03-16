@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { SkillsPermissionTree } from "@/components/permissions"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
@@ -54,12 +54,12 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
   useEffect(() => {
     loadSkillTools()
 
-    const unsubscribe = listen("skills-changed", () => {
+    const l = listenSafe("skills-changed", () => {
       loadSkillTools()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [loadSkillTools])
 

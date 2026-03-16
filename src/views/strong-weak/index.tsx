@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { Download, FolderOpen, Trash2, Loader2 } from "lucide-react"
 import { FEATURES } from "@/constants/features"
@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
+import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import {
@@ -52,19 +53,19 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
   useEffect(() => {
     loadStatus()
 
-    const unlistenProgress = listen("routellm-download-progress", (event: any) => {
+    const lProgress = listenSafe("routellm-download-progress", (event: any) => {
       const { progress } = event.payload
       setDownloadProgress(progress * 100)
     })
 
-    const unlistenComplete = listen("routellm-download-complete", () => {
+    const lComplete = listenSafe("routellm-download-complete", () => {
       setIsDownloading(false)
       setDownloadProgress(100)
       loadStatus()
       toast.success("Strong/Weak models downloaded successfully!")
     })
 
-    const unlistenFailed = listen("routellm-download-failed", (event: any) => {
+    const lFailed = listenSafe("routellm-download-failed", (event: any) => {
       setIsDownloading(false)
       toast.error(`Download failed: ${event.payload.error}`)
     })
@@ -73,9 +74,9 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
     const interval = setInterval(loadStatus, 3000)
 
     return () => {
-      unlistenProgress.then((fn) => fn())
-      unlistenComplete.then((fn) => fn())
-      unlistenFailed.then((fn) => fn())
+      lProgress.cleanup()
+      lComplete.cleanup()
+      lFailed.cleanup()
       clearInterval(interval)
     }
   }, [])
@@ -161,13 +162,11 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
   return (
     <div className="flex flex-col h-full min-h-0 max-w-5xl">
       <div className="flex-shrink-0 pb-4">
-        <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <FEATURES.routing.icon className={`h-6 w-6 ${FEATURES.routing.color}`} />
-            Strong/Weak
-          </h1>
-          <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
-        </div>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <FEATURES.routing.icon className={`h-6 w-6 ${FEATURES.routing.color}`} />
+          Strong/Weak
+          {FEATURES.routing.experimental && <ExperimentalBadge />}
+        </h1>
         <p className="text-sm text-muted-foreground">
           Intelligent routing that analyzes complexity to select the most cost-effective model — typically saving 30-60% on costs while retaining 85-95% quality, with only {ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms of selection overhead
         </p>
@@ -224,9 +223,14 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
                 </CardHeader>
                 <CardContent>
                   <div className="flex items-center justify-between">
-                    <Badge variant={getStatusInfo(status.state).variant}>
-                      {getStatusInfo(status.state).label}
-                    </Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge variant={getStatusInfo(status.state).variant}>
+                        {getStatusInfo(status.state).label}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground font-mono">
+                        {status.model_name}
+                      </span>
+                    </div>
                     <div className="flex gap-2">
                       {status.state === "not_downloaded" && !isDownloading && (
                         <Button variant="outline" size="sm" onClick={handleDownload}>

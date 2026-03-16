@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { ArrowLeft } from "lucide-react"
+import { Button } from "@/components/ui/Button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
+import { useTauriListener } from "@/hooks/useTauriListener"
 import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
 import { ModelsPanel } from "./models-panel"
 import { CompatibilityPanel } from "./compatibility-panel"
@@ -57,34 +59,27 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   }, [])
 
   // Listen for health check events (individual provider checks)
-  useEffect(() => {
-    const unsubHealth = listen<HealthCheckEvent>("provider-health-check", (event) => {
-      const { provider_name, status, latency_ms, error_message } = event.payload
-      setHealthStatus((prev) => ({
-        ...prev,
-        [provider_name]: {
-          status: status as HealthStatus["status"],
-          latency_ms,
-          error: error_message,
-        },
-      }))
-    })
+  useTauriListener<HealthCheckEvent>("provider-health-check", (event) => {
+    const { provider_name, status, latency_ms, error_message } = event.payload
+    setHealthStatus((prev) => ({
+      ...prev,
+      [provider_name]: {
+        status: status as HealthStatus["status"],
+        latency_ms,
+        error: error_message,
+      },
+    }))
+  })
 
-    // Listen for global health cache updates (e.g. from sidebar refresh button, periodic checks)
-    const unsubCacheChanged = listen<HealthCacheState>("health-status-changed", (event) => {
-      const { providers } = event.payload
-      if (!providers) return
-      setHealthStatus((prev) => ({
-        ...prev,
-        ...mapCacheToHealthStatus(providers),
-      }))
-    })
-
-    return () => {
-      unsubHealth.then((fn) => fn())
-      unsubCacheChanged.then((fn) => fn())
-    }
-  }, [])
+  // Listen for global health cache updates (e.g. from sidebar refresh button, periodic checks)
+  useTauriListener<HealthCacheState>("health-status-changed", (event) => {
+    const { providers } = event.payload
+    if (!providers) return
+    setHealthStatus((prev) => ({
+      ...prev,
+      ...mapCacheToHealthStatus(providers),
+    }))
+  })
 
   // Parse subTab to determine which resource type and item is selected
   // Format: "providers" or "models"
@@ -114,52 +109,67 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
     onTabChange("resources", id ? `${type}/${id}` : type)
   }
 
+  // When a specific provider is selected, show detail view with back button
+  const providerSelected = resourceType === "providers" && !!itemId
+
   return (
     <div className="flex flex-col h-full min-h-0 max-w-5xl">
-      <div className="flex-shrink-0 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ProvidersIcon className="h-6 w-6" />LLM Providers</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage LLM providers
-        </p>
-      </div>
+      {providerSelected ? (
+        <div className="flex-shrink-0 pb-2">
+          <Button variant="ghost" size="sm" className="gap-1 -ml-2" onClick={() => handleItemSelect("providers", null)}>
+            <ArrowLeft className="h-3 w-3" />
+            Back to LLM Providers
+          </Button>
+        </div>
+      ) : (
+        <div className="flex-shrink-0 pb-4">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ProvidersIcon className="h-6 w-6" />LLM Providers</h1>
+          <p className="text-sm text-muted-foreground">
+            Manage LLM providers
+          </p>
+        </div>
+      )}
 
       <Tabs
         value={resourceType}
         onValueChange={handleResourceChange}
         className="flex flex-col flex-1 min-h-0"
       >
-        <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="providers"><TAB_ICONS.providers className={TAB_ICON_CLASS} />Providers</TabsTrigger>
-          <TabsTrigger value="models"><TAB_ICONS.allModels className={TAB_ICON_CLASS} />All Models</TabsTrigger>
-          <TabsTrigger value="compatibility"><TAB_ICONS.compatibility className={TAB_ICON_CLASS} />Compatibility</TabsTrigger>
-        </TabsList>
+        {!providerSelected && (
+          <TabsList className="flex-shrink-0 w-fit">
+            <TabsTrigger value="providers"><TAB_ICONS.providers className={TAB_ICON_CLASS} />Providers</TabsTrigger>
+            <TabsTrigger value="models"><TAB_ICONS.allModels className={TAB_ICON_CLASS} />All Models</TabsTrigger>
+            <TabsTrigger value="compatibility"><TAB_ICONS.compatibility className={TAB_ICON_CLASS} />Compatibility</TabsTrigger>
+          </TabsList>
+        )}
 
         <TabsContent value="providers" className="flex-1 min-h-0 mt-4">
           <ProvidersPanel
             selectedId={resourceType === "providers" ? itemId : null}
             onSelect={(id) => handleItemSelect("providers", id)}
             healthStatus={healthStatus}
-            onHealthInit={() => {
-              // Health checks are only triggered by explicit user action (refresh button)
-            }}
+            onHealthInit={() => {}}
             onRefreshHealth={refreshHealth}
             initialAddProviderType={resourceType === "providers" ? addType : null}
             onViewChange={onTabChange}
           />
         </TabsContent>
 
-        <TabsContent value="models" className="flex-1 min-h-0 mt-4">
-          <ModelsPanel
-            selectedId={resourceType === "models" ? itemId : null}
-            onSelect={(id) => handleItemSelect("models", id)}
-            onViewChange={onTabChange}
-          />
-        </TabsContent>
+        {!providerSelected && (
+          <>
+            <TabsContent value="models" className="flex-1 min-h-0 mt-4">
+              <ModelsPanel
+                selectedId={resourceType === "models" ? itemId : null}
+                onSelect={(id) => handleItemSelect("models", id)}
+                onViewChange={onTabChange}
+              />
+            </TabsContent>
 
-        <TabsContent value="compatibility" className="flex-1 min-h-0 mt-4">
-          <CompatibilityPanel />
-        </TabsContent>
-
+            <TabsContent value="compatibility" className="flex-1 min-h-0 mt-4">
+              <CompatibilityPanel />
+            </TabsContent>
+          </>
+        )}
       </Tabs>
     </div>
   )

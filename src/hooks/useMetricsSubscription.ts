@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listen } from '@tauri-apps/api/event'
+import { listenSafe } from '@/hooks/useTauriListener'
 
 /**
  * Hook to subscribe to metrics updates and trigger re-renders
@@ -11,21 +11,13 @@ export function useMetricsSubscription() {
   const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined
-
-    // Listen for metrics-updated events from the backend
-    listen('metrics-updated', (event) => {
+    const l = listenSafe('metrics-updated', (event) => {
       console.log('Metrics updated:', event.payload)
       setRefreshKey(prev => prev + 1)
-    }).then(fn => {
-      unlisten = fn
     })
 
-    // Cleanup on unmount
     return () => {
-      if (unlisten) {
-        unlisten()
-      }
+      l.cleanup()
     }
   }, [])
 

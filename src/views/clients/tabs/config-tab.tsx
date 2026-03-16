@@ -1,7 +1,7 @@
 
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { HowToConnect } from "@/components/client/HowToConnect"
 import type { ClientMode } from "@/types/tauri-commands"
 
@@ -43,12 +43,12 @@ export function ClientConfigTab({ client }: ConfigTabProps) {
     fetchSecret()
 
     // Also refetch when clients change (e.g., after credential rotation)
-    const unsubscribe = listen("clients-changed", () => {
+    const l = listenSafe("clients-changed", () => {
       fetchSecret()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [client.id])
 

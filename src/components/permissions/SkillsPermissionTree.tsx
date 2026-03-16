@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { PermissionTreeSelector } from "./PermissionTreeSelector"
 import { PermissionStateButton } from "./PermissionStateButton"
@@ -54,12 +54,12 @@ export function SkillsPermissionTree({ clientId, permissions, onUpdate }: Skills
   useEffect(() => {
     loadSkills()
 
-    const unsubscribe = listen("skills-changed", () => {
+    const l = listenSafe("skills-changed", () => {
       loadSkills()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      l.cleanup()
     }
   }, [loadSkills])
 

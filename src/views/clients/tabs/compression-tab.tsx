@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { FEATURES } from "@/constants/features"
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
-import { Badge } from "@/components/ui/Badge"
+import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { TriStateButton } from "@/components/ui/TriStateButton"
 import type {
   ClientPromptCompressionConfig,
@@ -83,7 +83,7 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
             <div className="flex items-center gap-2">
               <FEATURES.compression.icon className={`h-5 w-5 ${FEATURES.compression.color}`} />
               <CardTitle>Prompt Compression</CardTitle>
-              <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
+              <ExperimentalBadge />
             </div>
             <TriStateButton
               value={config.enabled}

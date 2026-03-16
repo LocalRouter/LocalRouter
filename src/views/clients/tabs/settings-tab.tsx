@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { FlaskConical, Loader2, Unlink } from "lucide-react"
+import { Loader2, Unlink } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
 import { Switch } from "@/components/ui/Toggle"
@@ -18,10 +18,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { CLIENT_TEMPLATES } from "@/components/client/ClientTemplates"
-import { PermissionStateButton } from "@/components/permissions/PermissionStateButton"
 import ServiceIcon from "@/components/ServiceIcon"
-import type { PermissionState } from "@/components/permissions"
-import type { ClientMode, SetClientTemplateParams, SetClientSamplingPermissionParams, SetClientElicitationPermissionParams } from "@/types/tauri-commands"
+import type { SetClientTemplateParams } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -29,10 +27,7 @@ interface Client {
   client_id: string
   enabled: boolean
   strategy_id: string
-  client_mode?: ClientMode
   template_id?: string | null
-  mcp_sampling_permission?: PermissionState
-  mcp_elicitation_permission?: PermissionState
 }
 
 interface SettingsTabProps {
@@ -51,7 +46,6 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
   // Debounce ref for name updates
   const nameTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const clientMode = client.client_mode || "both"
   const template = client.template_id
     ? CLIENT_TEMPLATES.find(t => t.id === client.template_id) || null
     : null
@@ -111,34 +105,6 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
     } catch (error) {
       console.error("Failed to toggle client:", error)
       toast.error("Failed to update client")
-    }
-  }
-
-  const handleSamplingPermissionChange = async (state: PermissionState) => {
-    try {
-      await invoke("set_client_sampling_permission", {
-        clientId: client.client_id,
-        state,
-      } satisfies SetClientSamplingPermissionParams)
-      toast.success("Sampling permission updated")
-      onUpdate()
-    } catch (error) {
-      console.error("Failed to update sampling permission:", error)
-      toast.error("Failed to update sampling permission")
-    }
-  }
-
-  const handleElicitationPermissionChange = async (state: PermissionState) => {
-    try {
-      await invoke("set_client_elicitation_permission", {
-        clientId: client.client_id,
-        state,
-      } satisfies SetClientElicitationPermissionParams)
-      toast.success("Elicitation permission updated")
-      onUpdate()
-    } catch (error) {
-      console.error("Failed to update elicitation permission:", error)
-      toast.error("Failed to update elicitation permission")
     }
   }
 
@@ -244,146 +210,6 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
                 Detach to unlock all modes.
               </p>
             )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* MCP Capabilities - visible when mode uses MCP */}
-      {clientMode !== "llm_only" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>MCP Capabilities</CardTitle>
-            <CardDescription>
-              Controls how backend MCP servers can request LLM completions and user input
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Sampling */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium">Sampling</p>
-                  <p className="text-xs text-muted-foreground">
-                    {clientMode === "mcp_via_llm"
-                      ? ({
-                          allow: "Automatically route to LLM",
-                          ask: "Show approval popup first",
-                          off: "Reject sampling requests",
-                        } as Record<string, string>)[client.mcp_sampling_permission || "ask"]
-                      : ({
-                          allow: "Forward to client",
-                          ask: "Show approval popup, then forward",
-                          off: "Reject sampling requests",
-                        } as Record<string, string>)[client.mcp_sampling_permission || "ask"]
-                    }
-                  </p>
-                </div>
-                <PermissionStateButton
-                  value={client.mcp_sampling_permission || "ask"}
-                  onChange={handleSamplingPermissionChange}
-                  size="sm"
-                />
-              </div>
-              {(client.mcp_sampling_permission || "ask") === "ask" && (
-                <div className="flex items-center justify-between pb-1">
-                  <div>
-                    <span className="text-sm font-medium">Approval Popup Preview</span>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Preview the popup shown when sampling permission is set to &ldquo;Ask&rdquo;
-                    </p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={async () => {
-                      try {
-                        await invoke("debug_trigger_sampling_approval_popup")
-                      } catch (e) {
-                        console.error("Failed to trigger sampling popup:", e)
-                      }
-                    }}
-                  >
-                    <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
-                    Sample Popup
-                  </Button>
-                </div>
-              )}
-            </div>
-
-            {/* Elicitation */}
-            <div className="space-y-3 pt-3 border-t">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium">Elicitation</p>
-                  <p className="text-xs text-muted-foreground">
-                    {clientMode === "mcp_via_llm"
-                      ? ({
-                          ask: "Show form popup for user input",
-                          off: "Reject elicitation requests",
-                        } as Record<string, string>)[client.mcp_elicitation_permission === "allow" ? "ask" : (client.mcp_elicitation_permission || "ask")]
-                      : ({
-                          allow: "Forward to client",
-                          ask: "Show form popup locally",
-                          off: "Reject elicitation requests",
-                        } as Record<string, string>)[client.mcp_elicitation_permission || "ask"]
-                    }
-                  </p>
-                </div>
-                {clientMode === "mcp_via_llm" ? (
-                  // MCP via LLM: only Ask/Off (no client to passthrough to)
-                  <div className="inline-flex rounded-md border border-border bg-muted/50">
-                    {(["ask", "off"] as PermissionState[]).map((state) => (
-                      <button
-                        key={state}
-                        type="button"
-                        onClick={() => handleElicitationPermissionChange(state)}
-                        className={`px-2 py-0.5 text-xs font-medium transition-colors ${
-                          (client.mcp_elicitation_permission === "allow" ? "ask" : (client.mcp_elicitation_permission || "ask")) === state
-                            ? state === "ask" ? "bg-amber-500 text-white" : "bg-zinc-500 text-white"
-                            : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                        } ${state === "ask" ? "rounded-l-md" : "rounded-r-md"}`}
-                      >
-                        {state === "ask" ? "Ask" : "Off"}
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <PermissionStateButton
-                    value={client.mcp_elicitation_permission || "ask"}
-                    onChange={handleElicitationPermissionChange}
-                    size="sm"
-                  />
-                )}
-              </div>
-              {(() => {
-                const perm = client.mcp_elicitation_permission || "ask"
-                const effective = clientMode === "mcp_via_llm" && perm === "allow" ? "ask" : perm
-                return effective === "ask"
-              })() && (
-                <div className="flex items-center justify-between pb-1">
-                  <div>
-                    <span className="text-sm font-medium">Approval Popup Preview</span>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Preview the popup shown when elicitation permission is set to &ldquo;Ask&rdquo;
-                    </p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={async () => {
-                      try {
-                        await invoke("debug_trigger_elicitation_form_popup")
-                      } catch (e) {
-                        console.error("Failed to trigger elicitation popup:", e)
-                      }
-                    }}
-                  >
-                    <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
-                    Sample Popup
-                  </Button>
-                </div>
-              )}
-            </div>
           </CardContent>
         </Card>
       )}
