@@ -128,9 +128,16 @@ where
             // Extract the bearer token (API key or client secret)
             let bearer_token = &auth_header[7..]; // Skip "Bearer "
 
-            // Check if this is the internal test token (debug only) or memory service token (always)
+            // Check if this is the internal test token or memory service token
             let is_internal = bearer_token == state.internal_test_secret.as_str();
             let is_memory = bearer_token == state.memory_secret.as_str();
+            tracing::debug!(
+                "Auth check: token_len={}, is_internal={}, is_memory={}, memory_secret_prefix={}",
+                bearer_token.len(),
+                is_internal,
+                is_memory,
+                &state.memory_secret[..12.min(state.memory_secret.len())],
+            );
             if is_internal || is_memory {
                 let client_id = if is_memory { "memory-service" } else { "internal-test" };
                 tracing::debug!("{} token detected - bypassing API key restrictions", client_id);
