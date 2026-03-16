@@ -30,6 +30,9 @@ import {
   Database,
   Minimize2,
   Zap,
+  ScanSearch,
+  Brain,
+  MessagesSquare,
 } from 'lucide-react'
 
 // --- Section data ---
@@ -269,6 +272,20 @@ const sections: DocSection[] = [
         { id: 'source-llm-guard', title: 'LLM Guard' },
       ]},
       { id: 'parallel-scanning', title: 'Parallel Scanning' },
+      { id: 'moderation-endpoint', title: 'Moderation Endpoint' },
+    ],
+  },
+  {
+    id: 'secret-scanning',
+    title: 'Secret Scanning',
+    icon: <ScanSearch className="h-4 w-4" />,
+    subsections: [
+      { id: 'secret-scanning-overview', title: 'Overview' },
+      { id: 'secret-scan-pipeline', title: 'Detection Pipeline' },
+      { id: 'secret-scan-categories', title: 'Secret Categories' },
+      { id: 'secret-scan-actions', title: 'Actions (Ask / Notify / Off)' },
+      { id: 'secret-scan-approval-flow', title: 'Firewall Approval Flow' },
+      { id: 'secret-scan-allowlist', title: 'Allowlist & Tuning' },
     ],
   },
   {
@@ -306,6 +323,21 @@ const sections: DocSection[] = [
         { id: 'compression-message-settings', title: 'Message Settings' },
         { id: 'compression-per-client', title: 'Per-Client Override' },
       ]},
+    ],
+  },
+  {
+    id: 'memory',
+    title: 'Memory',
+    icon: <Brain className="h-4 w-4" />,
+    subsections: [
+      { id: 'memory-overview', title: 'Overview' },
+      { id: 'memory-architecture', title: 'Architecture' },
+      { id: 'memory-modes', title: 'Supported Modes' },
+      { id: 'memory-recall-tool', title: 'MemoryRecall Tool' },
+      { id: 'memory-sessions', title: 'Sessions & Conversations' },
+      { id: 'memory-compaction', title: 'Compaction & Summarization' },
+      { id: 'memory-privacy', title: 'Privacy' },
+      { id: 'memory-config', title: 'Configuration' },
     ],
   },
   {
@@ -375,6 +407,11 @@ const sections: DocSection[] = [
       { id: 'openai-chat-completions', title: 'POST /chat/completions' },
       { id: 'openai-completions', title: 'POST /completions' },
       { id: 'openai-embeddings', title: 'POST /embeddings' },
+      { id: 'openai-audio-transcriptions', title: 'POST /audio/transcriptions' },
+      { id: 'openai-audio-translations', title: 'POST /audio/translations' },
+      { id: 'openai-audio-speech', title: 'POST /audio/speech' },
+      { id: 'openai-moderations', title: 'POST /moderations' },
+      { id: 'openai-image-generations', title: 'POST /images/generations' },
       { id: 'openai-health', title: 'GET /health' },
       { id: 'openai-spec', title: 'GET /openapi.json' },
       { id: 'openai-streaming', title: 'Streaming (SSE)' },
@@ -413,9 +450,9 @@ interface SidebarGroup {
 const sidebarGroups: SidebarGroup[] = [
   { label: 'Getting Started', sectionIds: ['introduction', 'getting-started'] },
   { label: 'Core Features', sectionIds: ['clients', 'providers', 'model-selection-routing', 'rate-limiting'] },
-  { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'mcp-via-llm', 'skills', 'coding-agents', 'marketplace'] },
+  { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'mcp-via-llm', 'skills', 'coding-agents', 'memory', 'marketplace'] },
   { label: 'Optimization', sectionIds: ['context-management', 'prompt-compression'] },
-  { label: 'Security', sectionIds: ['firewall', 'guardrails', 'privacy-security'] },
+  { label: 'Security', sectionIds: ['firewall', 'guardrails', 'secret-scanning', 'privacy-security'] },
   { label: 'Operations', sectionIds: ['monitoring', 'configuration'] },
   { label: 'API Reference', sectionIds: ['api-openai-gateway', 'api-mcp-gateway'] },
 ]

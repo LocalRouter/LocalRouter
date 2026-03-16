@@ -18,9 +18,9 @@ Model IDs use the format `provider/model_name` (e.g., `openai/gpt-4o`, `anthropi
 
 <!-- @entry openai-chat-completions -->
 
-`POST /chat/completions` is the primary endpoint for LLM inference. It accepts the standard OpenAI chat completions request format with `model`, `messages`, `temperature`, `max_tokens`, `stream`, `tools`, and other parameters. The `model` field accepts either a specific model ID (`openai/gpt-4o`) or `localrouter/auto` for intelligent routing.
+`POST /chat/completions` is the primary endpoint for LLM inference. It accepts the standard OpenAI chat completions request format with `model`, `messages`, `temperature`, `max_tokens`, `stream`, `tools`, `n`, `parallel_tool_calls`, `service_tier`, `metadata`, `modalities`, `audio`, `reasoning_effort`, `store`, and other parameters. The `model` field accepts either a specific model ID (`openai/gpt-4o`) or `localrouter/auto` for intelligent routing.
 
-Responses follow the OpenAI format with `choices`, `usage` (token counts), and `model` (the actual model used). Streaming is supported via `stream: true`.
+Responses follow the OpenAI format with `choices`, `usage` (token counts), `model` (the actual model used), `system_fingerprint`, and `service_tier`. Streaming is supported via `stream: true`, with `usage` included in the final streaming chunk before `[DONE]`.
 
 <!-- @entry openai-completions -->
 
@@ -33,6 +33,36 @@ The response includes `choices` with `text` and `finish_reason` fields. Not all 
 `POST /embeddings` generates vector embeddings for input text. The request includes `model` (must be an embedding model like `openai/text-embedding-3-small`) and `input` (a string or array of strings). The response contains an array of embedding objects, each with a `float[]` vector and token usage data.
 
 Embedding dimensions vary by model. This endpoint is useful for RAG pipelines, semantic search, and similarity comparisons.
+
+<!-- @entry openai-audio-transcriptions -->
+
+`POST /audio/transcriptions` converts audio to text using multipart form-data. The request includes `file` (audio binary, 25MB limit), `model`, and optional `language`, `prompt`, `response_format`, and `temperature` fields. Supported providers include OpenAI, Groq, TogetherAI, and DeepInfra.
+
+The response returns `{ "text": "..." }` with the transcribed content.
+
+<!-- @entry openai-audio-translations -->
+
+`POST /audio/translations` translates audio into English using the same multipart form-data format as transcriptions. It accepts `file`, `model`, `prompt`, `response_format`, and `temperature` fields.
+
+This endpoint always produces English output regardless of the source language. A subset of transcription providers support translations.
+
+<!-- @entry openai-audio-speech -->
+
+`POST /audio/speech` generates audio from text. The JSON request body accepts `model`, `input` (the text to synthesize), `voice`, `response_format`, and `speed` parameters.
+
+The response is a binary audio stream. The `Content-Type` header varies based on the requested output format (e.g., `audio/mpeg`, `audio/opus`).
+
+<!-- @entry openai-moderations -->
+
+`POST /moderations` analyzes content for safety concerns using configured GuardRails safety models. The JSON request body accepts `input` (a string or array of strings) and an optional `model` field.
+
+The response follows the OpenAI moderation format with category flags and confidence scores mapped to LocalRouter's safety categories.
+
+<!-- @entry openai-image-generations -->
+
+`POST /images/generations` creates images from text prompts. The JSON request body accepts `prompt`, `model`, `n`, `size`, `quality`, and `style` parameters.
+
+Provider support for image generation varies — not all providers or models support every parameter combination.
 
 <!-- @entry openai-health -->
 

@@ -3,6 +3,9 @@ import { Button } from '@/components/ui/button'
 import Logo from '@/components/Logo'
 import { FirewallApprovalDemo } from '@/components/FirewallApprovalDemo'
 import { GuardrailApprovalDemo } from '@/components/GuardrailApprovalDemo'
+import { SecretScanApprovalDemo } from '@/components/SecretScanApprovalDemo'
+import { FreeTierFallbackDemo } from '@/components/FreeTierFallbackDemo'
+import { ElicitationDemo } from '@/components/ElicitationDemo'
 import {
   Shield,
   ShieldCheck,
@@ -22,6 +25,9 @@ import {
   Minimize2,
   ArrowRight,
   Zap,
+  KeyRound,
+  MessagesSquare,
+  Brain,
 } from 'lucide-react'
 
 export default function Home() {
@@ -42,7 +48,7 @@ export default function Home() {
               s.
             </h1>
             <p className="mt-6 text-lg text-muted-foreground sm:text-xl">
-              Centralized API key storage with per-client access control. Automatic model failover across providers. Single Unified MCP Gateway aggregating all MCPs and skills.
+              Centralized API key storage with per-client access control. Automatic model failover across providers. Audio transcription and speech synthesis. Single Unified MCP Gateway aggregating all MCPs and skills.
             </p>
             <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <Button asChild size="xl">
@@ -368,6 +374,11 @@ export default function Home() {
                     <span className="text-slate-500 text-[10px]">Skipped</span>
                   </div>
                 </div>
+              </div>
+
+              {/* Exhaustion popup overlay */}
+              <div className="absolute bottom-3 right-3 z-10 transform scale-[0.8] origin-bottom-right">
+                <FreeTierFallbackDemo />
               </div>
             </div>
             <div className="order-1 lg:order-2">
@@ -771,207 +782,12 @@ export default function Home() {
                 <li className="flex gap-3">
                   <FlaskConical className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
-                    <span className="font-medium text-amber-600 dark:text-amber-400">Experimental: Strong/Weak classification</span>
+                    <span className="font-medium">Strong/Weak classification</span>
                     <p className="text-sm text-muted-foreground">ML classifier determines prompt complexity to select strong vs weak model tier</p>
                   </div>
                 </li>
               </ul>
               <Link to="/docs/model-selection-routing" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-violet-500 hover:text-violet-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Feature 6: Firewall */}
-      <section className="border-b py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <ShieldCheck className="h-5 w-5 text-amber-500" />
-                <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
-              </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Runtime Approval Firewall
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Interactive approval prompts for sensitive operations. Allow once, allow for session, or deny. Configurable per client, model, MCP server, and skill.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Request inspection & modification</span>
-                    <p className="text-sm text-muted-foreground">Inspect and modify tool arguments, model parameters, and API payloads in real time before they reach their destination</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Granular approval policies</span>
-                    <p className="text-sm text-muted-foreground">Gate access to models, MCP tools, skills, and marketplace installations. Allow once, for session, or deny &mdash; configurable per client</p>
-                  </div>
-                </li>
-              </ul>
-              <Link to="/docs/firewall" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-amber-500 hover:text-amber-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
-            </div>
-            {/* Visual: Firewall Architecture */}
-            <div className="relative">
-              <div className="relative w-full aspect-[4/3]">
-                {/* SVG Connection Lines */}
-                <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid meet">
-                  {/* Left clients to firewall */}
-                  {/* Cursor (front) right edge → Firewall left edge */}
-                  <path d="M 88 66 Q 120 66 155 112" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* Cline (middle) right edge → Firewall left edge */}
-                  <path d="M 94 78 Q 125 78 155 117" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* WebUI (back) right edge → Firewall left edge */}
-                  <path d="M 100 90 Q 128 90 155 122" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
-
-                  {/* Firewall to right resources */}
-                  {/* Firewall right edge → LLMs (front) left edge */}
-                  <path d="M 245 109 Q 274 66 302 66" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* Firewall right edge → MCPs left edge */}
-                  <path d="M 245 114 Q 274 78 302 78" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* Firewall right edge → Skills left edge */}
-                  <path d="M 245 119 Q 270 90 296 90" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* Firewall right edge → Marketplace left edge */}
-                  <path d="M 245 124 Q 268 102 290 102" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
-
-                  {/* Firewall down to permission dialog */}
-                  <path d="M 200 159 L 200 204" stroke="url(#fw-gradient-amber)" strokeWidth="2.5" fill="none" />
-                  <circle cx="200" cy="204" r="3" fill="#f59e0b" />
-
-                  <defs>
-                    <linearGradient id="fw-gradient-blue" x1="0%" y1="0%" x2="100%" y2="0%">
-                      <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.8" />
-                      <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.5" />
-                    </linearGradient>
-                    <linearGradient id="fw-gradient-multi" x1="0%" y1="0%" x2="100%" y2="0%">
-                      <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.5" />
-                      <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.8" />
-                    </linearGradient>
-                    <linearGradient id="fw-gradient-amber" x1="0%" y1="0%" x2="0%" y2="100%">
-                      <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.8" />
-                      <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.5" />
-                    </linearGradient>
-                  </defs>
-                </svg>
-
-                {/* Left: Clients Stack (diagonally offset) */}
-                <div className="absolute left-[2%] top-[12%]">
-                  <div className="text-[9px] sm:text-xs font-medium text-blue-500 uppercase tracking-wide mb-2">Clients</div>
-                  <div className="relative">
-                    {/* Client 3 (back) */}
-                    <div className="absolute top-8 left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
-                      <img src="/icons/open-webui.png" alt="Open WebUI" className="h-4 w-4" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white/80">WebUI</span>
-                    </div>
-                    {/* Client 2 (middle) */}
-                    <div className="absolute top-4 left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/15 border border-blue-500/40 shadow-sm backdrop-blur-sm">
-                      <div className="h-4 w-4 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-[7px]">C</div>
-                      <span className="text-[10px] sm:text-xs font-medium text-white/90">Cline</span>
-                    </div>
-                    {/* Client 1 (front) */}
-                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/20 border border-blue-500/50 shadow-lg backdrop-blur-sm">
-                      <img src="/icons/cursor.svg" alt="Cursor" className="h-4 w-4" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white">Cursor</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Center: LocalRouter Firewall */}
-                <div className="absolute left-1/2 top-[28%] -translate-x-1/2">
-                  <div className="rounded-xl border-2 border-amber-500/50 bg-gradient-to-br from-amber-500/20 to-orange-500/20 p-3 shadow-xl backdrop-blur-sm">
-                    <div className="text-center">
-                      <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center mx-auto mb-1 shadow-lg">
-                        <Shield className="h-5 w-5 text-white" />
-                      </div>
-                      <div className="font-bold text-xs text-white">LocalRouter</div>
-                      <div className="text-[9px] text-amber-400">Firewall</div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right: Resources Stack (diagonally offset) */}
-                <div className="absolute right-[2%] top-[12%]">
-                  <div className="text-[9px] sm:text-xs font-medium text-violet-500 uppercase tracking-wide mb-2 text-right">Resources</div>
-                  <div className="relative">
-                    {/* Resource 4 (back) */}
-                    <div className="absolute top-12 -left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 shadow-sm backdrop-blur-sm">
-                      <Store className="h-4 w-4 text-cyan-400" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white/80">Marketplace</span>
-                    </div>
-                    {/* Resource 3 */}
-                    <div className="absolute top-8 -left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/30 shadow-sm backdrop-blur-sm">
-                      <Sparkles className="h-4 w-4 text-violet-400" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white/85">Skills</span>
-                    </div>
-                    {/* Resource 2 */}
-                    <div className="absolute top-4 left-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 shadow-sm backdrop-blur-sm">
-                      <Wrench className="h-4 w-4 text-emerald-400" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white/90">MCPs</span>
-                    </div>
-                    {/* Resource 1 (front) */}
-                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/20 border border-violet-500/50 shadow-lg backdrop-blur-sm">
-                      <img src="/icons/chatgpt.svg" alt="LLM" className="h-4 w-4" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white">LLMs</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Bottom: Permission Dialog */}
-                <div className="absolute left-1/2 top-[68%] -translate-x-1/2 scale-75 origin-top">
-                  <FirewallApprovalDemo />
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Feature 6: GuardRails */}
-      <section className="border-b py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            {/* Visual: GuardRail Approval Demo */}
-            <div className="flex justify-center order-2 lg:order-1">
-              <div className="transform scale-[0.95]">
-                <GuardrailApprovalDemo />
-              </div>
-            </div>
-            <div className="order-1 lg:order-2">
-              <div className="flex items-center gap-2 mb-4">
-                <Shield className="h-5 w-5 text-red-500" />
-                <span className="text-sm font-medium text-red-500 uppercase tracking-wide">GuardRails</span>
-              </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Content Safety Inspection
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Scan LLM requests and responses for prompt injection, jailbreaks, PII leakage, and code injection. When a rule triggers, a popup lets you allow or deny the request.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Multi-source detection</span>
-                    <p className="text-sm text-muted-foreground">Built-in rules plus downloadable sources from Microsoft Presidio, LLM Guard, and more</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Parallel scanning</span>
-                    <p className="text-sm text-muted-foreground">Guardrail checks run in parallel with provider calls for zero-latency overhead on clean requests</p>
-                  </div>
-                </li>
-              </ul>
-              <Link to="/docs/guardrails" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-red-500 hover:text-red-400 transition-colors">
                 Learn more <span aria-hidden="true">&rarr;</span>
               </Link>
             </div>
@@ -1212,12 +1028,12 @@ export default function Home() {
               </div>
 
               {/* MCP via LLM */}
-              <div className="group rounded-xl border bg-card p-6 hover:border-rose-500/50 transition-colors">
+              <div className="group rounded-xl border bg-card p-6 hover:border-orange-500/50 transition-colors">
                 <div className="flex items-center gap-2 mb-3">
-                  <div className="h-8 w-8 rounded-lg bg-rose-500/10 flex items-center justify-center">
+                  <div className="h-8 w-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
                     <Route className="h-4 w-4 text-rose-500" />
                   </div>
-                  <span className="text-sm font-medium text-rose-500 uppercase tracking-wide">MCP via LLM</span>
+                  <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">MCP via LLM</span>
                 </div>
                 <h3 className="text-xl font-bold tracking-tight">MITM MCP Injection</h3>
                 <p className="mt-2 text-sm text-muted-foreground">
@@ -1225,21 +1041,301 @@ export default function Home() {
                 </p>
                 <ul className="mt-4 space-y-2">
                   <li className="flex gap-2 text-sm">
-                    <Check className="h-4 w-4 shrink-0 text-rose-500 mt-0.5" />
+                    <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
                     <span><span className="font-medium">Optional per-client</span> — enable for clients without MCP support, disable for those that have it</span>
                   </li>
                   <li className="flex gap-2 text-sm">
-                    <Check className="h-4 w-4 shrink-0 text-rose-500 mt-0.5" />
+                    <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
                     <span><span className="font-medium">Agentic loop</span> — automatic tool call → execute → resume cycles</span>
                   </li>
                   <li className="flex gap-2 text-sm">
-                    <Check className="h-4 w-4 shrink-0 text-rose-500 mt-0.5" />
+                    <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
                     <span><span className="font-medium">Mixed tools</span> — MCP tools run server-side, client tools returned normally</span>
                   </li>
                 </ul>
-                <Link to="/docs/mcp-via-llm" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-rose-500 hover:text-rose-400 transition-colors">
+                <Link to="/docs/mcp-via-llm" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-orange-500 hover:text-orange-400 transition-colors">
                   Learn more <span aria-hidden="true">&rarr;</span>
                 </Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Safety Platform */}
+      <section className="border-b py-20 sm:py-32">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          {/* Hero: Runtime Safety Layer */}
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <ShieldCheck className="h-5 w-5 text-amber-500" />
+                <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Safety</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Runtime Safety
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Every request passes through LocalRouter's safety layer — content scanning, secret detection, approval gates, and MCP permission controls. Configurable per client, model, and server.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Multi-layer protection</span>
+                    <p className="text-sm text-muted-foreground">Content safety scanning, secret detection, and runtime approval gates all run in the request pipeline</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Interactive approval popups</span>
+                    <p className="text-sm text-muted-foreground">Inspect, modify, allow, or deny any operation in real time — from tool calls to LLM sampling requests</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Per-client policies</span>
+                    <p className="text-sm text-muted-foreground">Granular rules per client, model, MCP server, and skill — allow once, for session, or deny</p>
+                  </div>
+                </li>
+              </ul>
+              <Link to="/docs/firewall" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-amber-500 hover:text-amber-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
+            </div>
+            {/* Visual: Firewall Architecture */}
+            <div className="relative">
+              <div className="relative w-full aspect-[4/3]">
+                {/* SVG Connection Lines */}
+                <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid meet">
+                  {/* Left clients to firewall */}
+                  <path d="M 88 66 Q 120 66 155 112" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
+                  <path d="M 94 78 Q 125 78 155 117" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
+                  <path d="M 100 90 Q 128 90 155 122" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
+
+                  {/* Firewall to right resources */}
+                  <path d="M 245 109 Q 274 66 302 66" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+                  <path d="M 245 114 Q 274 78 302 78" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+                  <path d="M 245 119 Q 270 90 296 90" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+                  <path d="M 245 124 Q 268 102 290 102" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+
+                  <defs>
+                    <linearGradient id="fw-gradient-blue" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.8" />
+                      <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.5" />
+                    </linearGradient>
+                    <linearGradient id="fw-gradient-multi" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.5" />
+                      <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.8" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+
+                {/* Left: Clients Stack */}
+                <div className="absolute left-[2%] top-[12%]">
+                  <div className="text-[9px] sm:text-xs font-medium text-blue-500 uppercase tracking-wide mb-2">Clients</div>
+                  <div className="relative">
+                    <div className="absolute top-8 left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
+                      <img src="/icons/open-webui.png" alt="Open WebUI" className="h-4 w-4" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/80">WebUI</span>
+                    </div>
+                    <div className="absolute top-4 left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/15 border border-blue-500/40 shadow-sm backdrop-blur-sm">
+                      <div className="h-4 w-4 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-[7px]">C</div>
+                      <span className="text-[10px] sm:text-xs font-medium text-white/90">Cline</span>
+                    </div>
+                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/20 border border-blue-500/50 shadow-lg backdrop-blur-sm">
+                      <img src="/icons/cursor.svg" alt="Cursor" className="h-4 w-4" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white">Cursor</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Center: LocalRouter Safety */}
+                <div className="absolute left-1/2 top-[28%] -translate-x-1/2">
+                  <div className="rounded-xl border-2 border-amber-500/50 bg-gradient-to-br from-amber-500/20 to-orange-500/20 p-3 shadow-xl backdrop-blur-sm">
+                    <div className="text-center">
+                      <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center mx-auto mb-1 shadow-lg">
+                        <Shield className="h-5 w-5 text-white" />
+                      </div>
+                      <div className="font-bold text-xs text-white">LocalRouter</div>
+                      <div className="text-[9px] text-amber-400">Safety Layer</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: Resources Stack */}
+                <div className="absolute right-[2%] top-[12%]">
+                  <div className="text-[9px] sm:text-xs font-medium text-violet-500 uppercase tracking-wide mb-2 text-right">Resources</div>
+                  <div className="relative">
+                    <div className="absolute top-12 -left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 shadow-sm backdrop-blur-sm">
+                      <Store className="h-4 w-4 text-cyan-400" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/80">Marketplace</span>
+                    </div>
+                    <div className="absolute top-8 -left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/30 shadow-sm backdrop-blur-sm">
+                      <Sparkles className="h-4 w-4 text-violet-400" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/85">Skills</span>
+                    </div>
+                    <div className="absolute top-4 left-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 shadow-sm backdrop-blur-sm">
+                      <Wrench className="h-4 w-4 text-emerald-400" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/90">MCPs</span>
+                    </div>
+                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/20 border border-violet-500/50 shadow-lg backdrop-blur-sm">
+                      <img src="/icons/chatgpt.svg" alt="LLM" className="h-4 w-4" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white">LLMs</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Sub-features: GuardRails, Secret Scanning, Approvals, Elicitation & Sampling */}
+          <div className="mt-16 pt-16 border-t border-border/50">
+            <div className="grid gap-8 md:grid-cols-2">
+              {/* Content Safety (GuardRails) */}
+              <div className="relative">
+                <div className="hidden lg:block absolute -top-12 right-[80%] transform scale-[0.65] origin-top-right pointer-events-none">
+                  <GuardrailApprovalDemo />
+                </div>
+                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-red-500/50 transition-colors">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-8 w-8 rounded-lg bg-red-500/10 flex items-center justify-center">
+                      <Shield className="h-4 w-4 text-red-500" />
+                    </div>
+                    <span className="text-sm font-medium text-red-500 uppercase tracking-wide">GuardRails</span>
+                  </div>
+                  <h3 className="text-xl font-bold tracking-tight">Content Safety Inspection</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Scan LLM requests and responses for prompt injection, jailbreaks, PII leakage, and code injection. When a rule triggers, a popup lets you allow or deny.
+                  </p>
+                  <ul className="mt-4 space-y-2">
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-red-500 mt-0.5" />
+                      <span><span className="font-medium">Multi-source detection</span> — built-in rules, Microsoft Presidio, LLM Guard</span>
+                    </li>
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-red-500 mt-0.5" />
+                      <span><span className="font-medium">Moderation API</span> — OpenAI-compatible <code className="text-xs bg-muted px-1 rounded">/v1/moderations</code> endpoint</span>
+                    </li>
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-red-500 mt-0.5" />
+                      <span><span className="font-medium">Parallel scanning</span> — zero-latency overhead on clean requests</span>
+                    </li>
+                  </ul>
+                  <Link to="/docs/guardrails" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-red-500 hover:text-red-400 transition-colors">
+                    Learn more <span aria-hidden="true">&rarr;</span>
+                  </Link>
+                </div>
+              </div>
+
+              {/* Secret Scanning */}
+              <div className="relative">
+                <div className="hidden lg:block absolute -top-12 left-[80%] transform scale-[0.65] origin-top-left pointer-events-none">
+                  <SecretScanApprovalDemo />
+                </div>
+                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-orange-500/50 transition-colors">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-8 w-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                      <KeyRound className="h-4 w-4 text-orange-500" />
+                    </div>
+                    <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">Secret Scanning</span>
+                  </div>
+                  <h3 className="text-xl font-bold tracking-tight">Secret Scanning</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Scans outbound requests for API keys, tokens, and passwords before they reach providers. Multi-stage pipeline with regex matching and Shannon entropy filtering.
+                  </p>
+                  <ul className="mt-4 space-y-2">
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
+                      <span><span className="font-medium">Regex + Shannon entropy</span> — multi-stage pipeline catches real secrets, ignores false positives</span>
+                    </li>
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
+                      <span><span className="font-medium">Three actions</span> — Ask (popup), Notify (alert), Off — per-client override</span>
+                    </li>
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-orange-500 mt-0.5" />
+                      <span><span className="font-medium">Time-based bypass</span> — approve once for a configurable period</span>
+                    </li>
+                  </ul>
+                  <Link to="/docs/secret-scanning" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-orange-500 hover:text-orange-400 transition-colors">
+                    Learn more <span aria-hidden="true">&rarr;</span>
+                  </Link>
+                </div>
+              </div>
+
+              {/* Runtime Approvals */}
+              <div className="relative">
+                <div className="hidden lg:block absolute -top-12 right-[80%] transform scale-[0.65] origin-top-right pointer-events-none">
+                  <FirewallApprovalDemo />
+                </div>
+                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-amber-500/50 transition-colors">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-8 w-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
+                      <ShieldCheck className="h-4 w-4 text-amber-500" />
+                    </div>
+                    <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
+                  </div>
+                  <h3 className="text-xl font-bold tracking-tight">Runtime Approval Firewall</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Interactive approval prompts for sensitive operations. Inspect and modify tool arguments, model parameters, and API payloads in real time.
+                  </p>
+                  <ul className="mt-4 space-y-2">
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-amber-500 mt-0.5" />
+                      <span><span className="font-medium">Request inspection & modification</span> — edit tool args, model params before they reach their destination</span>
+                    </li>
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-amber-500 mt-0.5" />
+                      <span><span className="font-medium">Granular policies</span> — per-client, per-model, per-MCP server, per-skill</span>
+                    </li>
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-amber-500 mt-0.5" />
+                      <span><span className="font-medium">Allow once / for session / deny</span> — configurable per client</span>
+                    </li>
+                  </ul>
+                  <Link to="/docs/firewall" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-amber-500 hover:text-amber-400 transition-colors">
+                    Learn more <span aria-hidden="true">&rarr;</span>
+                  </Link>
+                </div>
+              </div>
+
+              {/* Elicitation & Sampling */}
+              <div className="relative">
+                <div className="hidden lg:block absolute -top-12 left-[80%] transform scale-[0.65] origin-top-left pointer-events-none">
+                  <ElicitationDemo />
+                </div>
+                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-indigo-500/50 transition-colors">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-8 w-8 rounded-lg bg-indigo-500/10 flex items-center justify-center">
+                      <MessagesSquare className="h-4 w-4 text-indigo-500" />
+                    </div>
+                    <span className="text-sm font-medium text-indigo-500 uppercase tracking-wide">MCP Permissions</span>
+                  </div>
+                  <h3 className="text-xl font-bold tracking-tight">Elicitation &amp; Sampling</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    MCP servers can request user input via structured forms and route LLM completions through your configured providers — all gated by approval policies.
+                  </p>
+                  <ul className="mt-4 space-y-2">
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-indigo-500 mt-0.5" />
+                      <span><span className="font-medium">Elicitation</span> — servers request structured user input via JSON Schema popup forms</span>
+                    </li>
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-indigo-500 mt-0.5" />
+                      <span><span className="font-medium">Sampling</span> — servers request LLM completions routed through your providers</span>
+                    </li>
+                    <li className="flex gap-2 text-sm">
+                      <Check className="h-4 w-4 shrink-0 text-indigo-500 mt-0.5" />
+                      <span><span className="font-medium">Gated access</span> — Allow / Ask / Deny policies per server</span>
+                    </li>
+                  </ul>
+                  <Link to="/docs/unified-mcp-gateway" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-indigo-500 hover:text-indigo-400 transition-colors">
+                    Learn more <span aria-hidden="true">&rarr;</span>
+                  </Link>
+                </div>
               </div>
             </div>
           </div>
@@ -1573,6 +1669,110 @@ export default function Home() {
         ...
       </section>*/}
       {/* END OLD CAROUSEL SECTIONS */}
+
+      {/* Memory */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <Brain className="h-5 w-5 text-pink-500" />
+                <span className="text-sm font-medium text-pink-500 uppercase tracking-wide">Memory</span>
+                <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                  Experimental
+                </span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Persistent Conversation Memory
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                LLMs recall past conversations across sessions. Per-client isolation with automatic transcript capture and semantic search via Zillis memsearch.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-pink-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Per-client isolation</span>
+                    <p className="text-sm text-muted-foreground">Each client gets its own memory index and directory — no cross-client data leakage</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-pink-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Auto-capture</span>
+                    <p className="text-sm text-muted-foreground">Transcripts saved automatically in MCP via LLM and Both client modes</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-pink-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Semantic recall</span>
+                    <p className="text-sm text-muted-foreground">MemoryRecall virtual MCP tool with hybrid vector search across all past sessions</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-pink-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Session compaction</span>
+                    <p className="text-sm text-muted-foreground">LLM-powered summarization at session boundaries — raw transcripts archived for re-compaction</p>
+                  </div>
+                </li>
+              </ul>
+              <Link to="/docs/memory" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-pink-500 hover:text-pink-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
+            </div>
+            {/* Visual: Memory recall flow */}
+            <div className="relative overflow-x-auto">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-pink-950 to-slate-900 p-6 shadow-2xl min-w-[420px]">
+                {/* User message */}
+                <div className="flex gap-3 mb-4">
+                  <div className="h-7 w-7 rounded-full bg-blue-500/20 flex items-center justify-center shrink-0 mt-0.5">
+                    <span className="text-blue-400 text-[10px] font-bold">U</span>
+                  </div>
+                  <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 px-3 py-2">
+                    <p className="text-white text-xs">What did we discuss about rate limiting last week?</p>
+                  </div>
+                </div>
+
+                {/* Tool call: MemoryRecall */}
+                <div className="ml-10 mb-4">
+                  <div className="rounded-lg bg-pink-500/10 border border-pink-500/30 px-3 py-2">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <Brain className="h-3 w-3 text-pink-400" />
+                      <span className="text-pink-400 text-[10px] font-mono font-medium">MemoryRecall</span>
+                    </div>
+                    <code className="text-[10px] text-slate-300 font-mono block">{"{ query: \"rate limiting configuration\" }"}</code>
+                  </div>
+                </div>
+
+                {/* Retrieved memory */}
+                <div className="ml-10 mb-4">
+                  <div className="rounded-lg bg-slate-800/80 border border-slate-600 px-3 py-2">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      <span className="text-emerald-400 text-[10px] font-medium">Session from Mar 8</span>
+                    </div>
+                    <p className="text-slate-300 text-[10px] leading-relaxed">
+                      Discussed per-client rate limits: 100 RPM for Cursor, 50 RPM for Cline. Set cost limit of $5/month for OpenAI provider. Configured token limits at 100k input / 8k output...
+                    </p>
+                  </div>
+                </div>
+
+                {/* Assistant response */}
+                <div className="flex gap-3">
+                  <div className="h-7 w-7 rounded-full bg-pink-500/20 flex items-center justify-center shrink-0 mt-0.5">
+                    <span className="text-pink-400 text-[10px] font-bold">A</span>
+                  </div>
+                  <div className="rounded-lg bg-pink-500/10 border border-pink-500/20 px-3 py-2">
+                    <p className="text-white text-xs">Last week you configured rate limits for two clients: Cursor at 100 RPM and Cline at 50 RPM, with a $5/month cost cap on OpenAI...</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* Privacy */}
       <section className="border-b py-16 sm:py-24">

@@ -61,3 +61,9 @@ It runs as a separate service and provides higher accuracy than pattern-based de
 All configured detection sources run in parallel for each request, minimizing the impact on request latency. The overall scan time equals the slowest individual detector rather than the sum of all detectors.
 
 If any detector exceeds a configurable timeout, it is skipped and the request proceeds with partial scan results.
+
+<!-- @entry moderation-endpoint -->
+
+The `/v1/moderations` endpoint exposes GuardRails safety scanning as an OpenAI-compatible moderation API. Requests are run through configured safety models (such as OpenAI's moderation model) and the response includes category flags and confidence scores mapped to LocalRouter's SafetyCategory system.
+
+Moderation models are priced at zero cost for routing purposes.
