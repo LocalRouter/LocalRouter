@@ -131,11 +131,6 @@ impl VirtualMcpServer for MemoryVirtualServer {
                 e
             ));
         }
-        if let Err(e) = self.memory_service.start_daemon(client_id).await {
-            tracing::warn!("Memory: failed to start daemon for recall: {}", e);
-            // Don't fail — search might still work if index exists
-        }
-
         // Search
         let results = match self
             .memory_service

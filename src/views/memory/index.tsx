@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { CheckCircle2, Circle, Download, FolderOpen, Loader2, Play, XCircle } from "lucide-react"
 import { FEATURES } from "@/constants/features"
+import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -26,7 +27,7 @@ interface SetupState {
 }
 
 const defaultConfig: MemoryConfig = {
-  embedding: { type: "onnx" as const },
+  embedding: { type: "local" as const },
   auto_start_daemon: true,
   search_top_k: 5,
   session_inactivity_minutes: 180,
@@ -196,6 +197,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <FEATURES.memory.icon className={`h-6 w-6 ${FEATURES.memory.color}`} />
           Memory
+          {FEATURES.memory.experimental && <ExperimentalBadge />}
         </h1>
         <p className="text-sm text-muted-foreground">
           Persistent conversation memory for LLM sessions powered by Zillis memsearch
@@ -251,7 +253,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm">Setup</CardTitle>
                 <CardDescription>
-                  Memory requires Python 3 and the memsearch CLI with its built-in ONNX embedding model
+                  Memory requires Python 3 and the memsearch CLI with the local embedding provider
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -292,7 +294,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     <div className="flex-1 min-w-0">
                       <span className="font-medium">Embedding model</span>
                       <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-2">
-                        ONNX bge-m3 int8
+                        sentence-transformers
                       </Badge>
                     </div>
                     {setup.model.status === "installing" && (
@@ -323,7 +325,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 </Button>
 
                 <p className="text-xs text-muted-foreground pt-2 border-t">
-                  The ONNX bge-m3 int8 model (~558 MB) is downloaded from HuggingFace on first use.
+                  The sentence-transformers model is downloaded from HuggingFace on first use.
                   No API key required &mdash; runs locally on CPU.
                 </p>
               </CardContent>

@@ -227,6 +227,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
+  'clone_client': (args) => {
+    const source = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    if (!source) return null
+    const existingNames = mockData.clients.map(c => c.name)
+    let cloneName = `Clone of ${source.name}`
+    let n = 2
+    while (existingNames.includes(cloneName)) { cloneName = `Clone of ${source.name} (${n++})` }
+    const newId = generateId()
+    const cloned = { ...source, id: newId, client_id: newId, name: cloneName, sync_config: false, created_at: new Date().toISOString(), last_used: null }
+    mockData.clients.push(cloned)
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return [`demo-secret-${newId}`, cloned]
+  },
   'rotate_client_secret': () => {
     setTimeout(() => emit('clients-changed', {}), 10)
     return { secret: `demo-secret-${generateId()}` }
@@ -542,6 +555,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const idx = mockData.providers.findIndex(p => p.instance_name === args?.instanceName)
     if (idx !== -1) mockData.providers.splice(idx, 1)
     toast.success('Provider removed (demo)')
+    setTimeout(() => emit('providers-changed', {}), 10)
+    return null
+  },
+  'clone_provider_instance': (args) => {
+    const source = mockData.providers.find(p => p.instance_name === args?.instanceName)
+    if (!source) return null
+    const existingNames = mockData.providers.map(p => p.instance_name)
+    let cloneName = `Clone of ${source.instance_name}`
+    let n = 2
+    while (existingNames.includes(cloneName)) { cloneName = `Clone of ${source.instance_name} (${n++})` }
+    const cloned = { ...source, instance_name: cloneName }
+    mockData.providers.push(cloned)
+    setTimeout(() => emit('providers-changed', {}), 10)
     return null
   },
   'set_provider_enabled': (args) => {
@@ -578,10 +604,24 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return null
   },
   'delete_mcp_server': (args) => {
-    const idx = mockData.mcpServers.findIndex(s => s.id === args?.id)
+    const idx = mockData.mcpServers.findIndex(s => s.id === (args?.serverId || args?.id))
     if (idx !== -1) mockData.mcpServers.splice(idx, 1)
     toast.success('MCP Server deleted (demo)')
+    setTimeout(() => emit('mcp-servers-changed', {}), 10)
     return null
+  },
+  'clone_mcp_server': (args) => {
+    const source = mockData.mcpServers.find(s => s.id === args?.serverId)
+    if (!source) return null
+    const existingNames = mockData.mcpServers.map(s => s.name)
+    let cloneName = `Clone of ${source.name}`
+    let n = 2
+    while (existingNames.includes(cloneName)) { cloneName = `Clone of ${source.name} (${n++})` }
+    const newId = generateId()
+    const cloned = { ...source, id: newId, name: cloneName, created_at: new Date().toISOString() }
+    mockData.mcpServers.push(cloned)
+    setTimeout(() => emit('mcp-servers-changed', {}), 10)
+    return cloned
   },
   'toggle_mcp_server_enabled': (args) => {
     const server = mockData.mcpServers.find(s => s.id === args?.id)
@@ -2653,7 +2693,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Memory - Persistent Conversation Memory
   // ============================================================================
   'get_memory_config': () => ({
-    embedding: { type: 'onnx' as const },
+    embedding: { type: 'local' as const },
     auto_start_daemon: true,
     search_top_k: 5,
     session_inactivity_minutes: 180,

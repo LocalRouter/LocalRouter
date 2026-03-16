@@ -544,6 +544,7 @@ pub async fn run_agentic_loop(
                 let assistant_text = choice.message.content.as_text();
                 if !user_text.is_empty() && !assistant_text.is_empty() {
                     let svc = svc.clone();
+                    let client_id = session.read().client_id.clone();
                     tokio::spawn(async move {
                         if let Err(e) =
                             svc.transcript.append_exchange(&path, &user_text, &assistant_text).await
@@ -551,6 +552,7 @@ pub async fn run_agentic_loop(
                             tracing::warn!("Memory: failed to write transcript: {}", e);
                         }
                         svc.touch_session(&path);
+                        svc.index_client(&client_id).await;
                     });
                 }
             }

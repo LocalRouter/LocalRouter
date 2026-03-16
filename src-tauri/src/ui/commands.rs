@@ -4465,14 +4465,14 @@ pub async fn memory_setup(
         }
     }
 
-    // Step 2: Install/upgrade memsearch with ONNX support
-    // Always run pip install to ensure the [onnx] extra is present,
+    // Step 2: Install/upgrade memsearch with local embedding support
+    // Always run pip install to ensure the [local] extra is present,
     // even if memsearch is already installed without it.
     let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
         "step": "memsearch", "status": "installing"
     }));
     let install_result = tokio::process::Command::new("pip3")
-        .args(["install", "--upgrade", "memsearch[onnx]"])
+        .args(["install", "--upgrade", "memsearch[local]"])
         .output()
         .await
         .map_err(|e| format!("pip3 not found: {}", e))?;
@@ -4482,7 +4482,7 @@ pub async fn memory_setup(
         let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
             "step": "memsearch", "status": "error", "error": stderr.to_string()
         }));
-        return Err(format!("Failed to install memsearch[onnx]: {}", stderr));
+        return Err(format!("Failed to install memsearch[local]: {}", stderr));
     }
 
     match svc.cli.check_installed().await {
@@ -4504,11 +4504,11 @@ pub async fn memory_setup(
         "step": "model", "status": "checking"
     }));
 
-    // Pre-warm the ONNX model by running a dummy search
+    // Pre-warm the local embedding model by running a dummy search
     let warmup_result = tokio::time::timeout(
         std::time::Duration::from_secs(300),
         tokio::process::Command::new("memsearch")
-            .args(["search", "--provider", "onnx", "warmup"])
+            .args(["search", "--provider", "local", "warmup"])
             .output(),
     )
     .await;
@@ -4577,7 +4577,7 @@ const MEMORY_TEST_DIR_NAME: &str = "localrouter-memory-test";
 
 /// Get or create a temporary directory for memory Try It Out tests.
 /// Uses the system temp dir (cross-platform: /tmp on macOS/Linux, %TEMP% on Windows).
-/// No config file needed — all commands pass `--provider onnx` via CLI args.
+/// No config file needed — all commands pass `--provider` via CLI args.
 fn memory_test_dir() -> Result<std::path::PathBuf, String> {
     let dir = std::env::temp_dir().join(MEMORY_TEST_DIR_NAME);
     std::fs::create_dir_all(dir.join("sessions"))
@@ -4585,9 +4585,9 @@ fn memory_test_dir() -> Result<std::path::PathBuf, String> {
     Ok(dir)
 }
 
-/// Create an ONNX CLI instance for test commands.
+/// Create a CLI instance for test commands using the local provider.
 fn memory_test_cli() -> lr_memory::MemsearchCli {
-    lr_memory::MemsearchCli::with_provider("onnx".to_string())
+    lr_memory::MemsearchCli::with_provider("local".to_string())
 }
 
 /// Reset the memory test directory (wipe all indexed content).

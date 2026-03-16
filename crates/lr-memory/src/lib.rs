@@ -2,18 +2,22 @@
 //!
 //! Provides auto-capture of conversations in MCP via LLM and Both modes,
 //! with per-client isolation and configurable LLM compaction.
+//!
+//! No background daemon — indexing is called directly after each transcript write.
 
 pub mod cli;
 pub mod compaction;
-pub mod daemon;
 pub mod session_manager;
 pub mod transcript;
+
+// Daemon module removed — indexing is called directly after each write.
 
 #[cfg(test)]
 mod tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
@@ -25,17 +29,20 @@ pub use cli::{MemsearchCli, SearchResult};
 pub use session_manager::SessionManager;
 pub use transcript::TranscriptWriter;
 
-/// Core memory service — manages per-client memsearch instances,
-/// session tracking, and compaction.
+/// Minimum interval between index calls per client (debounce).
+const INDEX_DEBOUNCE: Duration = Duration::from_secs(3);
+
+/// Core memory service — manages per-client transcript writing,
+/// session tracking, indexing, and compaction.
 pub struct MemoryService {
     pub cli: MemsearchCli,
     pub session_manager: SessionManager,
     pub transcript: TranscriptWriter,
     config: RwLock<MemoryConfig>,
-    /// One daemon per client_id (per-client isolation)
-    daemons: DashMap<String, daemon::MemsearchDaemon>,
     /// Root memory directory (e.g., ~/.localrouter/memory/)
     memory_dir: PathBuf,
+    /// Last index time per client_id (for debouncing)
+    last_indexed: DashMap<String, Instant>,
 }
 
 impl MemoryService {
@@ -43,7 +50,8 @@ impl MemoryService {
     /// that's done lazily on first use or via the setup commands.
     pub fn new(config: MemoryConfig, memory_dir: PathBuf) -> Self {
         let provider = match &config.embedding {
-            lr_config::MemoryEmbeddingConfig::Onnx => "onnx".to_string(),
+            lr_config::MemoryEmbeddingConfig::Local
+            | lr_config::MemoryEmbeddingConfig::Onnx => "local".to_string(),
             lr_config::MemoryEmbeddingConfig::Ollama { .. } => "ollama".to_string(),
         };
         let session_config = session_manager::SessionConfig {
@@ -57,8 +65,8 @@ impl MemoryService {
             session_manager: SessionManager::new(session_config),
             transcript: TranscriptWriter::new(),
             config: RwLock::new(config),
-            daemons: DashMap::new(),
             memory_dir,
+            last_indexed: DashMap::new(),
         }
     }
 
@@ -71,37 +79,30 @@ impl MemoryService {
         Ok(client_dir)
     }
 
-    /// Start the memsearch watch daemon for a client (if not already running).
-    pub async fn start_daemon(&self, client_id: &str) -> Result<(), String> {
-        if let Some(mut daemon) = self.daemons.get_mut(client_id) {
-            if daemon.is_running() {
-                return Ok(());
+    /// Index a client's sessions directory with debouncing.
+    /// Called after each transcript write. Skips if indexed within the last
+    /// few seconds to avoid redundant work during rapid exchanges.
+    pub async fn index_client(&self, client_id: &str) {
+        // Debounce: skip if indexed recently
+        if let Some(last) = self.last_indexed.get(client_id) {
+            if last.elapsed() < INDEX_DEBOUNCE {
+                return;
             }
         }
 
-        let client_dir = self
-            .ensure_client_dir(client_id)
-            .map_err(|e| format!("Failed to create client directory: {}", e))?;
-
+        let client_dir = self.memory_dir.join(client_id);
         let sessions_dir = client_dir.join("sessions");
-        let mut daemon = daemon::MemsearchDaemon::new();
-        daemon.start(&sessions_dir, &self.cli.provider).await?;
-        self.daemons.insert(client_id.to_string(), daemon);
-        Ok(())
-    }
-
-    /// Stop the memsearch watch daemon for a client.
-    pub async fn stop_daemon(&self, client_id: &str) {
-        if let Some((_, mut daemon)) = self.daemons.remove(client_id) {
-            daemon.stop().await;
-        }
-    }
-
-    /// Stop all running daemons (for shutdown).
-    pub async fn stop_all_daemons(&self) {
-        let keys: Vec<String> = self.daemons.iter().map(|r| r.key().clone()).collect();
-        for key in keys {
-            self.stop_daemon(&key).await;
+        if sessions_dir.exists() {
+            if let Err(e) = self.cli.index(&sessions_dir).await {
+                tracing::warn!(
+                    "Memory index failed for client {}: {}",
+                    &client_id[..8.min(client_id.len())],
+                    e
+                );
+                return;
+            }
+            self.last_indexed
+                .insert(client_id.to_string(), Instant::now());
         }
     }
 

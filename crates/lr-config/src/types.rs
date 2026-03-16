@@ -2261,7 +2261,11 @@ fn default_memory_recall_tool_name() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MemoryEmbeddingConfig {
-    /// Built-in ONNX bge-m3 (default, ~558MB auto-download on first use)
+    /// Local sentence-transformers (default, no API key, runs on CPU).
+    /// Uses memsearch's `local` provider with auto-downloaded models.
+    Local,
+    /// Backwards-compatible alias — existing configs may have `type: onnx`.
+    /// Treated identically to Local (maps to memsearch's `local` provider).
     Onnx,
     /// Ollama for embeddings
     Ollama {
@@ -2272,7 +2276,7 @@ pub enum MemoryEmbeddingConfig {
 
 impl Default for MemoryEmbeddingConfig {
     fn default() -> Self {
-        Self::Onnx
+        Self::Local
     }
 }
 

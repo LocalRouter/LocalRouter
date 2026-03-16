@@ -1568,6 +1568,11 @@ export interface DeleteClientParams {
   clientId: string
 }
 
+/** Params for clone_client */
+export interface CloneClientParams {
+  clientId: string
+}
+
 /** Params for update_client_name */
 export interface UpdateClientNameParams {
   clientId: string
@@ -1838,6 +1843,11 @@ export interface RemoveProviderInstanceParams {
   instanceName: string
 }
 
+/** Params for clone_provider_instance */
+export interface CloneProviderInstanceParams {
+  instanceName: string
+}
+
 /** Params for set_provider_enabled */
 export interface SetProviderEnabledParams {
   instanceName: string
@@ -1880,6 +1890,11 @@ export interface CreateMcpServerParams {
 
 /** Params for delete_mcp_server */
 export interface DeleteMcpServerParams {
+  serverId: string
+}
+
+/** Params for clone_mcp_server */
+export interface CloneMcpServerParams {
   serverId: string
 }
 
@@ -3123,7 +3138,7 @@ export interface MemoryConfig {
 }
 
 export type MemoryEmbeddingConfig =
-  | { type: 'onnx' }
+  | { type: 'local' }
 
 export interface MemoryCompactionConfig {
   enabled: boolean

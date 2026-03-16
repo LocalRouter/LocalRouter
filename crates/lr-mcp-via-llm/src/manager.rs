@@ -252,10 +252,6 @@ impl McpViaLlmManager {
                                 .await;
                         }
                         session.write().transcript_path = Some(file_path);
-                        // Start daemon if needed
-                        if let Err(e) = svc.start_daemon(&client.id).await {
-                            tracing::warn!("Failed to start memsearch daemon: {}", e);
-                        }
                     }
                 }
             }
@@ -397,9 +393,6 @@ impl McpViaLlmManager {
                                 .await;
                         }
                         session.write().transcript_path = Some(file_path);
-                        if let Err(e) = svc.start_daemon(&client.id).await {
-                            tracing::warn!("Failed to start memsearch daemon: {}", e);
-                        }
                     }
                 }
             }

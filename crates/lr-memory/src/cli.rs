@@ -28,7 +28,7 @@ impl Default for MemsearchCli {
 impl MemsearchCli {
     pub fn new() -> Self {
         Self {
-            provider: "onnx".to_string(),
+            provider: "local".to_string(),
         }
     }
 

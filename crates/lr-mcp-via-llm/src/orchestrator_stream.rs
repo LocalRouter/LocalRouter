@@ -590,6 +590,7 @@ async fn streaming_loop(
                 let assistant_text = accumulated_message.content.as_text();
                 if !user_text.is_empty() && !assistant_text.is_empty() {
                     let svc = svc.clone();
+                    let cid = client_id.to_string();
                     tokio::spawn(async move {
                         if let Err(e) =
                             svc.transcript.append_exchange(&path, &user_text, &assistant_text).await
@@ -597,6 +598,7 @@ async fn streaming_loop(
                             tracing::warn!("Memory: failed to write streaming transcript: {}", e);
                         }
                         svc.touch_session(&path);
+                        svc.index_client(&cid).await;
                     });
                 }
             }

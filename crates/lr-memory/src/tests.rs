@@ -366,7 +366,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig::default();
         let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
-        assert_eq!(svc.cli.provider, "onnx");
+        assert_eq!(svc.cli.provider, "local");
     }
 
     #[test]
