@@ -109,6 +109,50 @@ export function IndexingView({ onTabChange }: IndexingViewProps) {
               &ldquo;We chose PostgreSQL for authentication.&rdquo;
               Runs locally via Metal/CUDA/CPU &mdash; no external API calls.
             </p>
+
+            {/* Latency benchmarks — shown when model is downloaded */}
+            {embeddingStatus?.downloaded && <div className="pt-2 border-t space-y-2">
+              <p className="text-xs font-medium text-foreground">Performance (Apple Silicon, all-MiniLM-L6-v2)</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-[11px] font-medium text-muted-foreground mb-1">Index Latency</p>
+                  <table className="text-[11px] text-muted-foreground w-full">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left font-medium pb-0.5">Size</th>
+                        <th className="text-right font-medium pb-0.5">FTS5</th>
+                        <th className="text-right font-medium pb-0.5">+ Vector</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr><td>1 KB</td><td className="text-right">0.6 ms</td><td className="text-right">29 ms</td></tr>
+                      <tr><td>10 KB</td><td className="text-right">1.5 ms</td><td className="text-right">237 ms</td></tr>
+                      <tr><td>100 KB</td><td className="text-right">11 ms</td><td className="text-right">2.3 s</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div>
+                  <p className="text-[11px] font-medium text-muted-foreground mb-1">Search Latency</p>
+                  <table className="text-[11px] text-muted-foreground w-full">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left font-medium pb-0.5">Size</th>
+                        <th className="text-right font-medium pb-0.5">FTS5</th>
+                        <th className="text-right font-medium pb-0.5">+ Vector</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr><td>1 KB</td><td className="text-right">44 µs</td><td className="text-right">7.1 ms</td></tr>
+                      <tr><td>10 KB</td><td className="text-right">97 µs</td><td className="text-right">7.3 ms</td></tr>
+                      <tr><td>100 KB</td><td className="text-right">465 µs</td><td className="text-right">7.8 ms</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground italic">
+                Search adds a fixed ~7 ms for query embedding. Model cold start: 32 ms (memory-mapped).
+              </p>
+            </div>}
           </CardContent>
         </Card>
 
