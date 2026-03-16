@@ -40,8 +40,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   const [indexText, setIndexText] = useState("We decided to use PostgreSQL for the auth service. MySQL had connection pooling issues under load, and PostgreSQL's row-level security features will help with multi-tenant isolation. The migration is planned for next sprint.")
   const [indexLoading, setIndexLoading] = useState(false)
   const [hasIndexed, setHasIndexed] = useState(false)
-  const [compactLoading, setCompactLoading] = useState(false)
-  const [compactResult, setCompactResult] = useState<string | null>(null)
 
   // Live models for compaction model picker
   const { models: liveModels } = useIncrementalModels({ refreshOnMount: true })
@@ -67,7 +65,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
       invoke("memory_test_reset").catch(() => {})
       setHasIndexed(false)
       setSearchResults(null)
-      setCompactResult(null)
     }
   }, [tab])
 
@@ -340,49 +337,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               </CardContent>
             </Card>
 
-            {/* Compact */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">3. Compact</CardTitle>
-                <CardDescription>
-                  Summarize indexed content using an LLM, then search the compacted version
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Button
-                  size="sm"
-                  disabled={compactLoading || !hasIndexed || !config.compaction_model}
-                  onClick={async () => {
-                    setCompactLoading(true)
-                    try {
-                      const result = await invoke<string>("memory_test_compact")
-                      setCompactResult(result || "Compaction complete.")
-                      toast.success("Content compacted")
-                    } catch (err: any) {
-                      setCompactResult(`Error: ${err.message || err}`)
-                    } finally {
-                      setCompactLoading(false)
-                    }
-                  }}
-                >
-                  {compactLoading ? (
-                    <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Compacting...</>
-                  ) : (
-                    "Compact"
-                  )}
-                </Button>
-                {!config.compaction_model && (
-                  <p className="text-xs text-muted-foreground">
-                    Select a compaction model in Settings first.
-                  </p>
-                )}
-                {compactResult && (
-                  <div className="rounded-md border p-3 bg-muted/50">
-                    <pre className="text-xs whitespace-pre-wrap font-mono">{compactResult}</pre>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
           </div>
         </TabsContent>
 
