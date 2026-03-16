@@ -1,8 +1,8 @@
 //! Memsearch CLI wrapper — shells out to the `memsearch` binary.
 //!
-//! All commands pass `--provider` via CLI args so no `.memsearch.toml`
-//! config file is needed. This avoids config file race conditions and
-//! makes the provider choice explicit.
+//! All commands pass `--provider` and `--milvus-uri` via CLI args so no
+//! `.memsearch.toml` config file is needed. Each client gets its own
+//! isolated Milvus Lite DB file to prevent lock conflicts.
 
 use std::path::Path;
 use std::time::Duration;
@@ -12,10 +12,11 @@ use tokio::process::Command;
 
 /// Wrapper around the `memsearch` CLI binary.
 ///
-/// The `provider` field is passed as `--provider` to all embedding commands
-/// (search, index, watch). Defaults to `"onnx"`.
+/// The `provider` field is passed as `--provider` to all embedding commands.
+/// Each call also passes `--milvus-uri` pointing to a local DB file in the
+/// working directory, preventing conflicts with the global `~/.memsearch/milvus.db`.
 pub struct MemsearchCli {
-    /// Embedding provider name (e.g., "onnx", "ollama", "openai")
+    /// Embedding provider name (e.g., "local", "ollama", "openai")
     pub provider: String,
 }
 
@@ -35,6 +36,12 @@ impl MemsearchCli {
     /// Create with a specific embedding provider.
     pub fn with_provider(provider: String) -> Self {
         Self { provider }
+    }
+
+    /// Get the Milvus DB URI for a given working directory.
+    /// Each directory gets its own isolated DB file.
+    fn milvus_uri(working_dir: &Path) -> String {
+        working_dir.join("milvus.db").to_string_lossy().to_string()
     }
 
     /// Check if memsearch is installed and return its version.
@@ -77,8 +84,9 @@ impl MemsearchCli {
         query: &str,
         top_k: usize,
     ) -> Result<Vec<SearchResult>, String> {
+        let working_dir = sessions_dir.parent().unwrap_or(sessions_dir);
         let output = tokio::time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(30),
             Command::new("memsearch")
                 .arg("search")
                 .arg(query)
@@ -87,11 +95,13 @@ impl MemsearchCli {
                 .arg("--json-output")
                 .arg("--provider")
                 .arg(&self.provider)
-                .current_dir(sessions_dir.parent().unwrap_or(sessions_dir))
+                .arg("--milvus-uri")
+                .arg(Self::milvus_uri(working_dir))
+                .current_dir(working_dir)
                 .output(),
         )
         .await
-        .map_err(|_| "memsearch search timed out (10s)".to_string())?
+        .map_err(|_| "memsearch search timed out (30s)".to_string())?
         .map_err(|e| format!("memsearch search failed: {}", e))?;
 
         if !output.status.success() {
@@ -127,6 +137,8 @@ impl MemsearchCli {
             Command::new("memsearch")
                 .arg("expand")
                 .arg(chunk_hash)
+                .arg("--milvus-uri")
+                .arg(Self::milvus_uri(working_dir))
                 .current_dir(working_dir)
                 .output(),
         )
@@ -146,18 +158,21 @@ impl MemsearchCli {
 
     /// Index (or re-index) markdown files in the given directory.
     pub async fn index(&self, dir: &Path) -> Result<(), String> {
+        let working_dir = dir.parent().unwrap_or(dir);
         let output = tokio::time::timeout(
-            Duration::from_secs(60),
+            Duration::from_secs(120),
             Command::new("memsearch")
                 .arg("index")
                 .arg(dir.to_string_lossy().as_ref())
                 .arg("--provider")
                 .arg(&self.provider)
-                .current_dir(dir.parent().unwrap_or(dir))
+                .arg("--milvus-uri")
+                .arg(Self::milvus_uri(working_dir))
+                .current_dir(working_dir)
                 .output(),
         )
         .await
-        .map_err(|_| "memsearch index timed out (60s)".to_string())?
+        .map_err(|_| "memsearch index timed out (120s)".to_string())?
         .map_err(|e| format!("memsearch index failed: {}", e))?;
 
         if !output.status.success() {
@@ -185,6 +200,8 @@ impl MemsearchCli {
                 .arg(source.to_string_lossy().as_ref())
                 .arg("--llm-provider")
                 .arg(llm_provider)
+                .arg("--milvus-uri")
+                .arg(Self::milvus_uri(working_dir))
                 .current_dir(working_dir)
                 .output(),
         )

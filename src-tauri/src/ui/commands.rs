@@ -4504,11 +4504,15 @@ pub async fn memory_setup(
         "step": "model", "status": "checking"
     }));
 
-    // Pre-warm the local embedding model by running a dummy search
+    // Pre-warm the local embedding model by running a dummy search.
+    // Uses an isolated Milvus DB in the temp dir to avoid locking the global one.
+    let warmup_dir = memory_test_dir()?;
+    let warmup_db = warmup_dir.join("milvus.db").to_string_lossy().to_string();
     let warmup_result = tokio::time::timeout(
         std::time::Duration::from_secs(300),
         tokio::process::Command::new("memsearch")
-            .args(["search", "--provider", "local", "warmup"])
+            .args(["search", "--provider", "local", "--milvus-uri", &warmup_db, "warmup"])
+            .current_dir(&warmup_dir)
             .output(),
     )
     .await;
