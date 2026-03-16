@@ -182,6 +182,26 @@ impl MemoryService {
         self.config.read().clone()
     }
 
+    /// Regenerate `.memsearch.toml` for all existing client directories.
+    /// Called after config changes (e.g., switching embedding provider).
+    pub fn regenerate_client_configs(&self) {
+        if let Ok(entries) = std::fs::read_dir(&self.memory_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    let config_path = entry.path().join(".memsearch.toml");
+                    let config_content = self.generate_memsearch_config();
+                    if let Err(e) = std::fs::write(&config_path, config_content) {
+                        tracing::warn!(
+                            "Failed to regenerate .memsearch.toml for {}: {}",
+                            entry.path().display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Get the root memory directory.
     pub fn memory_dir(&self) -> &std::path::Path {
         &self.memory_dir
@@ -198,8 +218,11 @@ impl MemoryService {
                 model_name,
                 ..
             } => {
+                // Default to localhost:11434 — the standard Ollama endpoint.
+                // The provider_id references a LocalRouter provider config but
+                // we don't have access to the provider registry here.
                 format!(
-                    "[embedding]\nprovider = \"ollama\"\nmodel = \"{}\"\n",
+                    "[embedding]\nprovider = \"ollama\"\nmodel = \"{}\"\nbase_url = \"http://localhost:11434\"\n",
                     model_name
                 )
             }

@@ -393,6 +393,61 @@ mod tests {
         .unwrap();
         assert!(config_content.contains("provider = \"ollama\""));
         assert!(config_content.contains("nomic-embed-text"));
+        assert!(config_content.contains("base_url = \"http://localhost:11434\""));
+    }
+
+    #[test]
+    fn memory_service_regenerate_client_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default(); // ONNX
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        // Create two clients
+        svc.ensure_client_dir("client-a").unwrap();
+        svc.ensure_client_dir("client-b").unwrap();
+
+        // Switch to Ollama
+        svc.update_config(lr_config::MemoryConfig {
+            embedding: lr_config::MemoryEmbeddingConfig::Ollama {
+                provider_id: "ollama".to_string(),
+                model_name: "nomic-embed-text".to_string(),
+            },
+            ..Default::default()
+        });
+        svc.regenerate_client_configs();
+
+        // Both clients should have updated configs
+        for client in &["client-a", "client-b"] {
+            let content = std::fs::read_to_string(
+                dir.path().join(client).join(".memsearch.toml"),
+            )
+            .unwrap();
+            assert!(content.contains("provider = \"ollama\""), "client {} not updated", client);
+        }
+    }
+
+    #[test]
+    fn session_manager_removes_expired_before_creating_new() {
+        let mgr = SessionManager::new(make_config(0, 28800)); // 0 inactivity = instant expire
+        let dir = std::path::PathBuf::from("/tmp/test-sessions");
+
+        // Create initial session
+        let (id1, _, _) = mgr.get_or_create_session("client-1", &dir);
+
+        // Wait for it to expire
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Should create a new session (not return expired one)
+        let (id2, _, is_new) = mgr.get_or_create_session("client-1", &dir);
+        assert!(is_new);
+        assert_ne!(id1, id2);
+
+        // The expired session was already removed by get_or_create_session,
+        // so close_expired_sessions should find nothing
+        std::thread::sleep(Duration::from_millis(10));
+        let expired = mgr.close_expired_sessions();
+        // The new session also expires instantly (0s TTL), so it gets collected too
+        assert!(expired.len() <= 1);
     }
 
     #[test]

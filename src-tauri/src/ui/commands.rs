@@ -4393,9 +4393,10 @@ pub async fn update_memory_config(
 
     config_manager.save().await.map_err(|e| e.to_string())?;
 
-    // Update the running memory service config
+    // Update the running memory service config and regenerate client configs
     if let Some(ref svc) = *state.memory_service.read() {
         svc.update_config(new_config);
+        svc.regenerate_client_configs();
     }
 
     Ok(())

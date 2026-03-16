@@ -105,7 +105,10 @@ impl SessionManager {
                 );
             }
 
-            // Session expired — will be cleaned up by close_expired_sessions
+            // Drop the mutable ref before removing
+            drop(session);
+            // Remove expired session to prevent duplicates
+            self.active_sessions.remove(client_id);
         }
 
         // Create new session
