@@ -1,41 +1,30 @@
-//! Session compaction — LLM-based summarization of session transcripts.
+//! Session compaction — archival of expired session transcripts.
 //!
-//! When a session expires, the transcript is compacted into a summary
-//! using an LLM routed through LocalRouter, and the original is archived.
+//! When a session expires, the transcript is moved to the archive directory.
+//! Future: LLM-based summarization will be added (calling LocalRouter's
+//! chat endpoint directly from Rust).
 
 use std::path::Path;
 
-use crate::cli::MemsearchCli;
-
-/// Compact a session transcript into a summary.
+/// Archive an expired session transcript.
 ///
-/// Both embedding (for re-indexing) and LLM (for summarization) calls
-/// are routed through LocalRouter via the CLI's configured endpoints.
-pub async fn compact_session(
-    cli: &MemsearchCli,
-    session_path: &Path,
-    archive_dir: &Path,
-    compaction_model: &str,
-) -> Result<(), String> {
+/// Moves the session file to the archive directory.
+/// Future: will add LLM summarization before archiving.
+pub async fn compact_session(session_path: &Path, archive_dir: &Path) -> Result<(), String> {
     let file_name = session_path
         .file_name()
         .ok_or("Invalid session path")?
         .to_string_lossy();
 
     let session_id = file_name.trim_end_matches(".md");
-    let working_dir = session_path
-        .parent()
-        .and_then(|p| p.parent())
-        .ok_or("Session path has no parent directory")?;
 
     tracing::info!(
-        "Compacting session {} with model {}",
+        "Archiving session {}",
         &session_id[..8.min(session_id.len())],
-        compaction_model
     );
 
-    cli.compact(working_dir, session_path, compaction_model)
-        .await?;
+    std::fs::create_dir_all(archive_dir)
+        .map_err(|e| format!("Failed to create archive dir: {}", e))?;
 
     // Move original to archive
     let archive_path = archive_dir.join(format!("{}.md", session_id));
@@ -44,7 +33,7 @@ pub async fn compact_session(
         .map_err(|e| format!("Failed to archive session: {}", e))?;
 
     tracing::info!(
-        "Session {} compacted and archived",
+        "Session {} archived",
         &session_id[..8.min(session_id.len())]
     );
 

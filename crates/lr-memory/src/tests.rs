@@ -2,7 +2,6 @@
 mod tests {
     use std::time::Duration;
 
-    use crate::cli::SearchResult;
     use crate::session_manager::{MessageHashable, SessionConfig, SessionManager};
     use crate::transcript::TranscriptWriter;
 
@@ -219,7 +218,8 @@ mod tests {
             .unwrap();
 
         // Completely different messages = new conversation
-        let messages2: Vec<(&str, &str)> = vec![("system", "You are helpful"), ("user", "Different topic")];
+        let messages2: Vec<(&str, &str)> =
+            vec![("system", "You are helpful"), ("user", "Different topic")];
         let ctx2 = mgr
             .detect_conversation_for_both_mode("client-1", &messages2, &dir)
             .unwrap();
@@ -261,7 +261,11 @@ mod tests {
 
         // Append exchange
         writer
-            .append_exchange(&path, "What is Rust?", "Rust is a systems programming language.")
+            .append_exchange(
+                &path,
+                "What is Rust?",
+                "Rust is a systems programming language.",
+            )
             .await
             .unwrap();
 
@@ -304,57 +308,25 @@ mod tests {
     }
 
     // ========================================================================
-    // SearchResult deserialization tests
-    // ========================================================================
-
-    #[test]
-    fn search_result_deserialize_basic() {
-        let json = r#"{"source": "session.md", "content": "Hello world", "score": 0.85}"#;
-        let result: SearchResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.source, "session.md");
-        assert_eq!(result.content, "Hello world");
-        assert_eq!(result.score, Some(0.85));
-    }
-
-    #[test]
-    fn search_result_deserialize_with_hash() {
-        let json = r###"{"source": "s.md", "content": "test", "chunk_hash": "abc123", "heading": "Title"}"###;
-        let result: SearchResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.chunk_hash, Some("abc123".to_string()));
-        assert_eq!(result.heading, Some("Title".to_string()));
-    }
-
-    #[test]
-    fn search_result_deserialize_minimal() {
-        let json = r#"{"source": "s.md", "content": "test"}"#;
-        let result: SearchResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.score, None);
-        assert_eq!(result.chunk_hash, None);
-        assert_eq!(result.heading, None);
-    }
-
-    // ========================================================================
-    // MemoryService tests
+    // MemoryService FTS5 tests
     // ========================================================================
 
     #[test]
     fn memory_service_ensure_client_dir() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig::default();
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 3625, "test-secret".to_string());
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
 
         let client_dir = svc.ensure_client_dir("test-client").unwrap();
         assert!(client_dir.join("sessions").exists());
         assert!(client_dir.join("archive").exists());
-        // No .memsearch.toml — provider is passed via CLI args
-        assert!(!client_dir.join(".memsearch.toml").exists());
     }
 
     #[test]
     fn memory_service_ensure_client_dir_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig::default();
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 3625, "test-secret".to_string());
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
 
         let dir1 = svc.ensure_client_dir("test-client").unwrap();
         let dir2 = svc.ensure_client_dir("test-client").unwrap();
@@ -362,25 +334,80 @@ mod tests {
     }
 
     #[test]
-    fn memory_service_routes_through_localrouter() {
+    fn memory_service_index_and_search() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig::default();
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 3625, "test-secret".to_string());
-        assert_eq!(svc.cli.base_url, "http://localhost:3625/v1");
-        assert_eq!(svc.cli.api_key, "test-secret");
-        assert!(svc.cli.get_embedding_model().is_empty()); // Not configured yet
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        // Index some content
+        svc.index_transcript("test-client", "session-1", "We decided to use PostgreSQL for the auth service. MySQL had connection pooling issues under load.")
+            .unwrap();
+
+        // Search for it
+        let results = svc.search("test-client", "PostgreSQL auth", 5).unwrap();
+        assert!(!results.is_empty());
+        assert!(results[0].content.contains("PostgreSQL"));
     }
 
     #[test]
-    fn memory_service_with_embedding_model() {
+    fn memory_service_search_empty_client() {
         let dir = tempfile::tempdir().unwrap();
-        let config = lr_config::MemoryConfig {
-            embedding_model: Some("ollama/nomic-embed-text".to_string()),
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        let results = svc.search("nonexistent", "test", 5).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn memory_service_update_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        assert_eq!(svc.config().search_top_k, 5);
+
+        let new_config = lr_config::MemoryConfig {
+            search_top_k: 10,
             ..Default::default()
         };
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 4000, "my-secret".to_string());
-        assert_eq!(svc.cli.base_url, "http://localhost:4000/v1");
-        assert_eq!(svc.cli.get_embedding_model(), "ollama/nomic-embed-text");
+        svc.update_config(new_config);
+        assert_eq!(svc.config().search_top_k, 10);
+    }
+
+    #[test]
+    fn memory_service_persistent_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+
+        // Index with first service instance
+        {
+            let svc = crate::MemoryService::new(config.clone(), dir.path().to_path_buf());
+            svc.index_transcript(
+                "test-client",
+                "session-1",
+                "Rust is a systems programming language focused on safety and performance.",
+            )
+            .unwrap();
+        }
+
+        // Search with new service instance (simulates app restart)
+        {
+            let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+            let results = svc.search("test-client", "Rust safety", 5).unwrap();
+            assert!(!results.is_empty());
+        }
+    }
+
+    // ========================================================================
+    // SessionConfig tests
+    // ========================================================================
+
+    #[test]
+    fn session_config_default_values() {
+        let config = SessionConfig::default();
+        assert_eq!(config.inactivity_timeout, Duration::from_secs(3 * 60 * 60));
+        assert_eq!(config.max_duration, Duration::from_secs(8 * 60 * 60));
     }
 
     #[test]
@@ -405,32 +432,5 @@ mod tests {
         let expired = mgr.close_expired_sessions();
         // The new session also expires instantly (0s TTL), so it gets collected too
         assert!(expired.len() <= 1);
-    }
-
-    #[test]
-    fn memory_service_update_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = lr_config::MemoryConfig::default();
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 3625, "test-secret".to_string());
-
-        assert_eq!(svc.config().search_top_k, 5);
-
-        let new_config = lr_config::MemoryConfig {
-            search_top_k: 10,
-            ..Default::default()
-        };
-        svc.update_config(new_config);
-        assert_eq!(svc.config().search_top_k, 10);
-    }
-
-    // ========================================================================
-    // SessionConfig tests
-    // ========================================================================
-
-    #[test]
-    fn session_config_default_values() {
-        let config = SessionConfig::default();
-        assert_eq!(config.inactivity_timeout, Duration::from_secs(3 * 60 * 60));
-        assert_eq!(config.max_duration, Duration::from_secs(8 * 60 * 60));
     }
 }

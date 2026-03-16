@@ -98,11 +98,7 @@ impl SessionManager {
 
             if !expired_inactivity && !expired_duration {
                 session.last_activity = Instant::now();
-                return (
-                    session.session_id.clone(),
-                    session.file_path.clone(),
-                    false,
-                );
+                return (session.session_id.clone(), session.file_path.clone(), false);
             }
 
             // Drop the mutable ref before removing
@@ -172,20 +168,17 @@ impl SessionManager {
         session.last_activity = Instant::now();
 
         // Check if this is a continuation of the current conversation
-        let is_continuation = session
-            .conversation_state
-            .as_ref()
-            .is_some_and(|state| {
-                // Check if stored hashes are a prefix of incoming hashes
-                if state.message_hashes.len() > incoming_hashes.len() {
-                    return false;
-                }
-                state
-                    .message_hashes
-                    .iter()
-                    .zip(incoming_hashes.iter())
-                    .all(|(a, b)| a == b)
-            });
+        let is_continuation = session.conversation_state.as_ref().is_some_and(|state| {
+            // Check if stored hashes are a prefix of incoming hashes
+            if state.message_hashes.len() > incoming_hashes.len() {
+                return false;
+            }
+            state
+                .message_hashes
+                .iter()
+                .zip(incoming_hashes.iter())
+                .all(|(a, b)| a == b)
+        });
 
         let (conversation_key, is_new_conversation) = if is_continuation {
             let key = session

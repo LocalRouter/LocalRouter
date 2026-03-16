@@ -591,14 +591,23 @@ async fn streaming_loop(
                 if !user_text.is_empty() && !assistant_text.is_empty() {
                     let svc = svc.clone();
                     let cid = client_id.to_string();
+                    let session_id = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let exchange = format!("{}\n\n{}", user_text, assistant_text);
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            svc.transcript.append_exchange(&path, &user_text, &assistant_text).await
+                        if let Err(e) = svc
+                            .transcript
+                            .append_exchange(&path, &user_text, &assistant_text)
+                            .await
                         {
                             tracing::warn!("Memory: failed to write streaming transcript: {}", e);
                         }
                         svc.touch_session(&path);
-                        svc.index_client(&cid).await;
+                        if let Err(e) = svc.index_transcript(&cid, &session_id, &exchange) {
+                            tracing::warn!("Memory: FTS5 index failed: {}", e);
+                        }
                     });
                 }
             }
