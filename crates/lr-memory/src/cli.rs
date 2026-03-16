@@ -1,8 +1,8 @@
 //! Memsearch CLI wrapper — shells out to the `memsearch` binary.
 //!
-//! All commands pass `--provider` and `--milvus-uri` via CLI args so no
-//! `.memsearch.toml` config file is needed. Each client gets its own
-//! isolated Milvus Lite DB file to prevent lock conflicts.
+//! All embedding/search/index calls are routed through LocalRouter's
+//! `/v1/embeddings` endpoint using memsearch's OpenAI-compatible provider.
+//! Each client directory gets its own isolated Milvus Lite DB file.
 
 use std::path::Path;
 use std::time::Duration;
@@ -12,12 +12,16 @@ use tokio::process::Command;
 
 /// Wrapper around the `memsearch` CLI binary.
 ///
-/// The `provider` field is passed as `--provider` to all embedding commands.
-/// Each call also passes `--milvus-uri` pointing to a local DB file in the
-/// working directory, preventing conflicts with the global `~/.memsearch/milvus.db`.
+/// Routes all embedding calls through LocalRouter's OpenAI-compatible
+/// `/v1/embeddings` endpoint using a transient bearer token.
 pub struct MemsearchCli {
-    /// Embedding provider name (e.g., "local", "ollama", "openai")
-    pub provider: String,
+    /// LocalRouter base URL (e.g., "http://localhost:33625/v1")
+    pub base_url: String,
+    /// Bearer token for LocalRouter auth
+    pub api_key: String,
+    /// Embedding model routed through LocalRouter (e.g., "ollama/nomic-embed-text").
+    /// Behind RwLock so it can be updated when config changes.
+    pub embedding_model: parking_lot::RwLock<String>,
 }
 
 impl Default for MemsearchCli {
@@ -29,19 +33,39 @@ impl Default for MemsearchCli {
 impl MemsearchCli {
     pub fn new() -> Self {
         Self {
-            provider: "local".to_string(),
+            base_url: "http://localhost:3625/v1".to_string(),
+            api_key: String::new(),
+            embedding_model: parking_lot::RwLock::new(String::new()),
         }
     }
 
-    /// Create with a specific embedding provider.
-    pub fn with_provider(provider: String) -> Self {
-        Self { provider }
-    }
-
     /// Get the Milvus DB URI for a given working directory.
-    /// Each directory gets its own isolated DB file.
     fn milvus_uri(working_dir: &Path) -> String {
         working_dir.join("milvus.db").to_string_lossy().to_string()
+    }
+
+    /// Common embedding provider args for all commands.
+    fn embedding_args(&self) -> Vec<String> {
+        vec![
+            "--provider".to_string(),
+            "openai".to_string(),
+            "--base-url".to_string(),
+            self.base_url.clone(),
+            "--api-key".to_string(),
+            self.api_key.clone(),
+            "--model".to_string(),
+            self.embedding_model.read().clone(),
+        ]
+    }
+
+    /// Get the current embedding model name.
+    pub fn get_embedding_model(&self) -> String {
+        self.embedding_model.read().clone()
+    }
+
+    /// Update the embedding model.
+    pub fn set_embedding_model(&self, model: String) {
+        *self.embedding_model.write() = model;
     }
 
     /// Check if memsearch is installed and return its version.
@@ -85,28 +109,24 @@ impl MemsearchCli {
         top_k: usize,
     ) -> Result<Vec<SearchResult>, String> {
         let working_dir = sessions_dir.parent().unwrap_or(sessions_dir);
-        let output = tokio::time::timeout(
-            Duration::from_secs(30),
-            Command::new("memsearch")
-                .arg("search")
-                .arg(query)
-                .arg("--top-k")
-                .arg(top_k.to_string())
-                .arg("--json-output")
-                .arg("--provider")
-                .arg(&self.provider)
-                .arg("--milvus-uri")
-                .arg(Self::milvus_uri(working_dir))
-                .current_dir(working_dir)
-                .output(),
-        )
-        .await
-        .map_err(|_| "memsearch search timed out (30s)".to_string())?
-        .map_err(|e| format!("memsearch search failed: {}", e))?;
+        let mut cmd = Command::new("memsearch");
+        cmd.arg("search")
+            .arg(query)
+            .arg("--top-k")
+            .arg(top_k.to_string())
+            .arg("--json-output")
+            .arg("--milvus-uri")
+            .arg(Self::milvus_uri(working_dir))
+            .args(self.embedding_args())
+            .current_dir(working_dir);
+
+        let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+            .await
+            .map_err(|_| "memsearch search timed out (30s)".to_string())?
+            .map_err(|e| format!("memsearch search failed: {}", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // Empty index is not an error
             if stderr.contains("no collection") || stderr.contains("empty") {
                 return Ok(Vec::new());
             }
@@ -120,13 +140,12 @@ impl MemsearchCli {
 
         serde_json::from_str::<Vec<SearchResult>>(&stdout)
             .or_else(|_| {
-                // Try parsing as a wrapper object
                 serde_json::from_str::<SearchResultWrapper>(&stdout).map(|w| w.results)
             })
             .map_err(|e| format!("Failed to parse memsearch search output: {}", e))
     }
 
-    /// Expand a chunk to get the full markdown section (progressive disclosure L2).
+    /// Expand a chunk to get the full markdown section.
     pub async fn expand(
         &self,
         working_dir: &Path,
@@ -159,21 +178,18 @@ impl MemsearchCli {
     /// Index (or re-index) markdown files in the given directory.
     pub async fn index(&self, dir: &Path) -> Result<(), String> {
         let working_dir = dir.parent().unwrap_or(dir);
-        let output = tokio::time::timeout(
-            Duration::from_secs(120),
-            Command::new("memsearch")
-                .arg("index")
-                .arg(dir.to_string_lossy().as_ref())
-                .arg("--provider")
-                .arg(&self.provider)
-                .arg("--milvus-uri")
-                .arg(Self::milvus_uri(working_dir))
-                .current_dir(working_dir)
-                .output(),
-        )
-        .await
-        .map_err(|_| "memsearch index timed out (120s)".to_string())?
-        .map_err(|e| format!("memsearch index failed: {}", e))?;
+        let mut cmd = Command::new("memsearch");
+        cmd.arg("index")
+            .arg(dir.to_string_lossy().as_ref())
+            .arg("--milvus-uri")
+            .arg(Self::milvus_uri(working_dir))
+            .args(self.embedding_args())
+            .current_dir(working_dir);
+
+        let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
+            .await
+            .map_err(|_| "memsearch index timed out (120s)".to_string())?
+            .map_err(|e| format!("memsearch index failed: {}", e))?;
 
         if !output.status.success() {
             return Err(format!(
@@ -186,28 +202,36 @@ impl MemsearchCli {
     }
 
     /// Compact a session file using LLM summarization.
+    /// Both embedding and LLM calls are routed through LocalRouter.
     pub async fn compact(
         &self,
         working_dir: &Path,
         source: &Path,
-        llm_provider: &str,
+        compaction_model: &str,
     ) -> Result<(), String> {
-        let output = tokio::time::timeout(
-            Duration::from_secs(120),
-            Command::new("memsearch")
-                .arg("compact")
-                .arg("--source")
-                .arg(source.to_string_lossy().as_ref())
-                .arg("--llm-provider")
-                .arg(llm_provider)
-                .arg("--milvus-uri")
-                .arg(Self::milvus_uri(working_dir))
-                .current_dir(working_dir)
-                .output(),
-        )
-        .await
-        .map_err(|_| "memsearch compact timed out (120s)".to_string())?
-        .map_err(|e| format!("memsearch compact failed: {}", e))?;
+        let mut cmd = Command::new("memsearch");
+        cmd.arg("compact")
+            .arg("--source")
+            .arg(source.to_string_lossy().as_ref())
+            .arg("--milvus-uri")
+            .arg(Self::milvus_uri(working_dir))
+            // Embedding provider args (for re-indexing the summary)
+            .args(self.embedding_args())
+            // LLM provider args (for summarization)
+            .arg("--llm-provider")
+            .arg("openai")
+            .arg("--llm-base-url")
+            .arg(&self.base_url)
+            .arg("--llm-api-key")
+            .arg(&self.api_key)
+            .arg("--llm-model")
+            .arg(compaction_model)
+            .current_dir(working_dir);
+
+        let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
+            .await
+            .map_err(|_| "memsearch compact timed out (120s)".to_string())?
+            .map_err(|e| format!("memsearch compact failed: {}", e))?;
 
         if !output.status.success() {
             return Err(format!(
@@ -223,24 +247,18 @@ impl MemsearchCli {
 /// A single search result from memsearch.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchResult {
-    /// Source file path
     #[serde(alias = "source")]
     pub source: String,
-    /// Section heading
     #[serde(alias = "heading", default)]
     pub heading: Option<String>,
-    /// Content preview
     #[serde(alias = "content")]
     pub content: String,
-    /// Chunk hash (for expand)
     #[serde(alias = "chunk_hash", default)]
     pub chunk_hash: Option<String>,
-    /// Relevance score
     #[serde(alias = "score", default)]
     pub score: Option<f64>,
 }
 
-/// Wrapper for search results (memsearch may return { results: [...] })
 #[derive(Deserialize)]
 struct SearchResultWrapper {
     results: Vec<SearchResult>,

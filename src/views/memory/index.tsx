@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { CheckCircle2, Circle, Download, FolderOpen, Loader2, Play, XCircle } from "lucide-react"
 import { FEATURES } from "@/constants/features"
@@ -23,17 +23,15 @@ type SetupStepStatus = "idle" | "checking" | "installing" | "ok" | "error"
 interface SetupState {
   python: { status: SetupStepStatus; version?: string; error?: string }
   memsearch: { status: SetupStepStatus; version?: string; error?: string }
-  model: { status: SetupStepStatus; error?: string }
 }
 
 const defaultConfig: MemoryConfig = {
-  embedding: { type: "local" as const },
-  auto_start_daemon: true,
+  embedding_model: null,
+  compaction_model: null,
   search_top_k: 5,
   session_inactivity_minutes: 180,
   max_session_minutes: 480,
   recall_tool_name: "MemoryRecall",
-  compaction: null,
 }
 
 interface MemoryViewProps {
@@ -49,7 +47,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   const [setup, setSetup] = useState<SetupState>({
     python: { status: "idle" },
     memsearch: { status: "idle" },
-    model: { status: "idle" },
   })
 
   // Try It Out state
@@ -67,7 +64,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   // Group models by provider
   const modelsByProvider = liveModels.reduce<Record<string, string[]>>((acc, m) => {
     if (!acc[m.provider]) acc[m.provider] = []
-    acc[m.provider].push(m.id)
+    if (!acc[m.provider].includes(m.id)) acc[m.provider].push(m.id)
     return acc
   }, {})
 
@@ -94,15 +91,14 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
 
   // Listen for setup progress events
   useEffect(() => {
-    const unlisteners: (() => void)[] = []
-    listen<MemorySetupProgress>("memory-setup-progress", (event) => {
+    const l = listenSafe<MemorySetupProgress>("memory-setup-progress", (event) => {
       const { step, status: stepStatus, version, error } = event.payload
       setSetup((prev) => ({
         ...prev,
         [step]: { status: stepStatus, version, error },
       }))
-    }).then((unlisten) => unlisteners.push(unlisten))
-    return () => { unlisteners.forEach((fn) => fn()) }
+    })
+    return () => { l.cleanup() }
   }, [])
 
   const loadConfig = async () => {
@@ -129,7 +125,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
           status: result.memsearch_installed ? "ok" : "idle",
           version: result.memsearch_version ?? undefined,
         },
-        model: { status: result.model_ready ? "ok" : "idle" },
       })
     } catch (error) {
       console.error("Failed to load memory status:", error)
@@ -289,21 +284,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2.5 text-sm">
-                    {renderStepIcon(setup.model.status)}
-                    <div className="flex-1 min-w-0">
-                      <span className="font-medium">Embedding model</span>
-                      <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-2">
-                        sentence-transformers
-                      </Badge>
-                    </div>
-                    {setup.model.status === "installing" && (
-                      <span className="text-xs text-muted-foreground">Downloading...</span>
-                    )}
-                    {setup.model.error && (
-                      <span className="text-xs text-destructive truncate max-w-[250px]">{setup.model.error}</span>
-                    )}
-                  </div>
                 </div>
 
                 <Button
@@ -325,8 +305,8 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 </Button>
 
                 <p className="text-xs text-muted-foreground pt-2 border-t">
-                  The sentence-transformers model is downloaded from HuggingFace on first use.
-                  No API key required &mdash; runs locally on CPU.
+                  Embedding and LLM calls are routed through LocalRouter &mdash;
+                  select a model from your configured providers in Settings.
                 </p>
               </CardContent>
             </Card>
@@ -487,7 +467,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               <CardContent className="space-y-3">
                 <Button
                   size="sm"
-                  disabled={compactLoading || !hasIndexed || !config.compaction?.enabled}
+                  disabled={compactLoading || !hasIndexed || !config.compaction_model}
                   onClick={async () => {
                     setCompactLoading(true)
                     try {
@@ -507,9 +487,9 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     "Compact"
                   )}
                 </Button>
-                {!config.compaction?.enabled && (
+                {!config.compaction_model && (
                   <p className="text-xs text-muted-foreground">
-                    Enable compaction in Settings first (select a model).
+                    Select a compaction model in Settings first.
                   </p>
                 )}
                 {compactResult && (
@@ -527,6 +507,80 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
         {/* ================================================================ */}
         <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
           <div className="space-y-4 max-w-2xl">
+            {/* Models */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Models</CardTitle>
+                <CardDescription>
+                  Embedding and compaction calls are routed through LocalRouter.
+                  Select models from your configured providers.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Embedding model</Label>
+                  <Select
+                    value={config.embedding_model || "none"}
+                    onValueChange={(value) => {
+                      saveConfig({ ...config, embedding_model: value === "none" ? null : value })
+                    }}
+                  >
+                    <SelectTrigger className="h-8 text-sm">
+                      <SelectValue placeholder="Select embedding model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Not configured</SelectItem>
+                      {Object.entries(modelsByProvider).map(([provider, models]) => (
+                        <SelectGroup key={provider}>
+                          <SelectLabel className="text-xs text-muted-foreground">{provider}</SelectLabel>
+                          {models.map((modelId) => (
+                            <SelectItem key={`${provider}/${modelId}`} value={`${provider}/${modelId}`}>
+                              {modelId}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[10px] text-muted-foreground">
+                    Used for indexing and searching memory. Must support the embeddings API.
+                    E.g., <code>ollama/nomic-embed-text</code>, <code>openai/text-embedding-3-small</code>
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Compaction model (optional)</Label>
+                  <Select
+                    value={config.compaction_model || "none"}
+                    onValueChange={(value) => {
+                      saveConfig({ ...config, compaction_model: value === "none" ? null : value })
+                    }}
+                  >
+                    <SelectTrigger className="h-8 text-sm">
+                      <SelectValue placeholder="Select compaction model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Disabled (keep raw transcripts)</SelectItem>
+                      {Object.entries(modelsByProvider).map(([provider, models]) => (
+                        <SelectGroup key={provider}>
+                          <SelectLabel className="text-xs text-muted-foreground">{provider}</SelectLabel>
+                          {models.map((modelId) => (
+                            <SelectItem key={`${provider}/${modelId}`} value={`${provider}/${modelId}`}>
+                              {modelId}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[10px] text-muted-foreground">
+                    LLM used to summarize session transcripts when they expire.
+                    Must support chat completions. Leave disabled to keep raw transcripts.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Tool & Search */}
             <Card>
               <CardHeader className="pb-3">
@@ -613,59 +667,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               </CardContent>
             </Card>
 
-            {/* Compaction */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Compaction</CardTitle>
-                <CardDescription>
-                  When a session ends, optionally summarize it using an LLM.
-                  The summary replaces the raw transcript in the search index while
-                  the original is archived for re-compaction.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Compaction model</Label>
-                  <Select
-                    value={config.compaction?.enabled ? `${config.compaction.llm_provider}/${config.compaction.llm_model || ""}` : "disabled"}
-                    onValueChange={(value) => {
-                      if (value === "disabled") {
-                        saveConfig({ ...config, compaction: null })
-                      } else {
-                        const slashIdx = value.indexOf("/")
-                        const provider = value.substring(0, slashIdx)
-                        const model = value.substring(slashIdx + 1)
-                        saveConfig({
-                          ...config,
-                          compaction: { enabled: true, llm_provider: provider, llm_model: model || null },
-                        })
-                      }
-                    }}
-                  >
-                    <SelectTrigger className="h-8 text-sm">
-                      <SelectValue placeholder="Select compaction model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="disabled">Disabled (keep raw transcripts)</SelectItem>
-                      {Object.entries(modelsByProvider).map(([provider, models]) => (
-                        <SelectGroup key={provider}>
-                          <SelectLabel className="text-xs text-muted-foreground">{provider}</SelectLabel>
-                          {models.map((modelId) => (
-                            <SelectItem key={`${provider}/${modelId}`} value={`${provider}/${modelId}`}>
-                              {modelId}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[10px] text-muted-foreground">
-                    The LLM used to summarize session transcripts when they expire.
-                    Select a model from your configured providers.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
 
             <p className="text-xs text-muted-foreground">
               Memory is enabled per-client in the client&apos;s Optimize tab.

@@ -128,18 +128,26 @@ where
             // Extract the bearer token (API key or client secret)
             let bearer_token = &auth_header[7..]; // Skip "Bearer "
 
-            // Check if this is the internal test token
-            if bearer_token == state.internal_test_secret.as_str() {
+            // Check if this is the internal test token or memory service token
+            if bearer_token == state.internal_test_secret.as_str()
+                || bearer_token == state.memory_secret.as_str()
+            {
+                let token_type = if bearer_token == state.memory_secret.as_str() {
+                    "memory-service"
+                } else {
+                    "internal-test"
+                };
                 tracing::debug!(
-                    "Internal test token detected - bypassing API key restrictions for UI testing"
+                    "{} token detected - bypassing API key restrictions",
+                    token_type
                 );
                 let auth_context = AuthContext {
-                    api_key_id: "internal-test".to_string(),
+                    api_key_id: token_type.to_string(),
                     model_selection: None,
                 };
                 req.extensions_mut().insert(auth_context);
                 req.extensions_mut().insert(ClientAuthContext {
-                    client_id: "internal-test".to_string(),
+                    client_id: token_type.to_string(),
                 });
                 return inner.call(req).await;
             }

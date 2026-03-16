@@ -147,14 +147,21 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
         }
     };
 
-    // Check if this is the internal test token (for UI testing)
-    // This allows the Tauri frontend to access MCP servers without a configured client
-    if token == state.internal_test_secret.as_str() {
+    // Check if this is the internal test token or memory service token
+    if token == state.internal_test_secret.as_str()
+        || token == state.memory_secret.as_str()
+    {
+        let client_id = if token == state.memory_secret.as_str() {
+            "memory-service"
+        } else {
+            "internal-test"
+        };
         tracing::debug!(
-            "Internal test token detected - bypassing client restrictions for UI MCP testing"
+            "{} token detected - bypassing client restrictions",
+            client_id
         );
         let auth_context = ClientAuthContext {
-            client_id: "internal-test".to_string(),
+            client_id: client_id.to_string(),
         };
         req.extensions_mut().insert(auth_context);
         return next.run(req).await;

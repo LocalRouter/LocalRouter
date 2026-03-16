@@ -3128,22 +3128,14 @@ export interface GetProviderFeatureSupportParams {
 
 /** Rust: crates/lr-config/src/types.rs - MemoryConfig struct */
 export interface MemoryConfig {
-  embedding: MemoryEmbeddingConfig
-  auto_start_daemon: boolean
+  /** Embedding model routed through LocalRouter (e.g., "ollama/nomic-embed-text") */
+  embedding_model: string | null
+  /** Compaction LLM model routed through LocalRouter (e.g., "anthropic/claude-haiku-4-5-20251001") */
+  compaction_model: string | null
   search_top_k: number
   session_inactivity_minutes: number
   max_session_minutes: number
   recall_tool_name: string
-  compaction: MemoryCompactionConfig | null
-}
-
-export type MemoryEmbeddingConfig =
-  | { type: 'local' }
-
-export interface MemoryCompactionConfig {
-  enabled: boolean
-  llm_provider: string
-  llm_model: string | null
 }
 
 export interface MemoryStatus {

@@ -2196,15 +2196,23 @@ pub struct ClientSecretScanningConfig {
 // ============================================================================
 
 /// Global memory configuration. Memory is enabled per-client, not globally.
+///
+/// Embedding and LLM calls are routed through LocalRouter's own endpoints
+/// using a transient internal bearer token. Users select models from their
+/// configured providers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryConfig {
-    /// Embedding provider for memsearch indexing
-    #[serde(default)]
-    pub embedding: MemoryEmbeddingConfig,
+    /// Embedding model for memsearch indexing/search, routed through LocalRouter.
+    /// Format: "provider/model" (e.g., "ollama/nomic-embed-text").
+    /// None = memory indexing disabled (recall tool won't return results).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
 
-    /// Auto-start memsearch watch daemon per client (default: true)
-    #[serde(default = "default_true")]
-    pub auto_start_daemon: bool,
+    /// Compaction LLM model for session summarization, routed through LocalRouter.
+    /// Format: "provider/model" (e.g., "anthropic/claude-haiku-4-5-20251001").
+    /// None = compaction disabled (raw transcripts kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_model: Option<String>,
 
     /// Number of search results to return (default: 5)
     #[serde(default = "default_memory_top_k")]
@@ -2222,21 +2230,27 @@ pub struct MemoryConfig {
     #[serde(default = "default_memory_recall_tool_name")]
     pub recall_tool_name: String,
 
-    /// Compaction configuration (optional LLM summarization at session end)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compaction: Option<MemoryCompactionConfig>,
+    // Legacy fields — kept for backwards-compatible deserialization, ignored at runtime.
+    #[serde(default, skip_serializing)]
+    pub embedding: Option<serde_json::Value>,
+    #[serde(default, skip_serializing)]
+    pub compaction: Option<serde_json::Value>,
+    #[serde(default, skip_serializing)]
+    pub auto_start_daemon: Option<bool>,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            embedding: MemoryEmbeddingConfig::default(),
-            auto_start_daemon: true,
+            embedding_model: None,
+            compaction_model: None,
             search_top_k: default_memory_top_k(),
             session_inactivity_minutes: default_session_inactivity_minutes(),
             max_session_minutes: default_max_session_minutes(),
             recall_tool_name: default_memory_recall_tool_name(),
+            embedding: None,
             compaction: None,
+            auto_start_daemon: None,
         }
     }
 }
@@ -2255,42 +2269,6 @@ fn default_max_session_minutes() -> u64 {
 
 fn default_memory_recall_tool_name() -> String {
     "MemoryRecall".to_string()
-}
-
-/// Embedding provider configuration for memsearch.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum MemoryEmbeddingConfig {
-    /// Local sentence-transformers (default, no API key, runs on CPU).
-    /// Uses memsearch's `local` provider with auto-downloaded models.
-    Local,
-    /// Backwards-compatible alias — existing configs may have `type: onnx`.
-    /// Treated identically to Local (maps to memsearch's `local` provider).
-    Onnx,
-    /// Ollama for embeddings
-    Ollama {
-        provider_id: String,
-        model_name: String,
-    },
-}
-
-impl Default for MemoryEmbeddingConfig {
-    fn default() -> Self {
-        Self::Local
-    }
-}
-
-/// LLM compaction configuration for memory summarization.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MemoryCompactionConfig {
-    /// Enable compaction at session end
-    #[serde(default)]
-    pub enabled: bool,
-    /// LLM provider to use for summarization (memsearch --llm-provider value)
-    pub llm_provider: String,
-    /// Optional: specific model name for the LLM
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub llm_model: Option<String>,
 }
 
 /// MCP via LLM configuration (experimental agentic orchestrator)

@@ -341,7 +341,7 @@ mod tests {
     fn memory_service_ensure_client_dir() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig::default();
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 3625, "test-secret".to_string());
 
         let client_dir = svc.ensure_client_dir("test-client").unwrap();
         assert!(client_dir.join("sessions").exists());
@@ -354,7 +354,7 @@ mod tests {
     fn memory_service_ensure_client_dir_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig::default();
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 3625, "test-secret".to_string());
 
         let dir1 = svc.ensure_client_dir("test-client").unwrap();
         let dir2 = svc.ensure_client_dir("test-client").unwrap();
@@ -362,25 +362,25 @@ mod tests {
     }
 
     #[test]
-    fn memory_service_uses_onnx_provider_by_default() {
+    fn memory_service_routes_through_localrouter() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig::default();
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
-        assert_eq!(svc.cli.provider, "local");
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 3625, "test-secret".to_string());
+        assert_eq!(svc.cli.base_url, "http://localhost:3625/v1");
+        assert_eq!(svc.cli.api_key, "test-secret");
+        assert!(svc.cli.get_embedding_model().is_empty()); // Not configured yet
     }
 
     #[test]
-    fn memory_service_uses_ollama_provider_from_config() {
+    fn memory_service_with_embedding_model() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig {
-            embedding: lr_config::MemoryEmbeddingConfig::Ollama {
-                provider_id: "my-ollama".to_string(),
-                model_name: "nomic-embed-text".to_string(),
-            },
+            embedding_model: Some("ollama/nomic-embed-text".to_string()),
             ..Default::default()
         };
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
-        assert_eq!(svc.cli.provider, "ollama");
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 4000, "my-secret".to_string());
+        assert_eq!(svc.cli.base_url, "http://localhost:4000/v1");
+        assert_eq!(svc.cli.get_embedding_model(), "ollama/nomic-embed-text");
     }
 
     #[test]
@@ -411,7 +411,7 @@ mod tests {
     fn memory_service_update_config() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig::default();
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf(), 3625, "test-secret".to_string());
 
         assert_eq!(svc.config().search_top_k, 5);
 

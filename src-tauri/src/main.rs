@@ -596,12 +596,16 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 // Initialize memory service (per-client enablement checked at runtime)
                 {
                     let memory_config = config_manager.get().memory.clone();
+                    let server_port = config_manager.get().server.port;
+                    let memory_secret = app_state.memory_secret.as_str().to_string();
                     match lr_utils::paths::config_dir() {
                         Ok(base_dir) => {
                             let memory_dir = base_dir.join("memory");
                             let service = Arc::new(lr_memory::MemoryService::new(
                                 memory_config,
                                 memory_dir,
+                                server_port,
+                                memory_secret,
                             ));
                             *app_state.memory_service.write() = Some(service.clone());
                             app_state
@@ -1719,6 +1723,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::rename_provider_instance,
             ui::commands::get_provider_api_key,
             ui::commands::remove_provider_instance,
+            ui::commands::clone_provider_instance,
             ui::commands::set_provider_enabled,
             ui::commands::get_providers_health,
             ui::commands::start_provider_health_checks,
@@ -1797,6 +1802,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::list_mcp_servers,
             ui::commands::create_mcp_server,
             ui::commands::delete_mcp_server,
+            ui::commands::clone_mcp_server,
             ui::commands::start_mcp_server,
             ui::commands::stop_mcp_server,
             ui::commands::get_mcp_server_health,
@@ -1825,6 +1831,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::list_clients,
             ui::commands::create_client,
             ui::commands::delete_client,
+            ui::commands::clone_client,
             ui::commands::update_client_name,
             ui::commands::toggle_client_enabled,
             ui::commands::rotate_client_secret,

@@ -4436,7 +4436,8 @@ pub async fn get_memory_status(
     }))
 }
 
-/// Run memsearch setup steps (check python, install memsearch, download model)
+/// Run memsearch setup steps (check python, install memsearch).
+/// No model download needed — embeddings are routed through LocalRouter.
 #[tauri::command]
 pub async fn memory_setup(
     app_handle: tauri::AppHandle,
@@ -4465,14 +4466,13 @@ pub async fn memory_setup(
         }
     }
 
-    // Step 2: Install/upgrade memsearch with local embedding support
-    // Always run pip install to ensure the [local] extra is present,
-    // even if memsearch is already installed without it.
+    // Step 2: Install/upgrade memsearch
+    // No extra needed — we use the openai provider which comes with base memsearch
     let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
         "step": "memsearch", "status": "installing"
     }));
     let install_result = tokio::process::Command::new("pip3")
-        .args(["install", "--upgrade", "memsearch[local]"])
+        .args(["install", "--upgrade", "memsearch"])
         .output()
         .await
         .map_err(|e| format!("pip3 not found: {}", e))?;
@@ -4482,7 +4482,7 @@ pub async fn memory_setup(
         let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
             "step": "memsearch", "status": "error", "error": stderr.to_string()
         }));
-        return Err(format!("Failed to install memsearch[local]: {}", stderr));
+        return Err(format!("Failed to install memsearch: {}", stderr));
     }
 
     match svc.cli.check_installed().await {
@@ -4496,44 +4496,6 @@ pub async fn memory_setup(
                 "step": "memsearch", "status": "error", "error": e
             }));
             return Err(e);
-        }
-    }
-
-    // Step 3: Model download (warmup)
-    let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
-        "step": "model", "status": "checking"
-    }));
-
-    // Pre-warm the local embedding model by running a dummy search.
-    // Uses an isolated Milvus DB in the temp dir to avoid locking the global one.
-    let warmup_dir = memory_test_dir()?;
-    let warmup_db = warmup_dir.join("milvus.db").to_string_lossy().to_string();
-    let warmup_result = tokio::time::timeout(
-        std::time::Duration::from_secs(300),
-        tokio::process::Command::new("memsearch")
-            .args(["search", "--provider", "local", "--milvus-uri", &warmup_db, "warmup"])
-            .current_dir(&warmup_dir)
-            .output(),
-    )
-    .await;
-
-    match warmup_result {
-        Ok(Ok(_)) => {
-            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
-                "step": "model", "status": "ok"
-            }));
-        }
-        Ok(Err(e)) => {
-            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
-                "step": "model", "status": "error", "error": e.to_string()
-            }));
-            return Err(format!("Model download failed: {}", e));
-        }
-        Err(_) => {
-            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
-                "step": "model", "status": "error", "error": "Timed out (5 min)"
-            }));
-            return Err("Model download timed out".to_string());
         }
     }
 
@@ -4589,9 +4551,15 @@ fn memory_test_dir() -> Result<std::path::PathBuf, String> {
     Ok(dir)
 }
 
-/// Create a CLI instance for test commands using the local provider.
-fn memory_test_cli() -> lr_memory::MemsearchCli {
-    lr_memory::MemsearchCli::with_provider("local".to_string())
+/// Get the CLI from the memory service for test commands.
+fn memory_test_cli(state: &lr_server::state::AppState) -> Result<lr_memory::MemsearchCli, String> {
+    let svc = state.memory_service.read();
+    let svc = svc.as_ref().ok_or("Memory service not initialized")?;
+    Ok(lr_memory::MemsearchCli {
+        base_url: svc.cli.base_url.clone(),
+        api_key: svc.cli.api_key.clone(),
+        embedding_model: parking_lot::RwLock::new(svc.cli.get_embedding_model()),
+    })
 }
 
 /// Reset the memory test directory (wipe all indexed content).
@@ -4607,16 +4575,18 @@ pub async fn memory_test_reset() -> Result<(), String> {
 }
 
 /// Test: index content into memsearch for the Try It Out tab.
-/// Uses a temp directory that is cleaned up on tab load.
 #[tauri::command]
 pub async fn memory_test_index(
     content: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
-    let cli = memory_test_cli();
+    let cli = memory_test_cli(&state)?;
 
-    // Verify memsearch is installed before attempting
     if cli.check_installed().await.is_err() {
         return Err("memsearch is not installed. Run Setup on the Info tab first.".to_string());
+    }
+    if cli.get_embedding_model().is_empty() {
+        return Err("No embedding model selected. Choose one in the Settings tab.".to_string());
     }
 
     let dir = memory_test_dir()?;
@@ -4644,11 +4614,13 @@ pub async fn memory_test_index(
 pub async fn memory_test_search(
     query: String,
     top_k: Option<usize>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<String, String> {
+    let cli = memory_test_cli(&state)?;
     let dir = memory_test_dir()?;
     let sessions_dir = dir.join("sessions");
 
-    let results = memory_test_cli()
+    let results = cli
         .search(&sessions_dir, &query, top_k.unwrap_or(5))
         .await?;
 
@@ -4676,18 +4648,16 @@ pub async fn memory_test_search(
 /// Test: compact the test memory file
 #[tauri::command]
 pub async fn memory_test_compact(
+    state: State<'_, Arc<lr_server::state::AppState>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<String, String> {
+    let cli = memory_test_cli(&state)?;
     let config = config_manager.get();
-    let compaction = config
+    let compaction_model = config
         .memory
-        .compaction
+        .compaction_model
         .as_ref()
-        .ok_or("Compaction not configured — select a model in Settings")?;
-
-    if !compaction.enabled {
-        return Err("Compaction is disabled".to_string());
-    }
+        .ok_or("No compaction model selected. Choose one in the Settings tab.")?;
 
     let dir = memory_test_dir()?;
     let test_file = dir.join("sessions").join("test-memory.md");
@@ -4696,8 +4666,7 @@ pub async fn memory_test_compact(
         return Err("No test content to compact — index something first".to_string());
     }
 
-    memory_test_cli()
-        .compact(&dir, &test_file, &compaction.llm_provider)
+    cli.compact(&dir, &test_file, compaction_model)
         .await?;
 
     Ok("Compaction complete. Search again to see compacted results.".to_string())

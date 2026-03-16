@@ -2693,13 +2693,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Memory - Persistent Conversation Memory
   // ============================================================================
   'get_memory_config': () => ({
-    embedding: { type: 'local' as const },
-    auto_start_daemon: true,
+    embedding_model: null,
+    compaction_model: null,
     search_top_k: 5,
     session_inactivity_minutes: 180,
     max_session_minutes: 480,
     recall_tool_name: 'MemoryRecall',
-    compaction: null,
   }),
   'update_memory_config': () => {
     toast.success('Memory configuration saved (demo)')
