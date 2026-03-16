@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/Input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/Select"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
 import { ContentStorePreview } from "@/components/shared/ContentStorePreview"
@@ -260,31 +260,56 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Compaction model (optional)</Label>
-                  <Select
-                    value={config.compaction_model || "none"}
-                    onValueChange={(value) => {
-                      saveConfig({ ...config, compaction_model: value === "none" ? null : value })
-                    }}
-                  >
-                    <SelectTrigger className="h-8 text-sm">
-                      <SelectValue placeholder="Select compaction model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Disabled (keep raw transcripts)</SelectItem>
-                      {Object.entries(modelsByProvider).map(([provider, models]) => (
-                        <SelectGroup key={provider}>
-                          <SelectLabel className="text-xs text-muted-foreground">{provider}</SelectLabel>
-                          {models.map((modelId) => (
-                            <SelectItem key={`${provider}/${modelId}`} value={`${provider}/${modelId}`}>
-                              {modelId}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Provider</Label>
+                    <Select
+                      value={config.compaction_model?.split("/")[0] || "none"}
+                      onValueChange={(value) => {
+                        if (value === "none") {
+                          saveConfig({ ...config, compaction_model: null })
+                        } else {
+                          // Auto-select first model from this provider
+                          const models = modelsByProvider[value]
+                          if (models?.length) {
+                            saveConfig({ ...config, compaction_model: `${value}/${models[0]}` })
+                          }
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-sm">
+                        <SelectValue placeholder="Select provider" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Disabled</SelectItem>
+                        {Object.keys(modelsByProvider).map((provider) => (
+                          <SelectItem key={provider} value={provider}>{provider}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Model</Label>
+                    <Select
+                      value={config.compaction_model?.split("/").slice(1).join("/") || ""}
+                      disabled={!config.compaction_model}
+                      onValueChange={(modelId) => {
+                        const provider = config.compaction_model?.split("/")[0]
+                        if (provider) {
+                          saveConfig({ ...config, compaction_model: `${provider}/${modelId}` })
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-sm">
+                        <SelectValue placeholder={config.compaction_model ? "Select model" : "Select provider first"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(modelsByProvider[config.compaction_model?.split("/")[0] || ""] || []).map((modelId) => (
+                          <SelectItem key={modelId} value={modelId}>{modelId}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </CardContent>
             </Card>

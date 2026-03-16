@@ -165,27 +165,29 @@ export function ContentStorePreview({
               </>
             )}
           </div>
-          <div className="flex items-center gap-4 pt-1">
-            <label className="flex items-center gap-1.5 cursor-pointer text-sm">
-              <input
-                type="radio"
-                name="content-store-mode"
-                checked={mode === "index"}
-                onChange={() => setMode("index")}
-                className="accent-primary"
-              />
+          <div className="flex items-center gap-1 rounded-md border p-0.5 w-fit">
+            <button
+              type="button"
+              onClick={() => setMode("index")}
+              className={`px-3 py-1 text-xs rounded transition-colors ${
+                mode === "index"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
               Index
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer text-sm">
-              <input
-                type="radio"
-                name="content-store-mode"
-                checked={mode === "compress"}
-                onChange={() => setMode("compress")}
-                className="accent-primary"
-              />
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("compress")}
+              className={`px-3 py-1 text-xs rounded transition-colors ${
+                mode === "compress"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
               Compress
-            </label>
+            </button>
           </div>
         </CardContent>
       </Card>
