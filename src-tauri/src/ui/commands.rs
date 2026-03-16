@@ -1662,6 +1662,7 @@ pub async fn update_context_management_config(
     config_manager: State<'_, ConfigManager>,
     context_mode_vs: State<'_, Arc<lr_mcp::gateway::context_mode::ContextModeVirtualServer>>,
     mcp_via_llm_manager: State<'_, Arc<lr_mcp_via_llm::McpViaLlmManager>>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
     config_manager
         .update(|cfg| {
@@ -1699,7 +1700,20 @@ pub async fn update_context_management_config(
     // Propagate updated config to the in-memory virtual server + MCP via LLM manager
     let new_config = config_manager.get().context_management.clone();
     context_mode_vs.update_config(new_config.clone());
-    mcp_via_llm_manager.update_context_management_config(new_config);
+    mcp_via_llm_manager.update_context_management_config(new_config.clone());
+
+    // Propagate embedding service attachment when vector_search_enabled changes
+    if let Some(enabled) = vector_search_enabled {
+        if enabled {
+            // Attach embedding service if available and loaded
+            if let Some(ref es) = *state.embedding_service.read() {
+                context_mode_vs.set_embedding_service(Some(Arc::clone(es)));
+            }
+        } else {
+            // Detach embedding service
+            context_mode_vs.set_embedding_service(None);
+        }
+    }
 
     config_manager.save().await.map_err(|e| e.to_string())?;
     Ok(())
@@ -4157,6 +4171,8 @@ pub async fn get_embedding_status(
 #[tauri::command]
 pub async fn install_embedding_model(
     state: State<'_, Arc<lr_server::state::AppState>>,
+    context_mode_vs: State<'_, Arc<lr_mcp::gateway::context_mode::ContextModeVirtualServer>>,
+    config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     let service = {
@@ -4177,6 +4193,17 @@ pub async fn install_embedding_model(
     svc.download(Some(app)).await?;
     svc.ensure_loaded()
         .map_err(|e| format!("Model downloaded but failed to load: {}", e))?;
+
+    // Propagate to context-mode virtual server if vector search is globally enabled
+    if config_manager.get().context_management.vector_search_enabled {
+        context_mode_vs.set_embedding_service(Some(svc.clone()));
+    }
+
+    // Propagate to memory service for hybrid memory search
+    if let Some(ref memory_svc) = *state.memory_service.read() {
+        memory_svc.set_embedding_service(svc);
+    }
+
     Ok("Embedding model downloaded and loaded successfully".to_string())
 }
 
