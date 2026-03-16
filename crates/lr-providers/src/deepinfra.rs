@@ -585,12 +585,9 @@ impl ModelProvider for DeepInfraProvider {
         let mut support = super::default_feature_support(self, instance_name);
 
         for f in &mut support.model_features {
-            match f.name.as_str() {
-                "N Completions" => {
-                    f.support = super::SupportLevel::Partial;
-                    f.notes = Some("Support depends on the model being used".into());
-                }
-                _ => {}
+            if f.name == "N Completions" {
+                f.support = super::SupportLevel::Partial;
+                f.notes = Some("Support depends on the model being used".into());
             }
         }
 

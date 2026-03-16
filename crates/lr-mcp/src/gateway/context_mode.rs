@@ -160,7 +160,7 @@ impl VirtualSessionState for ContextModeSessionState {
 
 /// Build the tool definitions for the native context-mode server using configured names.
 fn build_native_tools_with_names(search_name: &str, read_name: &str) -> Vec<McpTool> {
-    let mut search_desc = format!("Search indexed content. Pass ALL search questions as queries array in ONE call.\n\nTIPS: 2-4 specific terms per query. Use 'source' to scope results.");
+    let mut search_desc = "Search indexed content. Pass ALL search questions as queries array in ONE call.\n\nTIPS: 2-4 specific terms per query. Use 'source' to scope results.".to_string();
     search_desc.push_str(CTX_SEARCH_SOURCE_GUIDE);
 
     let mut source_desc = "Filter to a specific indexed source (partial match).".to_string();
@@ -506,6 +506,7 @@ fn handle_ctx_search_blocking(
 
         // Build state updater to mark items as activated by their correct type
         let activated_clone = activated.clone();
+        #[allow(clippy::type_complexity)]
         let state_update: Box<
             dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send,
         > = Box::new(move |s| {
@@ -587,6 +588,7 @@ fn handle_index_read_blocking(
                 if !already_active {
                     let name_owned = name.to_string();
                     let item_type_clone = item_type.clone();
+                    #[allow(clippy::type_complexity)]
                     let state_update: Box<
                         dyn FnOnce(&mut dyn super::virtual_server::VirtualSessionState) + Send,
                     > = Box::new(move |s| {

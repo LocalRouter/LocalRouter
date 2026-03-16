@@ -30,10 +30,7 @@ pub struct SecretScanEngine {
 impl SecretScanEngine {
     /// Create a new engine from configuration
     pub fn new(config: &SecretScanEngineConfig) -> Result<Self, String> {
-        let regex_engine = RegexEngine::new(
-            config.entropy_threshold,
-            &config.allowlist,
-        )?;
+        let regex_engine = RegexEngine::new(config.entropy_threshold, &config.allowlist)?;
 
         info!(
             "Secret scanner initialized with {} rules",

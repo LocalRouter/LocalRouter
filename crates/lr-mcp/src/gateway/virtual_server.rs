@@ -99,6 +99,7 @@ pub trait VirtualSessionState: Any + Send + Sync {
 }
 
 /// Result of a virtual server's permission check.
+#[allow(clippy::large_enum_variant)]
 pub enum VirtualFirewallResult {
     /// Delegate to gateway's standard firewall popup flow
     Standard(FirewallCheckResult),

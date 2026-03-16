@@ -272,6 +272,7 @@ impl FirewallManager {
     ///
     /// Similar to `request_approval` but for LLM model access.
     /// The popup shows different options (Allow for 1 Hour instead of Allow for Session).
+    #[allow(clippy::too_many_arguments)]
     pub async fn request_model_approval(
         &self,
         client_id: String,

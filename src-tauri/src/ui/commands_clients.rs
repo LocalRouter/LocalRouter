@@ -472,6 +472,7 @@ pub async fn get_client_tools_indexing(
 
 /// Set client tools indexing permission at global or tool level.
 /// Pass state=None to clear an override (revert to inherit).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn set_client_tools_indexing(
     client_id: String,
@@ -1482,7 +1483,7 @@ pub(crate) fn reevaluate_pending_approvals(
                     .guardrails
                     .category_actions
                     .as_ref()
-                    .map_or(true, |a| a.is_empty()),
+                    .is_none_or(|a| a.is_empty()),
             }
         } else if info.is_model_request {
             FirewallCheckContext::Model {

@@ -1649,6 +1649,7 @@ pub async fn get_context_management_config(
 }
 
 /// Update context management configuration
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn update_context_management_config(
     catalog_compression: Option<bool>,

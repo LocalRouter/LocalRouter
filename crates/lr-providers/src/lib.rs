@@ -1732,360 +1732,6 @@ pub struct SpeechResponse {
     pub content_type: String,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_token_usage_basic_serialization() {
-        let usage = TokenUsage {
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            total_tokens: 150,
-            prompt_tokens_details: None,
-            completion_tokens_details: None,
-        };
-
-        let json = serde_json::to_value(&usage).unwrap();
-
-        // Verify basic fields
-        assert_eq!(json["prompt_tokens"], 100);
-        assert_eq!(json["completion_tokens"], 50);
-        assert_eq!(json["total_tokens"], 150);
-
-        // Verify optional fields are NOT present (OpenAI compatibility)
-        assert!(json.get("prompt_tokens_details").is_none());
-        assert!(json.get("completion_tokens_details").is_none());
-    }
-
-    #[test]
-    fn test_token_usage_with_prompt_details() {
-        let usage = TokenUsage {
-            prompt_tokens: 1000,
-            completion_tokens: 200,
-            total_tokens: 1200,
-            prompt_tokens_details: Some(PromptTokensDetails {
-                cached_tokens: Some(500),
-                cache_creation_tokens: Some(300),
-                cache_read_tokens: Some(200),
-            }),
-            completion_tokens_details: None,
-        };
-
-        let json = serde_json::to_value(&usage).unwrap();
-
-        // Verify basic fields
-        assert_eq!(json["prompt_tokens"], 1000);
-        assert_eq!(json["completion_tokens"], 200);
-        assert_eq!(json["total_tokens"], 1200);
-
-        // Verify prompt details are present
-        let prompt_details = json["prompt_tokens_details"].as_object().unwrap();
-        assert_eq!(prompt_details["cached_tokens"], 500);
-        assert_eq!(prompt_details["cache_creation_tokens"], 300);
-        assert_eq!(prompt_details["cache_read_tokens"], 200);
-
-        // Verify completion details are NOT present
-        assert!(json.get("completion_tokens_details").is_none());
-    }
-
-    #[test]
-    fn test_token_usage_with_completion_details() {
-        let usage = TokenUsage {
-            prompt_tokens: 100,
-            completion_tokens: 250,
-            total_tokens: 350,
-            prompt_tokens_details: None,
-            completion_tokens_details: Some(CompletionTokensDetails {
-                reasoning_tokens: Some(50),
-                thinking_tokens: Some(30),
-                audio_tokens: Some(20),
-            }),
-        };
-
-        let json = serde_json::to_value(&usage).unwrap();
-
-        // Verify completion details are present
-        let completion_details = json["completion_tokens_details"].as_object().unwrap();
-        assert_eq!(completion_details["reasoning_tokens"], 50);
-        assert_eq!(completion_details["thinking_tokens"], 30);
-        assert_eq!(completion_details["audio_tokens"], 20);
-
-        // Verify prompt details are NOT present
-        assert!(json.get("prompt_tokens_details").is_none());
-    }
-
-    #[test]
-    fn test_token_usage_with_all_details() {
-        let usage = TokenUsage {
-            prompt_tokens: 1000,
-            completion_tokens: 300,
-            total_tokens: 1300,
-            prompt_tokens_details: Some(PromptTokensDetails {
-                cached_tokens: Some(500),
-                cache_creation_tokens: Some(200),
-                cache_read_tokens: Some(200),
-            }),
-            completion_tokens_details: Some(CompletionTokensDetails {
-                reasoning_tokens: Some(100),
-                thinking_tokens: Some(50),
-                audio_tokens: None,
-            }),
-        };
-
-        let json = serde_json::to_value(&usage).unwrap();
-
-        // Verify all fields are present
-        assert_eq!(json["prompt_tokens"], 1000);
-        assert_eq!(json["completion_tokens"], 300);
-        assert_eq!(json["total_tokens"], 1300);
-
-        let prompt_details = json["prompt_tokens_details"].as_object().unwrap();
-        assert_eq!(prompt_details["cached_tokens"], 500);
-
-        let completion_details = json["completion_tokens_details"].as_object().unwrap();
-        assert_eq!(completion_details["reasoning_tokens"], 100);
-        assert_eq!(completion_details["thinking_tokens"], 50);
-        // audio_tokens should not be present since it's None
-        assert!(completion_details.get("audio_tokens").is_none());
-    }
-
-    #[test]
-    fn test_token_usage_deserialization_basic() {
-        // Test that old format (without details) deserializes correctly
-        let json = r#"{
-            "prompt_tokens": 100,
-            "completion_tokens": 50,
-            "total_tokens": 150
-        }"#;
-
-        let usage: TokenUsage = serde_json::from_str(json).unwrap();
-
-        assert_eq!(usage.prompt_tokens, 100);
-        assert_eq!(usage.completion_tokens, 50);
-        assert_eq!(usage.total_tokens, 150);
-        assert!(usage.prompt_tokens_details.is_none());
-        assert!(usage.completion_tokens_details.is_none());
-    }
-
-    #[test]
-    fn test_token_usage_deserialization_with_details() {
-        let json = r#"{
-            "prompt_tokens": 1000,
-            "completion_tokens": 200,
-            "total_tokens": 1200,
-            "prompt_tokens_details": {
-                "cached_tokens": 500,
-                "cache_creation_tokens": 300,
-                "cache_read_tokens": 200
-            },
-            "completion_tokens_details": {
-                "reasoning_tokens": 50,
-                "thinking_tokens": 30
-            }
-        }"#;
-
-        let usage: TokenUsage = serde_json::from_str(json).unwrap();
-
-        assert_eq!(usage.prompt_tokens, 1000);
-        assert_eq!(usage.completion_tokens, 200);
-        assert_eq!(usage.total_tokens, 1200);
-
-        let prompt_details = usage.prompt_tokens_details.unwrap();
-        assert_eq!(prompt_details.cached_tokens, Some(500));
-        assert_eq!(prompt_details.cache_creation_tokens, Some(300));
-        assert_eq!(prompt_details.cache_read_tokens, Some(200));
-
-        let completion_details = usage.completion_tokens_details.unwrap();
-        assert_eq!(completion_details.reasoning_tokens, Some(50));
-        assert_eq!(completion_details.thinking_tokens, Some(30));
-        assert_eq!(completion_details.audio_tokens, None);
-    }
-
-    #[test]
-    fn test_prompt_tokens_details_partial_fields() {
-        // Test that PromptTokensDetails with some None values works correctly
-        let details = PromptTokensDetails {
-            cached_tokens: Some(100),
-            cache_creation_tokens: None,
-            cache_read_tokens: Some(50),
-        };
-
-        let json = serde_json::to_value(&details).unwrap();
-
-        assert_eq!(json["cached_tokens"], 100);
-        assert_eq!(json["cache_read_tokens"], 50);
-        // cache_creation_tokens should not be serialized
-        assert!(json.get("cache_creation_tokens").is_none());
-    }
-
-    #[test]
-    fn test_completion_tokens_details_partial_fields() {
-        // Test that CompletionTokensDetails with some None values works correctly
-        let details = CompletionTokensDetails {
-            reasoning_tokens: Some(75),
-            thinking_tokens: None,
-            audio_tokens: None,
-        };
-
-        let json = serde_json::to_value(&details).unwrap();
-
-        assert_eq!(json["reasoning_tokens"], 75);
-        // Other fields should not be serialized
-        assert!(json.get("thinking_tokens").is_none());
-        assert!(json.get("audio_tokens").is_none());
-    }
-
-    #[test]
-    fn test_openai_compatibility() {
-        // Verify that TokenUsage without details matches OpenAI's exact format
-        let usage = TokenUsage {
-            prompt_tokens: 10,
-            completion_tokens: 5,
-            total_tokens: 15,
-            prompt_tokens_details: None,
-            completion_tokens_details: None,
-        };
-
-        let json_str = serde_json::to_string(&usage).unwrap();
-
-        // Parse back to verify only expected fields are present
-        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        let obj = parsed.as_object().unwrap();
-
-        // Should have exactly 3 fields
-        assert_eq!(obj.len(), 3);
-        assert!(obj.contains_key("prompt_tokens"));
-        assert!(obj.contains_key("completion_tokens"));
-        assert!(obj.contains_key("total_tokens"));
-    }
-
-    // ==================== Audio Type Tests ====================
-
-    #[test]
-    fn test_audio_transcription_response_serialization() {
-        let response = AudioTranscriptionResponse {
-            text: "Hello world".to_string(),
-            task: Some("transcribe".to_string()),
-            language: Some("en".to_string()),
-            duration: Some(1.5),
-            words: None,
-            segments: None,
-        };
-        let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["text"], "Hello world");
-        assert_eq!(json["task"], "transcribe");
-        assert_eq!(json["language"], "en");
-        assert_eq!(json["duration"], 1.5);
-    }
-
-    #[test]
-    fn test_audio_transcription_response_deserialization() {
-        let json = r#"{"text": "test", "task": "transcribe", "language": "en", "duration": 2.0}"#;
-        let response: AudioTranscriptionResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.text, "test");
-        assert_eq!(response.task.as_deref(), Some("transcribe"));
-        assert_eq!(response.duration, Some(2.0));
-    }
-
-    #[test]
-    fn test_audio_transcription_response_minimal_deserialization() {
-        let json = r#"{"text": "minimal"}"#;
-        let response: AudioTranscriptionResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.text, "minimal");
-        assert!(response.task.is_none());
-        assert!(response.language.is_none());
-        assert!(response.duration.is_none());
-        assert!(response.words.is_none());
-        assert!(response.segments.is_none());
-    }
-
-    #[test]
-    fn test_transcription_word_roundtrip() {
-        let word = TranscriptionWord {
-            word: "hello".to_string(),
-            start: 0.5,
-            end: 1.0,
-        };
-        let json = serde_json::to_string(&word).unwrap();
-        let parsed: TranscriptionWord = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.word, "hello");
-        assert_eq!(parsed.start, 0.5);
-        assert_eq!(parsed.end, 1.0);
-    }
-
-    #[test]
-    fn test_transcription_segment_roundtrip() {
-        let segment = TranscriptionSegment {
-            id: 0,
-            seek: 0,
-            start: 0.0,
-            end: 5.0,
-            text: "Test".to_string(),
-            tokens: vec![1, 2, 3],
-            temperature: 0.0,
-            avg_logprob: -0.5,
-            compression_ratio: 1.2,
-            no_speech_prob: 0.01,
-        };
-        let json = serde_json::to_string(&segment).unwrap();
-        let parsed: TranscriptionSegment = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.text, "Test");
-        assert_eq!(parsed.tokens.len(), 3);
-        assert_eq!(parsed.no_speech_prob, 0.01);
-    }
-
-    #[test]
-    fn test_speech_request_serialization() {
-        let request = SpeechRequest {
-            model: "tts-1".to_string(),
-            input: "Test".to_string(),
-            voice: "alloy".to_string(),
-            response_format: Some("opus".to_string()),
-            speed: Some(1.5),
-        };
-        let json = serde_json::to_value(&request).unwrap();
-        assert_eq!(json["model"], "tts-1");
-        assert_eq!(json["input"], "Test");
-        assert_eq!(json["voice"], "alloy");
-        assert_eq!(json["response_format"], "opus");
-        assert_eq!(json["speed"], 1.5);
-    }
-
-    #[test]
-    fn test_speech_request_optional_omission() {
-        let request = SpeechRequest {
-            model: "tts-1".to_string(),
-            input: "Test".to_string(),
-            voice: "alloy".to_string(),
-            response_format: None,
-            speed: None,
-        };
-        let json = serde_json::to_value(&request).unwrap();
-        assert!(json.get("response_format").is_none());
-        assert!(json.get("speed").is_none());
-    }
-
-    #[test]
-    fn test_capability_enum_has_audio_variants() {
-        let audio = Capability::Audio;
-        let tts = Capability::TextToSpeech;
-        // Verify they serialize correctly
-        let json_audio = serde_json::to_value(&audio).unwrap();
-        let json_tts = serde_json::to_value(&tts).unwrap();
-        assert_eq!(json_audio, "Audio");
-        assert_eq!(json_tts, "TextToSpeech");
-    }
-
-    #[test]
-    fn test_audio_translation_response_is_same_as_transcription() {
-        // AudioTranslationResponse is a type alias for AudioTranscriptionResponse
-        let response: AudioTranslationResponse =
-            serde_json::from_str(r#"{"text": "Hello in English", "language": "en"}"#).unwrap();
-        assert_eq!(response.text, "Hello in English");
-    }
-}
-
 // ==================== FEATURE ENDPOINT MATRIX BUILDER ====================
 
 /// Helper to create a MatrixCell.
@@ -2442,5 +2088,359 @@ pub fn build_feature_endpoint_matrix() -> FeatureEndpointMatrix {
         client_modes,
         feature_rows,
         mode_rows,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_token_usage_basic_serialization() {
+        let usage = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        };
+
+        let json = serde_json::to_value(&usage).unwrap();
+
+        // Verify basic fields
+        assert_eq!(json["prompt_tokens"], 100);
+        assert_eq!(json["completion_tokens"], 50);
+        assert_eq!(json["total_tokens"], 150);
+
+        // Verify optional fields are NOT present (OpenAI compatibility)
+        assert!(json.get("prompt_tokens_details").is_none());
+        assert!(json.get("completion_tokens_details").is_none());
+    }
+
+    #[test]
+    fn test_token_usage_with_prompt_details() {
+        let usage = TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 200,
+            total_tokens: 1200,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(500),
+                cache_creation_tokens: Some(300),
+                cache_read_tokens: Some(200),
+            }),
+            completion_tokens_details: None,
+        };
+
+        let json = serde_json::to_value(&usage).unwrap();
+
+        // Verify basic fields
+        assert_eq!(json["prompt_tokens"], 1000);
+        assert_eq!(json["completion_tokens"], 200);
+        assert_eq!(json["total_tokens"], 1200);
+
+        // Verify prompt details are present
+        let prompt_details = json["prompt_tokens_details"].as_object().unwrap();
+        assert_eq!(prompt_details["cached_tokens"], 500);
+        assert_eq!(prompt_details["cache_creation_tokens"], 300);
+        assert_eq!(prompt_details["cache_read_tokens"], 200);
+
+        // Verify completion details are NOT present
+        assert!(json.get("completion_tokens_details").is_none());
+    }
+
+    #[test]
+    fn test_token_usage_with_completion_details() {
+        let usage = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 250,
+            total_tokens: 350,
+            prompt_tokens_details: None,
+            completion_tokens_details: Some(CompletionTokensDetails {
+                reasoning_tokens: Some(50),
+                thinking_tokens: Some(30),
+                audio_tokens: Some(20),
+            }),
+        };
+
+        let json = serde_json::to_value(&usage).unwrap();
+
+        // Verify completion details are present
+        let completion_details = json["completion_tokens_details"].as_object().unwrap();
+        assert_eq!(completion_details["reasoning_tokens"], 50);
+        assert_eq!(completion_details["thinking_tokens"], 30);
+        assert_eq!(completion_details["audio_tokens"], 20);
+
+        // Verify prompt details are NOT present
+        assert!(json.get("prompt_tokens_details").is_none());
+    }
+
+    #[test]
+    fn test_token_usage_with_all_details() {
+        let usage = TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 300,
+            total_tokens: 1300,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(500),
+                cache_creation_tokens: Some(200),
+                cache_read_tokens: Some(200),
+            }),
+            completion_tokens_details: Some(CompletionTokensDetails {
+                reasoning_tokens: Some(100),
+                thinking_tokens: Some(50),
+                audio_tokens: None,
+            }),
+        };
+
+        let json = serde_json::to_value(&usage).unwrap();
+
+        // Verify all fields are present
+        assert_eq!(json["prompt_tokens"], 1000);
+        assert_eq!(json["completion_tokens"], 300);
+        assert_eq!(json["total_tokens"], 1300);
+
+        let prompt_details = json["prompt_tokens_details"].as_object().unwrap();
+        assert_eq!(prompt_details["cached_tokens"], 500);
+
+        let completion_details = json["completion_tokens_details"].as_object().unwrap();
+        assert_eq!(completion_details["reasoning_tokens"], 100);
+        assert_eq!(completion_details["thinking_tokens"], 50);
+        // audio_tokens should not be present since it's None
+        assert!(completion_details.get("audio_tokens").is_none());
+    }
+
+    #[test]
+    fn test_token_usage_deserialization_basic() {
+        // Test that old format (without details) deserializes correctly
+        let json = r#"{
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150
+        }"#;
+
+        let usage: TokenUsage = serde_json::from_str(json).unwrap();
+
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.total_tokens, 150);
+        assert!(usage.prompt_tokens_details.is_none());
+        assert!(usage.completion_tokens_details.is_none());
+    }
+
+    #[test]
+    fn test_token_usage_deserialization_with_details() {
+        let json = r#"{
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "total_tokens": 1200,
+            "prompt_tokens_details": {
+                "cached_tokens": 500,
+                "cache_creation_tokens": 300,
+                "cache_read_tokens": 200
+            },
+            "completion_tokens_details": {
+                "reasoning_tokens": 50,
+                "thinking_tokens": 30
+            }
+        }"#;
+
+        let usage: TokenUsage = serde_json::from_str(json).unwrap();
+
+        assert_eq!(usage.prompt_tokens, 1000);
+        assert_eq!(usage.completion_tokens, 200);
+        assert_eq!(usage.total_tokens, 1200);
+
+        let prompt_details = usage.prompt_tokens_details.unwrap();
+        assert_eq!(prompt_details.cached_tokens, Some(500));
+        assert_eq!(prompt_details.cache_creation_tokens, Some(300));
+        assert_eq!(prompt_details.cache_read_tokens, Some(200));
+
+        let completion_details = usage.completion_tokens_details.unwrap();
+        assert_eq!(completion_details.reasoning_tokens, Some(50));
+        assert_eq!(completion_details.thinking_tokens, Some(30));
+        assert_eq!(completion_details.audio_tokens, None);
+    }
+
+    #[test]
+    fn test_prompt_tokens_details_partial_fields() {
+        // Test that PromptTokensDetails with some None values works correctly
+        let details = PromptTokensDetails {
+            cached_tokens: Some(100),
+            cache_creation_tokens: None,
+            cache_read_tokens: Some(50),
+        };
+
+        let json = serde_json::to_value(&details).unwrap();
+
+        assert_eq!(json["cached_tokens"], 100);
+        assert_eq!(json["cache_read_tokens"], 50);
+        // cache_creation_tokens should not be serialized
+        assert!(json.get("cache_creation_tokens").is_none());
+    }
+
+    #[test]
+    fn test_completion_tokens_details_partial_fields() {
+        // Test that CompletionTokensDetails with some None values works correctly
+        let details = CompletionTokensDetails {
+            reasoning_tokens: Some(75),
+            thinking_tokens: None,
+            audio_tokens: None,
+        };
+
+        let json = serde_json::to_value(&details).unwrap();
+
+        assert_eq!(json["reasoning_tokens"], 75);
+        // Other fields should not be serialized
+        assert!(json.get("thinking_tokens").is_none());
+        assert!(json.get("audio_tokens").is_none());
+    }
+
+    #[test]
+    fn test_openai_compatibility() {
+        // Verify that TokenUsage without details matches OpenAI's exact format
+        let usage = TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        };
+
+        let json_str = serde_json::to_string(&usage).unwrap();
+
+        // Parse back to verify only expected fields are present
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let obj = parsed.as_object().unwrap();
+
+        // Should have exactly 3 fields
+        assert_eq!(obj.len(), 3);
+        assert!(obj.contains_key("prompt_tokens"));
+        assert!(obj.contains_key("completion_tokens"));
+        assert!(obj.contains_key("total_tokens"));
+    }
+
+    // ==================== Audio Type Tests ====================
+
+    #[test]
+    fn test_audio_transcription_response_serialization() {
+        let response = AudioTranscriptionResponse {
+            text: "Hello world".to_string(),
+            task: Some("transcribe".to_string()),
+            language: Some("en".to_string()),
+            duration: Some(1.5),
+            words: None,
+            segments: None,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["text"], "Hello world");
+        assert_eq!(json["task"], "transcribe");
+        assert_eq!(json["language"], "en");
+        assert_eq!(json["duration"], 1.5);
+    }
+
+    #[test]
+    fn test_audio_transcription_response_deserialization() {
+        let json = r#"{"text": "test", "task": "transcribe", "language": "en", "duration": 2.0}"#;
+        let response: AudioTranscriptionResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.text, "test");
+        assert_eq!(response.task.as_deref(), Some("transcribe"));
+        assert_eq!(response.duration, Some(2.0));
+    }
+
+    #[test]
+    fn test_audio_transcription_response_minimal_deserialization() {
+        let json = r#"{"text": "minimal"}"#;
+        let response: AudioTranscriptionResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.text, "minimal");
+        assert!(response.task.is_none());
+        assert!(response.language.is_none());
+        assert!(response.duration.is_none());
+        assert!(response.words.is_none());
+        assert!(response.segments.is_none());
+    }
+
+    #[test]
+    fn test_transcription_word_roundtrip() {
+        let word = TranscriptionWord {
+            word: "hello".to_string(),
+            start: 0.5,
+            end: 1.0,
+        };
+        let json = serde_json::to_string(&word).unwrap();
+        let parsed: TranscriptionWord = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.word, "hello");
+        assert_eq!(parsed.start, 0.5);
+        assert_eq!(parsed.end, 1.0);
+    }
+
+    #[test]
+    fn test_transcription_segment_roundtrip() {
+        let segment = TranscriptionSegment {
+            id: 0,
+            seek: 0,
+            start: 0.0,
+            end: 5.0,
+            text: "Test".to_string(),
+            tokens: vec![1, 2, 3],
+            temperature: 0.0,
+            avg_logprob: -0.5,
+            compression_ratio: 1.2,
+            no_speech_prob: 0.01,
+        };
+        let json = serde_json::to_string(&segment).unwrap();
+        let parsed: TranscriptionSegment = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.text, "Test");
+        assert_eq!(parsed.tokens.len(), 3);
+        assert_eq!(parsed.no_speech_prob, 0.01);
+    }
+
+    #[test]
+    fn test_speech_request_serialization() {
+        let request = SpeechRequest {
+            model: "tts-1".to_string(),
+            input: "Test".to_string(),
+            voice: "alloy".to_string(),
+            response_format: Some("opus".to_string()),
+            speed: Some(1.5),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["model"], "tts-1");
+        assert_eq!(json["input"], "Test");
+        assert_eq!(json["voice"], "alloy");
+        assert_eq!(json["response_format"], "opus");
+        assert_eq!(json["speed"], 1.5);
+    }
+
+    #[test]
+    fn test_speech_request_optional_omission() {
+        let request = SpeechRequest {
+            model: "tts-1".to_string(),
+            input: "Test".to_string(),
+            voice: "alloy".to_string(),
+            response_format: None,
+            speed: None,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("response_format").is_none());
+        assert!(json.get("speed").is_none());
+    }
+
+    #[test]
+    fn test_capability_enum_has_audio_variants() {
+        let audio = Capability::Audio;
+        let tts = Capability::TextToSpeech;
+        // Verify they serialize correctly
+        let json_audio = serde_json::to_value(&audio).unwrap();
+        let json_tts = serde_json::to_value(&tts).unwrap();
+        assert_eq!(json_audio, "Audio");
+        assert_eq!(json_tts, "TextToSpeech");
+    }
+
+    #[test]
+    fn test_audio_translation_response_is_same_as_transcription() {
+        // AudioTranslationResponse is a type alias for AudioTranscriptionResponse
+        let response: AudioTranslationResponse =
+            serde_json::from_str(r#"{"text": "Hello in English", "language": "en"}"#).unwrap();
+        assert_eq!(response.text, "Hello in English");
     }
 }

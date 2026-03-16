@@ -1383,7 +1383,7 @@ mod tests {
     #[test]
     fn read_offset_sub_on_long_line_works() {
         let store = ContentStore::new().unwrap();
-        let long_line = "abcdef".repeat(500); // 3000 chars → 2 sub-chunks
+        let long_line = "abcdef".repeat(100); // 600 chars → 2 sub-chunks at threshold=500
         let content = format!("first\n{}\nlast", long_line);
         store.index("test", &content).unwrap();
 

@@ -52,7 +52,7 @@ pub fn is_coding_agent_tool(name: &str, prefix: &str) -> bool {
 fn action_from_tool(name: &str, prefix: &str) -> Option<&'static str> {
     let rest = name.strip_prefix(prefix)?;
 
-    let alphanumeric_prefix = prefix.chars().last().map_or(false, |c| c.is_alphanumeric());
+    let alphanumeric_prefix = prefix.chars().last().is_some_and(|c| c.is_alphanumeric());
 
     for suffix in TOOL_SUFFIXES {
         if alphanumeric_prefix {

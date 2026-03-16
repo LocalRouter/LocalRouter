@@ -1271,7 +1271,7 @@ pub struct SkillsConfig {
 }
 
 /// Approval mode for coding agent tool/question approvals
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodingAgentApprovalMode {
     /// Auto-approve all tool usage and questions (dangerous — autonomous mode)
@@ -1279,13 +1279,8 @@ pub enum CodingAgentApprovalMode {
     /// Show approval popup in LocalRouter UI
     Ask,
     /// Forward via MCP elicitation to the client (falls back to Ask if unsupported)
+    #[default]
     Elicitation,
-}
-
-impl Default for CodingAgentApprovalMode {
-    fn default() -> Self {
-        CodingAgentApprovalMode::Elicitation
-    }
 }
 
 fn default_tool_prefix() -> String {
@@ -1344,17 +1339,12 @@ fn default_output_buffer_size() -> usize {
 }
 
 /// Whether indexing is enabled or disabled for a given scope.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexingState {
+    #[default]
     Enable,
     Disable,
-}
-
-impl Default for IndexingState {
-    fn default() -> Self {
-        IndexingState::Enable
-    }
 }
 
 impl IndexingState {
@@ -3903,8 +3893,10 @@ mod tests {
 
     #[test]
     fn test_client_tools_per_tool_enable_overrides_global_disable() {
-        let mut config = ContextManagementConfig::default();
-        config.client_tools_indexing_default = IndexingState::Disable;
+        let config = ContextManagementConfig {
+            client_tools_indexing_default: IndexingState::Disable,
+            ..ContextManagementConfig::default()
+        };
         let mut client = Client::new_with_strategy("test".to_string(), "s".to_string());
         let mut tools = HashMap::new();
         tools.insert("Read".to_string(), IndexingState::Enable);
@@ -3919,8 +3911,10 @@ mod tests {
 
     #[test]
     fn test_client_tools_no_client_override_inherits_global() {
-        let mut config = ContextManagementConfig::default();
-        config.client_tools_indexing_default = IndexingState::Disable;
+        let config = ContextManagementConfig {
+            client_tools_indexing_default: IndexingState::Disable,
+            ..ContextManagementConfig::default()
+        };
         let client = Client::new_with_strategy("test".to_string(), "s".to_string());
         // No client_tools_indexing → inherits global default
         assert!(!client.is_client_tool_indexing_eligible("Read", &config));

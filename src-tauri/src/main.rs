@@ -1292,7 +1292,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                             .entry(provider_info.instance_name.clone())
                                             .or_insert(0);
                                         *counter += 1;
-                                        if *counter % multiplier != 0 {
+                                        if !(*counter).is_multiple_of(multiplier) {
                                             continue;
                                         }
                                     }

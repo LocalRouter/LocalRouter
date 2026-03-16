@@ -34,10 +34,7 @@ pub struct RegexEngine {
 
 impl RegexEngine {
     /// Build a new regex engine from builtin patterns
-    pub fn new(
-        entropy_threshold: f32,
-        allowlist: &[String],
-    ) -> Result<Self, String> {
+    pub fn new(entropy_threshold: f32, allowlist: &[String]) -> Result<Self, String> {
         let mut rules = Vec::new();
         let mut all_keywords: Vec<String> = Vec::new();
         let mut keyword_to_rules: Vec<Vec<usize>> = Vec::new();

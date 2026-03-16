@@ -1102,10 +1102,7 @@ impl McpGateway {
                         if let Some(obj) = caps.as_object_mut() {
                             obj.remove("sampling");
                         }
-                    } else if !caps
-                        .as_object()
-                        .map_or(false, |o| o.contains_key("sampling"))
-                    {
+                    } else if !caps.as_object().is_some_and(|o| o.contains_key("sampling")) {
                         // Ensure sampling capability exists if permission is Allow/Ask
                         if let Some(obj) = caps.as_object_mut() {
                             obj.insert("sampling".to_string(), serde_json::json!({}));
@@ -1119,7 +1116,7 @@ impl McpGateway {
                         }
                     } else if !caps
                         .as_object()
-                        .map_or(false, |o| o.contains_key("elicitation"))
+                        .is_some_and(|o| o.contains_key("elicitation"))
                     {
                         // Ensure elicitation capability exists if permission is Allow/Ask
                         if let Some(obj) = caps.as_object_mut() {

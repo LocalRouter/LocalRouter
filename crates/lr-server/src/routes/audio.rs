@@ -896,7 +896,7 @@ mod tests {
     #[test]
     fn test_validate_speech_request_input_multibyte_under_limit() {
         // 2000 multi-byte chars (each char is 3 bytes = 6000 bytes, but only 2000 chars)
-        let input: String = std::iter::repeat('\u{1F600}').take(2000).collect(); // emoji chars
+        let input: String = std::iter::repeat_n('\u{1F600}', 2000).collect(); // emoji chars
         let request = make_speech_request("tts-1", &input, "alloy");
         assert!(validate_speech_request(&request).is_ok());
     }
@@ -904,7 +904,7 @@ mod tests {
     #[test]
     fn test_validate_speech_request_input_multibyte_over_limit() {
         // 4097 multi-byte chars — over limit by character count
-        let input: String = std::iter::repeat('\u{00E9}').take(4097).collect(); // é chars
+        let input: String = std::iter::repeat_n('\u{00E9}', 4097).collect(); // é chars
         let request = make_speech_request("tts-1", &input, "alloy");
         assert!(validate_speech_request(&request).is_err());
     }

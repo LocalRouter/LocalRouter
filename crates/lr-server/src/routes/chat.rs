@@ -257,7 +257,7 @@ pub async fn chat_completions(
         let is_mcp_via_llm_client = client_auth
             .as_ref()
             .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
-            .map_or(false, |c| c.client_mode == lr_config::ClientMode::McpViaLlm);
+            .is_some_and(|c| c.client_mode == lr_config::ClientMode::McpViaLlm);
 
         if !is_mcp_via_llm_client {
             let firewall_edits = check_model_firewall_permission(
@@ -1369,7 +1369,7 @@ async fn handle_guardrail_approval(
                 c.guardrails
                     .category_actions
                     .as_ref()
-                    .map_or(true, |a| a.is_empty())
+                    .is_none_or(|a| a.is_empty())
                     && state
                         .config_manager
                         .get()

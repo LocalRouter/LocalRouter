@@ -736,8 +736,10 @@ mod tests {
     fn test_migrate_sampling_defaults_to_ask() {
         use super::super::types::PermissionState;
 
-        let mut config = AppConfig::default();
-        config.version = 18;
+        let mut config = AppConfig {
+            version: 18,
+            ..AppConfig::default()
+        };
         let mut client =
             super::super::Client::new_with_strategy("test".to_string(), "s".to_string());
         // Both at defaults (enabled=false, requires_approval=true) → Ask
@@ -756,8 +758,10 @@ mod tests {
     fn test_migrate_sampling_enabled_approval_to_ask() {
         use super::super::types::PermissionState;
 
-        let mut config = AppConfig::default();
-        config.version = 18;
+        let mut config = AppConfig {
+            version: 18,
+            ..AppConfig::default()
+        };
         let mut client =
             super::super::Client::new_with_strategy("test".to_string(), "s".to_string());
         client.mcp_sampling_enabled = true;
@@ -775,8 +779,10 @@ mod tests {
     fn test_migrate_sampling_enabled_no_approval_to_allow() {
         use super::super::types::PermissionState;
 
-        let mut config = AppConfig::default();
-        config.version = 18;
+        let mut config = AppConfig {
+            version: 18,
+            ..AppConfig::default()
+        };
         let mut client =
             super::super::Client::new_with_strategy("test".to_string(), "s".to_string());
         client.mcp_sampling_enabled = true;
@@ -794,8 +800,10 @@ mod tests {
     fn test_migrate_adds_elicitation_default_ask() {
         use super::super::types::PermissionState;
 
-        let mut config = AppConfig::default();
-        config.version = 18;
+        let mut config = AppConfig {
+            version: 18,
+            ..AppConfig::default()
+        };
         let client = super::super::Client::new_with_strategy("test".to_string(), "s".to_string());
         config.clients.push(client);
 
