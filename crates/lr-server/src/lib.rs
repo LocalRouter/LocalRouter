@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::Request,
+    extract::{ConnectInfo, Request},
     http::{header, Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -163,7 +163,12 @@ pub async fn start_server(
 
     // Start server (this runs forever)
     let handle = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
             error!("Server error: {}", e);
         }
     });
@@ -434,9 +439,16 @@ async fn security_headers_middleware(req: Request, next: Next) -> Response {
 }
 
 /// Logging middleware to log all requests
-async fn logging_middleware(req: Request, next: Next) -> Response {
+async fn logging_middleware(
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    use crate::middleware::client_auth::LoggedClientId;
+
     let method = req.method().clone();
     let uri = req.uri().clone();
+    let peer = connect_info.map(|ci| ci.0);
     let start = std::time::Instant::now();
 
     let response = next.run(req).await;
@@ -444,10 +456,25 @@ async fn logging_middleware(req: Request, next: Next) -> Response {
     let elapsed = start.elapsed();
     let status = response.status();
 
+    let peer_str = peer
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let client = response
+        .extensions()
+        .get::<LoggedClientId>()
+        .map(|id| id.0.as_str())
+        .unwrap_or("none");
+
     if status.is_success() {
-        info!("{} {} - {} ({:?})", method, uri, status, elapsed);
+        info!(
+            "{} {} - {} ({:?}) [{}] client={}",
+            method, uri, status, elapsed, peer_str, client
+        );
     } else {
-        error!("{} {} - {} ({:?})", method, uri, status, elapsed);
+        error!(
+            "{} {} - {} ({:?}) [{}] client={}",
+            method, uri, status, elapsed, peer_str, client
+        );
     }
 
     response

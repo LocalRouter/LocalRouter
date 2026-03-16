@@ -1431,7 +1431,6 @@ impl Router {
                 .await;
         }
 
-
         // 1. Validate client and get strategy
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
 
@@ -1560,7 +1559,6 @@ impl Router {
             )
             .await);
         }
-
 
         // 1. Validate client and get strategy
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
@@ -1907,7 +1905,6 @@ impl Router {
                 .await;
         }
 
-
         // 1. Validate client and get strategy
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
 
@@ -2062,7 +2059,6 @@ impl Router {
                 .await;
         }
 
-
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
         self.check_client_rate_limits(client_id).await?;
         self.check_strategy_rate_limits(&strategy, "", "")?;
@@ -2159,7 +2155,6 @@ impl Router {
                 .execute_translation_request(client_id, &provider, &model, request)
                 .await;
         }
-
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
         self.check_client_rate_limits(client_id).await?;
@@ -2260,7 +2255,6 @@ impl Router {
                 .execute_speech_request(client_id, &provider, &model, request)
                 .await;
         }
-
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
         self.check_client_rate_limits(client_id).await?;

@@ -430,10 +430,18 @@ impl McpServerManager {
                         env.insert(var_name.clone(), value);
                     }
                     Ok(None) => {
-                        tracing::warn!("Env var '{}' ref '{}' not found in keychain", var_name, ref_key);
+                        tracing::warn!(
+                            "Env var '{}' ref '{}' not found in keychain",
+                            var_name,
+                            ref_key
+                        );
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to read env var '{}' from keychain: {}", var_name, e);
+                        tracing::warn!(
+                            "Failed to read env var '{}' from keychain: {}",
+                            var_name,
+                            e
+                        );
                     }
                 }
             }
@@ -479,16 +487,16 @@ impl McpServerManager {
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
                     // Token is stored with account name: {server_id}_bearer_token
                     let account_name = format!("{}_bearer_token", config.id);
-                    if let Ok(Some(token)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name) {
+                    if let Ok(Some(token)) =
+                        keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name)
+                    {
                         headers.insert("Authorization".to_string(), format!("Bearer {}", token));
                         tracing::debug!("Applied bearer token auth for SSE server: {}", server_id);
                     } else {
                         tracing::warn!("Bearer token not found in keychain for MCP server");
                     }
                 }
-                lr_config::McpAuthConfig::CustomHeaders {
-                    header_refs,
-                } => {
+                lr_config::McpAuthConfig::CustomHeaders { header_refs } => {
                     // Resolve header values from keychain
                     let keychain = lr_api_keys::CachedKeychain::auto()
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
@@ -498,10 +506,18 @@ impl McpServerManager {
                                 headers.insert(header_name.clone(), value);
                             }
                             Ok(None) => {
-                                tracing::warn!("Header '{}' ref '{}' not found in keychain", header_name, ref_key);
+                                tracing::warn!(
+                                    "Header '{}' ref '{}' not found in keychain",
+                                    header_name,
+                                    ref_key
+                                );
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to read header '{}' from keychain: {}", header_name, e);
+                                tracing::warn!(
+                                    "Failed to read header '{}' from keychain: {}",
+                                    header_name,
+                                    e
+                                );
                             }
                         }
                     }
@@ -670,7 +686,9 @@ impl McpServerManager {
                     let keychain = lr_api_keys::CachedKeychain::auto()
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
                     let account_name = format!("{}_bearer_token", config.id);
-                    if let Ok(Some(token)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name) {
+                    if let Ok(Some(token)) =
+                        keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name)
+                    {
                         headers.insert("Authorization".to_string(), format!("Bearer {}", token));
                         tracing::debug!(
                             "Applied bearer token auth for WebSocket server: {}",
@@ -680,9 +698,7 @@ impl McpServerManager {
                         tracing::warn!("Bearer token not found in keychain for MCP server");
                     }
                 }
-                lr_config::McpAuthConfig::CustomHeaders {
-                    header_refs,
-                } => {
+                lr_config::McpAuthConfig::CustomHeaders { header_refs } => {
                     // Resolve header values from keychain
                     let keychain = lr_api_keys::CachedKeychain::auto()
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
@@ -692,10 +708,18 @@ impl McpServerManager {
                                 headers.insert(header_name.clone(), value);
                             }
                             Ok(None) => {
-                                tracing::warn!("Header '{}' ref '{}' not found in keychain", header_name, ref_key);
+                                tracing::warn!(
+                                    "Header '{}' ref '{}' not found in keychain",
+                                    header_name,
+                                    ref_key
+                                );
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to read header '{}' from keychain: {}", header_name, e);
+                                tracing::warn!(
+                                    "Failed to read header '{}' from keychain: {}",
+                                    header_name,
+                                    e
+                                );
                             }
                         }
                     }

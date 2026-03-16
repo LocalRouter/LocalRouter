@@ -738,10 +738,7 @@ fn migrate_to_v23(mut config: AppConfig) -> AppResult<AppConfig> {
                 }
             }
             // Clean up empty provider_config
-            if provider_cfg
-                .as_object()
-                .is_some_and(|o| o.is_empty())
-            {
+            if provider_cfg.as_object().is_some_and(|o| o.is_empty()) {
                 provider.provider_config = None;
             }
         }

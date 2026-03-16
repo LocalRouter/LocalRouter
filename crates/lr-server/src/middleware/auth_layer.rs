@@ -7,7 +7,7 @@ use std::task::{Context, Poll};
 use tauri::http::{Request, Response, StatusCode};
 use tower::{Layer, Service};
 
-use crate::middleware::client_auth::ClientAuthContext;
+use crate::middleware::client_auth::{ClientAuthContext, LoggedClientId};
 use crate::state::{AppState, AuthContext};
 use crate::types::{ApiError, ErrorResponse};
 
@@ -128,21 +128,21 @@ where
             // Extract the bearer token (API key or client secret)
             let bearer_token = &auth_header[7..]; // Skip "Bearer "
 
-            // Check if this is the internal test token or memory service token
-            let is_internal = bearer_token == state.internal_test_secret.as_str();
-            let is_memory = bearer_token == state.memory_secret.as_str();
-            if is_internal || is_memory {
-                let client_id = if is_memory { "memory-service" } else { "internal-test" };
-                tracing::debug!("{} token detected - bypassing API key restrictions", client_id);
+            // Check if this is the internal test token
+            if bearer_token == state.internal_test_secret.as_str() {
+                tracing::debug!("internal-test token detected - bypassing API key restrictions");
                 let auth_context = AuthContext {
-                    api_key_id: client_id.to_string(),
+                    api_key_id: "internal-test".to_string(),
                     model_selection: None,
                 };
                 req.extensions_mut().insert(auth_context);
                 req.extensions_mut().insert(ClientAuthContext {
-                    client_id: client_id.to_string(),
+                    client_id: "internal-test".to_string(),
                 });
-                return inner.call(req).await;
+                let mut resp = inner.call(req).await?;
+                resp.extensions_mut()
+                    .insert(LoggedClientId("internal-test".to_string()));
+                return Ok(resp);
             }
 
             // Validate bearer token using client manager
@@ -192,10 +192,13 @@ where
             };
 
             // Insert auth context into request extensions
+            let logged_id = auth_context.api_key_id.clone();
             req.extensions_mut().insert(auth_context);
 
             // Call the inner service
-            inner.call(req).await
+            let mut resp = inner.call(req).await?;
+            resp.extensions_mut().insert(LoggedClientId(logged_id));
+            Ok(resp)
         })
     }
 }

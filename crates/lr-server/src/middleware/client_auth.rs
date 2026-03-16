@@ -26,6 +26,11 @@ pub struct ClientAuthContext {
     pub client_id: String,
 }
 
+/// Lightweight wrapper inserted into **response** extensions so the
+/// outer logging middleware can report which client was authenticated.
+#[derive(Debug, Clone)]
+pub struct LoggedClientId(pub String);
+
 /// Extract Bearer token from Authorization header
 ///
 /// Expected format: "Bearer <token>"
@@ -147,17 +152,18 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
         }
     };
 
-    // Check if this is the internal test token or memory service token
-    let is_internal = token == state.internal_test_secret.as_str();
-    let is_memory = token == state.memory_secret.as_str();
-    if is_internal || is_memory {
-        let client_id = if is_memory { "memory-service" } else { "internal-test" };
-        tracing::debug!("{} token detected - bypassing client restrictions", client_id);
+    // Check if this is the internal test token
+    if token == state.internal_test_secret.as_str() {
+        tracing::debug!("internal-test token detected - bypassing client restrictions");
         let auth_context = ClientAuthContext {
-            client_id: client_id.to_string(),
+            client_id: "internal-test".to_string(),
         };
         req.extensions_mut().insert(auth_context);
-        return next.run(req).await;
+        let mut response = next.run(req).await;
+        response
+            .extensions_mut()
+            .insert(LoggedClientId("internal-test".to_string()));
+        return response;
     }
 
     // Try OAuth access token first (short-lived tokens from /oauth/token)
@@ -198,13 +204,16 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     };
 
     // Create auth context
+    let logged_id = client_id.clone();
     let auth_context = ClientAuthContext { client_id };
 
     // Insert auth context into request extensions
     req.extensions_mut().insert(auth_context);
 
     // Continue to next middleware/handler
-    next.run(req).await
+    let mut response = next.run(req).await;
+    response.extensions_mut().insert(LoggedClientId(logged_id));
+    response
 }
 
 #[cfg(test)]

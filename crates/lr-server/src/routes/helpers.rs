@@ -12,7 +12,7 @@ pub type HelperResult<T> = Result<T, ApiErrorResponse>;
 /// Check if a client_id is a transient internal token (not a real persisted client).
 /// These bypass all client validation — they route directly to provider/model.
 pub fn is_internal_client(client_id: &str) -> bool {
-    client_id == "internal-test" || client_id == "memory-service"
+    client_id == "internal-test"
 }
 
 /// Create a synthetic client for internal tokens (no persisted config).
@@ -77,7 +77,10 @@ pub fn get_client_with_strategy(
     client_id: &str,
 ) -> HelperResult<(Client, Strategy)> {
     if is_internal_client(client_id) {
-        return Ok((synthetic_internal_client(client_id), Strategy::new(client_id.to_string())));
+        return Ok((
+            synthetic_internal_client(client_id),
+            Strategy::new(client_id.to_string()),
+        ));
     }
 
     let config = state.config_manager.get();
