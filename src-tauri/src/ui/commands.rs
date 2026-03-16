@@ -4393,10 +4393,9 @@ pub async fn update_memory_config(
 
     config_manager.save().await.map_err(|e| e.to_string())?;
 
-    // Update the running memory service config and regenerate client configs
+    // Update the running memory service config
     if let Some(ref svc) = *state.memory_service.read() {
         svc.update_config(new_config);
-        svc.regenerate_client_configs();
     }
 
     Ok(())
@@ -4578,21 +4577,17 @@ const MEMORY_TEST_DIR_NAME: &str = "localrouter-memory-test";
 
 /// Get or create a temporary directory for memory Try It Out tests.
 /// Uses the system temp dir (cross-platform: /tmp on macOS/Linux, %TEMP% on Windows).
-/// Writes a `.memsearch.toml` with the ONNX provider (installed by Setup).
+/// No config file needed — all commands pass `--provider onnx` via CLI args.
 fn memory_test_dir() -> Result<std::path::PathBuf, String> {
     let dir = std::env::temp_dir().join(MEMORY_TEST_DIR_NAME);
     std::fs::create_dir_all(dir.join("sessions"))
         .map_err(|e| format!("Failed to create test dir: {}", e))?;
-
-    // Always write the config to ensure ONNX provider is used.
-    // If memsearch[onnx] is not installed, the error from memsearch will be clear.
-    let config_path = dir.join(".memsearch.toml");
-    if !config_path.exists() {
-        std::fs::write(&config_path, "[embedding]\nprovider = \"onnx\"\n")
-            .map_err(|e| format!("Failed to write test config: {}", e))?;
-    }
-
     Ok(dir)
+}
+
+/// Create an ONNX CLI instance for test commands.
+fn memory_test_cli() -> lr_memory::MemsearchCli {
+    lr_memory::MemsearchCli::with_provider("onnx".to_string())
 }
 
 /// Reset the memory test directory (wipe all indexed content).
@@ -4613,10 +4608,10 @@ pub async fn memory_test_reset() -> Result<(), String> {
 pub async fn memory_test_index(
     content: String,
 ) -> Result<(), String> {
-    let cli = lr_memory::MemsearchCli::new();
+    let cli = memory_test_cli();
 
     // Verify memsearch is installed before attempting
-    if let Err(_) = cli.check_installed().await {
+    if cli.check_installed().await.is_err() {
         return Err("memsearch is not installed. Run Setup on the Info tab first.".to_string());
     }
 
@@ -4657,7 +4652,7 @@ pub async fn memory_test_search(
     let dir = memory_test_dir()?;
     let sessions_dir = dir.join("sessions");
 
-    let results = lr_memory::MemsearchCli::new()
+    let results = memory_test_cli()
         .search(&sessions_dir, &query, top_k.unwrap_or(5))
         .await?;
 
@@ -4705,7 +4700,7 @@ pub async fn memory_test_compact(
         return Err("No test content to compact — index something first".to_string());
     }
 
-    lr_memory::MemsearchCli::new()
+    memory_test_cli()
         .compact(&dir, &test_file, &compaction.llm_provider)
         .await?;
 

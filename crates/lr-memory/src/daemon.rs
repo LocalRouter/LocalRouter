@@ -24,7 +24,7 @@ impl MemsearchDaemon {
     }
 
     /// Start `memsearch watch` for the given sessions directory.
-    pub async fn start(&mut self, sessions_dir: &Path) -> Result<(), String> {
+    pub async fn start(&mut self, sessions_dir: &Path, provider: &str) -> Result<(), String> {
         if self.is_running() {
             return Ok(());
         }
@@ -32,6 +32,8 @@ impl MemsearchDaemon {
         let child = Command::new("memsearch")
             .arg("watch")
             .arg(sessions_dir.to_string_lossy().as_ref())
+            .arg("--provider")
+            .arg(provider)
             .current_dir(sessions_dir.parent().unwrap_or(sessions_dir))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

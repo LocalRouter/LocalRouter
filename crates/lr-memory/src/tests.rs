@@ -346,7 +346,8 @@ mod tests {
         let client_dir = svc.ensure_client_dir("test-client").unwrap();
         assert!(client_dir.join("sessions").exists());
         assert!(client_dir.join("archive").exists());
-        assert!(client_dir.join(".memsearch.toml").exists());
+        // No .memsearch.toml — provider is passed via CLI args
+        assert!(!client_dir.join(".memsearch.toml").exists());
     }
 
     #[test]
@@ -361,21 +362,15 @@ mod tests {
     }
 
     #[test]
-    fn memory_service_generates_onnx_config() {
+    fn memory_service_uses_onnx_provider_by_default() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig::default();
         let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
-
-        svc.ensure_client_dir("test-client").unwrap();
-        let config_content = std::fs::read_to_string(
-            dir.path().join("test-client").join(".memsearch.toml"),
-        )
-        .unwrap();
-        assert!(config_content.contains("provider = \"onnx\""));
+        assert_eq!(svc.cli.provider, "onnx");
     }
 
     #[test]
-    fn memory_service_generates_ollama_config() {
+    fn memory_service_uses_ollama_provider_from_config() {
         let dir = tempfile::tempdir().unwrap();
         let config = lr_config::MemoryConfig {
             embedding: lr_config::MemoryEmbeddingConfig::Ollama {
@@ -385,45 +380,7 @@ mod tests {
             ..Default::default()
         };
         let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
-
-        svc.ensure_client_dir("test-client").unwrap();
-        let config_content = std::fs::read_to_string(
-            dir.path().join("test-client").join(".memsearch.toml"),
-        )
-        .unwrap();
-        assert!(config_content.contains("provider = \"ollama\""));
-        assert!(config_content.contains("nomic-embed-text"));
-        assert!(config_content.contains("base_url = \"http://localhost:11434\""));
-    }
-
-    #[test]
-    fn memory_service_regenerate_client_configs() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = lr_config::MemoryConfig::default(); // ONNX
-        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
-
-        // Create two clients
-        svc.ensure_client_dir("client-a").unwrap();
-        svc.ensure_client_dir("client-b").unwrap();
-
-        // Switch to Ollama
-        svc.update_config(lr_config::MemoryConfig {
-            embedding: lr_config::MemoryEmbeddingConfig::Ollama {
-                provider_id: "ollama".to_string(),
-                model_name: "nomic-embed-text".to_string(),
-            },
-            ..Default::default()
-        });
-        svc.regenerate_client_configs();
-
-        // Both clients should have updated configs
-        for client in &["client-a", "client-b"] {
-            let content = std::fs::read_to_string(
-                dir.path().join(client).join(".memsearch.toml"),
-            )
-            .unwrap();
-            assert!(content.contains("provider = \"ollama\""), "client {} not updated", client);
-        }
+        assert_eq!(svc.cli.provider, "ollama");
     }
 
     #[test]

@@ -42,6 +42,10 @@ impl MemoryService {
     /// Create a new memory service. Does NOT validate memsearch installation —
     /// that's done lazily on first use or via the setup commands.
     pub fn new(config: MemoryConfig, memory_dir: PathBuf) -> Self {
+        let provider = match &config.embedding {
+            lr_config::MemoryEmbeddingConfig::Onnx => "onnx".to_string(),
+            lr_config::MemoryEmbeddingConfig::Ollama { .. } => "ollama".to_string(),
+        };
         let session_config = session_manager::SessionConfig {
             inactivity_timeout: std::time::Duration::from_secs(
                 config.session_inactivity_minutes * 60,
@@ -49,7 +53,7 @@ impl MemoryService {
             max_duration: std::time::Duration::from_secs(config.max_session_minutes * 60),
         };
         Self {
-            cli: MemsearchCli::new(),
+            cli: MemsearchCli::with_provider(provider),
             session_manager: SessionManager::new(session_config),
             transcript: TranscriptWriter::new(),
             config: RwLock::new(config),
@@ -64,14 +68,6 @@ impl MemoryService {
         let client_dir = self.memory_dir.join(client_id);
         std::fs::create_dir_all(client_dir.join("sessions"))?;
         std::fs::create_dir_all(client_dir.join("archive"))?;
-
-        // Generate .memsearch.toml if it doesn't exist
-        let config_path = client_dir.join(".memsearch.toml");
-        if !config_path.exists() {
-            let config_content = self.generate_memsearch_config();
-            std::fs::write(&config_path, config_content)?;
-        }
-
         Ok(client_dir)
     }
 
@@ -89,7 +85,7 @@ impl MemoryService {
 
         let sessions_dir = client_dir.join("sessions");
         let mut daemon = daemon::MemsearchDaemon::new();
-        daemon.start(&sessions_dir).await?;
+        daemon.start(&sessions_dir, &self.cli.provider).await?;
         self.daemons.insert(client_id.to_string(), daemon);
         Ok(())
     }
@@ -182,50 +178,8 @@ impl MemoryService {
         self.config.read().clone()
     }
 
-    /// Regenerate `.memsearch.toml` for all existing client directories.
-    /// Called after config changes (e.g., switching embedding provider).
-    pub fn regenerate_client_configs(&self) {
-        if let Ok(entries) = std::fs::read_dir(&self.memory_dir) {
-            for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    let config_path = entry.path().join(".memsearch.toml");
-                    let config_content = self.generate_memsearch_config();
-                    if let Err(e) = std::fs::write(&config_path, config_content) {
-                        tracing::warn!(
-                            "Failed to regenerate .memsearch.toml for {}: {}",
-                            entry.path().display(),
-                            e
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     /// Get the root memory directory.
     pub fn memory_dir(&self) -> &std::path::Path {
         &self.memory_dir
-    }
-
-    /// Generate .memsearch.toml content based on current config.
-    fn generate_memsearch_config(&self) -> String {
-        let config = self.config.read();
-        match &config.embedding {
-            lr_config::MemoryEmbeddingConfig::Onnx => {
-                "[embedding]\nprovider = \"onnx\"\n".to_string()
-            }
-            lr_config::MemoryEmbeddingConfig::Ollama {
-                model_name,
-                ..
-            } => {
-                // Default to localhost:11434 — the standard Ollama endpoint.
-                // The provider_id references a LocalRouter provider config but
-                // we don't have access to the provider registry here.
-                format!(
-                    "[embedding]\nprovider = \"ollama\"\nmodel = \"{}\"\nbase_url = \"http://localhost:11434\"\n",
-                    model_name
-                )
-            }
-        }
     }
 }

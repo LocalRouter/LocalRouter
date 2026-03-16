@@ -1,4 +1,8 @@
 //! Memsearch CLI wrapper — shells out to the `memsearch` binary.
+//!
+//! All commands pass `--provider` via CLI args so no `.memsearch.toml`
+//! config file is needed. This avoids config file race conditions and
+//! makes the provider choice explicit.
 
 use std::path::Path;
 use std::time::Duration;
@@ -7,7 +11,13 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 /// Wrapper around the `memsearch` CLI binary.
-pub struct MemsearchCli;
+///
+/// The `provider` field is passed as `--provider` to all embedding commands
+/// (search, index, watch). Defaults to `"onnx"`.
+pub struct MemsearchCli {
+    /// Embedding provider name (e.g., "onnx", "ollama", "openai")
+    pub provider: String,
+}
 
 impl Default for MemsearchCli {
     fn default() -> Self {
@@ -17,7 +27,14 @@ impl Default for MemsearchCli {
 
 impl MemsearchCli {
     pub fn new() -> Self {
-        Self
+        Self {
+            provider: "onnx".to_string(),
+        }
+    }
+
+    /// Create with a specific embedding provider.
+    pub fn with_provider(provider: String) -> Self {
+        Self { provider }
     }
 
     /// Check if memsearch is installed and return its version.
@@ -68,6 +85,8 @@ impl MemsearchCli {
                 .arg("--top-k")
                 .arg(top_k.to_string())
                 .arg("--json-output")
+                .arg("--provider")
+                .arg(&self.provider)
                 .current_dir(sessions_dir.parent().unwrap_or(sessions_dir))
                 .output(),
         )
@@ -92,8 +111,7 @@ impl MemsearchCli {
         serde_json::from_str::<Vec<SearchResult>>(&stdout)
             .or_else(|_| {
                 // Try parsing as a wrapper object
-                serde_json::from_str::<SearchResultWrapper>(&stdout)
-                    .map(|w| w.results)
+                serde_json::from_str::<SearchResultWrapper>(&stdout).map(|w| w.results)
             })
             .map_err(|e| format!("Failed to parse memsearch search output: {}", e))
     }
@@ -133,6 +151,8 @@ impl MemsearchCli {
             Command::new("memsearch")
                 .arg("index")
                 .arg(dir.to_string_lossy().as_ref())
+                .arg("--provider")
+                .arg(&self.provider)
                 .current_dir(dir.parent().unwrap_or(dir))
                 .output(),
         )
