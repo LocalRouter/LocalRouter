@@ -132,7 +132,7 @@ fn bench_search(c: &mut Criterion) {
                 b.iter(|| {
                     store
                         .search(
-                            black_box(&["programming language safety"]),
+                            black_box(&["programming language safety".to_string()]),
                             black_box(5),
                             None,
                         )
@@ -154,7 +154,7 @@ fn bench_search(c: &mut Criterion) {
                     b.iter(|| {
                         store
                             .search(
-                                black_box(&["programming language safety"]),
+                                black_box(&["programming language safety".to_string()]),
                                 black_box(5),
                                 None,
                             )
