@@ -9,6 +9,17 @@ use lr_config::{Client, Strategy};
 /// Result type for helper functions
 pub type HelperResult<T> = Result<T, ApiErrorResponse>;
 
+/// Check if a client_id is a transient internal token (not a real persisted client).
+/// These bypass all client validation — they route directly to provider/model.
+pub fn is_internal_client(client_id: &str) -> bool {
+    client_id == "internal-test" || client_id == "memory-service"
+}
+
+/// Create a synthetic client for internal tokens (no persisted config).
+fn synthetic_internal_client(client_id: &str) -> Client {
+    Client::new_with_strategy(client_id.to_string(), "internal".to_string())
+}
+
 /// Get an enabled client by ID, returning appropriate errors if not found or disabled.
 ///
 /// This is the standard way to validate a client for any endpoint:
@@ -25,6 +36,10 @@ pub type HelperResult<T> = Result<T, ApiErrorResponse>;
 /// let client = get_enabled_client(&state, &auth.api_key_id)?;
 /// ```
 pub fn get_enabled_client(state: &AppState, client_id: &str) -> HelperResult<Client> {
+    if is_internal_client(client_id) {
+        return Ok(synthetic_internal_client(client_id));
+    }
+
     let config = state.config_manager.get();
     let client = config
         .clients
@@ -61,6 +76,10 @@ pub fn get_client_with_strategy(
     state: &AppState,
     client_id: &str,
 ) -> HelperResult<(Client, Strategy)> {
+    if is_internal_client(client_id) {
+        return Ok((synthetic_internal_client(client_id), Strategy::new(client_id.to_string())));
+    }
+
     let config = state.config_manager.get();
 
     let client = config
@@ -103,6 +122,10 @@ pub fn get_client_with_strategy(
 /// let client = get_enabled_client_from_manager(&state, &client_ctx.client_id)?;
 /// ```
 pub fn get_enabled_client_from_manager(state: &AppState, client_id: &str) -> HelperResult<Client> {
+    if is_internal_client(client_id) {
+        return Ok(synthetic_internal_client(client_id));
+    }
+
     let client = state
         .client_manager
         .get_client(client_id)

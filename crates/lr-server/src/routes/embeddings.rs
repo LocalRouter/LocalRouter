@@ -50,8 +50,7 @@ pub async fn embeddings(
     state.record_client_activity(&auth.api_key_id);
 
     // Validate client is enabled and mode allows LLM access
-    // Skip for internal-test and memory-service (transient internal tokens)
-    if auth.api_key_id != "internal-test" && auth.api_key_id != "memory-service" {
+    {
         let client = get_enabled_client(&state, &auth.api_key_id)?;
         check_llm_access(&client)?;
     }
@@ -351,12 +350,7 @@ async fn validate_client_provider_access(
         return Ok(());
     };
 
-    // Skip for transient internal tokens
-    if client_ctx.client_id == "internal-test" || client_ctx.client_id == "memory-service" {
-        return Ok(());
-    }
-
-    // Get enabled client
+    // Get enabled client (returns synthetic for internal tokens)
     let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
 
     // Special case: localrouter/auto is a virtual model that routes to actual providers

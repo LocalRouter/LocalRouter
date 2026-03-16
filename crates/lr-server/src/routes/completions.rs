@@ -62,7 +62,7 @@ pub async fn completions(
     state.record_client_activity(&auth.api_key_id);
 
     // Enforce client mode: block MCP-only clients from LLM endpoints
-    if auth.api_key_id != "internal-test" && auth.api_key_id != "memory-service" {
+    {
         let client = get_enabled_client(&state, &auth.api_key_id)?;
         check_llm_access(&client)?;
     }
