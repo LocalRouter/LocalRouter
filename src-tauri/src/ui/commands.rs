@@ -4524,68 +4524,66 @@ pub async fn update_client_memory_config(
     Ok(())
 }
 
-/// Helper: get the memory service from app state.
-fn get_memory_service(
-    state: &lr_server::state::AppState,
-) -> Result<std::sync::Arc<lr_memory::MemoryService>, String> {
-    state
-        .memory_service
-        .read()
-        .clone()
-        .ok_or_else(|| "Memory service not initialized".to_string())
+/// In-memory store for the memory Try It Out tab (ephemeral, not persisted to disk).
+fn memory_test_store() -> &'static parking_lot::Mutex<Option<lr_context::ContentStore>> {
+    static STORE: std::sync::OnceLock<parking_lot::Mutex<Option<lr_context::ContentStore>>> =
+        std::sync::OnceLock::new();
+    STORE.get_or_init(|| parking_lot::Mutex::new(None))
 }
 
 /// Reset the memory test state. Called when the Try It Out tab is loaded.
 #[tauri::command]
-pub async fn memory_test_reset(
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<(), String> {
-    // Index empty content to _test client to reset
-    let svc = get_memory_service(&state)?;
-    let _ = svc.ensure_client_dir("_test");
+pub async fn memory_test_reset() -> Result<(), String> {
+    *memory_test_store().lock() = None;
     Ok(())
 }
 
-/// Test: index content into FTS5 for the Try It Out tab.
+/// Test: index content into FTS5 for the Try It Out tab (in-memory only).
 #[tauri::command]
-pub async fn memory_test_index(
-    content: String,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<(), String> {
-    let svc = get_memory_service(&state)?;
-    svc.index_transcript("_test", "test-session", &content)
+pub async fn memory_test_index(content: String) -> Result<(), String> {
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+
+    let mut guard = memory_test_store().lock();
+    let store = match guard.as_ref() {
+        Some(s) => s,
+        None => {
+            let new_store =
+                lr_context::ContentStore::new().map_err(|e| format!("Failed to create in-memory store: {}", e))?;
+            *guard = Some(new_store);
+            guard.as_ref().unwrap()
+        }
+    };
+
+    store
+        .index("test-session", &content)
+        .map_err(|e| format!("FTS5 index failed: {}", e))?;
+    Ok(())
 }
 
-/// Test: search memory for the Try It Out tab
+/// Test: search memory for the Try It Out tab (in-memory only).
 #[tauri::command]
-pub async fn memory_test_search(
-    query: String,
-    top_k: Option<usize>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<String, String> {
-    let svc = get_memory_service(&state)?;
-    let results = svc.search("_test", &query, top_k.unwrap_or(5))?;
+pub async fn memory_test_search(query: String, top_k: Option<usize>) -> Result<String, String> {
+    let guard = memory_test_store().lock();
+    let store = match guard.as_ref() {
+        Some(s) => s,
+        None => return Ok("No results found. Index some content first.".to_string()),
+    };
 
-    if results.is_empty() {
+    let results = store
+        .search(&[query], top_k.unwrap_or(5), None)
+        .map_err(|e| format!("FTS5 search failed: {}", e))?;
+
+    let has_hits = results.iter().any(|r| !r.hits.is_empty());
+    if !has_hits {
         return Ok("No results found.".to_string());
     }
 
-    let mut output = format!("Found {} results:\n\n", results.len());
-    for (i, r) in results.iter().enumerate() {
-        let score = r
-            .score
-            .map(|s| format!(" [score: {:.2}]", s))
-            .unwrap_or_default();
-        output.push_str(&format!(
-            "{}. **{}**{}\n   Source: {}\n\n{}\n\n",
-            i + 1,
-            r.title,
-            score,
-            r.source,
-            r.content.trim(),
-        ));
-    }
-    Ok(output)
+    Ok(lr_context::format_search_results(
+        &results,
+        lr_context::SEARCH_OUTPUT_CAP,
+    ))
 }
 
 /// Open the memory storage directory in the system file manager

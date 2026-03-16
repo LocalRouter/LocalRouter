@@ -365,10 +365,49 @@ impl ContentStore {
                     sr.hits = self.vector_search_and_merge(q, fts_hits, limit);
                 }
 
+                // Deduplicate hits with overlapping line ranges from the same source.
+                // Chunks are created with 2-line overlap, so the same content region
+                // can produce multiple hits. Keep the best-ranked hit per region.
+                sr.hits = Self::dedup_overlapping_hits(sr.hits);
+
                 sr
             })
             .collect();
         Ok(results)
+    }
+
+    /// Remove hits from the same source whose line ranges overlap.
+    /// Keeps the best-ranked (closest to 0) hit when two overlap.
+    fn dedup_overlapping_hits(mut hits: Vec<SearchHit>) -> Vec<SearchHit> {
+        if hits.len() <= 1 {
+            return hits;
+        }
+        // Sort by source then line_start for efficient overlap detection
+        hits.sort_by(|a, b| {
+            a.source
+                .cmp(&b.source)
+                .then(a.line_start.cmp(&b.line_start))
+        });
+        let mut kept: Vec<SearchHit> = Vec::with_capacity(hits.len());
+        for hit in hits {
+            if let Some(last) = kept.last() {
+                // Same source and overlapping line range → keep better rank
+                if last.source == hit.source && hit.line_start <= last.line_end {
+                    // BM25 ranks are negative (closer to 0 = better);
+                    // RRF ranks are also stored as negative. Compare by absolute closeness to 0.
+                    if hit.rank > last.rank {
+                        // New hit has better rank — replace
+                        *kept.last_mut().unwrap() = hit;
+                    }
+                    // Otherwise skip the new hit
+                    continue;
+                }
+            }
+            kept.push(hit);
+        }
+        // Re-sort by rank (best first) since we disturbed the original ordering
+        kept.sort_by(|a, b| b.rank.partial_cmp(&a.rank).unwrap_or(std::cmp::Ordering::Equal));
+        kept
     }
 
     // ── Read ──
