@@ -152,12 +152,12 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <FEATURES.catalogCompression.icon className={`h-6 w-6 ${FEATURES.catalogCompression.color}`} />
-            MCP Catalog Compression
+            {FEATURES.catalogCompression.name}
           </h1>
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
         </div>
         <p className="text-sm text-muted-foreground">
-          Compress MCP catalogs using deferred loading and FTS5 search indexing
+          Defer MCP catalog entries behind search indexing for reduced context usage
         </p>
       </div>
 
@@ -210,7 +210,7 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
               </>
             )}
 
-            <FeatureClientsCard feature="catalog_compression" onNavigateToClient={onTabChange} />
+            <FeatureClientsCard feature="catalog_compression" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

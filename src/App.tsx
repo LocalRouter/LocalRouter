@@ -1,5 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
-import { listen } from '@tauri-apps/api/event'
+import { listenSafe } from '@/hooks/useTauriListener'
 import { invoke } from '@tauri-apps/api/core'
 import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
@@ -17,6 +17,7 @@ import { CodingAgentsView } from './views/coding-agents'
 import { CatalogCompressionView } from './views/catalog-compression'
 import { ResponseRagView } from './views/response-rag'
 import { MemoryView } from './views/memory'
+import { IndexingView } from './views/indexing'
 import { CompressionView } from './views/compression'
 import { JsonRepairView } from './views/json-repair'
 import { SecretScanningView } from './views/secret-scanning'
@@ -84,162 +85,153 @@ function App() {
   }
 
   useEffect(() => {
-    // Subscribe to configuration changes
-    const unsubscribeConfig = listen('config-changed', (event: any) => {
-      console.log('Configuration changed:', event.payload)
-    })
+    const listeners = [
+      // Subscribe to configuration changes
+      listenSafe('config-changed', (event: any) => {
+        console.log('Configuration changed:', event.payload)
+      }),
 
-    // Subscribe to clients-changed events (for debugging)
-    const unsubscribeClients = listen('clients-changed', () => {
-      console.log('Clients changed event received')
-    })
+      // Subscribe to clients-changed events (for debugging)
+      listenSafe('clients-changed', () => {
+        console.log('Clients changed event received')
+      }),
 
-    // Subscribe to open-prioritized-list event from tray
-    const unsubscribePrioritized = listen<string>('open-prioritized-list', async (event) => {
-      const clientId = event.payload
-      console.log('Opening prioritized list for client:', clientId)
+      // Subscribe to open-prioritized-list event from tray
+      listenSafe<string>('open-prioritized-list', async (event) => {
+        const clientId = event.payload
+        console.log('Opening prioritized list for client:', clientId)
 
-      try {
-        // Find the client by ID
-        const clients = await invoke<Client[]>('list_clients')
-        const client = clients.find((c) => c.id === clientId || c.client_id === clientId)
+        try {
+          // Find the client by ID
+          const clients = await invoke<Client[]>('list_clients')
+          const client = clients.find((c) => c.id === clientId || c.client_id === clientId)
 
-        if (client) {
-          // Navigate to clients view with this client
-          setActiveView('clients')
-          setActiveSubTab(`${client.id}/models`)
-        } else {
-          console.warn('Client not found:', clientId)
-        }
-      } catch (err) {
-        console.error('Failed to load client:', err)
-      }
-    })
-
-    // Subscribe to open-updates-tab event from tray menu
-    const unsubscribeUpdatesTab = listen('open-updates-tab', () => {
-      console.log('Opening Updates tab from tray menu')
-      setActiveView('settings')
-      setActiveSubTab('updates')
-    })
-
-    // Subscribe to open-resources-tab event from tray menu (for provider health issues)
-    const unsubscribeResourcesTab = listen('open-resources-tab', () => {
-      console.log('Opening Resources tab from tray menu')
-      setActiveView('resources')
-      setActiveSubTab('providers')
-    })
-
-    // Subscribe to open-mcp-server event from tray menu (for MCP health issues)
-    const unsubscribeMcpServer = listen<string>('open-mcp-server', (event) => {
-      const serverId = event.payload
-      console.log('Opening MCP server from tray menu:', serverId)
-      setActiveView('mcp-servers')
-      setActiveSubTab(serverId)
-    })
-
-    // Subscribe to open-client-tab event from tray menu (for "More…" overflow)
-    const unsubscribeClientTab = listen<string>('open-client-tab', (event) => {
-      const payload = event.payload
-      console.log('Opening client tab from tray menu:', payload)
-      setActiveView('clients')
-      setActiveSubTab(payload)
-    })
-
-    // Subscribe to open-mcp-servers-page event from tray menu (for "More…" overflow)
-    const unsubscribeMcpServersPage = listen('open-mcp-servers-page', () => {
-      console.log('Opening MCP servers page from tray menu')
-      setActiveView('mcp-servers')
-      setActiveSubTab(null)
-    })
-
-    // Subscribe to open-skills-page event from tray menu (for "More…" overflow)
-    const unsubscribeSkillsPage = listen('open-skills-page', () => {
-      console.log('Opening Skills page from tray menu')
-      setActiveView('skills')
-      setActiveSubTab(null)
-    })
-
-    // Subscribe to guardrail streaming response notification
-    const unsubscribeGuardrailFlagged = listen<string>('guardrail-response-flagged', (event) => {
-      try {
-        const data = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload
-        const matchCount = data?.matches?.length || 0
-        toast.error(`GuardRail: ${matchCount} rule${matchCount !== 1 ? 's' : ''} triggered — stream aborted`, {
-          duration: 8000,
-        })
-      } catch {
-        toast.error('GuardRail: Response flagged — stream aborted', { duration: 8000 })
-      }
-    })
-
-    // Subscribe to check-for-updates event from background timer
-    // This must be in App.tsx (not UpdatesTab) so periodic checks work
-    // even when the Updates tab isn't open
-    const unsubscribeCheckForUpdates = listen('check-for-updates', async () => {
-      console.log('Background update check triggered')
-      try {
-        const update = await check()
-        await invoke('mark_update_check_performed')
-        if (update?.available) {
-          // Check if this version was skipped
-          const config = await invoke<{ skipped_version?: string }>('get_update_config')
-          if (config.skipped_version === update.version) {
-            await invoke('set_update_notification', { available: false })
+          if (client) {
+            // Navigate to clients view with this client
+            setActiveView('clients')
+            setActiveSubTab(`${client.id}/models`)
           } else {
-            await invoke('set_update_notification', { available: true })
-            toast.info(`New version ${update.version} available!`, {
-              action: {
-                label: 'View',
-                onClick: () => {
-                  setActiveView('settings')
-                  setActiveSubTab('updates')
-                },
-              },
-            })
+            console.warn('Client not found:', clientId)
           }
-        } else {
-          await invoke('set_update_notification', { available: false })
+        } catch (err) {
+          console.error('Failed to load client:', err)
         }
-      } catch (err: any) {
-        const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || 'Unknown error'
-        console.error('Background update check failed:', errorMessage)
-      }
-    })
+      }),
 
-    // Subscribe to update-and-restart event from tray menu
-    const unsubscribeUpdateAndRestart = listen('update-and-restart', async () => {
-      console.log('Update and restart requested from tray menu')
-      try {
-        const update = await check()
-        if (update?.available) {
-          toast.info(`Installing update ${update.version}...`)
-          await update.downloadAndInstall()
-          await invoke('set_update_notification', { available: false })
-          await relaunch()
-        } else {
-          toast.info('No update available')
+      // Subscribe to open-updates-tab event from tray menu
+      listenSafe('open-updates-tab', () => {
+        console.log('Opening Updates tab from tray menu')
+        setActiveView('settings')
+        setActiveSubTab('updates')
+      }),
+
+      // Subscribe to open-resources-tab event from tray menu (for provider health issues)
+      listenSafe('open-resources-tab', () => {
+        console.log('Opening Resources tab from tray menu')
+        setActiveView('resources')
+        setActiveSubTab('providers')
+      }),
+
+      // Subscribe to open-mcp-server event from tray menu (for MCP health issues)
+      listenSafe<string>('open-mcp-server', (event) => {
+        const serverId = event.payload
+        console.log('Opening MCP server from tray menu:', serverId)
+        setActiveView('mcp-servers')
+        setActiveSubTab(serverId)
+      }),
+
+      // Subscribe to open-client-tab event from tray menu (for "More…" overflow)
+      listenSafe<string>('open-client-tab', (event) => {
+        const payload = event.payload
+        console.log('Opening client tab from tray menu:', payload)
+        setActiveView('clients')
+        setActiveSubTab(payload)
+      }),
+
+      // Subscribe to open-mcp-servers-page event from tray menu (for "More…" overflow)
+      listenSafe('open-mcp-servers-page', () => {
+        console.log('Opening MCP servers page from tray menu')
+        setActiveView('mcp-servers')
+        setActiveSubTab(null)
+      }),
+
+      // Subscribe to open-skills-page event from tray menu (for "More…" overflow)
+      listenSafe('open-skills-page', () => {
+        console.log('Opening Skills page from tray menu')
+        setActiveView('skills')
+        setActiveSubTab(null)
+      }),
+
+      // Subscribe to guardrail streaming response notification
+      listenSafe<string>('guardrail-response-flagged', (event) => {
+        try {
+          const data = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload
+          const matchCount = data?.matches?.length || 0
+          toast.error(`GuardRail: ${matchCount} rule${matchCount !== 1 ? 's' : ''} triggered — stream aborted`, {
+            duration: 8000,
+          })
+        } catch {
+          toast.error('GuardRail: Response flagged — stream aborted', { duration: 8000 })
         }
-      } catch (err: any) {
-        const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || 'Unknown error'
-        console.error('Update failed:', errorMessage)
-        toast.error(`Update failed: ${errorMessage}`)
-      }
-    })
+      }),
+
+      // Subscribe to check-for-updates event from background timer
+      // This must be in App.tsx (not UpdatesTab) so periodic checks work
+      // even when the Updates tab isn't open
+      listenSafe('check-for-updates', async () => {
+        console.log('Background update check triggered')
+        try {
+          const update = await check()
+          await invoke('mark_update_check_performed')
+          if (update?.available) {
+            // Check if this version was skipped
+            const config = await invoke<{ skipped_version?: string }>('get_update_config')
+            if (config.skipped_version === update.version) {
+              await invoke('set_update_notification', { available: false })
+            } else {
+              await invoke('set_update_notification', { available: true })
+              toast.info(`New version ${update.version} available!`, {
+                action: {
+                  label: 'View',
+                  onClick: () => {
+                    setActiveView('settings')
+                    setActiveSubTab('updates')
+                  },
+                },
+              })
+            }
+          } else {
+            await invoke('set_update_notification', { available: false })
+          }
+        } catch (err: any) {
+          const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || 'Unknown error'
+          console.error('Background update check failed:', errorMessage)
+        }
+      }),
+
+      // Subscribe to update-and-restart event from tray menu
+      listenSafe('update-and-restart', async () => {
+        console.log('Update and restart requested from tray menu')
+        try {
+          const update = await check()
+          if (update?.available) {
+            toast.info(`Installing update ${update.version}...`)
+            await update.downloadAndInstall()
+            await invoke('set_update_notification', { available: false })
+            await relaunch()
+          } else {
+            toast.info('No update available')
+          }
+        } catch (err: any) {
+          const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || 'Unknown error'
+          console.error('Update failed:', errorMessage)
+          toast.error(`Update failed: ${errorMessage}`)
+        }
+      }),
+    ]
 
     return () => {
-      unsubscribeConfig.then((fn: any) => fn())
-      unsubscribeClients.then((fn: any) => fn())
-      unsubscribePrioritized.then((fn: any) => fn())
-      unsubscribeUpdatesTab.then((fn: any) => fn())
-      unsubscribeResourcesTab.then((fn: any) => fn())
-      unsubscribeMcpServer.then((fn: any) => fn())
-      unsubscribeCheckForUpdates.then((fn: any) => fn())
-      unsubscribeUpdateAndRestart.then((fn: any) => fn())
-      unsubscribeGuardrailFlagged.then((fn: any) => fn())
-      unsubscribeClientTab.then((fn: any) => fn())
-      unsubscribeMcpServersPage.then((fn: any) => fn())
-      unsubscribeSkillsPage.then((fn: any) => fn())
+      listeners.forEach(l => l.cleanup())
     }
   }, [])
 
@@ -290,6 +282,13 @@ function App() {
       case 'response-rag':
         return (
           <ResponseRagView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'indexing':
+        return (
+          <IndexingView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

@@ -6,13 +6,10 @@ import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
-import { GatewayIndexingTree } from "@/components/permissions/GatewayIndexingTree"
-import { IndexingStateButton } from "@/components/permissions/IndexingStateButton"
-import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, RouteLLMStatus, RouteLLMState, ContextManagementConfig, IndexingState } from "@/types/tauri-commands"
+import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
 import { OptimizeDiagram } from "./OptimizeDiagram"
 import { FEATURES } from "@/constants/features"
-import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 
 interface OptimizeOverviewProps {
   activeSubTab?: string | null
@@ -44,9 +41,6 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
   const [routellmStatus, setRoutellmStatus] = useState<RouteLLMStatus | null>(null)
   const [savingJsonRepair, setSavingJsonRepair] = useState(false)
   const [savingCompression, setSavingCompression] = useState(false)
-
-  // Context management state
-  const [cmConfig, setCmConfig] = useState<ContextManagementConfig | null>(null)
 
   const loadJsonRepairConfig = useCallback(async () => {
     try {
@@ -84,32 +78,21 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
     }
   }, [])
 
-  const loadCmConfig = useCallback(async () => {
-    try {
-      const data = await invoke<ContextManagementConfig>("get_context_management_config")
-      setCmConfig(data)
-    } catch (err) {
-      console.error("Failed to load context management config:", err)
-    }
-  }, [])
-
   useEffect(() => {
     loadJsonRepairConfig()
     loadCompressionConfig()
     loadCompressionStatus()
     loadRoutellmStatus()
-    loadCmConfig()
 
     const l = listenSafe('config-changed', () => {
       loadJsonRepairConfig()
       loadCompressionConfig()
-      loadCmConfig()
     })
 
     return () => {
       l.cleanup()
     }
-  }, [loadJsonRepairConfig, loadCompressionConfig, loadCompressionStatus, loadRoutellmStatus, loadCmConfig])
+  }, [loadJsonRepairConfig, loadCompressionConfig, loadCompressionStatus, loadRoutellmStatus])
 
   const updateJsonRepairEnabled = async (enabled: boolean) => {
     if (!jsonRepairConfig) return
@@ -135,16 +118,6 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
       console.error("Failed to update compression config:", err)
     } finally {
       setSavingCompression(false)
-    }
-  }
-
-  const updateCmField = async (field: string, value: unknown) => {
-    try {
-      await invoke("update_context_management_config", { [field]: value })
-      const updated = await invoke<ContextManagementConfig>("get_context_management_config")
-      setCmConfig(updated)
-    } catch (err) {
-      console.error("Failed to update context management config:", err)
     }
   }
 
@@ -322,101 +295,34 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           </CardContent>
         </Card>
 
-        {/* Catalog Compression Section */}
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <FEATURES.catalogCompression.icon className={`h-4 w-4 ${FEATURES.catalogCompression.color}`} />
-                <CardTitle className="text-base">Default: Catalog Compression</CardTitle>
-              </div>
-              {cmConfig && (
-                <Switch
-                  checked={cmConfig.catalog_compression}
-                  onCheckedChange={(v) => updateCmField("catalogCompression", v)}
-                />
-              )}
-            </div>
-            <CardDescription>
-              Deferred loading of tools, prompts, and resources. When catalogs exceed the configured
-              threshold, capabilities are compressed and a search tool lets the AI discover them on demand.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("catalog-compression")}>
-              Configure
-              <ArrowRight className="h-3 w-3" />
-            </Button>
-          </CardContent>
-        </Card>
-
-        {/* Response RAG Section */}
+        {/* Indexing Section (Catalog + Responses + Memory) */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
-              <FEATURES.responseRag.icon className={`h-4 w-4 ${FEATURES.responseRag.color}`} />
-              <CardTitle className="text-base">Response RAG</CardTitle>
+              <FEATURES.indexing.icon className={`h-4 w-4 ${FEATURES.indexing.color}`} />
+              <CardTitle className="text-base">Indexing</CardTitle>
             </div>
             <CardDescription>
-              FTS5 search indexing of tool responses. Control which gateway and client tool
-              responses get indexed for context search.
+              FTS5 search indexing engine with optional semantic vector search.
+              Powers catalog indexing, tool response compression, and conversation memory.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3 pt-0">
-            {cmConfig && (
-              <div className="border rounded-lg overflow-hidden">
-                {/* Gateway tools tree (strip its own border) */}
-                <div className="[&>div]:border-0 [&>div]:rounded-none">
-                  <GatewayIndexingTree
-                    permissions={cmConfig.gateway_indexing}
-                    onUpdate={async () => {
-                      const updated = await invoke<ContextManagementConfig>("get_context_management_config")
-                      setCmConfig(updated)
-                    }}
-                  />
-                </div>
-
-                {/* Client Tools - same level as "All Gateway Tools" */}
-                <div className="flex items-center gap-2 px-3 py-3 border-t bg-background">
-                  <span className="font-semibold text-sm flex-1 min-w-0 truncate">Client Tools</span>
-                  <div className="shrink-0">
-                    <IndexingStateButton
-                      value={cmConfig.client_tools_indexing_default}
-                      onChange={(state: IndexingState) => updateCmField("clientToolsIndexingDefault", state)}
-                      size="sm"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 py-2 border-t border-border/50 hover:bg-muted/30 transition-colors text-sm" style={{ paddingLeft: "28px", paddingRight: "12px" }}>
-                  <div className="w-5" />
-                  <span className="text-xs text-muted-foreground">
-                    Per-client overrides are configured in each client&apos;s settings.
-                  </span>
-                </div>
-              </div>
-            )}
-            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("response-rag")}>
-              Configure
-              <ArrowRight className="h-3 w-3" />
-            </Button>
-          </CardContent>
-        </Card>
-
-        {/* Memory Section */}
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <FEATURES.memory.icon className={`h-4 w-4 ${FEATURES.memory.color}`} />
-              <CardTitle className="text-base flex items-center gap-2">Memory{FEATURES.memory.experimental && <ExperimentalBadge />}</CardTitle>
-            </div>
-            <CardDescription>
-              Persistent conversation memory for LLM sessions. Automatically captures
-              conversations and makes them searchable via MemorySearch and MemoryRead tools.
-              Native FTS5 search with optional semantic vector search.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("memory")}>
+          <CardContent className="space-y-2 pt-0">
+            <ul className="text-sm text-muted-foreground space-y-1 ml-1">
+              <li className="flex items-center gap-2">
+                <FEATURES.catalogCompression.icon className={`h-3.5 w-3.5 ${FEATURES.catalogCompression.color} shrink-0`} />
+                {FEATURES.catalogCompression.name}
+              </li>
+              <li className="flex items-center gap-2">
+                <FEATURES.responseRag.icon className={`h-3.5 w-3.5 ${FEATURES.responseRag.color} shrink-0`} />
+                {FEATURES.responseRag.name}
+              </li>
+              <li className="flex items-center gap-2">
+                <FEATURES.memory.icon className={`h-3.5 w-3.5 ${FEATURES.memory.color} shrink-0`} />
+                {FEATURES.memory.name}
+              </li>
+            </ul>
+            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("indexing")}>
               Configure
               <ArrowRight className="h-3 w-3" />
             </Button>

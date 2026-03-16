@@ -186,7 +186,7 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <FEATURES.responseRag.icon className={`h-6 w-6 ${FEATURES.responseRag.color}`} />
-            MCP Response RAG
+            {FEATURES.responseRag.name}
           </h1>
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
         </div>
@@ -311,7 +311,7 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
               </Card>
             )}
 
-            <FeatureClientsCard feature="context_management" onNavigateToClient={onTabChange} />
+            <FeatureClientsCard feature="context_management" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

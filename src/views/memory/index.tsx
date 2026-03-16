@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { CheckCircle2, Download, FolderOpen, Loader2, Play } from "lucide-react"
+import { FolderOpen, Loader2, Play } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { Textarea } from "@/components/ui/textarea"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
-import type { MemoryConfig, EmbeddingStatus, UpdateMemoryConfigParams } from "@/types/tauri-commands"
+import type { MemoryConfig, UpdateMemoryConfigParams } from "@/types/tauri-commands"
 
 const defaultConfig: MemoryConfig = {
   compaction_model: null,
@@ -33,9 +33,6 @@ interface MemoryViewProps {
 export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   const [config, setConfig] = useState<MemoryConfig>(defaultConfig)
   const [isLoading, setIsLoading] = useState(true)
-  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null)
-  const [isDownloading, setIsDownloading] = useState(false)
-
   // Try It Out state
   const [searchQuery, setSearchQuery] = useState("What database did we choose for auth?")
   const [searchResults, setSearchResults] = useState<string | null>(null)
@@ -76,7 +73,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
 
   useEffect(() => {
     loadConfig()
-    loadEmbeddingStatus()
   }, [])
 
   const loadConfig = async () => {
@@ -87,15 +83,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
       console.error("Failed to load memory config:", error)
     } finally {
       setIsLoading(false)
-    }
-  }
-
-  const loadEmbeddingStatus = async () => {
-    try {
-      const result = await invoke<EmbeddingStatus>("get_embedding_status")
-      setEmbeddingStatus(result)
-    } catch {
-      // Embedding status not available
     }
   }
 
@@ -119,19 +106,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
     }
   }
 
-  const downloadEmbeddingModel = async () => {
-    setIsDownloading(true)
-    try {
-      await invoke("install_embedding_model")
-      toast.success("Embedding model downloaded and loaded")
-      loadEmbeddingStatus()
-    } catch (error: any) {
-      toast.error(`Download failed: ${error.message || error}`)
-    } finally {
-      setIsDownloading(false)
-    }
-  }
-
   if (isLoading) {
     return (
       <div className="flex items-center justify-center p-8">
@@ -145,7 +119,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
       <div className="flex-shrink-0">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <FEATURES.memory.icon className={`h-6 w-6 ${FEATURES.memory.color}`} />
-          Memory
+          {FEATURES.memory.name}
           {FEATURES.memory.experimental && <ExperimentalBadge />}
         </h1>
         <p className="text-sm text-muted-foreground">
@@ -196,44 +170,14 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               </CardContent>
             </Card>
 
-            {/* Semantic Search (optional) */}
+            {/* Semantic Search — configured on Indexing page */}
             <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Semantic Search (Optional)</CardTitle>
-                <CardDescription>
-                  Download a small local embedding model (~80MB) to enable hybrid search.
-                  FTS5 keyword search works without it.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {embeddingStatus?.downloaded ? (
-                  <div className="flex items-center gap-2 text-sm">
-                    <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
-                    <span className="font-medium">
-                      {embeddingStatus.model_name}
-                    </span>
-                    <span className="text-muted-foreground text-xs">
-                      {embeddingStatus.model_size_mb != null && `(${embeddingStatus.model_size_mb.toFixed(0)} MB)`}
-                      {embeddingStatus.loaded ? " — loaded" : " — downloaded"}
-                    </span>
-                  </div>
-                ) : (
-                  <Button
-                    size="sm"
-                    onClick={downloadEmbeddingModel}
-                    disabled={isDownloading}
-                  >
-                    {isDownloading ? (
-                      <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Downloading...</>
-                    ) : (
-                      <><Download className="h-3.5 w-3.5 mr-1.5" />Download all-MiniLM-L6-v2 (~80MB)</>
-                    )}
-                  </Button>
-                )}
-                <p className="text-xs text-muted-foreground">
-                  Enables semantic search: &ldquo;SQL database for login&rdquo; finds
-                  &ldquo;We chose PostgreSQL for authentication.&rdquo;
-                  Runs locally via Metal/CUDA/CPU &mdash; no external API calls.
+              <CardContent className="py-3">
+                <p className="text-sm text-muted-foreground">
+                  Semantic search (hybrid FTS5 + embeddings) is configured on the{' '}
+                  <button onClick={() => onTabChange?.('indexing', null)} className="text-primary hover:underline">
+                    Indexing page
+                  </button>.
                 </p>
               </CardContent>
             </Card>

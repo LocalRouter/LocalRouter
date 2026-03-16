@@ -1,6 +1,6 @@
 import * as React from "react"
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { listenSafe } from '@/hooks/useTauriListener'
 import {
   Users,
   Settings,
@@ -12,8 +12,9 @@ import {
   ChevronRight,
   Zap,
 } from "lucide-react"
-import { FEATURES } from "@/constants/features"
+import { FEATURES, INDEXING_CHILDREN, type FeatureKey } from "@/constants/features"
 import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
+import ServiceIcon from "@/components/ServiceIcon"
 import { Logo } from "@/components/Logo"
 import { cn } from "@/lib/utils"
 import {
@@ -47,7 +48,7 @@ interface HealthCacheState {
 
 export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'catalog-compression' | 'response-rag' | 'skills'
   | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair'
-  | 'secret-scanning' | 'memory' | 'optimize-overview' | 'settings' | 'debug'
+  | 'secret-scanning' | 'memory' | 'indexing' | 'optimize-overview' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -65,6 +66,7 @@ interface NavItem {
   icon: React.ElementType
   label: string
   shortcut?: string
+  subItems?: NavItem[]
 }
 
 interface NavHeading {
@@ -82,6 +84,14 @@ interface NavCollapsible {
 interface NavDynamicChild {
   subTab: string
   label: string
+  /** Service identifier for ServiceIcon (template_id, provider_type, server name) */
+  iconService?: string
+}
+
+interface NavStaticChild {
+  view: View
+  icon: React.ElementType
+  label: string
 }
 
 type NavEntry = NavItem | NavHeading | NavCollapsible
@@ -96,28 +106,40 @@ function isNavCollapsible(entry: NavEntry): entry is NavCollapsible {
 
 const MAX_SIDEBAR_CHILDREN = 10
 
+const mcpStaticChildren: NavStaticChild[] = [
+  { view: 'skills', icon: SkillsIcon, label: 'Skills' },
+  { view: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents' },
+  { view: 'marketplace', icon: StoreIcon, label: 'Marketplace' },
+]
+
+const NON_INDEXING_FEATURES: FeatureKey[] = ['guardrails', 'secretScanning', 'jsonRepair', 'compression', 'routing']
+
 const resourceNavEntries: NavEntry[] = [
-  { id: 'skills', icon: SkillsIcon, label: 'Skills', shortcut: '⌘5' },
-  { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6' },
-  { id: 'marketplace', icon: StoreIcon, label: 'Marketplace', shortcut: '⌘7' },
   {
-    id: 'optimize-overview', icon: Zap, label: 'Optimize', shortcut: '⌘8',
+    id: 'optimize-overview', icon: Zap, label: 'Optimize', shortcut: '⌘5',
     children: [
-      { id: FEATURES.guardrails.viewId as View, icon: FEATURES.guardrails.icon, label: FEATURES.guardrails.shortName },
-      { id: FEATURES.secretScanning.viewId as View, icon: FEATURES.secretScanning.icon, label: FEATURES.secretScanning.shortName },
-      { id: FEATURES.jsonRepair.viewId as View, icon: FEATURES.jsonRepair.icon, label: FEATURES.jsonRepair.shortName },
-      { id: FEATURES.compression.viewId as View, icon: FEATURES.compression.icon, label: FEATURES.compression.shortName },
-      { id: FEATURES.routing.viewId as View, icon: FEATURES.routing.icon, label: FEATURES.routing.shortName },
-      { id: FEATURES.catalogCompression.viewId as View, icon: FEATURES.catalogCompression.icon, label: FEATURES.catalogCompression.shortName },
-      { id: FEATURES.responseRag.viewId as View, icon: FEATURES.responseRag.icon, label: FEATURES.responseRag.shortName },
-      { id: FEATURES.memory.viewId as View, icon: FEATURES.memory.icon, label: FEATURES.memory.shortName },
+      ...NON_INDEXING_FEATURES.map((key) => ({
+        id: FEATURES[key].viewId as View,
+        icon: FEATURES[key].icon,
+        label: FEATURES[key].shortName,
+      })),
+      {
+        id: 'indexing' as View,
+        icon: FEATURES.indexing.icon,
+        label: FEATURES.indexing.shortName,
+        subItems: INDEXING_CHILDREN.map((key) => ({
+          id: FEATURES[key].viewId as View,
+          icon: FEATURES[key].icon,
+          label: FEATURES[key].shortName,
+        })),
+      },
     ],
   },
 ]
 
 const bottomNavItems: NavItem[] = [
   ...(import.meta.env.DEV ? [{ id: 'debug' as View, icon: Bug, label: 'Debug' }] : []),
-  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘9' },
+  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘6' },
 ]
 
 export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups }: SidebarProps) {
@@ -131,7 +153,9 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
     // Static collapsibles (Optimize)
     for (const entry of resourceNavEntries) {
       if (isNavCollapsible(entry)) {
-        const hasActiveChild = entry.children.some(child => child.id === activeView)
+        const hasActiveChild = entry.children.some(child =>
+          child.id === activeView || child.subItems?.some(sub => sub.id === activeView)
+        )
         if (hasActiveChild) {
           setCollapsibleOpen(prev => ({ ...prev, [entry.id]: true }))
         }
@@ -147,6 +171,10 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
     if (activeView === 'mcp-servers' && activeSubTab && !activeSubTab.startsWith('add/')) {
       setCollapsibleOpen(prev => ({ ...prev, 'mcp-servers': true }))
     }
+    // Expand MCPs when a built-in subpage is active
+    if (activeView === 'skills' || activeView === 'coding-agents' || activeView === 'marketplace') {
+      setCollapsibleOpen(prev => ({ ...prev, 'mcp-servers': true }))
+    }
   }, [activeView, activeSubTab])
 
   // Load sidebar expanded state from config
@@ -156,7 +184,7 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
       .catch((error) => console.error('Failed to load sidebar state:', error))
   }, [])
 
-  // Load health cache state
+  // Load health cache state and trigger initial health check
   React.useEffect(() => {
     const loadHealthState = async () => {
       try {
@@ -169,36 +197,31 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
 
     loadHealthState()
 
+    // Trigger initial health check to populate the cache
+    // (periodic checks may be disabled, so we need at least one check on startup)
+    invoke('refresh_all_health').catch(() => {})
+
     // Listen for health status changes
-    const unlistenHealth = listen<HealthCacheState>('health-status-changed', (event) => {
-      setHealthState(event.payload)
-    })
-
-    // Also listen for server status changes to update immediately
-    const unlistenStatus = listen<string>('server-status-changed', () => {
-      loadHealthState()
-    })
-
-    // Listen for config changes (port might change)
-    const unlistenConfig = listen('config-changed', () => {
-      loadHealthState()
-    })
-
-    // Listen for server restart events
-    const unlistenRestartCompleted = listen('server-restart-completed', () => {
-      loadHealthState()
-    })
-
-    const unlistenRestartFailed = listen('server-restart-failed', () => {
-      loadHealthState()
-    })
+    const listeners = [
+      listenSafe<HealthCacheState>('health-status-changed', (event) => {
+        setHealthState(event.payload)
+      }),
+      listenSafe<string>('server-status-changed', () => {
+        loadHealthState()
+      }),
+      listenSafe('config-changed', () => {
+        loadHealthState()
+      }),
+      listenSafe('server-restart-completed', () => {
+        loadHealthState()
+      }),
+      listenSafe('server-restart-failed', () => {
+        loadHealthState()
+      }),
+    ]
 
     return () => {
-      unlistenHealth.then(fn => fn())
-      unlistenStatus.then(fn => fn())
-      unlistenConfig.then(fn => fn())
-      unlistenRestartCompleted.then(fn => fn())
-      unlistenRestartFailed.then(fn => fn())
+      listeners.forEach(l => l.cleanup())
     }
   }, [])
 
@@ -289,21 +312,9 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
             break
           case '5':
             e.preventDefault()
-            onViewChange('skills')
-            break
-          case '6':
-            e.preventDefault()
-            onViewChange('coding-agents')
-            break
-          case '7':
-            e.preventDefault()
-            onViewChange('marketplace')
-            break
-          case '8':
-            e.preventDefault()
             onViewChange('optimize-overview')
             break
-          case '9':
+          case '6':
             e.preventDefault()
             onViewChange('settings')
             break
@@ -335,7 +346,9 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
   const renderNavCollapsible = (group: NavCollapsible) => {
     const isOpen = collapsibleOpen[group.id] ?? false
     const isGroupActive = activeView === group.id
-    const hasActiveChild = group.children.some(child => child.id === activeView)
+    const hasActiveChild = group.children.some(child =>
+      child.id === activeView || child.subItems?.some(sub => sub.id === activeView)
+    )
     const Icon = group.icon
 
     const toggleOpen = () => {
@@ -428,7 +441,19 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
         {parentContent}
         {isOpen && (
           <div className="ml-3 border-l border-border/50 pl-1 mt-0.5 space-y-0.5">
-            {group.children.map(renderNavItem)}
+            {group.children.map(child => {
+              if (child.subItems) {
+                return (
+                  <div key={child.id}>
+                    {renderNavItem(child)}
+                    <div className="ml-3 border-l border-border/50 pl-1 mt-0.5 space-y-0.5">
+                      {child.subItems.map(renderNavItem)}
+                    </div>
+                  </div>
+                )
+              }
+              return renderNavItem(child)
+            })}
           </div>
         )}
       </div>
@@ -444,7 +469,7 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
       <button
         onClick={() => onViewChange(item.id)}
         className={cn(
-          "flex items-center rounded-md transition-colors h-8 w-full gap-2 whitespace-nowrap px-2",
+          "flex items-center rounded-md transition-colors h-8 shrink-0 w-full gap-2 whitespace-nowrap px-2",
           isActive
             ? "bg-accent text-accent-foreground"
             : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -484,9 +509,9 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
     label: string,
     shortcut: string,
     children: NavDynamicChild[],
+    staticPrefixItems?: NavStaticChild[],
   ) => {
     const isOpen = collapsibleOpen[groupId] ?? false
-    const isGroupActive = activeView === groupId && !activeSubTab
     const activeChildSubTab = (() => {
       if (activeView !== groupId || !activeSubTab) return null
       return children.find(child =>
@@ -495,7 +520,9 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
         activeSubTab.startsWith(child.subTab + '/')
       )?.subTab ?? null
     })()
-    const hasActiveChild = !!activeChildSubTab
+    const hasActiveStaticChild = staticPrefixItems?.some(item => activeView === item.view) ?? false
+    const hasActiveChild = !!activeChildSubTab || hasActiveStaticChild
+    const isGroupActive = activeView === groupId && !hasActiveChild
 
     const toggleOpen = () => {
       setCollapsibleOpen(prev => ({ ...prev, [groupId]: !prev[groupId] }))
@@ -554,7 +581,7 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
       >
         <GroupIcon className="h-4 w-4 shrink-0" />
         <span className="truncate text-left text-sm flex-1">{label}</span>
-        {children.length > 0 && (
+        {(children.length > 0 || (staticPrefixItems && staticPrefixItems.length > 0)) && (
           <button
             className="shrink-0 p-0.5 rounded hover:bg-accent-foreground/10"
             onClick={(e) => {
@@ -583,8 +610,29 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
             </kbd>
           </TooltipContent>
         </Tooltip>
-        {isOpen && children.length > 0 && (
+        {isOpen && (children.length > 0 || (staticPrefixItems && staticPrefixItems.length > 0)) && (
           <div className="ml-3 border-l border-border/50 pl-1 mt-0.5 space-y-0.5">
+            {staticPrefixItems?.map(item => {
+              const StaticIcon = item.icon
+              const isActive = activeView === item.view
+              return (
+                <button
+                  key={item.view}
+                  onClick={() => onViewChange(item.view)}
+                  className={cn(
+                    "flex items-center rounded-md transition-colors h-8 w-full whitespace-nowrap px-2 gap-1.5",
+                    isActive
+                      ? "bg-accent text-accent-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  )}
+                >
+                  <span className="inline-flex items-center justify-center shrink-0 opacity-70" style={{ width: 18, height: 18 }}>
+                    <StaticIcon className="h-2.5 w-2.5" />
+                  </span>
+                  <span className="truncate text-left text-sm">{item.label}</span>
+                </button>
+              )
+            })}
             {displayChildren.map(child => {
               const isActive = activeChildSubTab === child.subTab
               return (
@@ -592,22 +640,27 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
                   key={child.subTab}
                   onClick={() => onViewChange(groupId, child.subTab)}
                   className={cn(
-                    "flex items-center rounded-md transition-colors h-7 w-full whitespace-nowrap px-2",
+                    "flex items-center rounded-md transition-colors h-8 w-full whitespace-nowrap px-2 gap-1.5",
                     isActive
                       ? "bg-accent text-accent-foreground"
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   )}
                 >
-                  <span className="truncate text-left text-xs">{child.label}</span>
+                  {child.iconService && (
+                    <span className="shrink-0 grayscale dark:invert opacity-70 [&_span]:!bg-transparent">
+                      <ServiceIcon service={child.iconService} size={10} fallbackToServerIcon={groupId === 'mcp-servers'} />
+                    </span>
+                  )}
+                  <span className="truncate text-left text-sm">{child.label}</span>
                 </button>
               )
             })}
             {hasMore && (
               <button
                 onClick={() => onViewChange(groupId)}
-                className="flex items-center rounded-md transition-colors h-7 w-full whitespace-nowrap px-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                className="flex items-center rounded-md transition-colors h-8 w-full whitespace-nowrap px-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
               >
-                <span className="text-xs italic">Show all ({children.length})</span>
+                <span className="text-sm italic">Show all ({children.length})</span>
               </button>
             )}
           </div>
@@ -658,7 +711,7 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
           {/* Dynamic collapsible sections */}
           {renderNavDynamicCollapsible('clients', Users, 'Clients', '⌘2', dynamicGroups?.clients ?? [])}
           {renderNavDynamicCollapsible('resources', ProvidersIcon, 'LLMs', '⌘3', dynamicGroups?.providers ?? [])}
-          {renderNavDynamicCollapsible('mcp-servers', McpIcon, 'MCPs', '⌘4', dynamicGroups?.mcpServers ?? [])}
+          {renderNavDynamicCollapsible('mcp-servers', McpIcon, 'MCPs', '⌘4', dynamicGroups?.mcpServers ?? [], mcpStaticChildren)}
 
           {/* Static resource items */}
           {resourceNavEntries.map(renderNavEntry)}
@@ -677,7 +730,7 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
               <button
                 onClick={handleRefresh}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-accent transition-colors"
-                disabled={isRefreshing || hasAnyPending()}
+                disabled={isRefreshing}
               >
                 {isRefreshing || hasAnyPending() ? (
                   <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
