@@ -1,19 +1,18 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { FolderOpen, Loader2, Play } from "lucide-react"
+import { FolderOpen, Loader2 } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
-import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/Input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/Select"
-import { Textarea } from "@/components/ui/textarea"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
+import { ContentStorePreview } from "@/components/shared/ContentStorePreview"
 import type { MemoryConfig, UpdateMemoryConfigParams } from "@/types/tauri-commands"
 
 const defaultConfig: MemoryConfig = {
@@ -32,13 +31,6 @@ interface MemoryViewProps {
 export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   const [config, setConfig] = useState<MemoryConfig>(defaultConfig)
   const [isLoading, setIsLoading] = useState(true)
-  // Try It Out state
-  const [searchQuery, setSearchQuery] = useState("What database did we choose for auth?")
-  const [searchResults, setSearchResults] = useState<string | null>(null)
-  const [searchLoading, setSearchLoading] = useState(false)
-  const [indexText, setIndexText] = useState("We decided to use PostgreSQL for the auth service. MySQL had connection pooling issues under load, and PostgreSQL's row-level security features will help with multi-tenant isolation. The migration is planned for next sprint.")
-  const [indexLoading, setIndexLoading] = useState(false)
-  const [hasIndexed, setHasIndexed] = useState(false)
 
   // Live models for compaction model picker
   const { models: liveModels } = useIncrementalModels({ refreshOnMount: true })
@@ -57,15 +49,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
     : config.recall_tool_name.endsWith("Recall")
       ? config.recall_tool_name.replace(/Recall$/, "Read")
       : `${config.recall_tool_name}Read`
-
-  // Reset test state when Try It Out tab is loaded
-  useEffect(() => {
-    if (tab === "try-it-out") {
-      invoke("memory_test_reset").catch(() => {})
-      setHasIndexed(false)
-      setSearchResults(null)
-    }
-  }, [tab])
 
   useEffect(() => {
     loadConfig()
@@ -251,107 +234,14 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
         {/* Try It Out Tab                                                   */}
         {/* ================================================================ */}
         <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4 overflow-y-auto">
-          <div className="space-y-4 max-w-2xl">
-            {/* Index some content */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">1. Index Content</CardTitle>
-                <CardDescription>
-                  Write a memory note and index it so you can search for it
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Textarea
-                  value={indexText}
-                  onChange={(e) => setIndexText(e.target.value)}
-                  placeholder="Paste or type content to index, or load a sample transcript..."
-                  className="min-h-[80px] text-sm font-mono"
-                />
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={async () => {
-                      try {
-                        const sample = await invoke<string>("memory_test_sample")
-                        setIndexText(sample)
-                      } catch (err: any) {
-                        toast.error(`Failed to load sample: ${err.message || err}`)
-                      }
-                    }}
-                  >
-                    Load Sample
-                  </Button>
-                  <Button
-                    size="sm"
-                    disabled={indexLoading || !indexText.trim()}
-                    onClick={async () => {
-                      setIndexLoading(true)
-                      try {
-                        await invoke("memory_test_index", { content: indexText })
-                        toast.success("Content indexed")
-                        setHasIndexed(true)
-                      } catch (err: any) {
-                        toast.error(`Index failed: ${err.message || err}`)
-                      } finally {
-                        setIndexLoading(false)
-                      }
-                    }}
-                  >
-                    {indexLoading ? (
-                      <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Indexing...</>
-                    ) : (
-                      "Index"
-                    )}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Search */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">2. Search Memories</CardTitle>
-                <CardDescription>
-                  Search for previously indexed memories using keyword + semantic search
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex gap-2">
-                  <Input
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="e.g. session token storage compliance"
-                    className="h-8 text-sm flex-1"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && searchQuery.trim()) {
-                        runSearch()
-                      }
-                    }}
-                  />
-                  <Button
-                    size="sm"
-                    disabled={searchLoading || !searchQuery.trim() || !hasIndexed}
-                    onClick={runSearch}
-                  >
-                    {searchLoading ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <><Play className="h-3.5 w-3.5 mr-1" />Search</>
-                    )}
-                  </Button>
-                </div>
-                {searchResults !== null && (
-                  <div className="rounded-md border p-3 bg-muted/50">
-                    <pre className="text-xs whitespace-pre-wrap font-mono">{searchResults}</pre>
-                  </div>
-                )}
-                {!hasIndexed && (
-                  <p className="text-xs text-muted-foreground">Index some content first to enable search.</p>
-                )}
-              </CardContent>
-            </Card>
-
+          <div className="max-w-2xl">
+            <ContentStorePreview
+              loadSample={() => invoke<string>("memory_test_sample")}
+              sourceLabel="session/sample-session"
+              responseThresholdBytes={200}
+              searchPlaceholder='e.g. "session token storage", "database choice"'
+              defaultMode="index"
+            />
           </div>
         </TabsContent>
 
@@ -493,16 +383,4 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
       </Tabs>
     </div>
   )
-
-  async function runSearch() {
-    setSearchLoading(true)
-    try {
-      const result = await invoke<string>("memory_test_search", { query: searchQuery, topK: config.search_top_k })
-      setSearchResults(result || "No results found.")
-    } catch (err: any) {
-      setSearchResults(`Error: ${err.message || err}`)
-    } finally {
-      setSearchLoading(false)
-    }
-  }
 }

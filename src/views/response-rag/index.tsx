@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Search, Loader2, BookOpen, Wrench } from "lucide-react"
+import { Wrench } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { FEATURES } from "@/constants/features"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
@@ -12,18 +12,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
 import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
+import { ContentStorePreview } from "@/components/shared/ContentStorePreview"
 import { VirtualMcpIndexingTree } from "@/components/permissions/VirtualMcpIndexingTree"
 import { GatewayIndexingTree } from "@/components/permissions/GatewayIndexingTree"
 import { IndexingStateButton } from "@/components/permissions/IndexingStateButton"
 import type {
   ContextManagementConfig,
   IndexingState,
-  RagPreviewIndexResult,
-  RagSearchResult,
-  RagReadResult,
-  PreviewRagIndexParams,
-  PreviewRagSearchParams,
-  PreviewRagReadParams,
   ToolDefinition,
 } from "@/types/tauri-commands"
 
@@ -148,6 +143,7 @@ interface ResponseRagViewProps {
 export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewProps) {
   const [config, setConfig] = useState<ContextManagementConfig | null>(null)
   const [, setSaving] = useState(false)
+  const [contextTools, setContextTools] = useState<McpToolDisplayItem[]>([])
 
   const tab = activeSubTab || "info"
 
@@ -161,6 +157,16 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
     invoke<ContextManagementConfig>("get_context_management_config")
       .then((cfg) => { if (!ignore) setConfig(cfg) })
       .catch((err) => console.error("Failed to load context management config:", err))
+
+    invoke<ToolDefinition[]>("get_context_mode_tool_definitions")
+      .then((defs) => {
+        if (!ignore) setContextTools(defs.map((d): McpToolDisplayItem => ({
+          name: d.name,
+          description: d.description,
+          inputSchema: d.input_schema,
+        })))
+      })
+      .catch(() => {})
 
     return () => {
       ignore = true
@@ -244,6 +250,24 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
                 </p>
               </CardContent>
             </Card>
+
+            {/* MCP Tools exposed to the LLM */}
+            {contextTools.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Wrench className="h-4 w-4" />
+                    Tool Definitions
+                  </CardTitle>
+                  <CardDescription>
+                    These tools are exposed to the LLM for searching and reading indexed content.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <McpToolDisplay tools={contextTools} />
+                </CardContent>
+              </Card>
+            )}
 
             {/* Tool Indexing */}
             {config && (
@@ -370,365 +394,17 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
 
         {/* Preview / Try it out Tab */}
         <TabsContent value="preview" className="flex-1 min-h-0 mt-4 overflow-y-auto">
-          <RagPreview initialThreshold={config?.response_threshold_bytes ?? DEFAULT_RESPONSE_THRESHOLD_BYTES} />
+          <div className="max-w-2xl">
+            <ContentStorePreview
+              loadSample={() => Promise.resolve(SAMPLE_DOCUMENT)}
+              sourceLabel="tool-response:1"
+              responseThresholdBytes={config?.response_threshold_bytes ?? DEFAULT_RESPONSE_THRESHOLD_BYTES}
+              searchPlaceholder='e.g. "rate limiting", "login endpoint"'
+              defaultMode="compress"
+            />
+          </div>
         </TabsContent>
       </Tabs>
     </div>
   )
-}
-
-
-// ─────────────────────────────────────────────────────────
-// RagPreview component
-// ─────────────────────────────────────────────────────────
-
-interface RagPreviewProps {
-  initialThreshold: number
-}
-
-function RagPreview({ initialThreshold }: RagPreviewProps) {
-  const [content, setContent] = useState(SAMPLE_DOCUMENT)
-  const [indexResult, setIndexResult] = useState<RagPreviewIndexResult | null>(null)
-  const [indexing, setIndexing] = useState(false)
-
-  const sourceLabel = "tool-response:1"
-
-  // Search state
-  const [searchQuery, setSearchQuery] = useState("")
-  const [searchResults, setSearchResults] = useState<RagSearchResult[] | null>(null)
-  const [searching, setSearching] = useState(false)
-
-  // Read state
-  const [readOffset, setReadOffset] = useState("")
-  const [readLimit, setReadLimit] = useState("")
-  const [readResult, setReadResult] = useState<RagReadResult | null>(null)
-  const [reading, setReading] = useState(false)
-
-  // Tool definitions
-  const [contextTools, setContextTools] = useState<McpToolDisplayItem[]>([])
-
-  useEffect(() => {
-    invoke<ToolDefinition[]>("get_context_mode_tool_definitions")
-      .then((defs) =>
-        setContextTools(
-          defs.map((d): McpToolDisplayItem => ({
-            name: d.name,
-            description: d.description,
-            inputSchema: d.input_schema,
-          }))
-        )
-      )
-      .catch(() => setContextTools([]))
-  }, [])
-
-  const doIndex = useCallback(async (text: string) => {
-    if (!text.trim()) return
-    setIndexing(true)
-    try {
-      const result = await invoke<RagPreviewIndexResult>("preview_rag_index", {
-        content: text,
-        label: sourceLabel,
-        responseThresholdBytes: initialThreshold,
-      } satisfies PreviewRagIndexParams)
-      setIndexResult(result)
-    } catch (e) {
-      toast.error(`Failed to index: ${e}`)
-    } finally {
-      setIndexing(false)
-    }
-  }, [initialThreshold])
-
-  // Auto-index with debounce on content change
-  useEffect(() => {
-    if (!content.trim()) return
-    const timer = setTimeout(() => {
-      doIndex(content)
-    }, 500)
-    return () => clearTimeout(timer)
-  }, [content, doIndex])
-
-  const doSearch = useCallback(async () => {
-    if (!searchQuery.trim()) return
-    setSearching(true)
-    try {
-      const results = await invoke<RagSearchResult[]>("preview_rag_search", {
-        query: searchQuery,
-        limit: 5,
-      } satisfies PreviewRagSearchParams)
-      setSearchResults(results)
-    } catch (e) {
-      toast.error(`Search failed: ${e}`)
-    } finally {
-      setSearching(false)
-    }
-  }, [searchQuery])
-
-  const doRead = useCallback(async () => {
-    if (!indexResult) return
-    setReading(true)
-    try {
-      const result = await invoke<RagReadResult>("preview_rag_read", {
-        label: indexResult.sources[0]?.label ?? sourceLabel,
-        offset: readOffset || null,
-        limit: readLimit ? parseInt(readLimit) : null,
-      } satisfies PreviewRagReadParams)
-      setReadResult(result)
-    } catch (e) {
-      toast.error(`Read failed: ${e}`)
-    } finally {
-      setReading(false)
-    }
-  }, [indexResult, readOffset, readLimit])
-
-  return (
-    <div className="space-y-4">
-      {/* Input Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Document Input</CardTitle>
-          <CardDescription>
-            Paste or edit a document to see how Response RAG indexes and compresses it.
-            Changes are automatically re-indexed.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            className="w-full h-48 rounded-md border border-input bg-background px-3 py-2 text-xs font-mono ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 resize-y"
-            placeholder="Paste document content here..."
-          />
-          <div className="flex items-center gap-3 flex-wrap text-xs text-muted-foreground">
-            <span>{content.length.toLocaleString()} bytes</span>
-            {indexing && (
-              <span className="flex items-center gap-1">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                Indexing...
-              </span>
-            )}
-            {indexResult && !indexing && (
-              <>
-                <span>{indexResult.index_result.total_lines} lines</span>
-                <span>{indexResult.index_result.total_chunks} chunks ({indexResult.index_result.code_chunks} code)</span>
-                <span>{formatBytes(indexResult.index_result.content_bytes)}</span>
-              </>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Compressed Preview */}
-      {indexResult && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center justify-between">
-              <span>Compressed (what LLM sees)</span>
-              <span className="text-xs font-mono font-normal text-muted-foreground">{formatBytes(indexResult.compressed_preview.length)}</span>
-            </CardTitle>
-            <CardDescription>
-              This is the compressed version that replaces the original {formatBytes(content.length)} response in the LLM&apos;s context window.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="bg-muted/50 rounded-md p-3 max-h-[400px] overflow-y-auto">
-              <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{indexResult.compressed_preview}</pre>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Chunk Table of Contents */}
-      {indexResult && indexResult.index_result.chunk_titles.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Indexed Chunks</CardTitle>
-            <CardDescription>
-              The document was split into {indexResult.index_result.total_chunks} searchable chunks.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-0.5">
-              {indexResult.index_result.chunk_titles.map((chunk, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-2 py-1 px-2 rounded text-sm hover:bg-muted/50"
-                  style={{ paddingLeft: `${8 + chunk.depth * 16}px` }}
-                >
-                  <code className="text-[10px] text-muted-foreground font-mono w-8 text-right shrink-0">
-                    L{chunk.line_ref}
-                  </code>
-                  <span className="text-xs truncate">{chunk.title}</span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* MCP Tools exposed to the LLM */}
-      {indexResult && contextTools.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Wrench className="h-4 w-4" />
-              MCP Tools
-            </CardTitle>
-            <CardDescription>
-              These tools are exposed to the LLM for searching and reading indexed content.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <McpToolDisplay tools={contextTools} />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* IndexSearch */}
-      {indexResult && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Search className="h-4 w-4" />
-              IndexSearch
-            </CardTitle>
-            <CardDescription>
-              Search the indexed content using FTS5 full-text search. This is what the LLM calls to find relevant sections.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex gap-2">
-              <Input
-                placeholder="Search query... (e.g. &quot;rate limiting&quot;, &quot;login endpoint&quot;)"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") doSearch()
-                }}
-                className="flex-1"
-              />
-              <Button
-                size="sm"
-                onClick={doSearch}
-                disabled={searching || !searchQuery.trim()}
-              >
-                {searching ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
-                ) : (
-                  <Search className="h-3.5 w-3.5 mr-1" />
-                )}
-                Search
-              </Button>
-            </div>
-
-            {searchResults !== null && (
-              <div className="bg-muted/50 rounded-md p-3 max-h-[400px] overflow-y-auto">
-                {searchResults.length === 0 || searchResults.every(r => r.hits.length === 0) ? (
-                  <p className="text-sm text-muted-foreground">No results found.</p>
-                ) : (
-                  <div className="space-y-3">
-                    {searchResults.map((r, ri) => (
-                      <div key={ri}>
-                        {r.corrected_query && (
-                          <p className="text-xs text-muted-foreground italic mb-2">
-                            Corrected to: &quot;{r.corrected_query}&quot;
-                          </p>
-                        )}
-                        {r.hits.map((hit, hi) => (
-                          <div key={hi} className="mb-3">
-                            <p className="text-xs font-semibold mb-1">
-                              [{hi + 1}] {hit.source} — {hit.title} (lines {hit.line_start}-{hit.line_end})
-                            </p>
-                            <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed pl-2 border-l-2 border-border">{hit.content}</pre>
-                          </div>
-                        ))}
-                        <p className="text-[10px] text-muted-foreground mt-2">
-                          Use IndexRead(source=&quot;{r.hits[0]?.source ?? sourceLabel}&quot;, offset, limit) for full context.
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* IndexRead */}
-      {indexResult && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <BookOpen className="h-4 w-4" />
-              IndexRead
-            </CardTitle>
-            <CardDescription>
-              Read the full indexed content with pagination. The LLM uses this to retrieve specific sections after searching.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex gap-2 items-center flex-wrap">
-              <div className="flex items-center gap-1.5">
-                <label className="text-sm text-muted-foreground whitespace-nowrap">Source:</label>
-                <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
-                  {indexResult.sources[0]?.label ?? sourceLabel}
-                </code>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <label className="text-sm text-muted-foreground">Offset:</label>
-                <Input
-                  placeholder="e.g. 10"
-                  value={readOffset}
-                  onChange={(e) => setReadOffset(e.target.value)}
-                  className="w-20 h-8 text-sm"
-                />
-              </div>
-              <div className="flex items-center gap-1.5">
-                <label className="text-sm text-muted-foreground">Limit:</label>
-                <Input
-                  placeholder="e.g. 50"
-                  value={readLimit}
-                  onChange={(e) => setReadLimit(e.target.value)}
-                  className="w-20 h-8 text-sm"
-                />
-              </div>
-              <Button
-                size="sm"
-                onClick={doRead}
-                disabled={reading}
-              >
-                {reading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
-                ) : (
-                  <BookOpen className="h-3.5 w-3.5 mr-1" />
-                )}
-                Read
-              </Button>
-            </div>
-
-            {readResult && (
-              <div className="space-y-2">
-                <div className="flex gap-3 text-xs text-muted-foreground">
-                  <span>Lines {readResult.showing_start}-{readResult.showing_end} of {readResult.total_lines}</span>
-                </div>
-                <div className="bg-muted/50 rounded-md p-3 max-h-[400px] overflow-y-auto">
-                  <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{readResult.content}</pre>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-    </div>
-  )
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B"
-  if (bytes < 1024) return `${bytes} B`
-  const kb = bytes / 1024
-  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`
-  const mb = kb / 1024
-  return `${mb.toFixed(1)} MB`
 }
