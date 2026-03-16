@@ -2708,13 +2708,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.info('Would open memory folder (demo)')
     return null
   },
+  'memory_test_sample': () => {
+    return '---\nclient_id: demo-client\nsession_id: sample-session\nstarted: 2026-03-16T10:30:00Z\n---\n\n\n# Conversation 1 (10:30)\n\n## User\nWhat database should we use for the auth service?\n\n## Assistant\nI recommend PostgreSQL for its row-level security features and PgBouncer for connection pooling.\n\n## User\nHow should we handle session token storage?\n\n## Assistant\nStore tokens as SHA-256 hashes with automatic 24-hour rotation.\n\n'
+  },
   'memory_test_index': () => {
     toast.success('Content indexed (demo)')
     return null
   },
   'memory_test_reset': () => null,
   'memory_test_search': () => {
-    return 'Found 1 result:\n\n1. We decided to use PostgreSQL for the auth service because MySQL had connection pooling issues. [score: 0.87]\n   Source: sessions/test-memory.md\n'
+    return '### Results for "session token storage"\n\n**[1] session/sample-session \u2014 How should we handle session token storage?** (lines 12-16)\n12\tHow should we handle session token storage?\n13\t\n14\t## Assistant\n15\tStore tokens as SHA-256 hashes with automatic 24-hour rotation.\n\n---\n*Use read(source, offset, limit) for full context.*'
   },
   'get_client_memory_config': () => ({
     memory_enabled: null,

@@ -112,6 +112,36 @@ impl TranscriptWriter {
         Ok(sessions_path)
     }
 
+    /// Build a complete session transcript in memory (no file I/O).
+    /// Used by the Try It Out tab to generate realistic sample content
+    /// that stays in sync with the real transcript format.
+    pub fn build_transcript(
+        client_id: &str,
+        session_id: &str,
+        exchanges: &[(&str, &str)], // (user_content, assistant_content)
+    ) -> String {
+        let mut out = format!(
+            "---\nclient_id: {}\nsession_id: {}\nstarted: {}\n---\n\n",
+            client_id,
+            session_id,
+            chrono::Utc::now().to_rfc3339(),
+        );
+
+        if !exchanges.is_empty() {
+            let ts = chrono::Utc::now().format("%H:%M");
+            out.push_str(&format!("\n# Conversation 1 ({})\n\n", ts));
+
+            for (user, assistant) in exchanges {
+                out.push_str(&format!(
+                    "## User\n{}\n\n## Assistant\n{}\n\n",
+                    user, assistant
+                ));
+            }
+        }
+
+        out
+    }
+
     /// Append raw content to a file.
     async fn append_raw(&self, path: &Path, content: &str) -> Result<(), String> {
         let mut file = OpenOptions::new()

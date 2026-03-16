@@ -1958,6 +1958,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_memory_config,
             ui::commands::update_memory_config,
             ui::commands::open_memory_folder,
+            ui::commands::memory_test_sample,
             ui::commands::memory_test_index,
             ui::commands::memory_test_search,
             ui::commands::memory_test_reset,

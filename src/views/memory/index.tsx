@@ -264,31 +264,47 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 <Textarea
                   value={indexText}
                   onChange={(e) => setIndexText(e.target.value)}
-                  placeholder="Type a memory note to index, e.g.: 'We decided to use PostgreSQL for the auth service because MySQL had connection pooling issues.'"
-                  className="min-h-[80px] text-sm"
+                  placeholder="Paste or type content to index, or load a sample transcript..."
+                  className="min-h-[80px] text-sm font-mono"
                 />
-                <Button
-                  size="sm"
-                  disabled={indexLoading || !indexText.trim()}
-                  onClick={async () => {
-                    setIndexLoading(true)
-                    try {
-                      await invoke("memory_test_index", { content: indexText })
-                      toast.success("Content indexed")
-                      setHasIndexed(true)
-                    } catch (err: any) {
-                      toast.error(`Index failed: ${err.message || err}`)
-                    } finally {
-                      setIndexLoading(false)
-                    }
-                  }}
-                >
-                  {indexLoading ? (
-                    <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Indexing...</>
-                  ) : (
-                    "Index"
-                  )}
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={async () => {
+                      try {
+                        const sample = await invoke<string>("memory_test_sample")
+                        setIndexText(sample)
+                      } catch (err: any) {
+                        toast.error(`Failed to load sample: ${err.message || err}`)
+                      }
+                    }}
+                  >
+                    Load Sample
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={indexLoading || !indexText.trim()}
+                    onClick={async () => {
+                      setIndexLoading(true)
+                      try {
+                        await invoke("memory_test_index", { content: indexText })
+                        toast.success("Content indexed")
+                        setHasIndexed(true)
+                      } catch (err: any) {
+                        toast.error(`Index failed: ${err.message || err}`)
+                      } finally {
+                        setIndexLoading(false)
+                      }
+                    }}
+                  >
+                    {indexLoading ? (
+                      <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Indexing...</>
+                    ) : (
+                      "Index"
+                    )}
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 
@@ -305,7 +321,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                   <Input
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="What database did we choose?"
+                    placeholder="e.g. session token storage compliance"
                     className="h-8 text-sm flex-1"
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && searchQuery.trim()) {

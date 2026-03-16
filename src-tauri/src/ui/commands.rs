@@ -4538,6 +4538,32 @@ pub async fn memory_test_reset() -> Result<(), String> {
     Ok(())
 }
 
+/// Generate a realistic sample transcript for the Try It Out tab.
+/// Uses the same format as TranscriptWriter so the sample stays in sync.
+#[tauri::command]
+pub async fn memory_test_sample() -> Result<String, String> {
+    let exchanges = vec![
+        (
+            "What database should we use for the auth service? We need multi-tenant isolation and good connection pooling under load.",
+            "I recommend PostgreSQL for the auth service. It has excellent row-level security (RLS) features for multi-tenant isolation — you can define policies per-tenant without application-level filtering. Connection pooling can be handled with PgBouncer in transaction mode.\n\nMySQL was considered but has weaker RLS support and we've seen connection pooling issues under high concurrency in our benchmarks.",
+        ),
+        (
+            "How should we handle session token storage? Legal flagged our current approach.",
+            "For compliance, session tokens should be stored as hashed values (SHA-256) in the database, not as plaintext. The raw token is only sent to the client once at creation.\n\nAdditionally, we should add a `last_rotated` timestamp and enforce rotation every 24 hours. The legal team's concern was specifically about token reuse after compromise — automatic rotation addresses this.",
+        ),
+        (
+            "What's the deployment plan for the migration?",
+            "The migration plan is:\n1. Deploy the new auth schema behind a feature flag (week 1)\n2. Run dual-write to both old and new tables (week 2)\n3. Backfill existing sessions with hashed tokens (week 2-3)\n4. Switch reads to the new table, keep dual-write (week 3)\n5. Remove the old table after 2 weeks of monitoring (week 5)\n\nRollback: at any point before step 5, we can disable the feature flag and fall back to the old table.",
+        ),
+    ];
+
+    Ok(lr_memory::TranscriptWriter::build_transcript(
+        "demo-client",
+        "sample-session",
+        &exchanges,
+    ))
+}
+
 /// Test: index content into FTS5 for the Try It Out tab (in-memory only).
 #[tauri::command]
 pub async fn memory_test_index(content: String) -> Result<(), String> {
