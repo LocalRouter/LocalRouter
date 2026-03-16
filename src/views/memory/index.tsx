@@ -75,6 +75,16 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
     onTabChange?.("memory", newTab)
   }
 
+  // Reset test state when Try It Out tab is loaded
+  useEffect(() => {
+    if (tab === "try-it-out") {
+      invoke("memory_test_reset").catch(() => {})
+      setHasIndexed(false)
+      setSearchResults(null)
+      setCompactResult(null)
+    }
+  }, [tab])
+
   useEffect(() => {
     loadConfig()
     loadStatus()

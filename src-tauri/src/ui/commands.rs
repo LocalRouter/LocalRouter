@@ -4570,10 +4570,12 @@ pub async fn update_client_memory_config(
     Ok(())
 }
 
+const MEMORY_TEST_DIR_NAME: &str = "localrouter-memory-test";
+
 /// Get or create a temporary directory for memory Try It Out tests.
-/// Uses the system temp dir so it's cleaned up on reboot.
+/// Uses the system temp dir (cross-platform: /tmp on macOS/Linux, %TEMP% on Windows).
 fn memory_test_dir() -> Result<std::path::PathBuf, String> {
-    let dir = std::env::temp_dir().join("localrouter-memory-test");
+    let dir = std::env::temp_dir().join(MEMORY_TEST_DIR_NAME);
     std::fs::create_dir_all(dir.join("sessions"))
         .map_err(|e| format!("Failed to create test dir: {}", e))?;
 
@@ -4585,6 +4587,18 @@ fn memory_test_dir() -> Result<std::path::PathBuf, String> {
     }
 
     Ok(dir)
+}
+
+/// Reset the memory test directory (wipe all indexed content).
+/// Called when the Try It Out tab is loaded.
+#[tauri::command]
+pub async fn memory_test_reset() -> Result<(), String> {
+    let dir = std::env::temp_dir().join(MEMORY_TEST_DIR_NAME);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| format!("Failed to clean test dir: {}", e))?;
+    }
+    Ok(())
 }
 
 /// Test: index content into memsearch for the Try It Out tab.

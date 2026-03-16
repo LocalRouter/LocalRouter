@@ -2683,6 +2683,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Content indexed (demo)')
     return null
   },
+  'memory_test_reset': () => null,
   'memory_test_compact': () => {
     return 'Compaction complete. Search again to see compacted results.'
   },
