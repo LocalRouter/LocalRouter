@@ -4578,12 +4578,20 @@ const MEMORY_TEST_DIR_NAME: &str = "localrouter-memory-test";
 
 /// Get or create a temporary directory for memory Try It Out tests.
 /// Uses the system temp dir (cross-platform: /tmp on macOS/Linux, %TEMP% on Windows).
-/// Does NOT generate a .memsearch.toml — memsearch will use its global config
-/// (~/.memsearch/config.toml) or built-in defaults.
+/// Writes a `.memsearch.toml` with the ONNX provider (installed by Setup).
 fn memory_test_dir() -> Result<std::path::PathBuf, String> {
     let dir = std::env::temp_dir().join(MEMORY_TEST_DIR_NAME);
     std::fs::create_dir_all(dir.join("sessions"))
         .map_err(|e| format!("Failed to create test dir: {}", e))?;
+
+    // Always write the config to ensure ONNX provider is used.
+    // If memsearch[onnx] is not installed, the error from memsearch will be clear.
+    let config_path = dir.join(".memsearch.toml");
+    if !config_path.exists() {
+        std::fs::write(&config_path, "[embedding]\nprovider = \"onnx\"\n")
+            .map_err(|e| format!("Failed to write test config: {}", e))?;
+    }
+
     Ok(dir)
 }
 
@@ -4600,11 +4608,18 @@ pub async fn memory_test_reset() -> Result<(), String> {
 }
 
 /// Test: index content into memsearch for the Try It Out tab.
-/// Uses a temp directory that is cleaned up on reboot.
+/// Uses a temp directory that is cleaned up on tab load.
 #[tauri::command]
 pub async fn memory_test_index(
     content: String,
 ) -> Result<(), String> {
+    let cli = lr_memory::MemsearchCli::new();
+
+    // Verify memsearch is installed before attempting
+    if let Err(_) = cli.check_installed().await {
+        return Err("memsearch is not installed. Run Setup on the Info tab first.".to_string());
+    }
+
     let dir = memory_test_dir()?;
     let sessions_dir = dir.join("sessions");
     let test_file = sessions_dir.join("test-memory.md");
@@ -4620,11 +4635,15 @@ pub async fn memory_test_index(
     .await
     .map_err(|e| format!("Failed to write test file: {}", e))?;
 
-    // Index it
-    lr_memory::MemsearchCli::new()
-        .index(&sessions_dir)
-        .await
-        .map_err(|e| format!("Index failed: {}", e))?;
+    // Index it — if this fails with "Unknown embedding provider 'onnx'",
+    // the user needs to run Setup which installs memsearch[onnx].
+    cli.index(&sessions_dir).await.map_err(|e| {
+        if e.contains("Unknown embedding provider") {
+            "Embedding provider not available. Run Setup on the Info tab to install memsearch with ONNX support.".to_string()
+        } else {
+            format!("Index failed: {}", e)
+        }
+    })?;
 
     Ok(())
 }
