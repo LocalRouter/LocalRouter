@@ -1,11 +1,9 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Play, Loader2 } from "lucide-react"
+import { Loader2 } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
-import { Badge } from "@/components/ui/Badge"
-import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -80,22 +78,35 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
     }
   }
 
-  const runTest = async () => {
-    if (!testInput.trim()) return
+  const runTest = useCallback(async (input: string, schema: string | null) => {
+    if (!input.trim()) {
+      setTestResult(null)
+      return
+    }
     setTestLoading(true)
-    setTestResult(null)
     try {
       const result = await invoke<JsonRepairTestResult>("test_json_repair", {
-        content: testInput,
-        schema: useSchema ? testSchema : null,
+        content: input,
+        schema,
       })
       setTestResult(result)
-    } catch (err) {
-      toast.error(`JSON repair test failed: ${err}`)
+    } catch {
+      // Silently ignore during typing
     } finally {
       setTestLoading(false)
     }
-  }
+  }, [])
+
+  // Debounced auto-repair on input, schema, or toggle changes
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (tab !== "try-it-out") return
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      runTest(testInput, useSchema ? testSchema : null)
+    }, 300)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [testInput, testSchema, useSchema, tab, runTest])
 
   return (
     <div className="flex flex-col h-full min-h-0 gap-4 max-w-5xl">
@@ -131,7 +142,10 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle className="text-base">Default: JSON Repair</CardTitle>
-                      <CardDescription>Automatically repair JSON responses for requests with JSON response format. Individual clients can override this in their settings.</CardDescription>
+                      <CardDescription>
+                        Automatically repair JSON responses for requests with <code className="text-xs bg-muted px-1 py-0.5 rounded">response_format: json_object</code> or <code className="text-xs bg-muted px-1 py-0.5 rounded">json_schema</code>.
+                        Works inline during streaming with near-zero latency. Individual clients can override this in their settings.
+                      </CardDescription>
                     </div>
                     <Switch
                       checked={config.enabled}
@@ -145,13 +159,14 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
 
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Syntax Repair</CardTitle>
+                <CardTitle className="text-base">Examples</CardTitle>
                 <CardDescription>
-                  Fixes malformed JSON syntax so the response is valid and parseable. Runs character-by-character with near-zero latency.
+                  Syntax repairs fix malformed JSON, schema coercion matches values to your <code className="text-xs bg-muted px-1 py-0.5 rounded">json_schema</code>.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3 text-sm">
+                <div className="space-y-3 text-sm max-h-[340px] overflow-y-auto pr-1">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Syntax Repair</p>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="bg-muted rounded-md p-2">
                       <p className="text-xs text-muted-foreground mb-1">Trailing comma</p>
@@ -182,19 +197,7 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                       <code className="text-xs">{'Here is the data: ```json {"name": "Alice"} ```'}</code>
                     </div>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Schema Coercion</CardTitle>
-                <CardDescription>
-                  When a JSON Schema is provided via <code className="text-xs bg-muted px-1 py-0.5 rounded">response_format: json_schema</code>, values are coerced to match the schema.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3 text-sm">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide pt-2">Schema Coercion</p>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="bg-muted rounded-md p-2">
                       <p className="text-xs text-muted-foreground mb-1">String to integer</p>
@@ -221,95 +224,57 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Streaming Support</CardTitle>
-                <CardDescription>
-                  Unlike other services that only repair non-streaming responses, LocalRouter repairs JSON inline as chunks arrive.
-                  The character-at-a-time state machine buffers only the current token (string, number, keyword) — never the full response.
-                </CardDescription>
-              </CardHeader>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">How it activates</CardTitle>
-                <CardDescription>
-                  JSON Repair automatically activates for requests with <code className="text-xs bg-muted px-1 py-0.5 rounded">response_format: json_object</code> or <code className="text-xs bg-muted px-1 py-0.5 rounded">json_schema</code>.
-                  It can be disabled globally or overridden per-client. No code changes needed on the caller side.
-                </CardDescription>
-              </CardHeader>
-            </Card>
-
             <FeatureClientsCard feature="json_repair" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 
         {/* Try it out Tab */}
         <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
-          <div className="space-y-4 max-w-2xl overflow-y-auto">
+          <div className="space-y-4 overflow-y-auto">
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Test JSON Repair</CardTitle>
-                <CardDescription>
-                  Paste malformed JSON and optionally provide a schema to test repair
-                </CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base">Test JSON Repair</CardTitle>
+                    <CardDescription>
+                      Paste malformed JSON and optionally provide a schema to test repair
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {testLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                    <Switch
+                      checked={useSchema}
+                      onCheckedChange={setUseSchema}
+                    />
+                    <span className="text-sm text-muted-foreground whitespace-nowrap">JSON Schema</span>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div>
-                  <label className="text-sm font-medium mb-1.5 block">Input (malformed JSON)</label>
-                  <textarea
-                    value={testInput}
-                    onChange={(e) => setTestInput(e.target.value)}
-                    className="w-full h-48 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                    placeholder='{"name": "John", "age": "30",}'
-                  />
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={useSchema}
-                    onCheckedChange={setUseSchema}
-                  />
-                  <span className="text-sm">Include JSON Schema for coercion</span>
-                </div>
-
-                {useSchema && (
+                <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-sm font-medium mb-1.5 block">JSON Schema</label>
+                    <label className="text-sm font-medium mb-1.5 block">Input (malformed JSON)</label>
+                    <textarea
+                      value={testInput}
+                      onChange={(e) => setTestInput(e.target.value)}
+                      className="w-full h-56 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                      placeholder='{"name": "John", "age": "30",}'
+                    />
+                  </div>
+                  <div>
+                    <label className={`text-sm font-medium mb-1.5 block ${!useSchema ? "text-muted-foreground" : ""}`}>JSON Schema</label>
                     <textarea
                       value={testSchema}
                       onChange={(e) => setTestSchema(e.target.value)}
-                      className="w-full h-48 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                      disabled={!useSchema}
+                      className="w-full h-56 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
                       placeholder='{"type": "object", "properties": {...}}'
                     />
                   </div>
-                )}
-
-                <Button onClick={runTest} disabled={testLoading || !testInput.trim()}>
-                  {testLoading ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Play className="h-4 w-4 mr-2" />
-                  )}
-                  Repair
-                </Button>
+                </div>
 
                 {testResult && (
                   <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      {testResult.was_modified ? (
-                        <Badge variant="default" className="bg-green-600">Repaired</Badge>
-                      ) : (
-                        <Badge variant="secondary">No changes needed</Badge>
-                      )}
-                      {testResult.repairs.length > 0 && (
-                        <span className="text-xs text-muted-foreground">
-                          {testResult.repairs.length} fix(es) applied
-                        </span>
-                      )}
-                    </div>
-
                     <div>
                       <label className="text-sm font-medium mb-1.5 block">Output</label>
                       <pre className="w-full px-3 py-2 text-sm bg-muted rounded-md border font-mono whitespace-pre-wrap overflow-auto max-h-48">
