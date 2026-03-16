@@ -3133,6 +3133,7 @@ export interface MemoryCompactionConfig {
 
 export interface MemoryStatus {
   python_ok: boolean
+  python_version: string | null
   memsearch_installed: boolean
   memsearch_version: string | null
   model_ready: boolean

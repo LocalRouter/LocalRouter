@@ -4419,14 +4419,18 @@ pub async fn get_memory_status(
         (false, None)
     };
 
-    let python_ok = if let Some(ref svc) = svc {
-        svc.cli.check_python().await.is_ok()
+    let (python_ok, python_version) = if let Some(ref svc) = svc {
+        match svc.cli.check_python().await {
+            Ok(v) => (true, Some(v)),
+            Err(_) => (false, None),
+        }
     } else {
-        false
+        (false, None)
     };
 
     Ok(serde_json::json!({
         "python_ok": python_ok,
+        "python_version": python_version,
         "memsearch_installed": memsearch_installed,
         "memsearch_version": memsearch_version,
         "model_ready": memsearch_installed, // Approximate — model downloads on first use
@@ -4574,18 +4578,12 @@ const MEMORY_TEST_DIR_NAME: &str = "localrouter-memory-test";
 
 /// Get or create a temporary directory for memory Try It Out tests.
 /// Uses the system temp dir (cross-platform: /tmp on macOS/Linux, %TEMP% on Windows).
+/// Does NOT generate a .memsearch.toml — memsearch will use its global config
+/// (~/.memsearch/config.toml) or built-in defaults.
 fn memory_test_dir() -> Result<std::path::PathBuf, String> {
     let dir = std::env::temp_dir().join(MEMORY_TEST_DIR_NAME);
     std::fs::create_dir_all(dir.join("sessions"))
         .map_err(|e| format!("Failed to create test dir: {}", e))?;
-
-    // Generate .memsearch.toml if missing
-    let config_path = dir.join(".memsearch.toml");
-    if !config_path.exists() {
-        std::fs::write(&config_path, "[embedding]\nprovider = \"onnx\"\n")
-            .map_err(|e| format!("Failed to write test config: {}", e))?;
-    }
-
     Ok(dir)
 }
 

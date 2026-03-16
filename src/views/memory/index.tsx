@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/Select"
 import { Textarea } from "@/components/ui/textarea"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
+import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
 import type { MemoryConfig, MemorySetupProgress, MemoryStatus, UpdateMemoryConfigParams } from "@/types/tauri-commands"
 
 type SetupStepStatus = "idle" | "checking" | "installing" | "ok" | "error"
@@ -119,7 +120,10 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
       const result = await invoke<MemoryStatus>("get_memory_status")
       setStatus(result)
       setSetup({
-        python: { status: result.python_ok ? "ok" : "idle" },
+        python: {
+          status: result.python_ok ? "ok" : "idle",
+          version: result.python_version ?? undefined,
+        },
         memsearch: {
           status: result.memsearch_installed ? "ok" : "idle",
           version: result.memsearch_version ?? undefined,
@@ -258,7 +262,9 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     <div className="flex-1 min-w-0">
                       <span className="font-medium">Python 3</span>
                       {setup.python.version && (
-                        <span className="text-xs text-muted-foreground ml-2">{setup.python.version}</span>
+                        <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-2">
+                          {setup.python.version}
+                        </Badge>
                       )}
                     </div>
                     {setup.python.error && (
@@ -332,25 +338,23 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="rounded-md border bg-muted/50 p-3 overflow-x-auto">
-                  <pre className="text-xs font-mono whitespace-pre">{JSON.stringify({
-                    type: "function",
-                    function: {
-                      name: config.recall_tool_name,
-                      description: "Search past conversation memories for relevant context. Use when the current conversation would benefit from information discussed in previous sessions.",
-                      parameters: {
-                        type: "object",
-                        properties: {
-                          query: {
-                            type: "string",
-                            description: "Search query describing what to recall"
-                          }
-                        },
-                        required: ["query"]
-                      }
-                    }
-                  }, null, 2)}</pre>
-                </div>
+                <McpToolDisplay
+                  tools={[{
+                    name: config.recall_tool_name,
+                    description: "Search past conversation memories for relevant context. Use when the current conversation would benefit from information discussed in previous sessions.",
+                    inputSchema: {
+                      type: "object",
+                      properties: {
+                        query: {
+                          type: "string",
+                          description: "Search query describing what to recall"
+                        }
+                      },
+                      required: ["query"]
+                    },
+                    itemType: "tool",
+                  }]}
+                />
               </CardContent>
             </Card>
 
