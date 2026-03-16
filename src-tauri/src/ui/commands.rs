@@ -4630,15 +4630,7 @@ pub async fn memory_test_index(
     .await
     .map_err(|e| format!("Failed to write test file: {}", e))?;
 
-    // Index it — if this fails with "Unknown embedding provider 'onnx'",
-    // the user needs to run Setup which installs memsearch[onnx].
-    cli.index(&sessions_dir).await.map_err(|e| {
-        if e.contains("Unknown embedding provider") {
-            "Embedding provider not available. Run Setup on the Info tab to install memsearch with ONNX support.".to_string()
-        } else {
-            format!("Index failed: {}", e)
-        }
-    })?;
+    cli.index(&sessions_dir).await?;
 
     Ok(())
 }
