@@ -223,6 +223,11 @@ impl SessionManager {
         }
     }
 
+    /// Force-close any active session for the given client.
+    pub fn force_close(&self, client_id: &str) {
+        self.active_sessions.remove(client_id);
+    }
+
     /// Close expired sessions and return them for compaction.
     /// Collects expired session keys first, then removes them one by one
     /// so we can return the removed values.

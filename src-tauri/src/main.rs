@@ -1962,6 +1962,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::memory_test_index,
             ui::commands::memory_test_search,
             ui::commands::memory_test_reset,
+            ui::commands::list_memory_clients,
+            ui::commands::search_client_memory,
+            ui::commands::read_client_memory,
+            ui::commands::clear_client_memory,
+            ui::commands::open_client_memory_folder,
             ui::commands::get_client_memory_config,
             ui::commands::update_client_memory_config,
             // Secret Scanning commands

@@ -330,4 +330,26 @@ impl MemoryService {
     pub fn memory_dir(&self) -> &std::path::Path {
         &self.memory_dir
     }
+
+    /// Clear all memory for a client: deletes FTS5 index, session files, and archive.
+    pub fn clear_memory(&self, client_id: &str) -> Result<(), String> {
+        // Close any active sessions for this client
+        self.session_manager.force_close(client_id);
+
+        // Remove the ContentStore from the cache (drops the SQLite connection)
+        self.stores.remove(client_id);
+
+        // Delete the entire client directory (sessions, archive, memory.db)
+        let client_dir = self.memory_dir.join(client_id);
+        if client_dir.exists() {
+            std::fs::remove_dir_all(&client_dir)
+                .map_err(|e| format!("Failed to delete memory directory: {}", e))?;
+        }
+
+        tracing::info!(
+            "Cleared all memory for client {}",
+            &client_id[..8.min(client_id.len())]
+        );
+        Ok(())
+    }
 }

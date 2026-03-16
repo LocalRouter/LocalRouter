@@ -4652,3 +4652,127 @@ pub async fn open_memory_folder(
 
     Ok(())
 }
+
+// ============================================================================
+// Memory Sessions commands (per-client memory management)
+// ============================================================================
+
+/// Info about a client's memory for the Sessions tab
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryClientInfo {
+    pub client_id: String,
+    pub client_name: String,
+    pub source_count: usize,
+    pub total_lines: usize,
+}
+
+/// List all clients that have memory enabled, with their memory stats
+#[tauri::command]
+pub async fn list_memory_clients(
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Vec<MemoryClientInfo>, String> {
+    let config = config_manager.get();
+    let memory_svc = {
+        let guard = state.memory_service.read();
+        guard.clone()
+    };
+
+    let mut result = Vec::new();
+    for client in &config.clients {
+        if !client.memory_enabled.unwrap_or(false) {
+            continue;
+        }
+
+        let (source_count, total_lines) = match &memory_svc {
+            Some(svc) => match svc.list_sources(&client.id) {
+                Ok(sources) => {
+                    let lines: usize = sources.iter().map(|s| s.total_lines).sum();
+                    (sources.len(), lines)
+                }
+                Err(_) => (0, 0),
+            },
+            None => (0, 0),
+        };
+
+        result.push(MemoryClientInfo {
+            client_id: client.id.clone(),
+            client_name: client.name.clone(),
+            source_count,
+            total_lines,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Search a specific client's memory
+#[tauri::command]
+pub async fn search_client_memory(
+    client_id: String,
+    query: String,
+    limit: Option<usize>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Vec<lr_context::SearchResult>, String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    svc.search_combined(
+        &client_id,
+        Some(&query),
+        None,
+        limit.unwrap_or(5),
+        None,
+    )
+}
+
+/// Read a specific source from a client's memory
+#[tauri::command]
+pub async fn read_client_memory(
+    client_id: String,
+    label: String,
+    offset: Option<String>,
+    limit: Option<usize>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<lr_context::ReadResult, String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    svc.read(&client_id, &label, offset.as_deref(), limit)
+}
+
+/// Clear all memory for a specific client
+#[tauri::command]
+pub async fn clear_client_memory(
+    client_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    svc.clear_memory(&client_id)
+}
+
+/// Open a specific client's memory folder in the system file manager
+#[tauri::command]
+pub async fn open_client_memory_folder(
+    client_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    let path = svc.memory_dir().join(&client_id);
+    std::fs::create_dir_all(&path).map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    open_path(path.to_string_lossy().to_string(), app).await
+}

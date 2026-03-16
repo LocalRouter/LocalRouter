@@ -2719,6 +2719,26 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'memory_test_search': () => {
     return '### Results for "session token storage"\n\n**[1] session/sample-session \u2014 How should we handle session token storage?** (lines 12-16)\n12\tHow should we handle session token storage?\n13\t\n14\t## Assistant\n15\tStore tokens as SHA-256 hashes with automatic 24-hour rotation.\n\n---\n*Use read(source, offset, limit) for full context.*'
   },
+  'list_memory_clients': () => ([
+    { client_id: 'demo-1', client_name: 'Claude Code', source_count: 3, total_lines: 142 },
+    { client_id: 'demo-2', client_name: 'Cursor', source_count: 1, total_lines: 28 },
+  ]),
+  'search_client_memory': () => ([{
+    query: 'database',
+    hits: [{ title: 'Database choice', content: 'We chose PostgreSQL for auth.', source: 'session/abc123', rank: -0.5, content_type: 'prose', match_layer: 'porter', line_start: 5, line_end: 8 }],
+    corrected_query: null,
+  }]),
+  'read_client_memory': () => ({
+    label: 'session/abc123', content: '1\tWe chose PostgreSQL.\n2\tMySQL had issues.', total_lines: 2, showing_start: '1', showing_end: '2',
+  }),
+  'clear_client_memory': () => {
+    toast.success('Memory cleared (demo)')
+    return null
+  },
+  'open_client_memory_folder': () => {
+    toast.info('Would open memory folder (demo)')
+    return null
+  },
   'get_client_memory_config': () => ({
     memory_enabled: null,
   }),

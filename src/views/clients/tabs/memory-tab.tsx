@@ -4,7 +4,19 @@ import { toast } from "sonner"
 import { FEATURES } from "@/constants/features"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/switch"
-import { AlertTriangle } from "lucide-react"
+import { Button } from "@/components/ui/Button"
+import { AlertTriangle, FolderOpen } from "lucide-react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 
 interface Client {
   id: string
@@ -63,40 +75,100 @@ export function ClientMemoryTab({ client, onUpdate, onViewChange }: ClientMemory
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <FEATURES.memory.icon className={`h-5 w-5 ${FEATURES.memory.color}`} />
-            <CardTitle>Memory</CardTitle>
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FEATURES.memory.icon className={`h-5 w-5 ${FEATURES.memory.color}`} />
+              <CardTitle>Memory</CardTitle>
+            </div>
+            <Switch
+              checked={memoryEnabled === true}
+              onCheckedChange={toggleMemory}
+            />
           </div>
-          <Switch
-            checked={memoryEnabled === true}
-            onCheckedChange={toggleMemory}
-          />
-        </div>
-        <CardDescription>
-          {memoryEnabled
-            ? "Conversations with this client are recorded and stored locally for future recall."
-            : "Enable to record conversations and make them searchable via the MemoryRecall tool."}
-        </CardDescription>
-      </CardHeader>
-      {memoryEnabled && (
-        <CardContent>
-          <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
-            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              Full conversations are stored locally when memory is enabled.{" "}
-              <button
-                className="underline hover:no-underline"
-                onClick={() => onViewChange?.("memory")}
+          <CardDescription>
+            {memoryEnabled
+              ? "Conversations with this client are recorded and stored locally for future recall."
+              : "Enable to record conversations and make them searchable via the MemoryRecall tool."}
+          </CardDescription>
+        </CardHeader>
+        {memoryEnabled && (
+          <CardContent className="space-y-3">
+            <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>
+                Full conversations are stored locally when memory is enabled.{" "}
+                <button
+                  className="underline hover:no-underline"
+                  onClick={() => onViewChange?.("memory", "sessions")}
+                >
+                  View sessions
+                </button>
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => invoke("open_client_memory_folder", { clientId: client.id }).catch((e: any) => toast.error(`${e}`))}
               >
-                Review settings
-              </button>
-            </span>
-          </div>
-        </CardContent>
+                <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
+                Open Folder
+              </Button>
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      {memoryEnabled && (
+        <Card className="border-red-200 dark:border-red-900">
+          <CardHeader>
+            <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Clear Memory</p>
+                <p className="text-sm text-muted-foreground">
+                  Permanently delete all stored conversations and search index for this client.
+                </p>
+              </div>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive" size="sm">Clear</Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Clear memory for &ldquo;{client.name}&rdquo;?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will permanently delete all stored conversations, session transcripts, and the search index for this client. This action cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={async () => {
+                        try {
+                          await invoke("clear_client_memory", { clientId: client.id })
+                          toast.success("Memory cleared")
+                          onUpdate()
+                        } catch (err: any) {
+                          toast.error(`Failed to clear: ${err.message || err}`)
+                        }
+                      }}
+                      className="bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
+                    >
+                      Clear Memory
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
+          </CardContent>
+        </Card>
       )}
-    </Card>
+    </div>
   )
 }

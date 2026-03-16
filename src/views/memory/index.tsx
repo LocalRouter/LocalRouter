@@ -14,6 +14,7 @@ import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
 import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import { ContentStorePreview } from "@/components/shared/ContentStorePreview"
+import { MemorySessionsTab } from "./sessions-tab"
 import type { MemoryConfig, UpdateMemoryConfigParams } from "@/types/tauri-commands"
 
 const defaultConfig: MemoryConfig = {
@@ -114,6 +115,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+          <TabsTrigger value="sessions"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Sessions</TabsTrigger>
           <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
           <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
@@ -231,6 +233,13 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
 
             <FeatureClientsCard feature="memory" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
+        </TabsContent>
+
+        {/* ================================================================ */}
+        {/* Sessions Tab                                                     */}
+        {/* ================================================================ */}
+        <TabsContent value="sessions" className="flex-1 min-h-0 mt-4">
+          <MemorySessionsTab />
         </TabsContent>
 
         {/* ================================================================ */}

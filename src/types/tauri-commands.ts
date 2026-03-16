@@ -3152,3 +3152,11 @@ export interface MemoryConfig {
 export interface UpdateMemoryConfigParams {
   configJson: string
 }
+
+/** Rust: src-tauri/src/ui/commands.rs - MemoryClientInfo */
+export interface MemoryClientInfo {
+  client_id: string
+  client_name: string
+  source_count: number
+  total_lines: number
+}
