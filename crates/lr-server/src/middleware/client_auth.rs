@@ -151,17 +151,9 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     if token == state.internal_test_secret.as_str()
         || token == state.memory_secret.as_str()
     {
-        let client_id = if token == state.memory_secret.as_str() {
-            "memory-service"
-        } else {
-            "internal-test"
-        };
-        tracing::debug!(
-            "{} token detected - bypassing client restrictions",
-            client_id
-        );
+        tracing::debug!("Internal/memory token detected - bypassing client restrictions");
         let auth_context = ClientAuthContext {
-            client_id: client_id.to_string(),
+            client_id: "internal-test".to_string(),
         };
         req.extensions_mut().insert(auth_context);
         return next.run(req).await;
