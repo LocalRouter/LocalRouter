@@ -13,6 +13,8 @@ lr-config = { workspace = true }
 lr-providers = { workspace = true }
 lr-mcp = { workspace = true }
 lr-router = { workspace = true }
+lr-memory = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

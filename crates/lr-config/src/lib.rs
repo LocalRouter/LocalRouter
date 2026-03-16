@@ -322,6 +322,7 @@ impl ConfigManager {
             coding_agent_type: None,
             mcp_sampling_permission: PermissionState::Ask,
             mcp_elicitation_permission: PermissionState::Ask,
+            memory_enabled: None,
         };
 
         self.update(|cfg| {

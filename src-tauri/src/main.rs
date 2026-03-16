@@ -576,6 +576,41 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     info!("Marketplace virtual server registered");
                 }
 
+                // Initialize memory service (per-client enablement checked at runtime)
+                {
+                    let memory_config = config_manager.get().memory.clone();
+                    match lr_utils::paths::config_dir() {
+                        Ok(base_dir) => {
+                            let memory_dir = base_dir.join("memory");
+                            let service = Arc::new(lr_memory::MemoryService::new(
+                                memory_config,
+                                memory_dir,
+                            ));
+                            *app_state.memory_service.write() = Some(service.clone());
+                            app_state
+                                .mcp_via_llm_manager
+                                .set_memory_service(Some(service.clone()));
+
+                            // Start session monitor (checks for expired sessions → triggers compaction)
+                            service.start_session_monitor();
+
+                            // Register _memory virtual server
+                            let memory_vs = Arc::new(
+                                lr_mcp::gateway::virtual_memory::MemoryVirtualServer::new(
+                                    service,
+                                ),
+                            );
+                            app_state
+                                .mcp_gateway
+                                .register_virtual_server(memory_vs);
+                            info!("Memory virtual server registered");
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to determine config dir for memory: {}", e);
+                        }
+                    }
+                }
+
                 // Initialize coding agent manager
                 {
                     let coding_agents_config = config_manager.get().coding_agents.clone();

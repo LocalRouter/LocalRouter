@@ -23,6 +23,7 @@ members = [
     "crates/lr-mcp-via-llm",
     "crates/lr-context",
     "crates/lr-secret-scanner",
+    "crates/lr-memory",
 ]
 resolver = "2"
 
@@ -57,6 +58,7 @@ lr-json-repair = { path = "crates/lr-json-repair" }
 lr-mcp-via-llm = { path = "crates/lr-mcp-via-llm" }
 lr-context = { path = "crates/lr-context" }
 lr-secret-scanner = { path = "crates/lr-secret-scanner" }
+lr-memory = { path = "crates/lr-memory" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }

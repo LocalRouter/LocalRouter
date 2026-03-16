@@ -93,6 +93,7 @@ pub async fn run_agentic_loop(
     allowed_servers: Vec<String>,
     mut guardrail_gate: Option<crate::manager::GuardrailGate>,
     initial_usage_entries: Option<Vec<lr_providers::TokenUsage>>,
+    memory_service: Option<Arc<lr_memory::MemoryService>>,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
     let started_at = Instant::now();
     let timeout = std::time::Duration::from_secs(config.max_loop_timeout_seconds);
@@ -528,6 +529,33 @@ pub async fn run_agentic_loop(
             s.history.full_messages.push(choice.message.clone());
         }
 
+        // Memory: write transcript exchange (fire-and-forget)
+        if let Some(ref svc) = memory_service {
+            if let Some(path) = session.read().transcript_path.clone() {
+                // Extract last user message text
+                let user_text = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == "user")
+                    .map(|m| m.content.as_text())
+                    .unwrap_or_default();
+                // Extract assistant response text
+                let assistant_text = choice.message.content.as_text();
+                if !user_text.is_empty() && !assistant_text.is_empty() {
+                    let svc = svc.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            svc.transcript.append_exchange(&path, &user_text, &assistant_text).await
+                        {
+                            tracing::warn!("Memory: failed to write transcript: {}", e);
+                        }
+                        svc.touch_session(&path);
+                    });
+                }
+            }
+        }
+
         return Ok(OrchestratorResult::Complete(build_final_response(
             response,
             total_prompt_tokens,
@@ -725,6 +753,7 @@ pub async fn resume_after_mixed(
         allowed_servers,
         None,
         initial_usage_entries,
+        None, // memory_service not passed through resume path
     )
     .await
 }

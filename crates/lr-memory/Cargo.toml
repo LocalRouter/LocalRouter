@@ -1,0 +1,20 @@
+[package]
+name = "lr-memory"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Persistent memory for LLM conversations via Zillis memsearch"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["process", "fs", "time"] }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }

@@ -31,6 +31,8 @@ pub struct McpViaLlmManager {
     context_management_config: RwLock<lr_config::ContextManagementConfig>,
     /// Seen client tools per client (client_id → tool_names)
     seen_client_tools: DashMap<String, std::collections::HashSet<String>>,
+    /// Optional memory service for auto-capturing conversation transcripts
+    memory_service: RwLock<Option<Arc<lr_memory::MemoryService>>>,
 }
 
 impl McpViaLlmManager {
@@ -41,7 +43,18 @@ impl McpViaLlmManager {
             config: RwLock::new(config),
             context_management_config: RwLock::new(lr_config::ContextManagementConfig::default()),
             seen_client_tools: DashMap::new(),
+            memory_service: RwLock::new(None),
         }
+    }
+
+    /// Set the memory service for auto-capturing conversation transcripts.
+    pub fn set_memory_service(&self, service: Option<Arc<lr_memory::MemoryService>>) {
+        *self.memory_service.write() = service;
+    }
+
+    /// Get a reference to the memory service (if configured).
+    pub fn memory_service(&self) -> Option<Arc<lr_memory::MemoryService>> {
+        self.memory_service.read().clone()
     }
 
     pub fn update_config(&self, config: McpViaLlmConfig) {
@@ -206,6 +219,47 @@ impl McpViaLlmManager {
     ) -> Result<lr_providers::CompletionResponse, McpViaLlmError> {
         let config = self.config();
         let session = self.get_or_create_session(&client.id);
+        let memory_svc = self.memory_service();
+
+        // Initialize memory transcript if enabled for this client
+        if let Some(ref svc) = memory_svc {
+            if client.memory_enabled.unwrap_or(false) {
+                let needs_init = session.read().transcript_path.is_none();
+                if needs_init {
+                    if let Ok(client_dir) = svc.ensure_client_dir(&client.id) {
+                        let sessions_dir = client_dir.join("sessions");
+                        let (session_id, file_path, is_new) = svc
+                            .session_manager
+                            .get_or_create_session(&client.id, &sessions_dir);
+                        if is_new {
+                            let mcp_session_id = session.read().session_id.clone();
+                            if let Err(e) = svc
+                                .transcript
+                                .create_session_file(&sessions_dir, &session_id, &client.id)
+                                .await
+                            {
+                                tracing::warn!("Failed to create memory transcript: {}", e);
+                            }
+                            // Write initial conversation header
+                            let timestamp = chrono::Utc::now().format("%H:%M").to_string();
+                            let _ = svc
+                                .transcript
+                                .append_conversation_header(
+                                    &file_path,
+                                    &mcp_session_id[..8.min(mcp_session_id.len())],
+                                    &timestamp,
+                                )
+                                .await;
+                        }
+                        session.write().transcript_path = Some(file_path);
+                        // Start daemon if needed
+                        if let Err(e) = svc.start_daemon(&client.id).await {
+                            tracing::warn!("Failed to start memsearch daemon: {}", e);
+                        }
+                    }
+                }
+            }
+        }
 
         // Check if this is a resume from a pending mixed execution
         if let Some((pending, client_tool_results)) =
@@ -246,6 +300,7 @@ impl McpViaLlmManager {
             allowed_servers,
             guardrail_gate,
             None,
+            memory_svc,
         )
         .await?;
 

@@ -13,8 +13,8 @@ mod session_tests {
     #[test]
     fn session_creation_sets_gateway_key() {
         let session = McpViaLlmSession::new("sess-123".to_string(), "client-abc".to_string());
-        assert_eq!(session._session_id, "sess-123");
-        assert_eq!(session._client_id, "client-abc");
+        assert_eq!(session.session_id, "sess-123");
+        assert_eq!(session.client_id, "client-abc");
         assert_eq!(session.gateway_session_key, "mcp-via-llm-sess-123");
         assert!(!session.gateway_initialized);
         assert!(session.history.full_messages.is_empty());
@@ -756,9 +756,9 @@ mod manager_tests {
     fn session_reuse_same_client() {
         let mgr = McpViaLlmManager::new(cfg());
         let s1 = mgr.get_or_create_session("c1");
-        let id1 = s1.read()._session_id.clone();
+        let id1 = s1.read().session_id.clone();
         let s2 = mgr.get_or_create_session("c1");
-        let id2 = s2.read()._session_id.clone();
+        let id2 = s2.read().session_id.clone();
         assert_eq!(id1, id2);
     }
 
@@ -767,7 +767,7 @@ mod manager_tests {
         let mgr = McpViaLlmManager::new(cfg());
         let s1 = mgr.get_or_create_session("c1");
         let s2 = mgr.get_or_create_session("c2");
-        assert_ne!(s1.read()._session_id, s2.read()._session_id);
+        assert_ne!(s1.read().session_id, s2.read().session_id);
     }
 }
 

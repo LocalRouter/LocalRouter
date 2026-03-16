@@ -4,6 +4,7 @@
 //! that the client never sees. Sessions are matched to incoming requests
 //! via per-message hashing.
 
+use std::path::PathBuf;
 use std::time::Instant;
 
 use lr_providers::ChatMessage;
@@ -64,8 +65,8 @@ impl SessionHistory {
 
 /// A single MCP via LLM session tied to one client
 pub struct McpViaLlmSession {
-    pub _session_id: String,
-    pub _client_id: String,
+    pub session_id: String,
+    pub client_id: String,
     /// Key used to identify this session in the MCP gateway
     pub gateway_session_key: String,
     /// Whether the gateway session has been initialized
@@ -74,18 +75,21 @@ pub struct McpViaLlmSession {
     pub history: SessionHistory,
     /// Last time this session was active
     pub last_activity: Instant,
+    /// Path to the memory transcript file (set when memory is enabled for this client)
+    pub transcript_path: Option<PathBuf>,
 }
 
 impl McpViaLlmSession {
     pub fn new(session_id: String, client_id: String) -> Self {
         let gateway_session_key = format!("mcp-via-llm-{}", session_id);
         Self {
-            _session_id: session_id,
-            _client_id: client_id,
+            session_id,
+            client_id,
             gateway_session_key,
             gateway_initialized: false,
             history: SessionHistory::new(),
             last_activity: Instant::now(),
+            transcript_path: None,
         }
     }
 

@@ -439,6 +439,11 @@ pub struct AppConfig {
     /// Secret scanning configuration
     #[serde(default)]
     pub secret_scanning: SecretScanningConfig,
+
+    /// Memory configuration (Zillis memsearch integration)
+    /// Configured globally, enabled per-client
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 /// Pricing override for a specific model
@@ -2180,6 +2185,104 @@ pub struct ClientSecretScanningConfig {
     pub action: Option<SecretScanAction>,
 }
 
+// ============================================================================
+// Memory Configuration (Zillis memsearch integration)
+// ============================================================================
+
+/// Global memory configuration. Memory is enabled per-client, not globally.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemoryConfig {
+    /// Embedding provider for memsearch indexing
+    #[serde(default)]
+    pub embedding: MemoryEmbeddingConfig,
+
+    /// Auto-start memsearch watch daemon per client (default: true)
+    #[serde(default = "default_true")]
+    pub auto_start_daemon: bool,
+
+    /// Number of search results to return (default: 5)
+    #[serde(default = "default_memory_top_k")]
+    pub search_top_k: usize,
+
+    /// Session inactivity timeout in minutes (default: 180 = 3 hours)
+    #[serde(default = "default_session_inactivity_minutes")]
+    pub session_inactivity_minutes: u64,
+
+    /// Max session duration in minutes (default: 480 = 8 hours)
+    #[serde(default = "default_max_session_minutes")]
+    pub max_session_minutes: u64,
+
+    /// Tool name for recall (default: "MemoryRecall")
+    #[serde(default = "default_memory_recall_tool_name")]
+    pub recall_tool_name: String,
+
+    /// Compaction configuration (optional LLM summarization at session end)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<MemoryCompactionConfig>,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            embedding: MemoryEmbeddingConfig::default(),
+            auto_start_daemon: true,
+            search_top_k: default_memory_top_k(),
+            session_inactivity_minutes: default_session_inactivity_minutes(),
+            max_session_minutes: default_max_session_minutes(),
+            recall_tool_name: default_memory_recall_tool_name(),
+            compaction: None,
+        }
+    }
+}
+
+fn default_memory_top_k() -> usize {
+    5
+}
+
+fn default_session_inactivity_minutes() -> u64 {
+    180
+}
+
+fn default_max_session_minutes() -> u64 {
+    480
+}
+
+fn default_memory_recall_tool_name() -> String {
+    "MemoryRecall".to_string()
+}
+
+/// Embedding provider configuration for memsearch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MemoryEmbeddingConfig {
+    /// Built-in ONNX bge-m3 (default, ~558MB auto-download on first use)
+    Onnx,
+    /// Ollama for embeddings
+    Ollama {
+        provider_id: String,
+        model_name: String,
+    },
+}
+
+impl Default for MemoryEmbeddingConfig {
+    fn default() -> Self {
+        Self::Onnx
+    }
+}
+
+/// LLM compaction configuration for memory summarization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemoryCompactionConfig {
+    /// Enable compaction at session end
+    #[serde(default)]
+    pub enabled: bool,
+    /// LLM provider to use for summarization (memsearch --llm-provider value)
+    pub llm_provider: String,
+    /// Optional: specific model name for the LLM
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_model: Option<String>,
+}
+
 /// MCP via LLM configuration (experimental agentic orchestrator)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpViaLlmConfig {
@@ -2467,6 +2570,11 @@ pub struct Client {
     /// Per-client secret scanning configuration
     #[serde(default)]
     pub secret_scanning: ClientSecretScanningConfig,
+
+    /// Enable persistent memory for this client (default: disabled)
+    /// When enabled, conversations are recorded and stored locally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_enabled: Option<bool>,
 }
 
 /// MCP server configuration
@@ -3150,6 +3258,7 @@ impl Default for AppConfig {
             json_repair: JsonRepairConfig::default(),
             mcp_via_llm: McpViaLlmConfig::default(),
             secret_scanning: SecretScanningConfig::default(),
+            memory: MemoryConfig::default(),
         }
     }
 }
@@ -3346,6 +3455,7 @@ impl Client {
             coding_agents_permissions: CodingAgentsPermissions::default(),
             coding_agent_permission: PermissionState::default(),
             coding_agent_type: None,
+            memory_enabled: None,
         }
     }
 

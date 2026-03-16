@@ -11,6 +11,7 @@ description = "MCP gateway, bridge, and transports for LocalRouter"
 lr-types = { workspace = true }
 lr-config = { workspace = true }
 lr-api-keys = { workspace = true }
+lr-memory = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
