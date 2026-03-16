@@ -44,8 +44,11 @@ impl SentenceEmbedder {
                 .map_err(|e| format!("Failed to load SafeTensors: {}", e))?
         };
 
-        let model = BertModel::load(vb.pp("bert"), &config)
-            .map_err(|e| format!("Failed to load BERT model: {}", e))?;
+        // sentence-transformers models store weights without a "bert." prefix
+        let model = BertModel::load(vb.clone(), &config).or_else(|_| {
+            // Fall back to "bert." prefix (standard HuggingFace BERT format)
+            BertModel::load(vb.pp("bert"), &config)
+        }).map_err(|e| format!("Failed to load BERT model: {}", e))?;
 
         let tokenizer_file = model_dir.join("tokenizer.json");
         if !tokenizer_file.exists() {
