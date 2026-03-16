@@ -50,7 +50,8 @@ pub async fn embeddings(
     state.record_client_activity(&auth.api_key_id);
 
     // Validate client is enabled and mode allows LLM access
-    if auth.api_key_id != "internal-test" {
+    // Skip for internal-test and memory-service (transient internal tokens)
+    if auth.api_key_id != "internal-test" && auth.api_key_id != "memory-service" {
         let client = get_enabled_client(&state, &auth.api_key_id)?;
         check_llm_access(&client)?;
     }
