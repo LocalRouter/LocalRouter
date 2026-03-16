@@ -1078,10 +1078,9 @@ pub enum McpAuthConfig {
 
     /// Custom headers (can include auth headers)
     CustomHeaders {
-        /// Headers to send with every request
-        /// Can include: Authorization, X-API-Key, etc.
-        /// Sensitive values should be stored in keychain and referenced here
-        headers: std::collections::HashMap<String, String>,
+        /// Map of header name → keychain reference key
+        /// Actual header values are stored in keychain (service: "LocalRouter-McpServers")
+        header_refs: std::collections::HashMap<String, String>,
     },
 
     /// Pre-registered OAuth credentials (client credentials flow)
@@ -1130,10 +1129,9 @@ pub enum McpAuthConfig {
     /// Environment variables (for STDIO only)
     /// Can include API keys, tokens, etc.
     EnvVars {
-        /// Environment variables to pass to subprocess
-        /// Merged with transport_config.env at runtime
-        /// Sensitive values should be stored in keychain and referenced here
-        env: std::collections::HashMap<String, String>,
+        /// Map of env var name → keychain reference key
+        /// Actual env var values are stored in keychain (service: "LocalRouter-McpServers")
+        env_refs: std::collections::HashMap<String, String>,
     },
 }
 

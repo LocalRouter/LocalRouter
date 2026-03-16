@@ -17,8 +17,7 @@ use lr_marketplace::{
 use serde_json::Value;
 use tauri::State;
 
-/// Keyring service name for MCP server tokens
-const MCP_KEYRING_SERVICE: &str = "LocalRouter-McpServers";
+use lr_config::MCP_KEYRING_SERVICE;
 
 // ============================================================================
 // Marketplace Config Commands

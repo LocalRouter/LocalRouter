@@ -4,7 +4,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 22;
+pub(crate) const CONFIG_VERSION: u32 = 23;
+
+/// Keyring service name for provider API keys
+pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
+
+/// Keyring service name for MCP server secrets
+pub const MCP_KEYRING_SERVICE: &str = "LocalRouter-McpServers";
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -2774,10 +2780,9 @@ pub enum McpAuthConfig {
 
     /// Custom headers (can include auth headers)
     CustomHeaders {
-        /// Headers to send with every request
-        /// Can include: Authorization, X-API-Key, etc.
-        /// Sensitive values should be stored in keychain and referenced here
-        headers: std::collections::HashMap<String, String>,
+        /// Map of header name → keychain reference key
+        /// Actual header values are stored in keychain (service: "LocalRouter-McpServers")
+        header_refs: std::collections::HashMap<String, String>,
     },
 
     /// Pre-registered OAuth credentials (client credentials flow)
@@ -2826,10 +2831,9 @@ pub enum McpAuthConfig {
     /// Environment variables (for STDIO only)
     /// Can include API keys, tokens, etc.
     EnvVars {
-        /// Environment variables to pass to subprocess
-        /// Merged with transport_config.env at runtime
-        /// Sensitive values should be stored in keychain and referenced here
-        env: std::collections::HashMap<String, String>,
+        /// Map of env var name → keychain reference key
+        /// Actual env var values are stored in keychain (service: "LocalRouter-McpServers")
+        env_refs: std::collections::HashMap<String, String>,
     },
 }
 

@@ -113,14 +113,31 @@ fn process_auth_config(
 
             let key = format!("{}_bearer_token", server_id);
             keychain
-                .store("LocalRouter-McpServers", &key, &token)
+                .store(lr_config::MCP_KEYRING_SERVICE, &key, &token)
                 .map_err(|e| format!("Failed to store token in keychain: {}", e))?;
 
             tracing::debug!("Stored bearer token in keychain with key: {}", key);
 
             McpAuthConfig::BearerToken { token_ref: key }
         }
-        FrontendAuthConfig::CustomHeaders { headers } => McpAuthConfig::CustomHeaders { headers },
+        FrontendAuthConfig::CustomHeaders { headers } => {
+            // Store each header value in keychain with a generated UUID reference
+            let keychain = lr_api_keys::CachedKeychain::auto()
+                .map_err(|e| format!("Failed to access keychain: {}", e))?;
+
+            let mut header_refs = std::collections::HashMap::new();
+            for (name, value) in headers {
+                let ref_key = uuid::Uuid::new_v4().to_string();
+                keychain
+                    .store(lr_config::MCP_KEYRING_SERVICE, &ref_key, &value)
+                    .map_err(|e| format!("Failed to store header '{}' in keychain: {}", name, e))?;
+                header_refs.insert(name, ref_key);
+            }
+
+            tracing::debug!("Stored {} custom header(s) in keychain for server {}", header_refs.len(), server_id);
+
+            McpAuthConfig::CustomHeaders { header_refs }
+        }
         FrontendAuthConfig::OAuth {
             client_id,
             client_secret,
@@ -134,7 +151,7 @@ fn process_auth_config(
 
             let key = format!("{}_oauth_secret", server_id);
             keychain
-                .store("LocalRouter-McpServers", &key, &client_secret)
+                .store(lr_config::MCP_KEYRING_SERVICE, &key, &client_secret)
                 .map_err(|e| format!("Failed to store OAuth secret in keychain: {}", e))?;
 
             tracing::debug!("Stored OAuth secret in keychain with key: {}", key);
@@ -147,7 +164,24 @@ fn process_auth_config(
                 scopes,
             }
         }
-        FrontendAuthConfig::EnvVars { env } => McpAuthConfig::EnvVars { env },
+        FrontendAuthConfig::EnvVars { env } => {
+            // Store each env var value in keychain with a generated UUID reference
+            let keychain = lr_api_keys::CachedKeychain::auto()
+                .map_err(|e| format!("Failed to access keychain: {}", e))?;
+
+            let mut env_refs = std::collections::HashMap::new();
+            for (name, value) in env {
+                let ref_key = uuid::Uuid::new_v4().to_string();
+                keychain
+                    .store(lr_config::MCP_KEYRING_SERVICE, &ref_key, &value)
+                    .map_err(|e| format!("Failed to store env var '{}' in keychain: {}", name, e))?;
+                env_refs.insert(name, ref_key);
+            }
+
+            tracing::debug!("Stored {} env var(s) in keychain for server {}", env_refs.len(), server_id);
+
+            McpAuthConfig::EnvVars { env_refs }
+        }
         FrontendAuthConfig::OAuthBrowser {
             client_id,
             client_secret,
@@ -163,7 +197,7 @@ fn process_auth_config(
 
                 let key = format!("{}_oauth_browser_secret", server_id);
                 keychain
-                    .store("LocalRouter-McpServers", &key, &secret)
+                    .store(lr_config::MCP_KEYRING_SERVICE, &key, &secret)
                     .map_err(|e| format!("Failed to store OAuth secret in keychain: {}", e))?;
 
                 tracing::debug!("Stored OAuth browser secret in keychain with key: {}", key);

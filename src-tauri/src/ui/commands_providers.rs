@@ -146,11 +146,25 @@ pub async fn create_provider_instance(
     provider_type: String,
     config: HashMap<String, String>,
 ) -> Result<(), String> {
-    // Create provider in registry (in-memory)
+    // Create provider in registry (in-memory) — includes api_key for factory use
     registry
         .create_provider(instance_name.clone(), provider_type.clone(), config.clone())
         .await
         .map_err(|e| e.to_string())?;
+
+    // Extract api_key and store in keychain (not in config file)
+    if let Some(api_key) = config.get("api_key") {
+        if !api_key.is_empty() {
+            lr_providers::key_storage::store_provider_key(&instance_name, api_key)
+                .map_err(|e| format!("Failed to store API key in keychain: {}", e))?;
+        }
+    }
+
+    // Build config for disk persistence WITHOUT api_key
+    let config_for_disk: HashMap<String, String> = config
+        .into_iter()
+        .filter(|(k, _)| k != "api_key")
+        .collect();
 
     // Save to config file for persistence
     config_manager
@@ -158,9 +172,9 @@ pub async fn create_provider_instance(
             // Convert provider_type string to ProviderType enum
             let provider_type_enum = provider_type_str_to_enum(&provider_type);
 
-            // Convert config HashMap to provider_config JSON
-            let provider_config = if !config.is_empty() {
-                Some(serde_json::to_value(&config).unwrap_or(serde_json::Value::Null))
+            // Convert config HashMap to provider_config JSON (without api_key)
+            let provider_config = if !config_for_disk.is_empty() {
+                Some(serde_json::to_value(&config_for_disk).unwrap_or(serde_json::Value::Null))
             } else {
                 None
             };
@@ -223,19 +237,33 @@ pub async fn update_provider_instance(
     provider_type: String,
     config: HashMap<String, String>,
 ) -> Result<(), String> {
-    // Update provider in registry (in-memory)
+    // Update provider in registry (in-memory) — includes api_key for factory use
     registry
         .update_provider(instance_name.clone(), provider_type.clone(), config.clone())
         .await
         .map_err(|e| e.to_string())?;
 
-    // Update in config file
+    // Update api_key in keychain
+    if let Some(api_key) = config.get("api_key") {
+        if !api_key.is_empty() {
+            lr_providers::key_storage::store_provider_key(&instance_name, api_key)
+                .map_err(|e| format!("Failed to store API key in keychain: {}", e))?;
+        }
+    }
+
+    // Build config for disk persistence WITHOUT api_key
+    let config_for_disk: HashMap<String, String> = config
+        .into_iter()
+        .filter(|(k, _)| k != "api_key")
+        .collect();
+
+    // Update in config file (without api_key)
     config_manager
         .update(|cfg| {
             if let Some(provider) = cfg.providers.iter_mut().find(|p| p.name == instance_name) {
                 provider.provider_type = provider_type_str_to_enum(&provider_type);
-                provider.provider_config = if !config.is_empty() {
-                    Some(serde_json::to_value(&config).unwrap_or(serde_json::Value::Null))
+                provider.provider_config = if !config_for_disk.is_empty() {
+                    Some(serde_json::to_value(&config_for_disk).unwrap_or(serde_json::Value::Null))
                 } else {
                     None
                 };
@@ -311,6 +339,21 @@ pub async fn rename_provider_instance(
     // Restore enabled state
     if !was_enabled {
         let _ = registry.set_provider_enabled(&new_name, false);
+    }
+
+    // Migrate keychain entry from old name to new name
+    match lr_providers::key_storage::get_provider_key(&instance_name) {
+        Ok(Some(api_key)) => {
+            if let Err(e) = lr_providers::key_storage::store_provider_key(&new_name, &api_key) {
+                tracing::warn!("Failed to store API key under new name '{}': {}", new_name, e);
+            } else if let Err(e) = lr_providers::key_storage::delete_provider_key(&instance_name) {
+                tracing::warn!("Failed to delete old API key for '{}': {}", instance_name, e);
+            }
+        }
+        Ok(None) => {} // No key to migrate (e.g., local provider)
+        Err(e) => {
+            tracing::warn!("Failed to check API key for '{}' during rename: {}", instance_name, e);
+        }
     }
 
     // Update config file
@@ -408,6 +451,14 @@ pub async fn remove_provider_instance(
     registry
         .remove_provider(&instance_name)
         .map_err(|e| e.to_string())?;
+
+    // Clean up keychain entry (best-effort)
+    if let Err(e) = lr_providers::key_storage::delete_provider_key(&instance_name) {
+        tracing::warn!(
+            "Failed to delete API key for provider '{}' from keychain: {}",
+            instance_name, e
+        );
+    }
 
     // Remove from config file
     config_manager

@@ -15,7 +15,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 
 const SENSITIVE_KEY_PATTERN =
-  /api_key|secret|token|password|^key$|auth_header|credential|private_key/i
+  /api_key|^secret$|client_secret|^token$|^password$|^key$|auth_header|credential|private_key/i
 
 function sanitizeConfig(obj: unknown): unknown {
   if (obj === null || obj === undefined) return obj

@@ -10,11 +10,10 @@
 //! Uses CachedKeychain to avoid repeated password prompts.
 
 use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
+use lr_config::PROVIDER_KEYRING_SERVICE;
 use lr_types::errors::AppResult;
 use std::sync::OnceLock;
 use tracing::{debug, warn};
-
-const KEYRING_SERVICE: &str = "LocalRouter-Providers";
 
 /// Global cached keychain instance for provider keys
 /// This ensures all provider key access goes through a single cached instance
@@ -46,7 +45,7 @@ fn get_keychain() -> &'static CachedKeychain {
 /// Note: Uses CachedKeychain which automatically caches the key in memory
 pub fn store_provider_key(provider_name: &str, api_key: &str) -> AppResult<()> {
     let keychain = get_keychain();
-    keychain.store(KEYRING_SERVICE, provider_name, api_key)?;
+    keychain.store(PROVIDER_KEYRING_SERVICE, provider_name, api_key)?;
 
     debug!(
         "Stored API key for provider '{}' in system keyring (cached)",
@@ -69,7 +68,7 @@ pub fn store_provider_key(provider_name: &str, api_key: &str) -> AppResult<()> {
 /// for the lifetime of the application process.
 pub fn get_provider_key(provider_name: &str) -> AppResult<Option<String>> {
     let keychain = get_keychain();
-    let result = keychain.get(KEYRING_SERVICE, provider_name)?;
+    let result = keychain.get(PROVIDER_KEYRING_SERVICE, provider_name)?;
 
     if result.is_some() {
         debug!(
@@ -95,7 +94,7 @@ pub fn get_provider_key(provider_name: &str) -> AppResult<Option<String>> {
 /// Note: Also removes the key from the in-memory cache
 pub fn delete_provider_key(provider_name: &str) -> AppResult<()> {
     let keychain = get_keychain();
-    keychain.delete(KEYRING_SERVICE, provider_name)?;
+    keychain.delete(PROVIDER_KEYRING_SERVICE, provider_name)?;
 
     debug!(
         "Deleted API key for provider '{}' from system keyring and cache",

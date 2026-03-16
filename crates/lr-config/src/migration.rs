@@ -2,9 +2,10 @@
 //!
 //! Handles migrating configuration files between versions.
 
-use super::{AppConfig, CONFIG_VERSION};
+use super::{AppConfig, CONFIG_VERSION, MCP_KEYRING_SERVICE, PROVIDER_KEYRING_SERVICE};
+use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
 use lr_types::AppResult;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Migrate configuration from an older version to the current version
 pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
@@ -136,6 +137,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
     // Migrate to v22: Secret scanning config (new fields with serde defaults, no-op)
     if config.version < 22 {
         config = migrate_to_v22(config)?;
+    }
+
+    // Migrate to v23: Move secrets from config to keychain
+    if config.version < 23 {
+        config = migrate_to_v23(config)?;
     }
 
     // Update version to current
@@ -678,6 +684,154 @@ fn migrate_to_v20(config: AppConfig) -> AppResult<AppConfig> {
 /// ctx_search/ctx_read to IndexSearch/IndexRead for new sessions.
 fn migrate_to_v21(config: AppConfig) -> AppResult<AppConfig> {
     info!("Migrating to version 21: Indexing eligibility + configurable tool names");
+    Ok(config)
+}
+
+/// Migrate to version 23: Move secrets from config to keychain
+///
+/// - Provider API keys: extracts `api_key` from `provider_config` JSON blobs, stores in keychain
+/// - MCP CustomHeaders: moves header values to keychain, replaces with UUID references
+/// - MCP EnvVars: moves env var values to keychain, replaces with UUID references
+fn migrate_to_v23(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 23: Move secrets from config to keychain");
+
+    let keychain = CachedKeychain::auto().unwrap_or_else(|e| {
+        warn!(
+            "Failed to create auto keychain: {}, falling back to system",
+            e
+        );
+        CachedKeychain::system()
+    });
+
+    // --- Part A: Provider API keys ---
+    for provider in &mut config.providers {
+        if let Some(ref mut provider_cfg) = provider.provider_config {
+            if let Some(obj) = provider_cfg.as_object_mut() {
+                if let Some(api_key_value) = obj.remove("api_key") {
+                    if let Some(api_key_str) = api_key_value.as_str() {
+                        if !api_key_str.is_empty() {
+                            match keychain.store(
+                                PROVIDER_KEYRING_SERVICE,
+                                &provider.name,
+                                api_key_str,
+                            ) {
+                                Ok(()) => {
+                                    info!(
+                                        "Migrated API key for provider '{}' to keychain",
+                                        provider.name
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to migrate API key for provider '{}' to keychain: {}. Key remains in config.",
+                                        provider.name, e
+                                    );
+                                    // Put it back so it's not lost
+                                    obj.insert(
+                                        "api_key".to_string(),
+                                        serde_json::Value::String(api_key_str.to_string()),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Clean up empty provider_config
+            if provider_cfg
+                .as_object()
+                .is_some_and(|o| o.is_empty())
+            {
+                provider.provider_config = None;
+            }
+        }
+    }
+
+    // --- Part B: MCP CustomHeaders & EnvVars ---
+    for server in &mut config.mcp_servers {
+        if let Some(ref mut auth_config) = server.auth_config {
+            // Use serde_json for migration since we're changing field names
+            let auth_json = serde_json::to_value(&*auth_config).unwrap_or_default();
+
+            // Check for old-style CustomHeaders with "headers" field (values, not refs)
+            if let Some(headers_obj) = auth_json
+                .get("CustomHeaders")
+                .and_then(|v| v.get("headers"))
+                .and_then(|v| v.as_object())
+            {
+                let mut header_refs = std::collections::HashMap::new();
+                let mut all_stored = true;
+
+                for (name, value) in headers_obj {
+                    if let Some(val_str) = value.as_str() {
+                        let ref_key = uuid::Uuid::new_v4().to_string();
+                        match keychain.store(MCP_KEYRING_SERVICE, &ref_key, val_str) {
+                            Ok(()) => {
+                                header_refs.insert(name.clone(), ref_key);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to migrate header '{}' for MCP server '{}': {}",
+                                    name, server.id, e
+                                );
+                                all_stored = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if all_stored {
+                    *auth_config = super::McpAuthConfig::CustomHeaders { header_refs };
+                    info!(
+                        "Migrated {} custom header(s) for MCP server '{}' to keychain",
+                        headers_obj.len(),
+                        server.id
+                    );
+                }
+            }
+
+            // Check for old-style EnvVars with "env" field (values, not refs)
+            if let Some(env_obj) = auth_json
+                .get("EnvVars")
+                .and_then(|v| v.get("env"))
+                .and_then(|v| v.as_object())
+            {
+                let mut env_refs = std::collections::HashMap::new();
+                let mut all_stored = true;
+
+                for (name, value) in env_obj {
+                    if let Some(val_str) = value.as_str() {
+                        let ref_key = uuid::Uuid::new_v4().to_string();
+                        match keychain.store(MCP_KEYRING_SERVICE, &ref_key, val_str) {
+                            Ok(()) => {
+                                env_refs.insert(name.clone(), ref_key);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to migrate env var '{}' for MCP server '{}': {}",
+                                    name, server.id, e
+                                );
+                                all_stored = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if all_stored {
+                    *auth_config = super::McpAuthConfig::EnvVars { env_refs };
+                    info!(
+                        "Migrated {} env var(s) for MCP server '{}' to keychain",
+                        env_obj.len(),
+                        server.id
+                    );
+                }
+            }
+        }
+    }
+
+    config.version = 23;
     Ok(config)
 }
 

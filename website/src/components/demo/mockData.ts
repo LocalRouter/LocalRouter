@@ -584,6 +584,9 @@ export const mockData = {
 
   healthCache: {
     aggregate_status: "green" as const,
+    server_running: true,
+    server_host: "127.0.0.1",
+    server_port: 3625,
     providers: {
       "openai-primary": { status: "healthy" as const, name: "OpenAI (Primary)", latency_ms: 245, last_check: new Date().toISOString() },
       "anthropic-main": { status: "healthy" as const, name: "Anthropic", latency_ms: 312, last_check: new Date().toISOString() },

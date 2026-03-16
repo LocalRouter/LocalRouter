@@ -39,13 +39,13 @@ fn test_mcp_server_with_no_auth() -> AppResult<()> {
 fn test_mcp_server_with_env_vars_auth() -> AppResult<()> {
     let manager = McpServerManager::new_for_test();
 
-    // Create auth config with environment variables
-    let mut env_vars = HashMap::new();
-    env_vars.insert("API_KEY".to_string(), "test-key-123".to_string());
-    env_vars.insert("SECRET".to_string(), "test-secret-456".to_string());
+    // Create auth config with environment variable refs (values stored in keychain)
+    let mut env_refs = HashMap::new();
+    env_refs.insert("API_KEY".to_string(), "ref-api-key-123".to_string());
+    env_refs.insert("SECRET".to_string(), "ref-secret-456".to_string());
 
     let auth_config = McpAuthConfig::EnvVars {
-        env: env_vars.clone(),
+        env_refs: env_refs.clone(),
     };
 
     // Create server
@@ -68,10 +68,10 @@ fn test_mcp_server_with_env_vars_auth() -> AppResult<()> {
     assert!(retrieved.auth_config.is_some());
 
     match retrieved.auth_config.unwrap() {
-        McpAuthConfig::EnvVars { env } => {
-            assert_eq!(env.len(), 2);
-            assert_eq!(env.get("API_KEY").unwrap(), "test-key-123");
-            assert_eq!(env.get("SECRET").unwrap(), "test-secret-456");
+        McpAuthConfig::EnvVars { env_refs } => {
+            assert_eq!(env_refs.len(), 2);
+            assert_eq!(env_refs.get("API_KEY").unwrap(), "ref-api-key-123");
+            assert_eq!(env_refs.get("SECRET").unwrap(), "ref-secret-456");
         }
         _ => panic!("Expected EnvVars auth config"),
     }
@@ -120,13 +120,13 @@ fn test_mcp_server_with_bearer_token_auth() -> AppResult<()> {
 fn test_mcp_server_with_custom_headers_auth() -> AppResult<()> {
     let manager = McpServerManager::new_for_test();
 
-    // Create auth config with custom headers
-    let mut headers = HashMap::new();
-    headers.insert("X-API-Key".to_string(), "secret-key-123".to_string());
-    headers.insert("X-Custom-Header".to_string(), "custom-value".to_string());
+    // Create auth config with custom header refs (values stored in keychain)
+    let mut header_refs = HashMap::new();
+    header_refs.insert("X-API-Key".to_string(), "ref-x-api-key".to_string());
+    header_refs.insert("X-Custom-Header".to_string(), "ref-x-custom".to_string());
 
     let auth_config = McpAuthConfig::CustomHeaders {
-        headers: headers.clone(),
+        header_refs: header_refs.clone(),
     };
 
     // Create SSE server
@@ -148,10 +148,10 @@ fn test_mcp_server_with_custom_headers_auth() -> AppResult<()> {
     assert!(retrieved.auth_config.is_some());
 
     match retrieved.auth_config.unwrap() {
-        McpAuthConfig::CustomHeaders { headers } => {
-            assert_eq!(headers.len(), 2);
-            assert_eq!(headers.get("X-API-Key").unwrap(), "secret-key-123");
-            assert_eq!(headers.get("X-Custom-Header").unwrap(), "custom-value");
+        McpAuthConfig::CustomHeaders { header_refs } => {
+            assert_eq!(header_refs.len(), 2);
+            assert_eq!(header_refs.get("X-API-Key").unwrap(), "ref-x-api-key");
+            assert_eq!(header_refs.get("X-Custom-Header").unwrap(), "ref-x-custom");
         }
         _ => panic!("Expected CustomHeaders auth config"),
     }
@@ -233,10 +233,10 @@ fn test_mcp_server_auth_config_update() -> AppResult<()> {
     let retrieved = manager.get_config(&config.id).unwrap();
     assert!(retrieved.auth_config.is_none());
 
-    // Update with auth config
-    let mut env_vars = HashMap::new();
-    env_vars.insert("TOKEN".to_string(), "secret-token".to_string());
-    config.auth_config = Some(McpAuthConfig::EnvVars { env: env_vars });
+    // Update with auth config (env_refs point to keychain entries)
+    let mut env_refs = HashMap::new();
+    env_refs.insert("TOKEN".to_string(), "ref-token".to_string());
+    config.auth_config = Some(McpAuthConfig::EnvVars { env_refs });
 
     manager.add_config(config.clone()); // Re-add with updated config
 
@@ -245,9 +245,9 @@ fn test_mcp_server_auth_config_update() -> AppResult<()> {
     assert!(retrieved.auth_config.is_some());
 
     match retrieved.auth_config.unwrap() {
-        McpAuthConfig::EnvVars { env } => {
-            assert_eq!(env.len(), 1);
-            assert_eq!(env.get("TOKEN").unwrap(), "secret-token");
+        McpAuthConfig::EnvVars { env_refs } => {
+            assert_eq!(env_refs.len(), 1);
+            assert_eq!(env_refs.get("TOKEN").unwrap(), "ref-token");
         }
         _ => panic!("Expected EnvVars auth config"),
     }
@@ -278,9 +278,6 @@ fn test_mcp_server_config_serialization() -> AppResult<()> {
 
     // Serialize to JSON
     let json = serde_json::to_string(&config)?;
-
-    // Debug: Print the JSON to see the actual format
-    eprintln!("Serialized JSON: {}", json);
 
     // The auth_config is serialized with tag format, check for the actual structure
     assert!(json.contains("auth_config"));
@@ -323,7 +320,7 @@ fn test_multiple_servers_with_different_auth() -> AppResult<()> {
         },
     );
 
-    // Server 2: EnvVars auth
+    // Server 2: EnvVars auth (refs point to keychain)
     let mut config2 = McpServerConfig::new(
         "Server 2".to_string(),
         McpTransportType::Stdio,
@@ -333,9 +330,9 @@ fn test_multiple_servers_with_different_auth() -> AppResult<()> {
             env: HashMap::new(),
         },
     );
-    let mut env = HashMap::new();
-    env.insert("KEY".to_string(), "value".to_string());
-    config2.auth_config = Some(McpAuthConfig::EnvVars { env });
+    let mut env_refs = HashMap::new();
+    env_refs.insert("KEY".to_string(), "ref-key".to_string());
+    config2.auth_config = Some(McpAuthConfig::EnvVars { env_refs });
 
     // Server 3: BearerToken auth
     let mut config3 = McpServerConfig::new(

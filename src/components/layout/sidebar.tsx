@@ -51,7 +51,13 @@ export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'cata
 
 interface SidebarProps {
   activeView: View
-  onViewChange: (view: View) => void
+  activeSubTab: string | null
+  onViewChange: (view: View, subTab?: string | null) => void
+  dynamicGroups?: {
+    clients?: NavDynamicChild[]
+    providers?: NavDynamicChild[]
+    mcpServers?: NavDynamicChild[]
+  }
 }
 
 interface NavItem {
@@ -73,6 +79,11 @@ interface NavCollapsible {
   children: NavItem[]
 }
 
+interface NavDynamicChild {
+  subTab: string
+  label: string
+}
+
 type NavEntry = NavItem | NavHeading | NavCollapsible
 
 function isNavHeading(entry: NavEntry): entry is NavHeading {
@@ -83,13 +94,9 @@ function isNavCollapsible(entry: NavEntry): entry is NavCollapsible {
   return 'children' in entry
 }
 
-const clientNavItems: NavItem[] = [
-  { id: 'clients', icon: Users, label: 'Clients', shortcut: '⌘2' },
-]
+const MAX_SIDEBAR_CHILDREN = 10
 
 const resourceNavEntries: NavEntry[] = [
-  { id: 'resources', icon: ProvidersIcon, label: 'LLMs', shortcut: '⌘3' },
-  { id: 'mcp-servers', icon: McpIcon, label: 'MCPs', shortcut: '⌘4' },
   { id: 'skills', icon: SkillsIcon, label: 'Skills', shortcut: '⌘5' },
   { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6' },
   { id: 'marketplace', icon: StoreIcon, label: 'Marketplace', shortcut: '⌘7' },
@@ -113,7 +120,7 @@ const bottomNavItems: NavItem[] = [
   { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘9' },
 ]
 
-export function Sidebar({ activeView, onViewChange }: SidebarProps) {
+export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups }: SidebarProps) {
   const [healthState, setHealthState] = React.useState<HealthCacheState | null>(null)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
   const [expanded, setExpanded] = React.useState(true) // default expanded, will load from config
@@ -121,6 +128,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
 
   // Auto-expand collapsible when a child view is active
   React.useEffect(() => {
+    // Static collapsibles (Optimize)
     for (const entry of resourceNavEntries) {
       if (isNavCollapsible(entry)) {
         const hasActiveChild = entry.children.some(child => child.id === activeView)
@@ -129,7 +137,17 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         }
       }
     }
-  }, [activeView])
+    // Dynamic collapsibles (Clients, LLMs, MCPs)
+    if (activeView === 'clients' && activeSubTab && activeSubTab !== 'settings' && !activeSubTab.startsWith('add/')) {
+      setCollapsibleOpen(prev => ({ ...prev, clients: true }))
+    }
+    if (activeView === 'resources' && activeSubTab?.startsWith('providers/') && activeSubTab.length > 'providers/'.length && !activeSubTab.startsWith('providers/add/')) {
+      setCollapsibleOpen(prev => ({ ...prev, resources: true }))
+    }
+    if (activeView === 'mcp-servers' && activeSubTab && !activeSubTab.startsWith('add/')) {
+      setCollapsibleOpen(prev => ({ ...prev, 'mcp-servers': true }))
+    }
+  }, [activeView, activeSubTab])
 
   // Load sidebar expanded state from config
   React.useEffect(() => {
@@ -460,6 +478,144 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
     )
   }
 
+  const renderNavDynamicCollapsible = (
+    groupId: View,
+    GroupIcon: React.ElementType,
+    label: string,
+    shortcut: string,
+    children: NavDynamicChild[],
+  ) => {
+    const isOpen = collapsibleOpen[groupId] ?? false
+    const isGroupActive = activeView === groupId && !activeSubTab
+    const activeChildSubTab = (() => {
+      if (activeView !== groupId || !activeSubTab) return null
+      return children.find(child =>
+        activeSubTab === child.subTab ||
+        activeSubTab.startsWith(child.subTab + '|') ||
+        activeSubTab.startsWith(child.subTab + '/')
+      )?.subTab ?? null
+    })()
+    const hasActiveChild = !!activeChildSubTab
+
+    const toggleOpen = () => {
+      setCollapsibleOpen(prev => ({ ...prev, [groupId]: !prev[groupId] }))
+    }
+
+    const displayChildren = children.slice(0, MAX_SIDEBAR_CHILDREN)
+    const hasMore = children.length > MAX_SIDEBAR_CHILDREN
+
+    if (!expanded) {
+      return (
+        <Tooltip key={groupId}>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => onViewChange(groupId)}
+              className={cn(
+                "flex items-center rounded-md transition-colors h-8 w-full gap-2 whitespace-nowrap px-2",
+                (isGroupActive || hasActiveChild)
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              )}
+            >
+              <GroupIcon className="h-4 w-4 shrink-0" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={8}>
+            <div className="flex items-center gap-2">
+              <span>{label}</span>
+              <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {shortcut}
+              </kbd>
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      )
+    }
+
+    const parentButton = (
+      <div
+        role="button"
+        tabIndex={0}
+        className={cn(
+          "flex items-center rounded-md transition-colors h-8 w-full gap-2 whitespace-nowrap px-2 cursor-pointer",
+          isGroupActive
+            ? "bg-accent text-accent-foreground"
+            : hasActiveChild
+              ? "text-accent-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        )}
+        onClick={() => {
+          onViewChange(groupId)
+          if (!isOpen) {
+            setCollapsibleOpen(prev => ({ ...prev, [groupId]: true }))
+          }
+        }}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onViewChange(groupId) } }}
+      >
+        <GroupIcon className="h-4 w-4 shrink-0" />
+        <span className="truncate text-left text-sm flex-1">{label}</span>
+        {children.length > 0 && (
+          <button
+            className="shrink-0 p-0.5 rounded hover:bg-accent-foreground/10"
+            onClick={(e) => {
+              e.stopPropagation()
+              toggleOpen()
+            }}
+          >
+            {isOpen
+              ? <ChevronDown className="h-3 w-3" />
+              : <ChevronRight className="h-3 w-3" />
+            }
+          </button>
+        )}
+      </div>
+    )
+
+    return (
+      <div key={groupId}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            {parentButton}
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={8}>
+            <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {shortcut}
+            </kbd>
+          </TooltipContent>
+        </Tooltip>
+        {isOpen && children.length > 0 && (
+          <div className="ml-3 border-l border-border/50 pl-1 mt-0.5 space-y-0.5">
+            {displayChildren.map(child => {
+              const isActive = activeChildSubTab === child.subTab
+              return (
+                <button
+                  key={child.subTab}
+                  onClick={() => onViewChange(groupId, child.subTab)}
+                  className={cn(
+                    "flex items-center rounded-md transition-colors h-7 w-full whitespace-nowrap px-2",
+                    isActive
+                      ? "bg-accent text-accent-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  )}
+                >
+                  <span className="truncate text-left text-xs">{child.label}</span>
+                </button>
+              )
+            })}
+            {hasMore && (
+              <button
+                onClick={() => onViewChange(groupId)}
+                className="flex items-center rounded-md transition-colors h-7 w-full whitespace-nowrap px-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              >
+                <span className="text-xs italic">Show all ({children.length})</span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <TooltipProvider delayDuration={0}>
       <aside
@@ -499,10 +655,12 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
 
         {/* Main Navigation */}
         <nav className="flex flex-1 flex-col gap-1 overflow-y-auto min-h-0 p-2">
-          {/* Client section */}
-          {clientNavItems.map(renderNavItem)}
+          {/* Dynamic collapsible sections */}
+          {renderNavDynamicCollapsible('clients', Users, 'Clients', '⌘2', dynamicGroups?.clients ?? [])}
+          {renderNavDynamicCollapsible('resources', ProvidersIcon, 'LLMs', '⌘3', dynamicGroups?.providers ?? [])}
+          {renderNavDynamicCollapsible('mcp-servers', McpIcon, 'MCPs', '⌘4', dynamicGroups?.mcpServers ?? [])}
 
-          {/* Resources section */}
+          {/* Static resource items */}
           {resourceNavEntries.map(renderNavEntry)}
 
           {/* Spacer to push bottom items down */}

@@ -420,10 +420,22 @@ impl McpServerManager {
         }
 
         // Merge auth config environment variables (if specified)
-        if let Some(lr_config::McpAuthConfig::EnvVars { env: auth_env }) = &config.auth_config {
-            // Auth env vars override base env vars
-            for (key, value) in auth_env {
-                env.insert(key.clone(), value.clone());
+        if let Some(lr_config::McpAuthConfig::EnvVars { env_refs }) = &config.auth_config {
+            // Resolve env var values from keychain
+            let keychain = lr_api_keys::CachedKeychain::auto()
+                .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
+            for (var_name, ref_key) in env_refs {
+                match keychain.get(lr_config::MCP_KEYRING_SERVICE, ref_key) {
+                    Ok(Some(value)) => {
+                        env.insert(var_name.clone(), value);
+                    }
+                    Ok(None) => {
+                        tracing::warn!("Env var '{}' ref '{}' not found in keychain", var_name, ref_key);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to read env var '{}' from keychain: {}", var_name, e);
+                    }
+                }
             }
             tracing::debug!("Applied auth env vars for STDIO server: {}", server_id);
         }
@@ -467,7 +479,7 @@ impl McpServerManager {
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
                     // Token is stored with account name: {server_id}_bearer_token
                     let account_name = format!("{}_bearer_token", config.id);
-                    if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &account_name) {
+                    if let Ok(Some(token)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name) {
                         headers.insert("Authorization".to_string(), format!("Bearer {}", token));
                         tracing::debug!("Applied bearer token auth for SSE server: {}", server_id);
                     } else {
@@ -475,12 +487,23 @@ impl McpServerManager {
                     }
                 }
                 lr_config::McpAuthConfig::CustomHeaders {
-                    headers: auth_headers,
+                    header_refs,
                 } => {
-                    // Merge custom auth headers with base headers
-                    // Auth headers override base headers
-                    for (key, value) in auth_headers {
-                        headers.insert(key.clone(), value.clone());
+                    // Resolve header values from keychain
+                    let keychain = lr_api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
+                    for (header_name, ref_key) in header_refs {
+                        match keychain.get(lr_config::MCP_KEYRING_SERVICE, ref_key) {
+                            Ok(Some(value)) => {
+                                headers.insert(header_name.clone(), value);
+                            }
+                            Ok(None) => {
+                                tracing::warn!("Header '{}' ref '{}' not found in keychain", header_name, ref_key);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to read header '{}' from keychain: {}", header_name, e);
+                            }
+                        }
                     }
                     tracing::debug!("Applied custom headers auth for SSE server: {}", server_id);
                 }
@@ -497,7 +520,7 @@ impl McpServerManager {
 
                     // Get client secret from keychain
                     let client_secret =
-                        match keychain.get("LocalRouter-McpServers", client_secret_ref) {
+                        match keychain.get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref) {
                             Ok(Some(secret)) => secret,
                             Ok(None) => {
                                 tracing::warn!(
@@ -647,7 +670,7 @@ impl McpServerManager {
                     let keychain = lr_api_keys::CachedKeychain::auto()
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
                     let account_name = format!("{}_bearer_token", config.id);
-                    if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &account_name) {
+                    if let Ok(Some(token)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name) {
                         headers.insert("Authorization".to_string(), format!("Bearer {}", token));
                         tracing::debug!(
                             "Applied bearer token auth for WebSocket server: {}",
@@ -658,10 +681,23 @@ impl McpServerManager {
                     }
                 }
                 lr_config::McpAuthConfig::CustomHeaders {
-                    headers: auth_headers,
+                    header_refs,
                 } => {
-                    for (key, value) in auth_headers {
-                        headers.insert(key.clone(), value.clone());
+                    // Resolve header values from keychain
+                    let keychain = lr_api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
+                    for (header_name, ref_key) in header_refs {
+                        match keychain.get(lr_config::MCP_KEYRING_SERVICE, ref_key) {
+                            Ok(Some(value)) => {
+                                headers.insert(header_name.clone(), value);
+                            }
+                            Ok(None) => {
+                                tracing::warn!("Header '{}' ref '{}' not found in keychain", header_name, ref_key);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to read header '{}' from keychain: {}", header_name, e);
+                            }
+                        }
                     }
                     tracing::debug!(
                         "Applied custom headers auth for WebSocket server: {}",
@@ -681,7 +717,7 @@ impl McpServerManager {
 
                     // Get client secret from keychain
                     let client_secret =
-                        match keychain.get("LocalRouter-McpServers", client_secret_ref) {
+                        match keychain.get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref) {
                             Ok(Some(secret)) => secret,
                             Ok(None) => {
                                 tracing::warn!(
