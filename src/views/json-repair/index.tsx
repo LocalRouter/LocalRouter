@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
@@ -10,6 +10,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import type { JsonRepairConfig, JsonRepairTestResult } from "@/types/tauri-commands"
 
+const REPAIR_LABELS: Record<string, string> = {
+  stripped_markdown_fences: "Stripped markdown fences",
+  stripped_prose: "Stripped surrounding prose",
+  syntax_repaired: "Fixed syntax error",
+}
+
+function formatRepairString(action: string): string {
+  return REPAIR_LABELS[action] ?? action.replace(/_/g, " ")
+}
+
 interface JsonRepairViewProps {
   activeSubTab?: string | null
   onTabChange?: (view: string, subTab?: string | null) => void
@@ -19,7 +29,10 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
   const [config, setConfig] = useState<JsonRepairConfig | null>(null)
   const [saving, setSaving] = useState(false)
   const [testInput, setTestInput] = useState(`\`\`\`json
-{name: 'Alice' "age": "28" "score": "95.5",
+{
+  name: Alice
+  'age': '28'
+  "score": "  95.5 ",
   "role": "admin", "active": "yes",
   "tags": ["developer" "lead"],
   "extra_field": True,
@@ -106,6 +119,38 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
     }, 300)
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
   }, [testInput, testSchema, tab, runTest])
+
+  // Deduplicate and format repair actions for display
+  const formattedRepairs = useMemo(() => {
+    if (!testResult) return []
+    const labels: string[] = []
+    const counts = new Map<string, number>()
+
+    for (const r of testResult.repairs) {
+      let label: string
+      if (typeof r === "string") {
+        label = formatRepairString(r)
+      } else if ("type_coerced" in r) {
+        label = `${r.type_coerced.path}: ${r.type_coerced.from} → ${r.type_coerced.to}`
+      } else if ("extra_field_removed" in r) {
+        label = `Removed ${r.extra_field_removed.path}`
+      } else if ("default_added" in r) {
+        label = `Added default for ${r.default_added.path}`
+      } else if ("enum_normalized" in r) {
+        label = `${r.enum_normalized.path}: ${r.enum_normalized.from} → ${r.enum_normalized.to}`
+      } else {
+        label = JSON.stringify(r)
+      }
+      const prev = counts.get(label) ?? 0
+      if (prev === 0) labels.push(label)
+      counts.set(label, prev + 1)
+    }
+
+    return labels.map(l => {
+      const c = counts.get(l)!
+      return c > 1 ? `${l} (×${c})` : l
+    })
+  }, [testResult])
 
   return (
     <div className="flex flex-col h-full min-h-0 gap-4 max-w-5xl">
@@ -273,15 +318,13 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                       </pre>
                     </div>
 
-                    {testResult.repairs.length > 0 && (
+                    {formattedRepairs.length > 0 && (
                       <div>
                         <label className="text-sm font-medium mb-1.5 block">Repairs performed</label>
                         <ul className="text-xs text-muted-foreground space-y-1">
-                          {testResult.repairs.map((repair, i) => (
+                          {formattedRepairs.map((label, i) => (
                             <li key={i} className="font-mono bg-muted px-2 py-1 rounded">
-                              {typeof repair === "string"
-                                ? repair.replace(/_/g, " ")
-                                : JSON.stringify(repair)}
+                              {label}
                             </li>
                           ))}
                         </ul>
