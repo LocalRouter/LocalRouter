@@ -3124,7 +3124,6 @@ export interface MemoryConfig {
 
 export type MemoryEmbeddingConfig =
   | { type: 'onnx' }
-  | { type: 'ollama'; provider_id: string; model_name: string }
 
 export interface MemoryCompactionConfig {
   enabled: boolean

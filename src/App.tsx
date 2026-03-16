@@ -295,7 +295,12 @@ function App() {
           />
         )
       case 'memory':
-        return <MemoryView />
+        return (
+          <MemoryView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
       case 'coding-agents':
         return (
           <CodingAgentsView

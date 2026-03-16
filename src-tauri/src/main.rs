@@ -289,6 +289,23 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             }
         }
 
+        // Inject api_key from keychain if not already in config_map
+        // (post-migration: key in keychain only; legacy: key still in JSON)
+        if !config_map.contains_key("api_key") {
+            match lr_providers::key_storage::get_provider_key(&provider_config.name) {
+                Ok(Some(api_key)) => {
+                    config_map.insert("api_key".to_string(), api_key);
+                }
+                Ok(None) => {} // No key — fine for local providers (Ollama, LMStudio, etc.)
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to retrieve API key for provider '{}' from keychain: {}",
+                        provider_config.name, e
+                    );
+                }
+            }
+        }
+
         // Create the provider instance
         if let Err(e) = provider_registry
             .create_provider(
@@ -1895,6 +1912,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_memory_status,
             ui::commands::memory_setup,
             ui::commands::open_memory_folder,
+            ui::commands::memory_test_index,
+            ui::commands::memory_test_search,
             ui::commands::get_client_memory_config,
             ui::commands::update_client_memory_config,
             // Secret Scanning commands

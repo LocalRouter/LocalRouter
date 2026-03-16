@@ -1,15 +1,28 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
+import { CheckCircle2, Circle, Download, FolderOpen, Loader2, Play, XCircle } from "lucide-react"
+import { FEATURES } from "@/constants/features"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
+import { Badge } from "@/components/ui/Badge"
+import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/Input"
-import { Button } from "@/components/ui/Button"
-import { Switch } from "@/components/ui/Toggle"
-import { AlertTriangle, CheckCircle2, Circle, FolderOpen, Loader2, XCircle } from "lucide-react"
-import { FEATURES } from "@/constants/features"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
+import { Textarea } from "@/components/ui/textarea"
 import type { MemoryConfig, MemorySetupProgress, MemoryStatus, UpdateMemoryConfigParams } from "@/types/tauri-commands"
+
+// Model requirements
+const MEMORY_REQUIREMENTS = {
+  DISK_GB: "~0.6",
+  MEMORY_GB: "~0.6",
+  COLD_START_SECS: "~3-5",
+  MODEL: "ONNX bge-m3 int8",
+  SEARCH_LATENCY: "~50-200ms",
+} as const
 
 type SetupStepStatus = "idle" | "checking" | "installing" | "ok" | "error"
 
@@ -29,17 +42,34 @@ const defaultConfig: MemoryConfig = {
   compaction: null,
 }
 
-export function MemoryView() {
+interface MemoryViewProps {
+  activeSubTab?: string | null
+  onTabChange?: (view: string, subTab?: string | null) => void
+}
+
+export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   const [config, setConfig] = useState<MemoryConfig>(defaultConfig)
   const [isLoading, setIsLoading] = useState(true)
-  const [, setIsSaving] = useState(false)
   const [isSettingUp, setIsSettingUp] = useState(false)
-  const [, setStatus] = useState<MemoryStatus | null>(null)
+  const [status, setStatus] = useState<MemoryStatus | null>(null)
   const [setup, setSetup] = useState<SetupState>({
     python: { status: "idle" },
     memsearch: { status: "idle" },
     model: { status: "idle" },
   })
+
+  // Try It Out state
+  const [searchQuery, setSearchQuery] = useState("")
+  const [searchResults, setSearchResults] = useState<string | null>(null)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [indexText, setIndexText] = useState("")
+  const [indexLoading, setIndexLoading] = useState(false)
+
+  const tab = activeSubTab || "info"
+
+  const handleTabChange = (newTab: string) => {
+    onTabChange?.("memory", newTab)
+  }
 
   useEffect(() => {
     loadConfig()
@@ -49,7 +79,6 @@ export function MemoryView() {
   // Listen for setup progress events
   useEffect(() => {
     const unlisteners: (() => void)[] = []
-
     listen<MemorySetupProgress>("memory-setup-progress", (event) => {
       const { step, status: stepStatus, version, error } = event.payload
       setSetup((prev) => ({
@@ -57,10 +86,7 @@ export function MemoryView() {
         [step]: { status: stepStatus, version, error },
       }))
     }).then((unlisten) => unlisteners.push(unlisten))
-
-    return () => {
-      unlisteners.forEach((fn) => fn())
-    }
+    return () => { unlisteners.forEach((fn) => fn()) }
   }, [])
 
   const loadConfig = async () => {
@@ -78,7 +104,6 @@ export function MemoryView() {
     try {
       const result = await invoke<MemoryStatus>("get_memory_status")
       setStatus(result)
-      // Pre-populate setup state from status
       setSetup({
         python: { status: result.python_ok ? "ok" : "idle" },
         memsearch: {
@@ -92,9 +117,8 @@ export function MemoryView() {
     }
   }
 
-  const saveConfig = async (newConfig: MemoryConfig) => {
+  const saveConfig = useCallback(async (newConfig: MemoryConfig) => {
     try {
-      setIsSaving(true)
       await invoke("update_memory_config", {
         configJson: JSON.stringify(newConfig),
       } satisfies UpdateMemoryConfigParams)
@@ -102,10 +126,8 @@ export function MemoryView() {
       toast.success("Memory configuration saved")
     } catch (error: any) {
       toast.error(`Failed to save: ${error.message || error}`)
-    } finally {
-      setIsSaving(false)
     }
-  }
+  }, [])
 
   const runSetup = async () => {
     setIsSettingUp(true)
@@ -131,14 +153,14 @@ export function MemoryView() {
   const renderStepIcon = (stepStatus: SetupStepStatus) => {
     switch (stepStatus) {
       case "ok":
-        return <CheckCircle2 className="h-4 w-4 text-green-500" />
+        return <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
       case "error":
-        return <XCircle className="h-4 w-4 text-destructive" />
+        return <XCircle className="h-4 w-4 text-destructive shrink-0" />
       case "checking":
       case "installing":
-        return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+        return <Loader2 className="h-4 w-4 animate-spin text-blue-500 shrink-0" />
       default:
-        return <Circle className="h-4 w-4 text-muted-foreground" />
+        return <Circle className="h-4 w-4 text-muted-foreground shrink-0" />
     }
   }
 
@@ -150,315 +172,456 @@ export function MemoryView() {
     )
   }
 
-  const MemoryIcon = FEATURES.memory.icon
-
   return (
-    <div className="space-y-4 max-w-5xl">
-      <div>
+    <div className="flex flex-col h-full min-h-0 gap-4 max-w-5xl">
+      <div className="flex-shrink-0">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <MemoryIcon className={`h-6 w-6 ${FEATURES.memory.color}`} />
+          <FEATURES.memory.icon className={`h-6 w-6 ${FEATURES.memory.color}`} />
           Memory
         </h1>
         <p className="text-sm text-muted-foreground">
-          Persistent conversation memory for LLM sessions via memsearch
+          Persistent conversation memory for LLM sessions powered by Zillis memsearch
         </p>
       </div>
 
-      {/* Privacy Warning */}
-      <Card className="border-amber-500/30 bg-amber-50/5">
-        <CardContent className="pt-4 pb-3">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
-            <div className="space-y-1">
-              <p className="text-sm text-amber-700 dark:text-amber-400">
-                When enabled for a client, full conversations are recorded and stored locally.
-              </p>
-              <button
-                onClick={openMemoryFolder}
-                className="text-xs text-amber-600 dark:text-amber-500 hover:underline flex items-center gap-1"
-              >
-                <FolderOpen className="h-3 w-3" />
-                Review stored memories
-              </button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      <Tabs
+        value={tab}
+        onValueChange={handleTabChange}
+        className="flex flex-col flex-1 min-h-0"
+      >
+        <TabsList className="flex-shrink-0 w-fit">
+          <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+          <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
+          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
+        </TabsList>
 
-      {/* Setup */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm">Setup</CardTitle>
-          <CardDescription>
-            Memory requires Python and the memsearch CLI
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-sm">
-              {renderStepIcon(setup.python.status)}
-              <span>Python environment</span>
-              {setup.python.version && (
-                <span className="text-xs text-muted-foreground">{setup.python.version}</span>
-              )}
-              {setup.python.error && (
-                <span className="text-xs text-destructive">{setup.python.error}</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2 text-sm">
-              {renderStepIcon(setup.memsearch.status)}
-              <span>memsearch CLI</span>
-              {setup.memsearch.version && (
-                <span className="text-xs text-muted-foreground">{setup.memsearch.version}</span>
-              )}
-              {setup.memsearch.error && (
-                <span className="text-xs text-destructive truncate max-w-[300px]">{setup.memsearch.error}</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2 text-sm">
-              {renderStepIcon(setup.model.status)}
-              <span>Embedding model</span>
-              {setup.model.status === "installing" && (
-                <span className="text-xs text-muted-foreground">Downloading...</span>
-              )}
-              {setup.model.error && (
-                <span className="text-xs text-destructive">{setup.model.error}</span>
-              )}
-            </div>
-          </div>
-          <Button
-            size="sm"
-            onClick={runSetup}
-            disabled={isSettingUp}
-          >
-            {isSettingUp ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                Setting up...
-              </>
-            ) : (
-              "Setup"
-            )}
-          </Button>
-        </CardContent>
-      </Card>
+        {/* ================================================================ */}
+        {/* Info Tab                                                         */}
+        {/* ================================================================ */}
+        <TabsContent value="info" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+          <div className="space-y-4 max-w-2xl">
+            {/* Privacy Warning */}
+            <Card className="border-orange-600/50 bg-orange-500/5">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm text-orange-900 dark:text-orange-400">
+                  Privacy Notice
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  When memory is enabled for a client, <strong>full conversations are recorded</strong> and
+                  stored locally as markdown files. This includes all user messages and assistant responses.
+                </p>
+                <ul className="list-disc list-inside space-y-1 ml-2">
+                  <li>Memory is <strong>not enabled by default</strong> &mdash; each client must opt in individually</li>
+                  <li>All data stays local &mdash; stored in the LocalRouter config directory</li>
+                  <li>Transcripts are plain-text markdown files you can review, edit, or delete at any time</li>
+                  <li>The vector index is a derived cache that can be rebuilt from markdown files</li>
+                </ul>
+                <button
+                  onClick={openMemoryFolder}
+                  className="text-xs text-orange-600 dark:text-orange-500 hover:underline flex items-center gap-1 mt-1"
+                >
+                  <FolderOpen className="h-3 w-3" />
+                  Open memory folder
+                </button>
+              </CardContent>
+            </Card>
 
-      {/* Configuration */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm">Configuration</CardTitle>
-          <CardDescription>
-            Global settings for memory. Enable memory per-client in client settings.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="recall-tool-name" className="text-xs">Tool name</Label>
-              <Input
-                id="recall-tool-name"
-                value={config.recall_tool_name}
-                onChange={(e) => {
-                  const newConfig = { ...config, recall_tool_name: e.target.value }
-                  setConfig(newConfig)
-                }}
-                onBlur={() => saveConfig(config)}
-                className="h-8 text-sm"
-                placeholder="MemoryRecall"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="search-top-k" className="text-xs">Search results</Label>
-              <Input
-                id="search-top-k"
-                type="number"
-                min={1}
-                max={20}
-                value={config.search_top_k}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value) || 5
-                  const newConfig = { ...config, search_top_k: val }
-                  setConfig(newConfig)
-                }}
-                onBlur={() => saveConfig(config)}
-                className="h-8 text-sm"
-              />
-            </div>
-          </div>
+            {/* Setup & Requirements */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Setup</CardTitle>
+                <CardDescription>
+                  Memory requires Python 3 and the memsearch CLI with its built-in ONNX embedding model
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* 3-step checklist */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center gap-2.5 text-sm">
+                    {renderStepIcon(setup.python.status)}
+                    <div className="flex-1 min-w-0">
+                      <span className="font-medium">Python 3</span>
+                      {setup.python.version && (
+                        <span className="text-xs text-muted-foreground ml-2">{setup.python.version}</span>
+                      )}
+                    </div>
+                    {setup.python.error && (
+                      <span className="text-xs text-destructive truncate max-w-[250px]">{setup.python.error}</span>
+                    )}
+                  </div>
 
-          <div className="space-y-1.5">
-            <Label className="text-xs">Embedding provider</Label>
-            <div className="flex gap-4">
-              <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                <input
-                  type="radio"
-                  name="embedding"
-                  checked={config.embedding.type === "onnx"}
-                  onChange={() => saveConfig({ ...config, embedding: { type: "onnx" } })}
-                  className="accent-primary"
-                />
-                Built-in ONNX
-              </label>
-              <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                <input
-                  type="radio"
-                  name="embedding"
-                  checked={config.embedding.type === "ollama"}
-                  onChange={() =>
-                    saveConfig({
-                      ...config,
-                      embedding: { type: "ollama", provider_id: "", model_name: "nomic-embed-text" },
-                    })
-                  }
-                  className="accent-primary"
-                />
-                Ollama
-              </label>
-            </div>
-            {config.embedding.type === "ollama" && (
-              <div className="grid grid-cols-2 gap-2 mt-2">
-                <Input
-                  placeholder="Provider ID"
-                  value={(config.embedding as any).provider_id || ""}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      embedding: {
-                        type: "ollama",
-                        provider_id: e.target.value,
-                        model_name: (config.embedding as any).model_name || "nomic-embed-text",
-                      },
-                    })
-                  }
-                  onBlur={() => saveConfig(config)}
-                  className="h-8 text-sm"
-                />
-                <Input
-                  placeholder="Model name"
-                  value={(config.embedding as any).model_name || ""}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      embedding: {
-                        type: "ollama",
-                        provider_id: (config.embedding as any).provider_id || "",
-                        model_name: e.target.value,
-                      },
-                    })
-                  }
-                  onBlur={() => saveConfig(config)}
-                  className="h-8 text-sm"
-                />
-              </div>
-            )}
-          </div>
+                  <div className="flex items-center gap-2.5 text-sm">
+                    {renderStepIcon(setup.memsearch.status)}
+                    <div className="flex-1 min-w-0">
+                      <span className="font-medium">memsearch CLI</span>
+                      {setup.memsearch.version && (
+                        <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-2">
+                          {setup.memsearch.version}
+                        </Badge>
+                      )}
+                    </div>
+                    {setup.memsearch.error && (
+                      <span className="text-xs text-destructive truncate max-w-[250px]">{setup.memsearch.error}</span>
+                    )}
+                  </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="inactivity" className="text-xs">Session inactivity timeout (min)</Label>
-              <Input
-                id="inactivity"
-                type="number"
-                min={10}
-                value={config.session_inactivity_minutes}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value) || 180
-                  setConfig({ ...config, session_inactivity_minutes: val })
-                }}
-                onBlur={() => saveConfig(config)}
-                className="h-8 text-sm"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="max-session" className="text-xs">Max session duration (min)</Label>
-              <Input
-                id="max-session"
-                type="number"
-                min={30}
-                value={config.max_session_minutes}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value) || 480
-                  setConfig({ ...config, max_session_minutes: val })
-                }}
-                onBlur={() => saveConfig(config)}
-                className="h-8 text-sm"
-              />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+                  <div className="flex items-center gap-2.5 text-sm">
+                    {renderStepIcon(setup.model.status)}
+                    <div className="flex-1 min-w-0">
+                      <span className="font-medium">Embedding model</span>
+                      <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-2">
+                        {MEMORY_REQUIREMENTS.MODEL}
+                      </Badge>
+                    </div>
+                    {setup.model.status === "installing" && (
+                      <span className="text-xs text-muted-foreground">Downloading...</span>
+                    )}
+                    {setup.model.error && (
+                      <span className="text-xs text-destructive truncate max-w-[250px]">{setup.model.error}</span>
+                    )}
+                  </div>
+                </div>
 
-      {/* Compaction */}
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-sm">Compaction</CardTitle>
-              <CardDescription>
-                LLM-based summarization at session end
-              </CardDescription>
-            </div>
-            <Switch
-              checked={config.compaction?.enabled ?? false}
-              onCheckedChange={(checked) => {
-                const newConfig = {
-                  ...config,
-                  compaction: checked
-                    ? { enabled: true, llm_provider: "anthropic", llm_model: null }
-                    : null,
-                }
-                saveConfig(newConfig)
-              }}
-            />
-          </div>
-        </CardHeader>
-        {config.compaction?.enabled && (
-          <CardContent className="space-y-3">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="llm-provider" className="text-xs">LLM provider</Label>
-                <Input
-                  id="llm-provider"
-                  value={config.compaction.llm_provider}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      compaction: { ...config.compaction!, llm_provider: e.target.value },
-                    })
-                  }
-                  onBlur={() => saveConfig(config)}
-                  className="h-8 text-sm"
-                  placeholder="anthropic"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="llm-model" className="text-xs">Model (optional)</Label>
-                <Input
-                  id="llm-model"
-                  value={config.compaction.llm_model || ""}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      compaction: {
-                        ...config.compaction!,
-                        llm_model: e.target.value || null,
-                      },
-                    })
-                  }
-                  onBlur={() => saveConfig(config)}
-                  className="h-8 text-sm"
-                  placeholder="claude-haiku-4-5-20251001"
-                />
-              </div>
-            </div>
-          </CardContent>
-        )}
-      </Card>
+                <Button
+                  size="sm"
+                  onClick={runSetup}
+                  disabled={isSettingUp}
+                >
+                  {isSettingUp ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                      Setting up...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="h-3.5 w-3.5 mr-1.5" />
+                      Setup
+                    </>
+                  )}
+                </Button>
 
-      {/* Info */}
-      <p className="text-xs text-muted-foreground">
-        Memory is enabled per-client in client settings. No global toggle — each client must opt in.
-      </p>
+                {/* Resource requirements */}
+                <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground pt-3 border-t">
+                  <div>
+                    <span>Disk Space:</span>{" "}
+                    <span className="font-medium text-foreground">{MEMORY_REQUIREMENTS.DISK_GB} GB</span>
+                  </div>
+                  <div>
+                    <span>Memory:</span>{" "}
+                    <span className="font-medium text-foreground">{MEMORY_REQUIREMENTS.MEMORY_GB} GB</span>
+                  </div>
+                  <div>
+                    <span>Cold Start:</span>{" "}
+                    <span className="font-medium text-foreground">{MEMORY_REQUIREMENTS.COLD_START_SECS}s</span>
+                  </div>
+                  <div>
+                    <span>Search Latency:</span>{" "}
+                    <span className="font-medium text-foreground">{MEMORY_REQUIREMENTS.SEARCH_LATENCY}</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* How it works */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">How It Works</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  Memory automatically captures conversation exchanges when enabled for a client.
+                  Conversations are grouped into <strong>sessions</strong> (bounded by inactivity timeout or max duration).
+                </p>
+                <ol className="list-decimal list-inside space-y-1 ml-2">
+                  <li>Each user/assistant exchange is appended to a session markdown file</li>
+                  <li>A background <code>memsearch watch</code> daemon auto-indexes changes within ~1.5s</li>
+                  <li>The LLM can search past conversations using the <strong>{config.recall_tool_name}</strong> tool</li>
+                  <li>When a session ends, optional compaction summarizes it using an LLM</li>
+                </ol>
+                <p className="text-xs mt-2">
+                  Enable memory per-client in the client&apos;s Optimize tab. Each client&apos;s memories are isolated.
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        {/* ================================================================ */}
+        {/* Try It Out Tab                                                   */}
+        {/* ================================================================ */}
+        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+          <div className="space-y-4 max-w-2xl">
+            {/* Index some content */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">1. Index Content</CardTitle>
+                <CardDescription>
+                  Write a memory note and index it so you can search for it
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Textarea
+                  value={indexText}
+                  onChange={(e) => setIndexText(e.target.value)}
+                  placeholder="Type a memory note to index, e.g.: 'We decided to use PostgreSQL for the auth service because MySQL had connection pooling issues.'"
+                  className="min-h-[80px] text-sm"
+                />
+                <Button
+                  size="sm"
+                  disabled={indexLoading || !indexText.trim() || !status?.memsearch_installed}
+                  onClick={async () => {
+                    setIndexLoading(true)
+                    try {
+                      await invoke("memory_test_index", { content: indexText })
+                      toast.success("Content indexed")
+                    } catch (err: any) {
+                      toast.error(`Index failed: ${err.message || err}`)
+                    } finally {
+                      setIndexLoading(false)
+                    }
+                  }}
+                >
+                  {indexLoading ? (
+                    <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Indexing...</>
+                  ) : (
+                    "Index"
+                  )}
+                </Button>
+                {!status?.memsearch_installed && (
+                  <p className="text-xs text-muted-foreground">Run Setup first to enable indexing.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Search */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">2. Search Memories</CardTitle>
+                <CardDescription>
+                  Search for previously indexed memories using semantic search
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex gap-2">
+                  <Input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="What database did we choose?"
+                    className="h-8 text-sm flex-1"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && searchQuery.trim()) {
+                        runSearch()
+                      }
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    disabled={searchLoading || !searchQuery.trim() || !status?.memsearch_installed}
+                    onClick={runSearch}
+                  >
+                    {searchLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <><Play className="h-3.5 w-3.5 mr-1" />Search</>
+                    )}
+                  </Button>
+                </div>
+                {searchResults !== null && (
+                  <div className="rounded-md border p-3 bg-muted/50">
+                    <pre className="text-xs whitespace-pre-wrap font-mono">{searchResults}</pre>
+                  </div>
+                )}
+                {!status?.memsearch_installed && (
+                  <p className="text-xs text-muted-foreground">Run Setup first to enable search.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        {/* ================================================================ */}
+        {/* Settings Tab                                                     */}
+        {/* ================================================================ */}
+        <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+          <div className="space-y-4 max-w-2xl">
+            {/* Tool & Search */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Tool Configuration</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="recall-tool-name" className="text-xs">Tool name</Label>
+                    <Input
+                      id="recall-tool-name"
+                      value={config.recall_tool_name}
+                      onChange={(e) => setConfig({ ...config, recall_tool_name: e.target.value })}
+                      onBlur={() => saveConfig(config)}
+                      className="h-8 text-sm"
+                      placeholder="MemoryRecall"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      The MCP tool name exposed to LLMs for searching memories
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="search-top-k" className="text-xs">Search results (top-k)</Label>
+                    <Input
+                      id="search-top-k"
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={config.search_top_k}
+                      onChange={(e) => setConfig({ ...config, search_top_k: parseInt(e.target.value) || 5 })}
+                      onBlur={() => saveConfig(config)}
+                      className="h-8 text-sm"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Number of memory chunks returned per search
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Session Grouping */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Session Grouping</CardTitle>
+                <CardDescription>
+                  Conversations are grouped into sessions based on timing. A session ends when
+                  there&apos;s been no activity for the inactivity timeout, or the max duration is reached.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="inactivity" className="text-xs">Inactivity timeout (minutes)</Label>
+                    <Input
+                      id="inactivity"
+                      type="number"
+                      min={10}
+                      value={config.session_inactivity_minutes}
+                      onChange={(e) => setConfig({ ...config, session_inactivity_minutes: parseInt(e.target.value) || 180 })}
+                      onBlur={() => saveConfig(config)}
+                      className="h-8 text-sm"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Close the session after this many minutes of no new messages. Default: 180 (3 hours).
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="max-session" className="text-xs">Max session duration (minutes)</Label>
+                    <Input
+                      id="max-session"
+                      type="number"
+                      min={30}
+                      value={config.max_session_minutes}
+                      onChange={(e) => setConfig({ ...config, max_session_minutes: parseInt(e.target.value) || 480 })}
+                      onBlur={() => saveConfig(config)}
+                      className="h-8 text-sm"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Force-close the session after this duration regardless of activity. Default: 480 (8 hours).
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Compaction */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Compaction</CardTitle>
+                <CardDescription>
+                  When a session ends, optionally summarize it using an LLM.
+                  The summary replaces the raw transcript in the search index while
+                  the original is archived for re-compaction.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Compaction model</Label>
+                  <Select
+                    value={config.compaction?.enabled ? `${config.compaction.llm_provider}${config.compaction.llm_model ? `:${config.compaction.llm_model}` : ""}` : "disabled"}
+                    onValueChange={(value) => {
+                      if (value === "disabled") {
+                        saveConfig({ ...config, compaction: null })
+                      } else {
+                        const [provider, ...modelParts] = value.split(":")
+                        const model = modelParts.join(":") || null
+                        saveConfig({
+                          ...config,
+                          compaction: { enabled: true, llm_provider: provider, llm_model: model },
+                        })
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="h-8 text-sm">
+                      <SelectValue placeholder="Select compaction model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="disabled">Disabled (keep raw transcripts)</SelectItem>
+                      <SelectItem value="anthropic:claude-haiku-4-5-20251001">Anthropic &mdash; Claude Haiku</SelectItem>
+                      <SelectItem value="anthropic:claude-sonnet-4-6-20250514">Anthropic &mdash; Claude Sonnet</SelectItem>
+                      <SelectItem value="openai:gpt-4o-mini">OpenAI &mdash; GPT-4o Mini</SelectItem>
+                      <SelectItem value="openai:gpt-4o">OpenAI &mdash; GPT-4o</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[10px] text-muted-foreground">
+                    The LLM used to summarize session transcripts when they expire.
+                    Requires the corresponding provider API key in memsearch config.
+                  </p>
+                </div>
+
+                {config.compaction?.enabled && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="llm-provider" className="text-xs">Provider override</Label>
+                      <Input
+                        id="llm-provider"
+                        value={config.compaction.llm_provider}
+                        onChange={(e) => setConfig({ ...config, compaction: { ...config.compaction!, llm_provider: e.target.value } })}
+                        onBlur={() => saveConfig(config)}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="llm-model" className="text-xs">Model override</Label>
+                      <Input
+                        id="llm-model"
+                        value={config.compaction.llm_model || ""}
+                        onChange={(e) => setConfig({ ...config, compaction: { ...config.compaction!, llm_model: e.target.value || null } })}
+                        onBlur={() => saveConfig(config)}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <p className="text-xs text-muted-foreground">
+              Memory is enabled per-client in the client&apos;s Optimize tab.
+            </p>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   )
+
+  async function runSearch() {
+    setSearchLoading(true)
+    try {
+      const result = await invoke<string>("memory_test_search", { query: searchQuery, topK: config.search_top_k })
+      setSearchResults(result || "No results found.")
+    } catch (err: any) {
+      setSearchResults(`Error: ${err.message || err}`)
+    } finally {
+      setSearchLoading(false)
+    }
+  }
 }

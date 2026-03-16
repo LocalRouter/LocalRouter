@@ -4582,6 +4582,77 @@ pub async fn update_client_memory_config(
     Ok(())
 }
 
+/// Test: index content into memsearch for the Try It Out tab
+#[tauri::command]
+pub async fn memory_test_index(
+    content: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    // Write to a test file and index it
+    let client_dir = svc.ensure_client_dir("_test").map_err(|e| e.to_string())?;
+    let sessions_dir = client_dir.join("sessions");
+
+    let test_file = sessions_dir.join("test-memory.md");
+    tokio::fs::write(
+        &test_file,
+        format!(
+            "---\nclient_id: _test\nsession_id: test\nstarted: {}\n---\n\n## Memory\n{}\n\n",
+            chrono::Utc::now().to_rfc3339(),
+            content
+        ),
+    )
+    .await
+    .map_err(|e| format!("Failed to write test file: {}", e))?;
+
+    // Index it
+    svc.cli
+        .index(&sessions_dir)
+        .await
+        .map_err(|e| format!("Index failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Test: search memsearch for the Try It Out tab
+#[tauri::command]
+pub async fn memory_test_search(
+    query: String,
+    top_k: Option<usize>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<String, String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    let results = svc.search("_test", &query, top_k.unwrap_or(5)).await?;
+
+    if results.is_empty() {
+        return Ok("No results found.".to_string());
+    }
+
+    let mut output = format!("Found {} results:\n\n", results.len());
+    for (i, r) in results.iter().enumerate() {
+        let score = r
+            .score
+            .map(|s| format!(" [score: {:.2}]", s))
+            .unwrap_or_default();
+        output.push_str(&format!(
+            "{}. {}{}\n   Source: {}\n\n",
+            i + 1,
+            r.content.trim(),
+            score,
+            r.source,
+        ));
+    }
+    Ok(output)
+}
+
 /// Open the memory storage directory in the system file manager
 #[tauri::command]
 pub async fn open_memory_folder(
