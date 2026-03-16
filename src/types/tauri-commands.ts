@@ -3136,29 +3136,15 @@ export interface GetProviderFeatureSupportParams {
 
 /** Rust: crates/lr-config/src/types.rs - MemoryConfig struct */
 export interface MemoryConfig {
-  /** Embedding model routed through LocalRouter (e.g., "ollama/nomic-embed-text") */
-  embedding_model: string | null
   /** Compaction LLM model routed through LocalRouter (e.g., "anthropic/claude-haiku-4-5-20251001") */
   compaction_model: string | null
   search_top_k: number
   session_inactivity_minutes: number
   max_session_minutes: number
+  /** Tool name for search (default: "MemorySearch"). Read tool is derived as "MemoryRead". */
   recall_tool_name: string
-}
-
-export interface MemoryStatus {
-  python_ok: boolean
-  python_version: string | null
-  memsearch_installed: boolean
-  memsearch_version: string | null
-  model_ready: boolean
-}
-
-export interface MemorySetupProgress {
-  step: 'python' | 'memsearch' | 'model'
-  status: string
-  version?: string
-  error?: string
+  /** Enable semantic vector search (hybrid FTS5 + embeddings) */
+  vector_search_enabled: boolean
 }
 
 /** Params for update_memory_config */

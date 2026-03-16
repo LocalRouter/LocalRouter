@@ -2693,25 +2693,15 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Memory - Persistent Conversation Memory
   // ============================================================================
   'get_memory_config': () => ({
-    embedding_model: null,
     compaction_model: null,
     search_top_k: 5,
     session_inactivity_minutes: 180,
     max_session_minutes: 480,
-    recall_tool_name: 'MemoryRecall',
+    recall_tool_name: 'MemorySearch',
+    vector_search_enabled: true,
   }),
   'update_memory_config': () => {
     toast.success('Memory configuration saved (demo)')
-    return null
-  },
-  'get_memory_status': () => ({
-    python_ok: true,
-    memsearch_installed: true,
-    memsearch_version: 'memsearch 0.1.10',
-    model_ready: true,
-  }),
-  'memory_setup': () => {
-    toast.success('Memory setup complete (demo)')
     return null
   },
   'open_memory_folder': () => {

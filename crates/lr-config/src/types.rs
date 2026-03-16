@@ -2270,7 +2270,7 @@ fn default_max_session_minutes() -> u64 {
 }
 
 fn default_memory_recall_tool_name() -> String {
-    "MemoryRecall".to_string()
+    "MemorySearch".to_string()
 }
 
 fn default_vector_search_enabled() -> bool {

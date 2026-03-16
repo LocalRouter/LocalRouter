@@ -1,12 +1,10 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { CheckCircle2, Circle, Download, FolderOpen, Loader2, Play, XCircle } from "lucide-react"
+import { CheckCircle2, Download, FolderOpen, Loader2, Play } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
-import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
@@ -16,22 +14,15 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { Textarea } from "@/components/ui/textarea"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
-import type { MemoryConfig, MemorySetupProgress, MemoryStatus, UpdateMemoryConfigParams } from "@/types/tauri-commands"
-
-type SetupStepStatus = "idle" | "checking" | "installing" | "ok" | "error"
-
-interface SetupState {
-  python: { status: SetupStepStatus; version?: string; error?: string }
-  memsearch: { status: SetupStepStatus; version?: string; error?: string }
-}
+import type { MemoryConfig, EmbeddingStatus, UpdateMemoryConfigParams } from "@/types/tauri-commands"
 
 const defaultConfig: MemoryConfig = {
-  embedding_model: null,
   compaction_model: null,
   search_top_k: 5,
   session_inactivity_minutes: 180,
   max_session_minutes: 480,
-  recall_tool_name: "MemoryRecall",
+  recall_tool_name: "MemorySearch",
+  vector_search_enabled: true,
 }
 
 interface MemoryViewProps {
@@ -42,12 +33,8 @@ interface MemoryViewProps {
 export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   const [config, setConfig] = useState<MemoryConfig>(defaultConfig)
   const [isLoading, setIsLoading] = useState(true)
-  const [isSettingUp, setIsSettingUp] = useState(false)
-  const [status, setStatus] = useState<MemoryStatus | null>(null)
-  const [setup, setSetup] = useState<SetupState>({
-    python: { status: "idle" },
-    memsearch: { status: "idle" },
-  })
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null)
+  const [isDownloading, setIsDownloading] = useState(false)
 
   // Try It Out state
   const [searchQuery, setSearchQuery] = useState("What database did we choose for auth?")
@@ -61,7 +48,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
 
   // Live models for compaction model picker
   const { models: liveModels } = useIncrementalModels({ refreshOnMount: true })
-  // Group models by provider
   const modelsByProvider = liveModels.reduce<Record<string, string[]>>((acc, m) => {
     if (!acc[m.provider]) acc[m.provider] = []
     if (!acc[m.provider].includes(m.id)) acc[m.provider].push(m.id)
@@ -69,10 +55,14 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   }, {})
 
   const tab = activeSubTab || "info"
+  const handleTabChange = (newTab: string) => onTabChange?.("memory", newTab)
 
-  const handleTabChange = (newTab: string) => {
-    onTabChange?.("memory", newTab)
-  }
+  // Derive read tool name from search tool name
+  const readToolName = config.recall_tool_name.endsWith("Search")
+    ? config.recall_tool_name.replace(/Search$/, "Read")
+    : config.recall_tool_name.endsWith("Recall")
+      ? config.recall_tool_name.replace(/Recall$/, "Read")
+      : `${config.recall_tool_name}Read`
 
   // Reset test state when Try It Out tab is loaded
   useEffect(() => {
@@ -86,19 +76,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
 
   useEffect(() => {
     loadConfig()
-    loadStatus()
-  }, [])
-
-  // Listen for setup progress events
-  useEffect(() => {
-    const l = listenSafe<MemorySetupProgress>("memory-setup-progress", (event) => {
-      const { step, status: stepStatus, version, error } = event.payload
-      setSetup((prev) => ({
-        ...prev,
-        [step]: { status: stepStatus, version, error },
-      }))
-    })
-    return () => { l.cleanup() }
+    loadEmbeddingStatus()
   }, [])
 
   const loadConfig = async () => {
@@ -112,22 +90,12 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
     }
   }
 
-  const loadStatus = async () => {
+  const loadEmbeddingStatus = async () => {
     try {
-      const result = await invoke<MemoryStatus>("get_memory_status")
-      setStatus(result)
-      setSetup({
-        python: {
-          status: result.python_ok ? "ok" : "idle",
-          version: result.python_version ?? undefined,
-        },
-        memsearch: {
-          status: result.memsearch_installed ? "ok" : "idle",
-          version: result.memsearch_version ?? undefined,
-        },
-      })
-    } catch (error) {
-      console.error("Failed to load memory status:", error)
+      const result = await invoke<EmbeddingStatus>("get_embedding_status")
+      setEmbeddingStatus(result)
+    } catch {
+      // Embedding status not available
     }
   }
 
@@ -143,19 +111,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
     }
   }, [])
 
-  const runSetup = async () => {
-    setIsSettingUp(true)
-    try {
-      await invoke("memory_setup")
-      toast.success("Memory setup complete")
-      loadStatus()
-    } catch (error: any) {
-      toast.error(`Setup failed: ${error.message || error}`)
-    } finally {
-      setIsSettingUp(false)
-    }
-  }
-
   const openMemoryFolder = async () => {
     try {
       await invoke("open_memory_folder")
@@ -164,17 +119,16 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
     }
   }
 
-  const renderStepIcon = (stepStatus: SetupStepStatus) => {
-    switch (stepStatus) {
-      case "ok":
-        return <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
-      case "error":
-        return <XCircle className="h-4 w-4 text-destructive shrink-0" />
-      case "checking":
-      case "installing":
-        return <Loader2 className="h-4 w-4 animate-spin text-blue-500 shrink-0" />
-      default:
-        return <Circle className="h-4 w-4 text-muted-foreground shrink-0" />
+  const downloadEmbeddingModel = async () => {
+    setIsDownloading(true)
+    try {
+      await invoke("install_embedding_model")
+      toast.success("Embedding model downloaded and loaded")
+      loadEmbeddingStatus()
+    } catch (error: any) {
+      toast.error(`Download failed: ${error.message || error}`)
+    } finally {
+      setIsDownloading(false)
     }
   }
 
@@ -195,7 +149,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
           {FEATURES.memory.experimental && <ExperimentalBadge />}
         </h1>
         <p className="text-sm text-muted-foreground">
-          Persistent conversation memory for LLM sessions powered by Zillis memsearch
+          Persistent conversation memory with native FTS5 search and optional semantic vector search
         </p>
       </div>
 
@@ -231,7 +185,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                   <li>Memory is <strong>not enabled by default</strong> &mdash; each client must opt in individually</li>
                   <li>All data stays local &mdash; stored in the LocalRouter config directory</li>
                   <li>Transcripts are plain-text markdown files you can review, edit, or delete at any time</li>
-                  <li>The vector index is a derived cache that can be rebuilt from markdown files</li>
                 </ul>
                 <button
                   onClick={openMemoryFolder}
@@ -243,70 +196,44 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               </CardContent>
             </Card>
 
-            {/* Setup & Requirements */}
+            {/* Semantic Search (optional) */}
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Setup</CardTitle>
+                <CardTitle className="text-sm">Semantic Search (Optional)</CardTitle>
                 <CardDescription>
-                  Memory requires Python 3 and the memsearch CLI with the local embedding provider
+                  Download a small local embedding model (~80MB) to enable hybrid search.
+                  FTS5 keyword search works without it.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
-                {/* 3-step checklist */}
-                <div className="space-y-2.5">
-                  <div className="flex items-center gap-2.5 text-sm">
-                    {renderStepIcon(setup.python.status)}
-                    <div className="flex-1 min-w-0">
-                      <span className="font-medium">Python 3</span>
-                      {setup.python.version && (
-                        <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-2">
-                          {setup.python.version}
-                        </Badge>
-                      )}
-                    </div>
-                    {setup.python.error && (
-                      <span className="text-xs text-destructive truncate max-w-[250px]">{setup.python.error}</span>
-                    )}
+              <CardContent className="space-y-3">
+                {embeddingStatus?.downloaded ? (
+                  <div className="flex items-center gap-2 text-sm">
+                    <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+                    <span className="font-medium">
+                      {embeddingStatus.model_name}
+                    </span>
+                    <span className="text-muted-foreground text-xs">
+                      {embeddingStatus.model_size_mb != null && `(${embeddingStatus.model_size_mb.toFixed(0)} MB)`}
+                      {embeddingStatus.loaded ? " — loaded" : " — downloaded"}
+                    </span>
                   </div>
-
-                  <div className="flex items-center gap-2.5 text-sm">
-                    {renderStepIcon(setup.memsearch.status)}
-                    <div className="flex-1 min-w-0">
-                      <span className="font-medium">memsearch CLI</span>
-                      {setup.memsearch.version && (
-                        <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-2">
-                          {setup.memsearch.version}
-                        </Badge>
-                      )}
-                    </div>
-                    {setup.memsearch.error && (
-                      <span className="text-xs text-destructive truncate max-w-[250px]">{setup.memsearch.error}</span>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={downloadEmbeddingModel}
+                    disabled={isDownloading}
+                  >
+                    {isDownloading ? (
+                      <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Downloading...</>
+                    ) : (
+                      <><Download className="h-3.5 w-3.5 mr-1.5" />Download all-MiniLM-L6-v2 (~80MB)</>
                     )}
-                  </div>
-
-                </div>
-
-                <Button
-                  size="sm"
-                  onClick={runSetup}
-                  disabled={isSettingUp}
-                >
-                  {isSettingUp ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                      Setting up...
-                    </>
-                  ) : (
-                    <>
-                      <Download className="h-3.5 w-3.5 mr-1.5" />
-                      Setup
-                    </>
-                  )}
-                </Button>
-
-                <p className="text-xs text-muted-foreground pt-2 border-t">
-                  Embedding and LLM calls are routed through LocalRouter &mdash;
-                  select a model from your configured providers in Settings.
+                  </Button>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Enables semantic search: &ldquo;SQL database for login&rdquo; finds
+                  &ldquo;We chose PostgreSQL for authentication.&rdquo;
+                  Runs locally via Metal/CUDA/CPU &mdash; no external API calls.
                 </p>
               </CardContent>
             </Card>
@@ -314,28 +241,43 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
             {/* Tool Preview */}
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Tool Definition</CardTitle>
+                <CardTitle className="text-sm">Tool Definitions</CardTitle>
                 <CardDescription>
-                  How the {config.recall_tool_name} tool appears to the LLM
+                  How the memory tools appear to the LLM &mdash; two tools for search and read
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <McpToolDisplay
-                  tools={[{
-                    name: config.recall_tool_name,
-                    description: "Search past conversation memories for relevant context. Use when the current conversation would benefit from information discussed in previous sessions.",
-                    inputSchema: {
-                      type: "object",
-                      properties: {
-                        query: {
-                          type: "string",
-                          description: "Search query describing what to recall"
-                        }
+                  tools={[
+                    {
+                      name: config.recall_tool_name,
+                      description: `Search past conversation memories. Returns results with source labels and line numbers. Use ${readToolName}(label, offset) to read full context around hits. Pass ALL search questions as queries array in ONE call.`,
+                      inputSchema: {
+                        type: "object",
+                        properties: {
+                          query: { type: "string", description: "Single search query" },
+                          queries: { type: "array", items: { type: "string" }, description: "Multiple search queries to batch" },
+                          source: { type: "string", description: "Filter to a specific source" },
+                          limit: { type: "number", description: "Max results per query (default: 3)" },
+                        },
                       },
-                      required: ["query"]
+                      itemType: "tool",
                     },
-                    itemType: "tool",
-                  }]}
+                    {
+                      name: readToolName,
+                      description: `Read the full content of a memory source. Use after ${config.recall_tool_name} to get complete context around a search hit. Supports offset and limit for pagination.`,
+                      inputSchema: {
+                        type: "object",
+                        properties: {
+                          label: { type: "string", description: 'Source label from search results (e.g., "session/abc123")' },
+                          offset: { type: "string", description: 'Line offset (e.g., "5" or "5-2")' },
+                          limit: { type: "number", description: "Number of lines to return (default: 15)" },
+                        },
+                        required: ["label"],
+                      },
+                      itemType: "tool",
+                    },
+                  ]}
                 />
               </CardContent>
             </Card>
@@ -352,9 +294,10 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 </p>
                 <ol className="list-decimal list-inside space-y-1 ml-2">
                   <li>Each user/assistant exchange is appended to a session markdown file</li>
-                  <li>A background <code>memsearch watch</code> daemon auto-indexes changes within ~1.5s</li>
-                  <li>The LLM can search past conversations using the <strong>{config.recall_tool_name}</strong> tool</li>
+                  <li>Content is indexed into a native FTS5 database (no external dependencies)</li>
+                  <li>The LLM searches memories using <strong>{config.recall_tool_name}</strong> and reads full context with <strong>{readToolName}</strong></li>
                   <li>When a session ends, optional compaction summarizes it using an LLM</li>
+                  <li>If the embedding model is downloaded, search automatically upgrades to hybrid mode (FTS5 + semantic)</li>
                 </ol>
                 <p className="text-xs mt-2">
                   Enable memory per-client in the client&apos;s Optimize tab. Each client&apos;s memories are isolated.
@@ -386,7 +329,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 />
                 <Button
                   size="sm"
-                  disabled={indexLoading || !indexText.trim() || !status?.memsearch_installed}
+                  disabled={indexLoading || !indexText.trim()}
                   onClick={async () => {
                     setIndexLoading(true)
                     try {
@@ -406,9 +349,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     "Index"
                   )}
                 </Button>
-                {!status?.memsearch_installed && (
-                  <p className="text-xs text-muted-foreground">Run Setup first to enable indexing.</p>
-                )}
               </CardContent>
             </Card>
 
@@ -417,7 +357,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm">2. Search Memories</CardTitle>
                 <CardDescription>
-                  Search for previously indexed memories using semantic search
+                  Search for previously indexed memories using keyword + semantic search
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -507,47 +447,16 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
         {/* ================================================================ */}
         <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
           <div className="space-y-4 max-w-2xl">
-            {/* Models */}
+            {/* Compaction Model */}
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Models</CardTitle>
+                <CardTitle className="text-sm">Compaction Model</CardTitle>
                 <CardDescription>
-                  Embedding and compaction calls are routed through LocalRouter.
-                  Select models from your configured providers.
+                  LLM used to summarize session transcripts when they expire.
+                  Leave disabled to keep raw transcripts.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Embedding model</Label>
-                  <Select
-                    value={config.embedding_model || "none"}
-                    onValueChange={(value) => {
-                      saveConfig({ ...config, embedding_model: value === "none" ? null : value })
-                    }}
-                  >
-                    <SelectTrigger className="h-8 text-sm">
-                      <SelectValue placeholder="Select embedding model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Not configured</SelectItem>
-                      {Object.entries(modelsByProvider).map(([provider, models]) => (
-                        <SelectGroup key={provider}>
-                          <SelectLabel className="text-xs text-muted-foreground">{provider}</SelectLabel>
-                          {models.map((modelId) => (
-                            <SelectItem key={`${provider}/${modelId}`} value={`${provider}/${modelId}`}>
-                              {modelId}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[10px] text-muted-foreground">
-                    Used for indexing and searching memory. Must support the embeddings API.
-                    E.g., <code>ollama/nomic-embed-text</code>, <code>openai/text-embedding-3-small</code>
-                  </p>
-                </div>
-
                 <div className="space-y-1.5">
                   <Label className="text-xs">Compaction model (optional)</Label>
                   <Select
@@ -573,10 +482,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-[10px] text-muted-foreground">
-                    LLM used to summarize session transcripts when they expire.
-                    Must support chat completions. Leave disabled to keep raw transcripts.
-                  </p>
                 </div>
               </CardContent>
             </Card>
@@ -589,17 +494,17 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="recall-tool-name" className="text-xs">Tool name</Label>
+                    <Label htmlFor="recall-tool-name" className="text-xs">Search tool name</Label>
                     <Input
                       id="recall-tool-name"
                       value={config.recall_tool_name}
                       onChange={(e) => setConfig({ ...config, recall_tool_name: e.target.value })}
                       onBlur={() => saveConfig(config)}
                       className="h-8 text-sm"
-                      placeholder="MemoryRecall"
+                      placeholder="MemorySearch"
                     />
                     <p className="text-[10px] text-muted-foreground">
-                      The MCP tool name exposed to LLMs for searching memories
+                      Read tool is derived automatically: <code>{readToolName}</code>
                     </p>
                   </div>
                   <div className="space-y-1.5">
@@ -666,7 +571,6 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 </div>
               </CardContent>
             </Card>
-
 
             <p className="text-xs text-muted-foreground">
               Memory is enabled per-client in the client&apos;s Optimize tab.

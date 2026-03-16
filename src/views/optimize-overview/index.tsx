@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { Zap, ArrowRight, CheckCircle2, XCircle, Loader2, Download } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -12,6 +12,7 @@ import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, Rout
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
 import { OptimizeDiagram } from "./OptimizeDiagram"
 import { FEATURES } from "@/constants/features"
+import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 
 interface OptimizeOverviewProps {
   activeSubTab?: string | null
@@ -99,14 +100,14 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
     loadRoutellmStatus()
     loadCmConfig()
 
-    const unlistenConfig = listen('config-changed', () => {
+    const l = listenSafe('config-changed', () => {
       loadJsonRepairConfig()
       loadCompressionConfig()
       loadCmConfig()
     })
 
     return () => {
-      unlistenConfig.then(fn => fn())
+      l.cleanup()
     }
   }, [loadJsonRepairConfig, loadCompressionConfig, loadCompressionStatus, loadRoutellmStatus, loadCmConfig])
 
@@ -295,7 +296,6 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
             <div className="flex items-center gap-2">
               <FEATURES.routing.icon className={`h-4 w-4 ${FEATURES.routing.color}`} />
               <CardTitle className="text-base">Strong/Weak Routing</CardTitle>
-              <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400 text-[10px]">EXPERIMENTAL</Badge>
             </div>
             <CardDescription>
               Intelligent routing that analyzes complexity to select the most cost-effective model — typically
@@ -407,12 +407,12 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
               <FEATURES.memory.icon className={`h-4 w-4 ${FEATURES.memory.color}`} />
-              <CardTitle className="text-base">Memory</CardTitle>
+              <CardTitle className="text-base flex items-center gap-2">Memory{FEATURES.memory.experimental && <ExperimentalBadge />}</CardTitle>
             </div>
             <CardDescription>
               Persistent conversation memory for LLM sessions. Automatically captures
-              conversations and makes them searchable via the MemoryRecall tool.
-              Powered by Zillis memsearch with hybrid vector search.
+              conversations and makes them searchable via MemorySearch and MemoryRead tools.
+              Native FTS5 search with optional semantic vector search.
             </CardDescription>
           </CardHeader>
           <CardContent>

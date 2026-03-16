@@ -230,6 +230,54 @@ impl MemoryService {
         Ok(out)
     }
 
+    /// Search memories using ContentStore's native search (returns full SearchResult
+    /// with line numbers for use with read). Supports combined query/queries.
+    pub fn search_combined(
+        &self,
+        client_id: &str,
+        query: Option<&str>,
+        queries: Option<&[String]>,
+        limit: usize,
+        source: Option<&str>,
+    ) -> Result<Vec<lr_context::SearchResult>, String> {
+        let client_dir = self.memory_dir.join(client_id);
+        if !client_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let store = self.get_or_create_store(client_id)?;
+        store
+            .search_combined(query, queries, limit, source)
+            .map_err(|e| format!("Search failed: {}", e))
+    }
+
+    /// Read a memory source by label with optional offset/limit pagination.
+    pub fn read(
+        &self,
+        client_id: &str,
+        label: &str,
+        offset: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<lr_context::ReadResult, String> {
+        let store = self.get_or_create_store(client_id)?;
+        store
+            .read(label, offset, limit)
+            .map_err(|e| format!("Read failed: {}", e))
+    }
+
+    /// List all indexed sources for a client (for summary fallback).
+    pub fn list_sources(&self, client_id: &str) -> Result<Vec<lr_context::SourceInfo>, String> {
+        let client_dir = self.memory_dir.join(client_id);
+        if !client_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let store = self.get_or_create_store(client_id)?;
+        store
+            .list_sources()
+            .map_err(|e| format!("List sources failed: {}", e))
+    }
+
     /// Update the last activity time for a session file.
     pub fn touch_session(&self, path: &std::path::Path) {
         self.session_manager.touch_by_path(path);
