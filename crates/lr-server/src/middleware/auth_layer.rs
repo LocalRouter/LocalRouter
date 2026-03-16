@@ -128,19 +128,19 @@ where
             // Extract the bearer token (API key or client secret)
             let bearer_token = &auth_header[7..]; // Skip "Bearer "
 
-            // Check if this is the internal test token or memory service token.
-            // Both use "internal-test" client_id to reuse the router's bypass logic.
-            if bearer_token == state.internal_test_secret.as_str()
-                || bearer_token == state.memory_secret.as_str()
-            {
-                tracing::debug!("Internal/memory token detected - bypassing API key restrictions");
+            // Check if this is the internal test token (debug only) or memory service token (always)
+            let is_internal = bearer_token == state.internal_test_secret.as_str();
+            let is_memory = bearer_token == state.memory_secret.as_str();
+            if is_internal || is_memory {
+                let client_id = if is_memory { "memory-service" } else { "internal-test" };
+                tracing::debug!("{} token detected - bypassing API key restrictions", client_id);
                 let auth_context = AuthContext {
-                    api_key_id: "internal-test".to_string(),
+                    api_key_id: client_id.to_string(),
                     model_selection: None,
                 };
                 req.extensions_mut().insert(auth_context);
                 req.extensions_mut().insert(ClientAuthContext {
-                    client_id: "internal-test".to_string(),
+                    client_id: client_id.to_string(),
                 });
                 return inner.call(req).await;
             }

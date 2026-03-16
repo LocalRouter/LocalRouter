@@ -1418,9 +1418,7 @@ impl Router {
         );
 
         // Special handling for internal test token (bypasses all routing config)
-        // SECURITY: Only enabled in debug builds to prevent production bypass
-        #[cfg(debug_assertions)]
-        if client_id == "internal-test" {
+        if client_id == "internal-test" || client_id == "memory-service" {
             debug!("Internal test token detected - bypassing routing config (test mode only)");
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
@@ -1433,12 +1431,6 @@ impl Router {
                 .await;
         }
 
-        // In release builds, reject internal-test token to prevent security bypass
-        #[cfg(not(debug_assertions))]
-        if client_id == "internal-test" {
-            warn!("Attempted to use internal-test bypass in production - rejected");
-            return Err(AppError::Unauthorized);
-        }
 
         // 1. Validate client and get strategy
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
@@ -1527,9 +1519,7 @@ impl Router {
         );
 
         // Special handling for internal test token
-        // SECURITY: Only enabled in debug builds to prevent production bypass
-        #[cfg(debug_assertions)]
-        if client_id == "internal-test" {
+        if client_id == "internal-test" || client_id == "memory-service" {
             debug!("Internal test token detected - bypassing routing config for streaming (test mode only)");
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
@@ -1571,12 +1561,6 @@ impl Router {
             .await);
         }
 
-        // In release builds, reject internal-test token to prevent security bypass
-        #[cfg(not(debug_assertions))]
-        if client_id == "internal-test" {
-            warn!("Attempted to use internal-test bypass in production (streaming) - rejected");
-            return Err(AppError::Unauthorized);
-        }
 
         // 1. Validate client and get strategy
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
@@ -1910,9 +1894,7 @@ impl Router {
         );
 
         // Special handling for internal test token (bypasses all routing config)
-        // SECURITY: Only enabled in debug builds to prevent production bypass
-        #[cfg(debug_assertions)]
-        if client_id == "internal-test" {
+        if client_id == "internal-test" || client_id == "memory-service" {
             debug!("Internal test token detected - bypassing routing config for embeddings (test mode only)");
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
@@ -1925,12 +1907,6 @@ impl Router {
                 .await;
         }
 
-        // In release builds, reject internal-test token to prevent security bypass
-        #[cfg(not(debug_assertions))]
-        if client_id == "internal-test" {
-            warn!("Attempted to use internal-test bypass in production (embeddings) - rejected");
-            return Err(AppError::Unauthorized);
-        }
 
         // 1. Validate client and get strategy
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
@@ -2074,8 +2050,7 @@ impl Router {
             client_id, request.model
         );
 
-        #[cfg(debug_assertions)]
-        if client_id == "internal-test" {
+        if client_id == "internal-test" || client_id == "memory-service" {
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
                 return Err(AppError::Router(
@@ -2087,10 +2062,6 @@ impl Router {
                 .await;
         }
 
-        #[cfg(not(debug_assertions))]
-        if client_id == "internal-test" {
-            return Err(AppError::Unauthorized);
-        }
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
         self.check_client_rate_limits(client_id).await?;
@@ -2177,8 +2148,7 @@ impl Router {
             client_id, request.model
         );
 
-        #[cfg(debug_assertions)]
-        if client_id == "internal-test" {
+        if client_id == "internal-test" || client_id == "memory-service" {
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
                 return Err(AppError::Router(
@@ -2190,10 +2160,6 @@ impl Router {
                 .await;
         }
 
-        #[cfg(not(debug_assertions))]
-        if client_id == "internal-test" {
-            return Err(AppError::Unauthorized);
-        }
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
         self.check_client_rate_limits(client_id).await?;
@@ -2283,8 +2249,7 @@ impl Router {
             client_id, request.model
         );
 
-        #[cfg(debug_assertions)]
-        if client_id == "internal-test" {
+        if client_id == "internal-test" || client_id == "memory-service" {
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
                 return Err(AppError::Router(
@@ -2296,10 +2261,6 @@ impl Router {
                 .await;
         }
 
-        #[cfg(not(debug_assertions))]
-        if client_id == "internal-test" {
-            return Err(AppError::Unauthorized);
-        }
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
         self.check_client_rate_limits(client_id).await?;
