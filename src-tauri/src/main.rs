@@ -1889,6 +1889,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::update_guardrails_config,
             ui::commands::rebuild_safety_engine,
             ui::commands::test_safety_check,
+            // Memory commands
+            ui::commands::get_memory_config,
+            ui::commands::update_memory_config,
+            ui::commands::get_memory_status,
+            ui::commands::memory_setup,
+            ui::commands::open_memory_folder,
             // Secret Scanning commands
             ui::commands::rebuild_secret_scanner,
             ui::commands::get_secret_scanning_config,

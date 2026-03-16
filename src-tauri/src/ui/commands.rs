@@ -4361,3 +4361,226 @@ pub async fn debug_trigger_elicitation_form_popup(
 
     Ok(())
 }
+
+// ============================================================================
+// Memory Configuration Commands
+// ============================================================================
+
+/// Get the current memory configuration
+#[tauri::command]
+pub async fn get_memory_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    serde_json::to_value(&config.memory).map_err(|e| e.to_string())
+}
+
+/// Update memory configuration
+#[tauri::command]
+pub async fn update_memory_config(
+    config_json: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let new_config: lr_config::MemoryConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    config_manager
+        .update(|config| {
+            config.memory = new_config.clone();
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Update the running memory service config
+    if let Some(ref svc) = *state.memory_service.read() {
+        svc.update_config(new_config);
+    }
+
+    Ok(())
+}
+
+/// Get memory service status
+#[tauri::command]
+pub async fn get_memory_status(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    // Clone the Arc out of the lock to avoid holding RwLockReadGuard across .await
+    let svc = state.memory_service.read().clone();
+
+    let (memsearch_installed, memsearch_version) = if let Some(ref svc) = svc {
+        match svc.cli.check_installed().await {
+            Ok(v) => (true, Some(v)),
+            Err(_) => (false, None),
+        }
+    } else {
+        (false, None)
+    };
+
+    let python_ok = if let Some(ref svc) = svc {
+        svc.cli.check_python().await.is_ok()
+    } else {
+        false
+    };
+
+    Ok(serde_json::json!({
+        "python_ok": python_ok,
+        "memsearch_installed": memsearch_installed,
+        "memsearch_version": memsearch_version,
+        "model_ready": memsearch_installed, // Approximate — model downloads on first use
+    }))
+}
+
+/// Run memsearch setup steps (check python, install memsearch, download model)
+#[tauri::command]
+pub async fn memory_setup(
+    app_handle: tauri::AppHandle,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    // Step 1: Check Python
+    let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+        "step": "python", "status": "checking"
+    }));
+    match svc.cli.check_python().await {
+        Ok(version) => {
+            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                "step": "python", "status": "ok", "version": version
+            }));
+        }
+        Err(e) => {
+            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                "step": "python", "status": "error", "error": e
+            }));
+            return Err(format!("Python not found: {}", e));
+        }
+    }
+
+    // Step 2: Check/install memsearch
+    let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+        "step": "memsearch", "status": "checking"
+    }));
+    match svc.cli.check_installed().await {
+        Ok(version) => {
+            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                "step": "memsearch", "status": "ok", "version": version
+            }));
+        }
+        Err(_) => {
+            // Try to install
+            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                "step": "memsearch", "status": "installing"
+            }));
+            let install_result = tokio::process::Command::new("pip3")
+                .args(["install", "memsearch[onnx]"])
+                .output()
+                .await
+                .map_err(|e| format!("pip3 not found: {}", e))?;
+
+            if !install_result.status.success() {
+                let stderr = String::from_utf8_lossy(&install_result.stderr);
+                let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                    "step": "memsearch", "status": "error", "error": stderr.to_string()
+                }));
+                return Err(format!("Failed to install memsearch: {}", stderr));
+            }
+
+            // Verify installation
+            match svc.cli.check_installed().await {
+                Ok(version) => {
+                    let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                        "step": "memsearch", "status": "ok", "version": version
+                    }));
+                }
+                Err(e) => {
+                    let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                        "step": "memsearch", "status": "error", "error": e
+                    }));
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    // Step 3: Model download (warmup)
+    let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+        "step": "model", "status": "checking"
+    }));
+
+    // Pre-warm the ONNX model by running a dummy search
+    let warmup_result = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        tokio::process::Command::new("memsearch")
+            .args(["search", "--provider", "onnx", "warmup"])
+            .output(),
+    )
+    .await;
+
+    match warmup_result {
+        Ok(Ok(_)) => {
+            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                "step": "model", "status": "ok"
+            }));
+        }
+        Ok(Err(e)) => {
+            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                "step": "model", "status": "error", "error": e.to_string()
+            }));
+            return Err(format!("Model download failed: {}", e));
+        }
+        Err(_) => {
+            let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+                "step": "model", "status": "error", "error": "Timed out (5 min)"
+            }));
+            return Err("Model download timed out".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+/// Open the memory storage directory in the system file manager
+#[tauri::command]
+pub async fn open_memory_folder(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+    let path = svc.memory_dir();
+
+    // Create the directory if it doesn't exist
+    std::fs::create_dir_all(path).map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    Ok(())
+}

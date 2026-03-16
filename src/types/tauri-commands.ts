@@ -3106,3 +3106,47 @@ export interface GetProviderFeatureSupportParams {
 /** Params for get_all_provider_feature_support - no params needed */
 
 /** Params for get_feature_endpoint_matrix - no params needed */
+
+// ============================================================================
+// Memory Configuration Types
+// ============================================================================
+
+/** Rust: crates/lr-config/src/types.rs - MemoryConfig struct */
+export interface MemoryConfig {
+  embedding: MemoryEmbeddingConfig
+  auto_start_daemon: boolean
+  search_top_k: number
+  session_inactivity_minutes: number
+  max_session_minutes: number
+  recall_tool_name: string
+  compaction: MemoryCompactionConfig | null
+}
+
+export type MemoryEmbeddingConfig =
+  | { type: 'onnx' }
+  | { type: 'ollama'; provider_id: string; model_name: string }
+
+export interface MemoryCompactionConfig {
+  enabled: boolean
+  llm_provider: string
+  llm_model: string | null
+}
+
+export interface MemoryStatus {
+  python_ok: boolean
+  memsearch_installed: boolean
+  memsearch_version: string | null
+  model_ready: boolean
+}
+
+export interface MemorySetupProgress {
+  step: 'python' | 'memsearch' | 'model'
+  status: string
+  version?: string
+  error?: string
+}
+
+/** Params for update_memory_config */
+export interface UpdateMemoryConfigParams {
+  configJson: string
+}

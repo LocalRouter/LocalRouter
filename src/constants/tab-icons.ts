@@ -3,7 +3,7 @@ import {
   Info, PlayCircle, Settings, LayoutDashboard, Plug, MessageSquare,
   Cable, Blocks, Sparkles, Palette, HeartPulse,
   ScrollText, Download, FileCheck, Server, Cpu, GitCompare,
-  Search, Bot, History, Wand2, Store, Users, Coins,
+  Search, Bot, History, Wand2, Store, Users, Coins, Brain,
 } from "lucide-react"
 import { FEATURES } from "./features"
 
@@ -41,4 +41,5 @@ export const TAB_ICONS = {
   model: Cpu,
   client: Users,
   freeTier: Coins,
+  memory: Brain,
 } as const satisfies Record<string, LucideIcon>
