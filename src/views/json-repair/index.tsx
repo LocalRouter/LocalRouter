@@ -43,7 +43,6 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
   }, null, 2))
   const [testResult, setTestResult] = useState<JsonRepairTestResult | null>(null)
   const [testLoading, setTestLoading] = useState(false)
-  const [useSchema, setUseSchema] = useState(true)
 
   const tab = activeSubTab || "info"
 
@@ -103,10 +102,10 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
     if (tab !== "try-it-out") return
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      runTest(testInput, useSchema ? testSchema : null)
+      runTest(testInput, testSchema)
     }, 300)
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [testInput, testSchema, useSchema, tab, runTest])
+  }, [testInput, testSchema, tab, runTest])
 
   return (
     <div className="flex flex-col h-full min-h-0 gap-4 max-w-5xl">
@@ -237,17 +236,10 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                   <div>
                     <CardTitle className="text-base">Test JSON Repair</CardTitle>
                     <CardDescription>
-                      Paste malformed JSON and optionally provide a schema to test repair
+                      Paste malformed JSON and provide a schema to test repair
                     </CardDescription>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {testLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                    <Switch
-                      checked={useSchema}
-                      onCheckedChange={setUseSchema}
-                    />
-                    <span className="text-sm text-muted-foreground whitespace-nowrap">JSON Schema</span>
-                  </div>
+                  {testLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -262,12 +254,11 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                     />
                   </div>
                   <div>
-                    <label className={`text-sm font-medium mb-1.5 block ${!useSchema ? "text-muted-foreground" : ""}`}>JSON Schema</label>
+                    <label className="text-sm font-medium mb-1.5 block">JSON Schema</label>
                     <textarea
                       value={testSchema}
                       onChange={(e) => setTestSchema(e.target.value)}
-                      disabled={!useSchema}
-                      className="w-full h-56 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="w-full h-56 px-3 py-2 text-sm bg-muted rounded-md border font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
                       placeholder='{"type": "object", "properties": {...}}'
                     />
                   </div>
