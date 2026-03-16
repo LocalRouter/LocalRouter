@@ -11,18 +11,10 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/Input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/Select"
 import { Textarea } from "@/components/ui/textarea"
+import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import type { MemoryConfig, MemorySetupProgress, MemoryStatus, UpdateMemoryConfigParams } from "@/types/tauri-commands"
-
-// Model requirements
-const MEMORY_REQUIREMENTS = {
-  DISK_GB: "~0.6",
-  MEMORY_GB: "~0.6",
-  COLD_START_SECS: "~3-5",
-  MODEL: "ONNX bge-m3 int8",
-  SEARCH_LATENCY: "~50-200ms",
-} as const
 
 type SetupStepStatus = "idle" | "checking" | "installing" | "ok" | "error"
 
@@ -59,11 +51,23 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   })
 
   // Try It Out state
-  const [searchQuery, setSearchQuery] = useState("")
+  const [searchQuery, setSearchQuery] = useState("What database did we choose for auth?")
   const [searchResults, setSearchResults] = useState<string | null>(null)
   const [searchLoading, setSearchLoading] = useState(false)
-  const [indexText, setIndexText] = useState("")
+  const [indexText, setIndexText] = useState("We decided to use PostgreSQL for the auth service. MySQL had connection pooling issues under load, and PostgreSQL's row-level security features will help with multi-tenant isolation. The migration is planned for next sprint.")
   const [indexLoading, setIndexLoading] = useState(false)
+  const [hasIndexed, setHasIndexed] = useState(false)
+  const [compactLoading, setCompactLoading] = useState(false)
+  const [compactResult, setCompactResult] = useState<string | null>(null)
+
+  // Live models for compaction model picker
+  const { models: liveModels } = useIncrementalModels({ refreshOnMount: true })
+  // Group models by provider
+  const modelsByProvider = liveModels.reduce<Record<string, string[]>>((acc, m) => {
+    if (!acc[m.provider]) acc[m.provider] = []
+    acc[m.provider].push(m.id)
+    return acc
+  }, {})
 
   const tab = activeSubTab || "info"
 
@@ -272,7 +276,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     <div className="flex-1 min-w-0">
                       <span className="font-medium">Embedding model</span>
                       <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-2">
-                        {MEMORY_REQUIREMENTS.MODEL}
+                        ONNX bge-m3 int8
                       </Badge>
                     </div>
                     {setup.model.status === "installing" && (
@@ -302,24 +306,40 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                   )}
                 </Button>
 
-                {/* Resource requirements */}
-                <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground pt-3 border-t">
-                  <div>
-                    <span>Disk Space:</span>{" "}
-                    <span className="font-medium text-foreground">{MEMORY_REQUIREMENTS.DISK_GB} GB</span>
-                  </div>
-                  <div>
-                    <span>Memory:</span>{" "}
-                    <span className="font-medium text-foreground">{MEMORY_REQUIREMENTS.MEMORY_GB} GB</span>
-                  </div>
-                  <div>
-                    <span>Cold Start:</span>{" "}
-                    <span className="font-medium text-foreground">{MEMORY_REQUIREMENTS.COLD_START_SECS}s</span>
-                  </div>
-                  <div>
-                    <span>Search Latency:</span>{" "}
-                    <span className="font-medium text-foreground">{MEMORY_REQUIREMENTS.SEARCH_LATENCY}</span>
-                  </div>
+                <p className="text-xs text-muted-foreground pt-2 border-t">
+                  The ONNX bge-m3 int8 model (~558 MB) is downloaded from HuggingFace on first use.
+                  No API key required &mdash; runs locally on CPU.
+                </p>
+              </CardContent>
+            </Card>
+
+            {/* Tool Preview */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Tool Definition</CardTitle>
+                <CardDescription>
+                  How the {config.recall_tool_name} tool appears to the LLM
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="rounded-md border bg-muted/50 p-3 overflow-x-auto">
+                  <pre className="text-xs font-mono whitespace-pre">{JSON.stringify({
+                    type: "function",
+                    function: {
+                      name: config.recall_tool_name,
+                      description: "Search past conversation memories for relevant context. Use when the current conversation would benefit from information discussed in previous sessions.",
+                      parameters: {
+                        type: "object",
+                        properties: {
+                          query: {
+                            type: "string",
+                            description: "Search query describing what to recall"
+                          }
+                        },
+                        required: ["query"]
+                      }
+                    }
+                  }, null, 2)}</pre>
                 </div>
               </CardContent>
             </Card>
@@ -376,6 +396,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     try {
                       await invoke("memory_test_index", { content: indexText })
                       toast.success("Content indexed")
+                      setHasIndexed(true)
                     } catch (err: any) {
                       toast.error(`Index failed: ${err.message || err}`)
                     } finally {
@@ -418,7 +439,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                   />
                   <Button
                     size="sm"
-                    disabled={searchLoading || !searchQuery.trim() || !status?.memsearch_installed}
+                    disabled={searchLoading || !searchQuery.trim() || !hasIndexed}
                     onClick={runSearch}
                   >
                     {searchLoading ? (
@@ -433,8 +454,52 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     <pre className="text-xs whitespace-pre-wrap font-mono">{searchResults}</pre>
                   </div>
                 )}
-                {!status?.memsearch_installed && (
-                  <p className="text-xs text-muted-foreground">Run Setup first to enable search.</p>
+                {!hasIndexed && (
+                  <p className="text-xs text-muted-foreground">Index some content first to enable search.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Compact */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">3. Compact</CardTitle>
+                <CardDescription>
+                  Summarize indexed content using an LLM, then search the compacted version
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Button
+                  size="sm"
+                  disabled={compactLoading || !hasIndexed || !config.compaction?.enabled}
+                  onClick={async () => {
+                    setCompactLoading(true)
+                    try {
+                      const result = await invoke<string>("memory_test_compact")
+                      setCompactResult(result || "Compaction complete.")
+                      toast.success("Content compacted")
+                    } catch (err: any) {
+                      setCompactResult(`Error: ${err.message || err}`)
+                    } finally {
+                      setCompactLoading(false)
+                    }
+                  }}
+                >
+                  {compactLoading ? (
+                    <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Compacting...</>
+                  ) : (
+                    "Compact"
+                  )}
+                </Button>
+                {!config.compaction?.enabled && (
+                  <p className="text-xs text-muted-foreground">
+                    Enable compaction in Settings first (select a model).
+                  </p>
+                )}
+                {compactResult && (
+                  <div className="rounded-md border p-3 bg-muted/50">
+                    <pre className="text-xs whitespace-pre-wrap font-mono">{compactResult}</pre>
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -546,16 +611,17 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                 <div className="space-y-1.5">
                   <Label className="text-xs">Compaction model</Label>
                   <Select
-                    value={config.compaction?.enabled ? `${config.compaction.llm_provider}${config.compaction.llm_model ? `:${config.compaction.llm_model}` : ""}` : "disabled"}
+                    value={config.compaction?.enabled ? `${config.compaction.llm_provider}/${config.compaction.llm_model || ""}` : "disabled"}
                     onValueChange={(value) => {
                       if (value === "disabled") {
                         saveConfig({ ...config, compaction: null })
                       } else {
-                        const [provider, ...modelParts] = value.split(":")
-                        const model = modelParts.join(":") || null
+                        const slashIdx = value.indexOf("/")
+                        const provider = value.substring(0, slashIdx)
+                        const model = value.substring(slashIdx + 1)
                         saveConfig({
                           ...config,
-                          compaction: { enabled: true, llm_provider: provider, llm_model: model },
+                          compaction: { enabled: true, llm_provider: provider, llm_model: model || null },
                         })
                       }
                     }}
@@ -565,42 +631,23 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="disabled">Disabled (keep raw transcripts)</SelectItem>
-                      <SelectItem value="anthropic:claude-haiku-4-5-20251001">Anthropic &mdash; Claude Haiku</SelectItem>
-                      <SelectItem value="anthropic:claude-sonnet-4-6-20250514">Anthropic &mdash; Claude Sonnet</SelectItem>
-                      <SelectItem value="openai:gpt-4o-mini">OpenAI &mdash; GPT-4o Mini</SelectItem>
-                      <SelectItem value="openai:gpt-4o">OpenAI &mdash; GPT-4o</SelectItem>
+                      {Object.entries(modelsByProvider).map(([provider, models]) => (
+                        <SelectGroup key={provider}>
+                          <SelectLabel className="text-xs text-muted-foreground">{provider}</SelectLabel>
+                          {models.map((modelId) => (
+                            <SelectItem key={`${provider}/${modelId}`} value={`${provider}/${modelId}`}>
+                              {modelId}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))}
                     </SelectContent>
                   </Select>
                   <p className="text-[10px] text-muted-foreground">
                     The LLM used to summarize session transcripts when they expire.
-                    Requires the corresponding provider API key in memsearch config.
+                    Select a model from your configured providers.
                   </p>
                 </div>
-
-                {config.compaction?.enabled && (
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <Label htmlFor="llm-provider" className="text-xs">Provider override</Label>
-                      <Input
-                        id="llm-provider"
-                        value={config.compaction.llm_provider}
-                        onChange={(e) => setConfig({ ...config, compaction: { ...config.compaction!, llm_provider: e.target.value } })}
-                        onBlur={() => saveConfig(config)}
-                        className="h-8 text-sm"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label htmlFor="llm-model" className="text-xs">Model override</Label>
-                      <Input
-                        id="llm-model"
-                        value={config.compaction.llm_model || ""}
-                        onChange={(e) => setConfig({ ...config, compaction: { ...config.compaction!, llm_model: e.target.value || null } })}
-                        onBlur={() => saveConfig(config)}
-                        className="h-8 text-sm"
-                      />
-                    </div>
-                  </div>
-                )}
               </CardContent>
             </Card>
 

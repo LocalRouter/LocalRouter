@@ -2683,6 +2683,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Content indexed (demo)')
     return null
   },
+  'memory_test_compact': () => {
+    return 'Compaction complete. Search again to see compacted results.'
+  },
   'memory_test_search': () => {
     return 'Found 1 result:\n\n1. We decided to use PostgreSQL for the auth service because MySQL had connection pooling issues. [score: 0.87]\n   Source: sessions/test-memory.md\n'
   },

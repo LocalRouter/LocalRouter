@@ -4462,49 +4462,37 @@ pub async fn memory_setup(
         }
     }
 
-    // Step 2: Check/install memsearch
+    // Step 2: Install/upgrade memsearch with ONNX support
+    // Always run pip install to ensure the [onnx] extra is present,
+    // even if memsearch is already installed without it.
     let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
-        "step": "memsearch", "status": "checking"
+        "step": "memsearch", "status": "installing"
     }));
+    let install_result = tokio::process::Command::new("pip3")
+        .args(["install", "--upgrade", "memsearch[onnx]"])
+        .output()
+        .await
+        .map_err(|e| format!("pip3 not found: {}", e))?;
+
+    if !install_result.status.success() {
+        let stderr = String::from_utf8_lossy(&install_result.stderr);
+        let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
+            "step": "memsearch", "status": "error", "error": stderr.to_string()
+        }));
+        return Err(format!("Failed to install memsearch[onnx]: {}", stderr));
+    }
+
     match svc.cli.check_installed().await {
         Ok(version) => {
             let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
                 "step": "memsearch", "status": "ok", "version": version
             }));
         }
-        Err(_) => {
-            // Try to install
+        Err(e) => {
             let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
-                "step": "memsearch", "status": "installing"
+                "step": "memsearch", "status": "error", "error": e
             }));
-            let install_result = tokio::process::Command::new("pip3")
-                .args(["install", "memsearch[onnx]"])
-                .output()
-                .await
-                .map_err(|e| format!("pip3 not found: {}", e))?;
-
-            if !install_result.status.success() {
-                let stderr = String::from_utf8_lossy(&install_result.stderr);
-                let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
-                    "step": "memsearch", "status": "error", "error": stderr.to_string()
-                }));
-                return Err(format!("Failed to install memsearch: {}", stderr));
-            }
-
-            // Verify installation
-            match svc.cli.check_installed().await {
-                Ok(version) => {
-                    let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
-                        "step": "memsearch", "status": "ok", "version": version
-                    }));
-                }
-                Err(e) => {
-                    let _ = app_handle.emit("memory-setup-progress", serde_json::json!({
-                        "step": "memsearch", "status": "error", "error": e
-                    }));
-                    return Err(e);
-                }
-            }
+            return Err(e);
         }
     }
 
@@ -4582,26 +4570,37 @@ pub async fn update_client_memory_config(
     Ok(())
 }
 
-/// Test: index content into memsearch for the Try It Out tab
+/// Get or create a temporary directory for memory Try It Out tests.
+/// Uses the system temp dir so it's cleaned up on reboot.
+fn memory_test_dir() -> Result<std::path::PathBuf, String> {
+    let dir = std::env::temp_dir().join("localrouter-memory-test");
+    std::fs::create_dir_all(dir.join("sessions"))
+        .map_err(|e| format!("Failed to create test dir: {}", e))?;
+
+    // Generate .memsearch.toml if missing
+    let config_path = dir.join(".memsearch.toml");
+    if !config_path.exists() {
+        std::fs::write(&config_path, "[embedding]\nprovider = \"onnx\"\n")
+            .map_err(|e| format!("Failed to write test config: {}", e))?;
+    }
+
+    Ok(dir)
+}
+
+/// Test: index content into memsearch for the Try It Out tab.
+/// Uses a temp directory that is cleaned up on reboot.
 #[tauri::command]
 pub async fn memory_test_index(
     content: String,
-    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
-    let svc = {
-        let guard = state.memory_service.read();
-        guard.clone().ok_or("Memory service not initialized")?
-    };
-
-    // Write to a test file and index it
-    let client_dir = svc.ensure_client_dir("_test").map_err(|e| e.to_string())?;
-    let sessions_dir = client_dir.join("sessions");
-
+    let dir = memory_test_dir()?;
+    let sessions_dir = dir.join("sessions");
     let test_file = sessions_dir.join("test-memory.md");
+
     tokio::fs::write(
         &test_file,
         format!(
-            "---\nclient_id: _test\nsession_id: test\nstarted: {}\n---\n\n## Memory\n{}\n\n",
+            "---\nsession_id: test\nstarted: {}\n---\n\n## Memory\n{}\n\n",
             chrono::Utc::now().to_rfc3339(),
             content
         ),
@@ -4610,7 +4609,7 @@ pub async fn memory_test_index(
     .map_err(|e| format!("Failed to write test file: {}", e))?;
 
     // Index it
-    svc.cli
+    lr_memory::MemsearchCli::new()
         .index(&sessions_dir)
         .await
         .map_err(|e| format!("Index failed: {}", e))?;
@@ -4623,14 +4622,13 @@ pub async fn memory_test_index(
 pub async fn memory_test_search(
     query: String,
     top_k: Option<usize>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<String, String> {
-    let svc = {
-        let guard = state.memory_service.read();
-        guard.clone().ok_or("Memory service not initialized")?
-    };
+    let dir = memory_test_dir()?;
+    let sessions_dir = dir.join("sessions");
 
-    let results = svc.search("_test", &query, top_k.unwrap_or(5)).await?;
+    let results = lr_memory::MemsearchCli::new()
+        .search(&sessions_dir, &query, top_k.unwrap_or(5))
+        .await?;
 
     if results.is_empty() {
         return Ok("No results found.".to_string());
@@ -4651,6 +4649,36 @@ pub async fn memory_test_search(
         ));
     }
     Ok(output)
+}
+
+/// Test: compact the test memory file
+#[tauri::command]
+pub async fn memory_test_compact(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<String, String> {
+    let config = config_manager.get();
+    let compaction = config
+        .memory
+        .compaction
+        .as_ref()
+        .ok_or("Compaction not configured — select a model in Settings")?;
+
+    if !compaction.enabled {
+        return Err("Compaction is disabled".to_string());
+    }
+
+    let dir = memory_test_dir()?;
+    let test_file = dir.join("sessions").join("test-memory.md");
+
+    if !test_file.exists() {
+        return Err("No test content to compact — index something first".to_string());
+    }
+
+    lr_memory::MemsearchCli::new()
+        .compact(&dir, &test_file, &compaction.llm_provider)
+        .await?;
+
+    Ok("Compaction complete. Search again to see compacted results.".to_string())
 }
 
 /// Open the memory storage directory in the system file manager
