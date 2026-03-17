@@ -171,7 +171,13 @@ export function FirewallApproval() {
         await win.setFocus()
       } catch (err) {
         console.error("Failed to load approval details:", err)
-        setError(typeof err === "string" ? err : "Failed to load approval details")
+        // Request expired or not found — just close the popup silently
+        try {
+          await getCurrentWebviewWindow().close()
+        } catch {
+          // Fallback: show error if we can't close
+          setError(typeof err === "string" ? err : "Failed to load approval details")
+        }
       } finally {
         setLoading(false)
       }
