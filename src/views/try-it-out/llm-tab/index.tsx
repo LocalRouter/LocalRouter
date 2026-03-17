@@ -169,6 +169,33 @@ function ModelCombobox({
   }, [open])
 
   const hasResults = filteredProviders.length > 0
+  const singleProvider = providers.length <= 1
+
+  // Render a model row (shared between grouped and flat views)
+  const renderModelRow = (model: Model, provider: string) => (
+    <button
+      key={`${provider}/${model.id}`}
+      type="button"
+      onClick={() => {
+        onModelChange(model.id)
+        setOpen(false)
+      }}
+      className={cn(
+        "flex items-center gap-2 w-full px-3 py-1.5 text-left text-sm hover:bg-accent transition-colors",
+        "border-b border-border/30",
+        selectedModel === model.id && "bg-accent"
+      )}
+      style={singleProvider ? undefined : { paddingLeft: "28px" }}
+    >
+      <Check
+        className={cn(
+          "h-3.5 w-3.5 shrink-0",
+          selectedModel === model.id ? "opacity-100" : "opacity-0"
+        )}
+      />
+      <span className="font-mono text-sm truncate">{model.id}</span>
+    </button>
+  )
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -219,53 +246,37 @@ function ModelCombobox({
               {search ? `No models match "${search}"` : "No models available"}
             </div>
           )}
-          {filteredProviders.map((provider) => {
-            const providerModels = filteredGrouped[provider]
-            const collapsed = isCollapsed(provider)
-
-            return (
-              <div key={provider}>
-                <button
-                  type="button"
-                  onClick={() => toggleProvider(provider)}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 bg-muted/30 border-b text-left hover:bg-muted/50 transition-colors sticky top-0 z-10"
-                >
-                  {collapsed ? (
-                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
-                  ) : (
-                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
-                  )}
-                  <span className="text-xs font-medium text-muted-foreground">{provider}</span>
-                  <span className="text-xs text-muted-foreground/60 ml-auto">{providerModels.length}</span>
-                </button>
-                {!collapsed &&
-                  providerModels.map((model) => (
-                    <button
-                      key={`${provider}/${model.id}`}
-                      type="button"
-                      onClick={() => {
-                        onModelChange(model.id)
-                        setOpen(false)
-                      }}
-                      className={cn(
-                        "flex items-center gap-2 w-full px-3 py-1.5 text-left text-sm hover:bg-accent transition-colors",
-                        "border-b border-border/30",
-                        selectedModel === model.id && "bg-accent"
-                      )}
-                      style={{ paddingLeft: "28px" }}
-                    >
-                      <Check
-                        className={cn(
-                          "h-3.5 w-3.5 shrink-0",
-                          selectedModel === model.id ? "opacity-100" : "opacity-0"
-                        )}
-                      />
-                      <span className="font-mono text-sm truncate">{model.id}</span>
-                    </button>
-                  ))}
-              </div>
+          {singleProvider ? (
+            /* Flat list when single provider — no grouping needed */
+            filteredProviders.flatMap((provider) =>
+              filteredGrouped[provider].map((model) => renderModelRow(model, provider))
             )
-          })}
+          ) : (
+            filteredProviders.map((provider) => {
+              const providerModels = filteredGrouped[provider]
+              const collapsed = isCollapsed(provider)
+
+              return (
+                <div key={provider}>
+                  <button
+                    type="button"
+                    onClick={() => toggleProvider(provider)}
+                    className="flex items-center gap-2 w-full px-3 py-1.5 bg-muted/30 border-b text-left hover:bg-muted/50 transition-colors sticky top-0 z-10"
+                  >
+                    {collapsed ? (
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                    )}
+                    <span className="text-xs font-medium text-muted-foreground">{provider}</span>
+                    <span className="text-xs text-muted-foreground/60 ml-auto">{providerModels.length}</span>
+                  </button>
+                  {!collapsed &&
+                    providerModels.map((model) => renderModelRow(model, provider))}
+                </div>
+              )
+            })
+          )}
         </div>
       </PopoverContent>
     </Popover>
@@ -298,7 +309,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
   // Direct mode state
   const [providers, setProviders] = useState<Provider[]>([])
   const [selectedProvider, setSelectedProvider] = useState<string>(initialProvider ?? "")
-  const { models: incrementalModels } = useIncrementalModels({ refreshOnMount: false })
+  const { models: incrementalModels, refresh: refreshIncrementalModels } = useIncrementalModels({ refreshOnMount: false })
   const providerModels = useMemo<ProviderModel[]>(() => incrementalModels.map(m => ({ id: m.id, provider: m.provider })), [incrementalModels])
   const [internalTestToken, setInternalTestToken] = useState<string | null>(null)
 
@@ -354,7 +365,6 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
         }
       } catch (error) {
         console.error("Failed to initialize:", error)
-      } finally {
         setLoadingModels(false)
       }
     }
@@ -382,6 +392,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
         } catch (error) {
           console.error("Failed to get client API key:", error)
           setClientApiKey(null)
+          setLoadingModels(false)
         }
       }
     }
@@ -484,6 +495,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
         if (!prev || !filtered.some(m => m.id === prev)) return filtered[0].id
         return prev
       })
+      setLoadingModels(false)
     } else if (mode === "all" && serverPort) {
       // For "all" mode, show all provider models in a single combined dropdown
       setModels(providerModels.map(m => ({ id: m.id, object: "model", owned_by: m.provider })))
@@ -492,11 +504,22 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
         if (!prev || !providerModels.some(m => m.id === prev)) return providerModels[0].id
         return prev
       })
+      setLoadingModels(false)
     } else if (openaiClient) {
       fetchModels()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, selectedProvider, serverPort, providerModels, openaiClient, fetchModels])
+
+  // Refresh models: use API for client mode, incremental refresh for direct/all
+  const handleRefresh = useCallback(() => {
+    if (mode === "direct" || mode === "all") {
+      setLoadingModels(true)
+      refreshIncrementalModels(true)
+    } else {
+      fetchModels()
+    }
+  }, [mode, refreshIncrementalModels, fetchModels])
 
   const getModeDescription = () => {
     switch (mode) {
@@ -671,8 +694,8 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
                   <Button
                     variant="outline"
                     size="icon"
-                    onClick={fetchModels}
-                    disabled={loadingModels || !openaiClient}
+                    onClick={handleRefresh}
+                    disabled={loadingModels || (mode === "client" && !openaiClient)}
                     title="Refresh models"
                   >
                     <RefreshCw className={cn("h-4 w-4", loadingModels && "animate-spin")} />
