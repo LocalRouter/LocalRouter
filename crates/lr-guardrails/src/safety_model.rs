@@ -102,6 +102,24 @@ impl fmt::Display for SafetyCategory {
     }
 }
 
+/// Convert a SafetyCategory to its serde-serialized name (snake_case).
+///
+/// Config stores categories in serde format (e.g. "violent_crimes", "jailbreak"),
+/// while Display uses human-readable format (e.g. "Violent Crimes", "Jailbreak").
+/// This function returns the serde form for config comparisons.
+fn category_to_serde_name(category: &SafetyCategory) -> String {
+    match serde_json::to_value(category) {
+        Ok(serde_json::Value::String(s)) => s,
+        // Custom("foo") serializes as {"custom": "foo"}
+        Ok(serde_json::Value::Object(obj)) => obj
+            .into_values()
+            .next()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| category.to_string()),
+        _ => category.to_string(),
+    }
+}
+
 /// What action to take when a category is flagged
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -279,7 +297,9 @@ impl SafetyCheckResult {
         }
 
         self.actions_required.retain_mut(|action| {
-            let category_name = action.category.to_string();
+            // Compare using serde serialization format (snake_case, e.g. "violent_crimes")
+            // to match config values. Display format ("Violent Crimes") differs from serde.
+            let category_name = category_to_serde_name(&action.category);
             if let Some((_, override_action)) = client_overrides
                 .iter()
                 .find(|(cat, _)| *cat == category_name)
@@ -298,6 +318,53 @@ impl SafetyCheckResult {
         }
 
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_category_to_serde_name() {
+        assert_eq!(category_to_serde_name(&SafetyCategory::Jailbreak), "jailbreak");
+        assert_eq!(category_to_serde_name(&SafetyCategory::ViolentCrimes), "violent_crimes");
+        assert_eq!(category_to_serde_name(&SafetyCategory::SexualContent), "sexual_content");
+        assert_eq!(category_to_serde_name(&SafetyCategory::Hate), "hate");
+    }
+
+    #[test]
+    fn test_apply_client_category_overrides_matches_serde_names() {
+        let result = SafetyCheckResult {
+            verdicts: vec![],
+            is_safe: false,
+            actions_required: vec![
+                CategoryActionRequired {
+                    category: SafetyCategory::Jailbreak,
+                    action: CategoryAction::Ask,
+                    model_id: "test".to_string(),
+                    confidence: Some(0.9),
+                },
+                CategoryActionRequired {
+                    category: SafetyCategory::ViolentCrimes,
+                    action: CategoryAction::Ask,
+                    model_id: "test".to_string(),
+                    confidence: Some(0.8),
+                },
+            ],
+            total_duration_ms: 0,
+            errors: vec![],
+        };
+
+        // Override using serde names (as config stores them)
+        let overrides = vec![
+            ("jailbreak".to_string(), CategoryAction::Allow),
+        ];
+        let result = result.apply_client_category_overrides(&overrides);
+
+        // Jailbreak should be removed, ViolentCrimes remains
+        assert_eq!(result.actions_required.len(), 1);
+        assert_eq!(result.actions_required[0].category, SafetyCategory::ViolentCrimes);
     }
 }
 
