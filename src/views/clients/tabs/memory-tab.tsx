@@ -5,7 +5,7 @@ import { FEATURES } from "@/constants/features"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/Button"
-import { AlertTriangle, FolderOpen } from "lucide-react"
+import { FolderOpen } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -95,19 +95,7 @@ export function ClientMemoryTab({ client, onUpdate, onViewChange }: ClientMemory
           </CardDescription>
         </CardHeader>
         {memoryEnabled && (
-          <CardContent className="space-y-3">
-            <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-              <span>
-                Full conversations are stored locally when memory is enabled.{" "}
-                <button
-                  className="underline hover:no-underline"
-                  onClick={() => onViewChange?.("memory", "sessions")}
-                >
-                  View sessions
-                </button>
-              </span>
-            </div>
+          <CardContent>
             <div className="flex gap-2">
               <Button
                 variant="outline"
@@ -117,27 +105,9 @@ export function ClientMemoryTab({ client, onUpdate, onViewChange }: ClientMemory
                 <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
                 Open Folder
               </Button>
-            </div>
-          </CardContent>
-        )}
-      </Card>
-
-      {memoryEnabled && (
-        <Card className="border-red-200 dark:border-red-900">
-          <CardHeader>
-            <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">Clear Memory</p>
-                <p className="text-sm text-muted-foreground">
-                  Permanently delete all stored conversations and search index for this client.
-                </p>
-              </div>
               <AlertDialog>
                 <AlertDialogTrigger asChild>
-                  <Button variant="destructive" size="sm">Clear</Button>
+                  <Button variant="destructive" size="sm">Clear Memory</Button>
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
@@ -167,8 +137,8 @@ export function ClientMemoryTab({ client, onUpdate, onViewChange }: ClientMemory
               </AlertDialog>
             </div>
           </CardContent>
-        </Card>
-      )}
+        )}
+    </Card>
     </div>
   )
 }
