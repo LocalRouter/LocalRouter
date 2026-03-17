@@ -202,7 +202,8 @@ impl ModerationExecutor {
         input: &str,
         model: &str,
     ) -> Result<OpenAIModerationResponse, String> {
-        let url = format!("{}/v1/moderations", self.base_url.trim_end_matches('/'));
+        // base_url typically already includes /v1 (e.g. "https://api.openai.com/v1")
+        let url = format!("{}/moderations", self.base_url.trim_end_matches('/'));
 
         let body = ModerationRequest {
             input: input.to_string(),

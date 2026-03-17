@@ -194,6 +194,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
       shield_gemma: "ShieldGemma",
       nemotron: "Nemotron",
       granite_guardian: "Granite Guardian",
+      openai_moderation: "OpenAI Moderation",
     }
 
     return Object.entries(modelTypeGroups).map(([modelType, children]) => ({

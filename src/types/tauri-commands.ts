@@ -2596,6 +2596,13 @@ export interface SafetyCheckResult {
   actions_required: CategoryActionRequired[]
   total_duration_ms: number
   scan_direction: "request" | "response"
+  errors?: SafetyModelError[]
+}
+
+/** Rust: crates/lr-guardrails/src/safety_model.rs - SafetyModelError struct */
+export interface SafetyModelError {
+  model_id: string
+  error: string
 }
 
 /** Guardrail approval details sent to popup */

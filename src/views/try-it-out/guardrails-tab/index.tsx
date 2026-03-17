@@ -422,6 +422,21 @@ export function GuardrailsTab({ initialClientId, forcedMode, hideModeSwitcher, f
                   </table>
                 </div>
 
+                {/* Model errors */}
+                {testResult.errors && testResult.errors.length > 0 && (
+                  <div className="space-y-1">
+                    {testResult.errors.map((err, i) => {
+                      const modelLabel = models.find((m) => m.id === err.model_id)?.label ?? err.model_id
+                      return (
+                        <div key={i} className="flex items-start gap-2 text-xs text-destructive">
+                          <XCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                          <span><span className="font-medium">{modelLabel}</span>: {err.error}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
                 {/* Raw output */}
                 {testResult.verdicts.some((v) => v.raw_output) && (
                   <details className="text-xs">

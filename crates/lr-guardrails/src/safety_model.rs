@@ -202,6 +202,16 @@ pub struct SafetyCheckResult {
     pub actions_required: Vec<CategoryActionRequired>,
     /// Total check duration across all models
     pub total_duration_ms: u64,
+    /// Errors from models that failed to run (model_id, error_message)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<SafetyModelError>,
+}
+
+/// An error from a safety model that failed to check
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SafetyModelError {
+    pub model_id: String,
+    pub error: String,
 }
 
 /// A specific action required for a flagged category

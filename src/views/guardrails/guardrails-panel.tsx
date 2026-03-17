@@ -4,7 +4,7 @@ import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -135,6 +135,7 @@ export function GuardrailsPanel({
                 <TabsList>
                   <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
                   <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
+                  <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="info">
@@ -187,28 +188,6 @@ export function GuardrailsPanel({
                         )}
                       </CardContent>
                     </Card>
-
-                    {/* Unlink */}
-                    <Card>
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-sm">Unlink Model</CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-2">
-                        <p className="text-xs text-muted-foreground">
-                          Remove this model from GuardRails. The model itself remains available on the provider and can be re-added later.
-                        </p>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            onRemoveModel(selectedModel.id)
-                            setSelectedModelId(null)
-                          }}
-                        >
-                          Unlink
-                        </Button>
-                      </CardContent>
-                    </Card>
                   </div>
                 </TabsContent>
 
@@ -218,6 +197,41 @@ export function GuardrailsPanel({
                     forcedModelId={selectedModel.id}
                     hideModeSwitcher
                   />
+                </TabsContent>
+
+                <TabsContent value="settings">
+                  <div className="space-y-4">
+                    {/* Danger Zone */}
+                    <Card className="border-red-200 dark:border-red-900">
+                      <CardHeader>
+                        <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
+                        <CardDescription>
+                          Irreversible actions for this safety model
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-medium">Remove model</p>
+                            <p className="text-sm text-muted-foreground">
+                              Remove this model from GuardRails. The model itself remains available on the provider and can be re-added later.
+                            </p>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              onRemoveModel(selectedModel.id)
+                              setSelectedModelId(null)
+                            }}
+                            className="border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
                 </TabsContent>
               </Tabs>
             </div>

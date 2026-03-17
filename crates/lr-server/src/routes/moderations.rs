@@ -273,6 +273,7 @@ mod tests {
             is_safe,
             actions_required: vec![],
             total_duration_ms: 0,
+            errors: vec![],
         }
     }
 

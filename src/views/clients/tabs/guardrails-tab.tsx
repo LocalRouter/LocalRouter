@@ -118,6 +118,7 @@ export function ClientGuardrailsTab({ client, onUpdate }: ClientGuardrailsTabPro
       shield_gemma: "ShieldGemma",
       nemotron: "Nemotron",
       granite_guardian: "Granite Guardian",
+      openai_moderation: "OpenAI Moderation",
     }
 
     return Object.entries(modelTypeGroups).map(([modelType, children]) => ({
