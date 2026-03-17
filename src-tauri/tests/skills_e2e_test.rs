@@ -160,6 +160,7 @@ async fn test_skills_e2e_all_tool_commands() {
             None,
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
+            None,                                  // memory_enabled
             tools_list_req,
         )
         .await
@@ -214,6 +215,7 @@ async fn test_skills_e2e_all_tool_commands() {
             None,
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
+            None,                                  // memory_enabled
             show_req,
         )
         .await
@@ -265,6 +267,7 @@ async fn test_skills_e2e_all_tool_commands() {
             None,
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
+            None,                                  // memory_enabled
             tools_list_req2,
         )
         .await
@@ -354,6 +357,7 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             None,
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
+            None,                                  // memory_enabled
             req,
         )
         .await
@@ -400,6 +404,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             None,
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
+            None,                                  // memory_enabled
             req,
         )
         .await
@@ -429,6 +434,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             None,
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
+            None,                                  // memory_enabled
             req2,
         )
         .await
