@@ -239,6 +239,223 @@ pub fn emit_llm_error(
     );
 }
 
+// ---- Auth & Access Control events ----
+
+/// Emit an AuthError monitor event (middleware-level auth failures).
+pub fn emit_auth_error(
+    state: &AppState,
+    error_type: &str,
+    endpoint: &str,
+    message: &str,
+    status_code: u16,
+) {
+    state.monitor_store.push(
+        MonitorEventType::AuthError,
+        None,
+        None,
+        None,
+        MonitorEventData::AuthError {
+            error_type: error_type.to_string(),
+            endpoint: endpoint.to_string(),
+            message: message.to_string(),
+            status_code,
+        },
+        EventStatus::Error,
+        None,
+    );
+}
+
+/// Emit an AccessDenied monitor event (route-level access control).
+pub fn emit_access_denied(
+    state: &AppState,
+    client_auth: Option<&Extension<ClientAuthContext>>,
+    reason: &str,
+    endpoint: &str,
+    message: &str,
+    status_code: u16,
+) {
+    let (client_id, client_name) = resolve_client(state, client_auth);
+
+    state.monitor_store.push(
+        MonitorEventType::AccessDenied,
+        client_id,
+        client_name,
+        None,
+        MonitorEventData::AccessDenied {
+            reason: reason.to_string(),
+            endpoint: endpoint.to_string(),
+            message: message.to_string(),
+            status_code,
+        },
+        EventStatus::Error,
+        None,
+    );
+}
+
+/// Emit an AccessDenied event using client_id directly (for routes without ClientAuthContext).
+pub fn emit_access_denied_for_client(
+    state: &AppState,
+    client_id: &str,
+    reason: &str,
+    endpoint: &str,
+    message: &str,
+    status_code: u16,
+) {
+    let client_name = state
+        .client_manager
+        .get_client(client_id)
+        .map(|c| c.name.clone());
+
+    state.monitor_store.push(
+        MonitorEventType::AccessDenied,
+        Some(client_id.to_string()),
+        client_name,
+        None,
+        MonitorEventData::AccessDenied {
+            reason: reason.to_string(),
+            endpoint: endpoint.to_string(),
+            message: message.to_string(),
+            status_code,
+        },
+        EventStatus::Error,
+        None,
+    );
+}
+
+// ---- Rate Limiting events ----
+
+/// Emit a RateLimitEvent monitor event.
+pub fn emit_rate_limit_event(
+    state: &AppState,
+    client_auth: Option<&Extension<ClientAuthContext>>,
+    reason: &str,
+    endpoint: &str,
+    message: &str,
+    status_code: u16,
+    retry_after_secs: Option<u64>,
+) {
+    let (client_id, client_name) = resolve_client(state, client_auth);
+
+    state.monitor_store.push(
+        MonitorEventType::RateLimitEvent,
+        client_id,
+        client_name,
+        None,
+        MonitorEventData::RateLimitEvent {
+            reason: reason.to_string(),
+            endpoint: endpoint.to_string(),
+            message: message.to_string(),
+            status_code,
+            retry_after_secs,
+        },
+        EventStatus::Error,
+        None,
+    );
+}
+
+// ---- Validation events ----
+
+/// Emit a ValidationError monitor event.
+pub fn emit_validation_error(
+    state: &AppState,
+    client_auth: Option<&Extension<ClientAuthContext>>,
+    endpoint: &str,
+    field: Option<&str>,
+    message: &str,
+    status_code: u16,
+) {
+    let (client_id, client_name) = resolve_client(state, client_auth);
+
+    state.monitor_store.push(
+        MonitorEventType::ValidationError,
+        client_id,
+        client_name,
+        None,
+        MonitorEventData::ValidationError {
+            endpoint: endpoint.to_string(),
+            field: field.map(|f| f.to_string()),
+            message: message.to_string(),
+            status_code,
+        },
+        EventStatus::Error,
+        None,
+    );
+}
+
+// ---- Moderation events ----
+
+/// Emit a ModerationEvent monitor event.
+pub fn emit_moderation_event(
+    state: &AppState,
+    reason: &str,
+    message: &str,
+    status_code: u16,
+) {
+    state.monitor_store.push(
+        MonitorEventType::ModerationEvent,
+        None,
+        None,
+        None,
+        MonitorEventData::ModerationEvent {
+            reason: reason.to_string(),
+            message: message.to_string(),
+            status_code,
+        },
+        EventStatus::Error,
+        None,
+    );
+}
+
+// ---- OAuth events ----
+
+/// Emit an OAuthEvent monitor event.
+pub fn emit_oauth_event(
+    state: &AppState,
+    action: &str,
+    client_id_hint: Option<&str>,
+    message: &str,
+    status_code: u16,
+) {
+    state.monitor_store.push(
+        MonitorEventType::OAuthEvent,
+        client_id_hint.map(|s| s.to_string()),
+        None,
+        None,
+        MonitorEventData::OAuthEvent {
+            action: action.to_string(),
+            client_id_hint: client_id_hint.map(|s| s.to_string()),
+            message: message.to_string(),
+            status_code,
+        },
+        EventStatus::Error,
+        None,
+    );
+}
+
+// ---- Internal error events ----
+
+/// Emit an InternalError monitor event.
+pub fn emit_internal_error(
+    state: &AppState,
+    error_type: &str,
+    message: &str,
+    status_code: u16,
+) {
+    state.monitor_store.push(
+        MonitorEventType::InternalError,
+        None,
+        None,
+        None,
+        MonitorEventData::InternalError {
+            error_type: error_type.to_string(),
+            message: truncate_string(message, 1000),
+            status_code,
+        },
+        EventStatus::Error,
+        None,
+    );
+}
+
 // ---- Guardrail events ----
 
 /// Emit a GuardrailRequest event before running safety checks.

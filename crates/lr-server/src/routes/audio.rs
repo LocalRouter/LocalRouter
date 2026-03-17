@@ -15,7 +15,7 @@ use chrono::Utc;
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access, get_enabled_client, get_enabled_client_from_manager};
+use super::helpers::{check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -44,11 +44,15 @@ pub async fn audio_transcriptions(
     mut multipart: axum::extract::Multipart,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
+
+    // Emit monitor event for traffic inspection (model not yet known from multipart)
+    // Will be emitted after multipart parsing below
+
     state.record_client_activity(&auth.api_key_id);
 
     if auth.api_key_id != "internal-test" {
         let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access(&client)?;
+        check_llm_access_with_state(&state, &client)?;
     }
 
     // Parse multipart form fields
@@ -64,7 +68,18 @@ pub async fn audio_transcriptions(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| ApiErrorResponse::bad_request(format!("Invalid multipart data: {}", e)))?
+        .map_err(|e| {
+            let msg = format!("Invalid multipart data: {}", e);
+            super::monitor_helpers::emit_validation_error(
+                &state,
+                client_auth.as_ref().map(|e| e),
+                "/v1/audio/transcriptions",
+                None,
+                &msg,
+                400,
+            );
+            ApiErrorResponse::bad_request(msg)
+        })?
     {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
@@ -75,46 +90,114 @@ pub async fn audio_transcriptions(
                         .bytes()
                         .await
                         .map_err(|e| {
-                            ApiErrorResponse::bad_request(format!("Failed to read file: {}", e))
+                            let msg = format!("Failed to read file: {}", e);
+                            super::monitor_helpers::emit_validation_error(
+                                &state,
+                                client_auth.as_ref().map(|e| e),
+                                "/v1/audio/transcriptions",
+                                Some("file"),
+                                &msg,
+                                400,
+                            );
+                            ApiErrorResponse::bad_request(msg)
                         })?
                         .to_vec(),
                 );
             }
             "model" => {
                 model = Some(field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!("Invalid model field: {}", e))
+                    let msg = format!("Invalid model field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/transcriptions",
+                        Some("model"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?);
             }
             "language" => {
                 language = Some(field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!("Invalid language field: {}", e))
+                    let msg = format!("Invalid language field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/transcriptions",
+                        Some("language"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?);
             }
             "prompt" => {
                 prompt = Some(field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!("Invalid prompt field: {}", e))
+                    let msg = format!("Invalid prompt field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/transcriptions",
+                        Some("prompt"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?);
             }
             "response_format" => {
                 response_format = Some(field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!("Invalid response_format field: {}", e))
+                    let msg = format!("Invalid response_format field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/transcriptions",
+                        Some("response_format"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?);
             }
             "temperature" => {
                 let text = field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!("Invalid temperature field: {}", e))
+                    let msg = format!("Invalid temperature field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/transcriptions",
+                        Some("temperature"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?;
                 temperature = Some(text.parse::<f32>().map_err(|_| {
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/transcriptions",
+                        Some("temperature"),
+                        "temperature must be a number",
+                        400,
+                    );
                     ApiErrorResponse::bad_request("temperature must be a number")
                         .with_param("temperature")
                 })?);
             }
             "timestamp_granularities[]" => {
                 let text = field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!(
-                        "Invalid timestamp_granularities field: {}",
-                        e
-                    ))
+                    let msg = format!("Invalid timestamp_granularities field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/transcriptions",
+                        Some("timestamp_granularities"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?;
                 timestamp_granularities
                     .get_or_insert_with(Vec::new)
@@ -124,22 +207,64 @@ pub async fn audio_transcriptions(
         }
     }
 
-    let file_data = file_data
-        .ok_or_else(|| ApiErrorResponse::bad_request("file is required").with_param("file"))?;
-    let model = model
-        .ok_or_else(|| ApiErrorResponse::bad_request("model is required").with_param("model"))?;
+    let file_data = file_data.ok_or_else(|| {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/audio/transcriptions",
+            Some("file"),
+            "file is required",
+            400,
+        );
+        ApiErrorResponse::bad_request("file is required").with_param("file")
+    })?;
+    let model = model.ok_or_else(|| {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/audio/transcriptions",
+            Some("model"),
+            "model is required",
+            400,
+        );
+        ApiErrorResponse::bad_request("model is required").with_param("model")
+    })?;
 
     if file_data.is_empty() {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/audio/transcriptions",
+            Some("file"),
+            "file cannot be empty",
+            400,
+        );
         return Err(ApiErrorResponse::bad_request("file cannot be empty").with_param("file"));
     }
 
     if model.is_empty() {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/audio/transcriptions",
+            Some("model"),
+            "model cannot be empty",
+            400,
+        );
         return Err(ApiErrorResponse::bad_request("model cannot be empty").with_param("model"));
     }
 
     // Validate temperature if provided
     if let Some(temp) = temperature {
         if !(0.0..=1.0).contains(&temp) {
+            super::monitor_helpers::emit_validation_error(
+                &state,
+                client_auth.as_ref().map(|e| e),
+                "/v1/audio/transcriptions",
+                Some("temperature"),
+                "temperature must be between 0 and 1",
+                400,
+            );
             return Err(
                 ApiErrorResponse::bad_request("temperature must be between 0 and 1")
                     .with_param("temperature"),
@@ -151,17 +276,36 @@ pub async fn audio_transcriptions(
     if let Some(ref fmt) = response_format {
         let valid_formats = ["json", "text", "srt", "verbose_json", "vtt"];
         if !valid_formats.contains(&fmt.as_str()) {
-            return Err(ApiErrorResponse::bad_request(format!(
+            let msg = format!(
                 "Invalid response_format '{}'. Valid formats: {}",
                 fmt,
                 valid_formats.join(", ")
-            ))
-            .with_param("response_format"));
+            );
+            super::monitor_helpers::emit_validation_error(
+                &state,
+                client_auth.as_ref().map(|e| e),
+                "/v1/audio/transcriptions",
+                Some("response_format"),
+                &msg,
+                400,
+            );
+            return Err(ApiErrorResponse::bad_request(msg).with_param("response_format"));
         }
     }
 
     // Validate client provider access
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &model).await?;
+
+    // Emit monitor event for traffic inspection
+    let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/transcriptions"});
+    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        "/v1/audio/transcriptions",
+        &model,
+        false,
+        &monitor_body,
+    );
 
     let request_id = format!("audio-{}", Uuid::new_v4());
     let created_at = Utc::now();
@@ -208,6 +352,18 @@ pub async fn audio_transcriptions(
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
+
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                client_auth.as_ref().map(|ext| ext),
+                Some(&request_id),
+                "unknown",
+                &model_for_log,
+                502,
+                &e.to_string(),
+            );
+
             tracing::error!("Audio transcription failed: {}", e);
             ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
         })?;
@@ -255,6 +411,28 @@ pub async fn audio_transcriptions(
     ) {
         tracing::warn!("Failed to write access log: {}", e);
     }
+
+    // Emit monitor response event
+    let content_preview = if response.text.len() > 200 {
+        &response.text[..200]
+    } else {
+        &response.text
+    };
+    super::monitor_helpers::emit_llm_response(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        &request_id,
+        &provider,
+        &model_for_log,
+        200,
+        0,
+        0,
+        None,
+        latency_ms,
+        Some("stop"),
+        content_preview,
+        false,
+    );
 
     // Record generation for tracking
     let generation_details = GenerationDetails {
@@ -328,7 +506,7 @@ pub async fn audio_translations(
 
     if auth.api_key_id != "internal-test" {
         let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access(&client)?;
+        check_llm_access_with_state(&state, &client)?;
     }
 
     // Parse multipart form fields
@@ -342,7 +520,18 @@ pub async fn audio_translations(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| ApiErrorResponse::bad_request(format!("Invalid multipart data: {}", e)))?
+        .map_err(|e| {
+            let msg = format!("Invalid multipart data: {}", e);
+            super::monitor_helpers::emit_validation_error(
+                &state,
+                client_auth.as_ref().map(|e| e),
+                "/v1/audio/translations",
+                None,
+                &msg,
+                400,
+            );
+            ApiErrorResponse::bad_request(msg)
+        })?
     {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
@@ -353,31 +542,84 @@ pub async fn audio_translations(
                         .bytes()
                         .await
                         .map_err(|e| {
-                            ApiErrorResponse::bad_request(format!("Failed to read file: {}", e))
+                            let msg = format!("Failed to read file: {}", e);
+                            super::monitor_helpers::emit_validation_error(
+                                &state,
+                                client_auth.as_ref().map(|e| e),
+                                "/v1/audio/translations",
+                                Some("file"),
+                                &msg,
+                                400,
+                            );
+                            ApiErrorResponse::bad_request(msg)
                         })?
                         .to_vec(),
                 );
             }
             "model" => {
                 model = Some(field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!("Invalid model field: {}", e))
+                    let msg = format!("Invalid model field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/translations",
+                        Some("model"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?);
             }
             "prompt" => {
                 prompt = Some(field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!("Invalid prompt field: {}", e))
+                    let msg = format!("Invalid prompt field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/translations",
+                        Some("prompt"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?);
             }
             "response_format" => {
                 response_format = Some(field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!("Invalid response_format field: {}", e))
+                    let msg = format!("Invalid response_format field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/translations",
+                        Some("response_format"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?);
             }
             "temperature" => {
                 let text = field.text().await.map_err(|e| {
-                    ApiErrorResponse::bad_request(format!("Invalid temperature field: {}", e))
+                    let msg = format!("Invalid temperature field: {}", e);
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/translations",
+                        Some("temperature"),
+                        &msg,
+                        400,
+                    );
+                    ApiErrorResponse::bad_request(msg)
                 })?;
                 temperature = Some(text.parse::<f32>().map_err(|_| {
+                    super::monitor_helpers::emit_validation_error(
+                        &state,
+                        client_auth.as_ref().map(|e| e),
+                        "/v1/audio/translations",
+                        Some("temperature"),
+                        "temperature must be a number",
+                        400,
+                    );
                     ApiErrorResponse::bad_request("temperature must be a number")
                         .with_param("temperature")
                 })?);
@@ -386,21 +628,63 @@ pub async fn audio_translations(
         }
     }
 
-    let file_data = file_data
-        .ok_or_else(|| ApiErrorResponse::bad_request("file is required").with_param("file"))?;
-    let model = model
-        .ok_or_else(|| ApiErrorResponse::bad_request("model is required").with_param("model"))?;
+    let file_data = file_data.ok_or_else(|| {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/audio/translations",
+            Some("file"),
+            "file is required",
+            400,
+        );
+        ApiErrorResponse::bad_request("file is required").with_param("file")
+    })?;
+    let model = model.ok_or_else(|| {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/audio/translations",
+            Some("model"),
+            "model is required",
+            400,
+        );
+        ApiErrorResponse::bad_request("model is required").with_param("model")
+    })?;
 
     if file_data.is_empty() {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/audio/translations",
+            Some("file"),
+            "file cannot be empty",
+            400,
+        );
         return Err(ApiErrorResponse::bad_request("file cannot be empty").with_param("file"));
     }
 
     if model.is_empty() {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/audio/translations",
+            Some("model"),
+            "model cannot be empty",
+            400,
+        );
         return Err(ApiErrorResponse::bad_request("model cannot be empty").with_param("model"));
     }
 
     if let Some(temp) = temperature {
         if !(0.0..=1.0).contains(&temp) {
+            super::monitor_helpers::emit_validation_error(
+                &state,
+                client_auth.as_ref().map(|e| e),
+                "/v1/audio/translations",
+                Some("temperature"),
+                "temperature must be between 0 and 1",
+                400,
+            );
             return Err(
                 ApiErrorResponse::bad_request("temperature must be between 0 and 1")
                     .with_param("temperature"),
@@ -411,17 +695,36 @@ pub async fn audio_translations(
     if let Some(ref fmt) = response_format {
         let valid_formats = ["json", "text", "srt", "verbose_json", "vtt"];
         if !valid_formats.contains(&fmt.as_str()) {
-            return Err(ApiErrorResponse::bad_request(format!(
+            let msg = format!(
                 "Invalid response_format '{}'. Valid formats: {}",
                 fmt,
                 valid_formats.join(", ")
-            ))
-            .with_param("response_format"));
+            );
+            super::monitor_helpers::emit_validation_error(
+                &state,
+                client_auth.as_ref().map(|e| e),
+                "/v1/audio/translations",
+                Some("response_format"),
+                &msg,
+                400,
+            );
+            return Err(ApiErrorResponse::bad_request(msg).with_param("response_format"));
         }
     }
 
     // Validate client provider access
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &model).await?;
+
+    // Emit monitor event for traffic inspection
+    let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/translations"});
+    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        "/v1/audio/translations",
+        &model,
+        false,
+        &monitor_body,
+    );
 
     let request_id = format!("audio-{}", Uuid::new_v4());
     let created_at = Utc::now();
@@ -466,6 +769,18 @@ pub async fn audio_translations(
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
+
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                client_auth.as_ref().map(|ext| ext),
+                Some(&request_id),
+                "unknown",
+                &model_for_log,
+                502,
+                &e.to_string(),
+            );
+
             tracing::error!("Audio translation failed: {}", e);
             ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
         })?;
@@ -510,6 +825,28 @@ pub async fn audio_translations(
     ) {
         tracing::warn!("Failed to write access log: {}", e);
     }
+
+    // Emit monitor response event
+    let content_preview = if response.text.len() > 200 {
+        &response.text[..200]
+    } else {
+        &response.text
+    };
+    super::monitor_helpers::emit_llm_response(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        &request_id,
+        &provider,
+        &model_for_log,
+        200,
+        0,
+        0,
+        None,
+        latency_ms,
+        Some("stop"),
+        content_preview,
+        false,
+    );
 
     let generation_details = GenerationDetails {
         id: request_id.clone(),
@@ -579,15 +916,37 @@ pub async fn audio_speech(
     Json(request): Json<SpeechRequest>,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
+
+    // Emit monitor event for traffic inspection
+    let monitor_body = serde_json::json!({"model": &request.model, "endpoint": "/v1/audio/speech", "voice": &request.voice});
+    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        "/v1/audio/speech",
+        &request.model,
+        false,
+        &monitor_body,
+    );
+
     state.record_client_activity(&auth.api_key_id);
 
     if auth.api_key_id != "internal-test" {
         let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access(&client)?;
+        check_llm_access_with_state(&state, &client)?;
     }
 
     // Validate request
-    validate_speech_request(&request)?;
+    if let Err(e) = validate_speech_request(&request) {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/audio/speech",
+            e.error.error.param.as_deref(),
+            &e.error.error.message,
+            400,
+        );
+        return Err(e);
+    }
 
     // Validate client provider access
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request.model)
@@ -633,6 +992,18 @@ pub async fn audio_speech(
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
+
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                client_auth.as_ref().map(|ext| ext),
+                Some(&request_id),
+                "unknown",
+                &request.model,
+                502,
+                &e.to_string(),
+            );
+
             tracing::error!("Speech generation failed: {}", e);
             ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
         })?;
@@ -681,6 +1052,23 @@ pub async fn audio_speech(
     ) {
         tracing::warn!("Failed to write access log: {}", e);
     }
+
+    // Emit monitor response event
+    super::monitor_helpers::emit_llm_response(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        &request_id,
+        &provider,
+        &request.model,
+        200,
+        estimated_tokens,
+        0,
+        None,
+        latency_ms,
+        Some("stop"),
+        &format!("[audio: {}B]", response.audio_data.len()),
+        false,
+    );
 
     let generation_details = GenerationDetails {
         id: request_id.clone(),
@@ -763,7 +1151,7 @@ async fn validate_client_provider_access(
             })
             .or(matching_models.first())
             .ok_or_else(|| {
-                ApiErrorResponse::bad_request(format!("Model not found: {}", model))
+                ApiErrorResponse::not_found(format!("Model not found: {}", model))
                     .with_param("model")
             })?;
 

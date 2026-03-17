@@ -15,7 +15,7 @@ use futures::stream::StreamExt;
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access, get_enabled_client, get_enabled_client_from_manager};
+use super::helpers::{check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -58,13 +58,24 @@ pub async fn completions(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "completion");
 
+    // Emit monitor event for traffic inspection
+    let request_json = serde_json::to_value(&request).unwrap_or_default();
+    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        "/v1/completions",
+        &request.model,
+        request.stream,
+        &request_json,
+    );
+
     // Record client activity for connection graph
     state.record_client_activity(&auth.api_key_id);
 
     // Enforce client mode: block MCP-only clients from LLM endpoints
     {
         let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access(&client)?;
+        check_llm_access_with_state(&state, &client)?;
     }
 
     // Validate request
@@ -738,12 +749,25 @@ async fn handle_non_streaming_parallel(
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
+
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                client_auth.as_ref().map(|ext| ext),
+                Some(&generation_id),
+                "unknown",
+                &request.model,
+                502,
+                &e.to_string(),
+            );
+
             ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
         })?;
 
     build_non_streaming_response(
         state,
         auth,
+        client_auth,
         request,
         response,
         generation_id,
@@ -799,6 +823,17 @@ async fn handle_non_streaming(
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
 
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                _client_auth.as_ref().map(|ext| ext),
+                Some(&generation_id),
+                "unknown",
+                &request.model,
+                502,
+                &e.to_string(),
+            );
+
             return Err(ApiErrorResponse::bad_gateway(format!(
                 "Provider error: {}",
                 e
@@ -809,6 +844,7 @@ async fn handle_non_streaming(
     build_non_streaming_response(
         state,
         auth,
+        _client_auth,
         request,
         response,
         generation_id,
@@ -819,9 +855,11 @@ async fn handle_non_streaming(
 }
 
 /// Build the non-streaming completion response. Shared by both sequential and parallel handlers.
+#[allow(clippy::too_many_arguments)]
 async fn build_non_streaming_response(
     state: AppState,
     auth: AuthContext,
+    _client_auth: Option<Extension<ClientAuthContext>>,
     request: CompletionRequest,
     response: lr_providers::CompletionResponse,
     generation_id: String,
@@ -885,6 +923,34 @@ async fn build_non_streaming_response(
         &generation_id,
     ) {
         tracing::warn!("Failed to write access log: {}", e);
+    }
+
+    // Emit monitor response event
+    {
+        let content_preview = response
+            .choices
+            .first()
+            .map(|c| c.message.content.as_text())
+            .unwrap_or_default();
+        let finish_reason = response
+            .choices
+            .first()
+            .and_then(|c| c.finish_reason.as_deref());
+        super::monitor_helpers::emit_llm_response(
+            &state,
+            _client_auth.as_ref().map(|e| e),
+            &generation_id,
+            &response.provider,
+            &response.model,
+            200,
+            response.usage.prompt_tokens as u64,
+            response.usage.completion_tokens as u64,
+            Some(cost),
+            latency_ms,
+            finish_reason,
+            &content_preview,
+            false,
+        );
     }
 
     // Convert chat completion response to legacy completion response
@@ -1091,12 +1157,31 @@ async fn handle_streaming(
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
 
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                _client_auth.as_ref().map(|ext| ext),
+                Some(&generation_id),
+                "unknown",
+                &model,
+                502,
+                &e.to_string(),
+            );
+
             return Err(ApiErrorResponse::bad_gateway(format!(
                 "Provider error: {}",
                 e
             )));
         }
     };
+
+    // Emit pending monitor event for streaming response
+    let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
+        &state,
+        _client_auth.as_ref().map(|e| e),
+        &generation_id,
+        &model,
+    );
 
     // Convert provider stream to SSE stream
     let created_timestamp = created_at.timestamp();
@@ -1284,6 +1369,20 @@ async fn handle_streaming(
             .to_string(),
         );
 
+        // Complete the pending monitor event with final streaming data
+        super::monitor_helpers::complete_llm_response(
+            &state_clone,
+            &monitor_event_id,
+            &provider,
+            &model_clone,
+            prompt_tokens as u64,
+            completion_tokens as u64,
+            Some(cost),
+            latency_ms,
+            Some(&finish_reason_final),
+            &completion_content,
+        );
+
         let generation_details = GenerationDetails {
             id: gen_id_clone,
             model: model_clone,
@@ -1371,12 +1470,32 @@ async fn handle_streaming_parallel(
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
+
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                client_auth.as_ref().map(|ext| ext),
+                Some(&generation_id),
+                "unknown",
+                &model,
+                502,
+                &e.to_string(),
+            );
+
             return Err(ApiErrorResponse::bad_gateway(format!(
                 "Provider error: {}",
                 e
             )));
         }
     };
+
+    // Emit pending monitor event for streaming response
+    let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        &generation_id,
+        &model,
+    );
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum GuardrailGate {
@@ -1671,6 +1790,20 @@ async fn handle_streaming_parallel(
                     "timestamp": created_at.to_rfc3339(),
                 })
                 .to_string(),
+            );
+
+            // Complete the pending monitor event with final streaming data
+            super::monitor_helpers::complete_llm_response(
+                &state_clone,
+                &monitor_event_id,
+                &provider,
+                &model_clone,
+                prompt_tokens as u64,
+                completion_tokens as u64,
+                Some(cost),
+                latency_ms,
+                Some(&finish_reason_val),
+                &content_accumulator,
             );
 
             let generation_details = GenerationDetails {

@@ -3175,3 +3175,99 @@ export interface MemoryClientInfo {
   source_count: number
   total_lines: number
 }
+
+// =============================================================================
+// Monitor Types
+// Rust: crates/lr-monitor/src/types.rs
+// =============================================================================
+
+export type MonitorEventType =
+  | 'llm_request' | 'llm_request_transformed' | 'llm_response' | 'llm_error'
+  | 'mcp_tool_call' | 'mcp_tool_response'
+  | 'mcp_resource_read' | 'mcp_resource_response'
+  | 'mcp_prompt_get' | 'mcp_prompt_response'
+  | 'mcp_elicitation_request' | 'mcp_elicitation_response'
+  | 'mcp_sampling_request' | 'mcp_sampling_response'
+  | 'guardrail_request' | 'guardrail_response'
+  | 'guardrail_response_check_request' | 'guardrail_response_check_response'
+  | 'secret_scan_request' | 'secret_scan_response'
+  | 'route_llm_request' | 'route_llm_response'
+  | 'routing_decision'
+  | 'auth_error' | 'access_denied'
+  | 'rate_limit_event'
+  | 'validation_error'
+  | 'mcp_server_event'
+  | 'oauth_event'
+  | 'internal_error'
+  | 'moderation_event'
+  | 'connection_error'
+  | 'prompt_compression' | 'firewall_decision' | 'sse_connection'
+
+export type EventStatus = 'pending' | 'complete' | 'error'
+
+/** Rust: crates/lr-monitor/src/types.rs - MonitorEventSummary */
+export interface MonitorEventSummary {
+  id: string
+  sequence: number
+  timestamp: string
+  event_type: MonitorEventType
+  client_id: string | null
+  client_name: string | null
+  status: EventStatus
+  duration_ms: number | null
+  summary: string
+}
+
+/** Rust: crates/lr-monitor/src/types.rs - MonitorEvent */
+export interface MonitorEvent {
+  id: string
+  sequence: number
+  timestamp: string
+  event_type: MonitorEventType
+  client_id: string | null
+  client_name: string | null
+  request_id: string | null
+  data: Record<string, unknown>
+  status: EventStatus
+  duration_ms: number | null
+}
+
+/** Rust: crates/lr-monitor/src/types.rs - MonitorEventListResponse */
+export interface MonitorEventListResponse {
+  events: MonitorEventSummary[]
+  total: number
+}
+
+/** Rust: crates/lr-monitor/src/types.rs - MonitorStats */
+export interface MonitorStats {
+  total_events: number
+  max_capacity: number
+  events_by_type: Record<string, number>
+}
+
+/** Rust: crates/lr-monitor/src/types.rs - MonitorEventFilter */
+export interface MonitorEventFilter {
+  event_types: MonitorEventType[] | null
+  client_id: string | null
+  status: EventStatus | null
+  search: string | null
+}
+
+// Monitor Command Parameters
+
+/** Params for get_monitor_events */
+export interface GetMonitorEventsParams {
+  offset: number
+  limit: number
+  filter: MonitorEventFilter | null
+}
+
+/** Params for get_monitor_event_detail */
+export interface GetMonitorEventDetailParams {
+  eventId: string
+}
+
+/** Params for set_monitor_max_capacity */
+export interface SetMonitorMaxCapacityParams {
+  capacity: number
+}

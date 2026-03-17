@@ -100,6 +100,18 @@ where
                 Some(header) => match header.to_str() {
                     Ok(s) => s,
                     Err(_) => {
+                        state.monitor_store.push(
+                            lr_monitor::MonitorEventType::AuthError,
+                            None, None, None,
+                            lr_monitor::MonitorEventData::AuthError {
+                                error_type: "invalid_encoding".to_string(),
+                                endpoint: path.to_string(),
+                                message: "Invalid Authorization header encoding".to_string(),
+                                status_code: 401,
+                            },
+                            lr_monitor::EventStatus::Error,
+                            None,
+                        );
                         return Ok(create_error_response(
                             StatusCode::UNAUTHORIZED,
                             "authentication_error",
@@ -108,6 +120,18 @@ where
                     }
                 },
                 None => {
+                    state.monitor_store.push(
+                        lr_monitor::MonitorEventType::AuthError,
+                        None, None, None,
+                        lr_monitor::MonitorEventData::AuthError {
+                            error_type: "missing_header".to_string(),
+                            endpoint: path.to_string(),
+                            message: "Missing Authorization header".to_string(),
+                            status_code: 401,
+                        },
+                        lr_monitor::EventStatus::Error,
+                        None,
+                    );
                     return Ok(create_error_response(
                         StatusCode::UNAUTHORIZED,
                         "authentication_error",
@@ -118,6 +142,18 @@ where
 
             // Check if it starts with "Bearer "
             if !auth_header.starts_with("Bearer ") {
+                state.monitor_store.push(
+                    lr_monitor::MonitorEventType::AuthError,
+                    None, None, None,
+                    lr_monitor::MonitorEventData::AuthError {
+                        error_type: "invalid_format".to_string(),
+                        endpoint: path.to_string(),
+                        message: "Invalid Authorization header format".to_string(),
+                        status_code: 401,
+                    },
+                    lr_monitor::EventStatus::Error,
+                    None,
+                );
                 return Ok(create_error_response(
                     StatusCode::UNAUTHORIZED,
                     "authentication_error",
@@ -174,6 +210,18 @@ where
                             reason = "invalid_token",
                             "Authentication failed: invalid bearer token"
                         );
+                        state.monitor_store.push(
+                            lr_monitor::MonitorEventType::AuthError,
+                            None, None, None,
+                            lr_monitor::MonitorEventData::AuthError {
+                                error_type: "invalid_key".to_string(),
+                                endpoint: path.to_string(),
+                                message: "Invalid API key".to_string(),
+                                status_code: 401,
+                            },
+                            lr_monitor::EventStatus::Error,
+                            None,
+                        );
                         return Ok(create_error_response(
                             StatusCode::UNAUTHORIZED,
                             "authentication_error",
@@ -182,6 +230,18 @@ where
                     }
                     Err(e) => {
                         tracing::error!("Error verifying client secret: {}", e);
+                        state.monitor_store.push(
+                            lr_monitor::MonitorEventType::AuthError,
+                            None, None, None,
+                            lr_monitor::MonitorEventData::AuthError {
+                                error_type: "verification_error".to_string(),
+                                endpoint: path.to_string(),
+                                message: format!("Authentication error: {}", e),
+                                status_code: 500,
+                            },
+                            lr_monitor::EventStatus::Error,
+                            None,
+                        );
                         return Ok(create_error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "internal_error",

@@ -65,6 +65,19 @@ export function EventDetail({ event }: EventDetailProps) {
         {(type === 'guardrail_request' || type === 'guardrail_response') && <GuardrailDetail data={data} />}
         {(type === 'secret_scan_request' || type === 'secret_scan_response') && <SecretScanDetail data={data} />}
         {(type === 'route_llm_request' || type === 'route_llm_response' || type === 'routing_decision') && <RoutingDetail data={data} />}
+        {(type === 'auth_error' || type === 'access_denied') && <AuthErrorDetail data={data} />}
+        {type === 'rate_limit_event' && <RateLimitDetail data={data} />}
+        {type === 'validation_error' && <ValidationErrorDetail data={data} />}
+        {type === 'mcp_server_event' && <McpServerEventDetail data={data} />}
+        {type === 'oauth_event' && <OAuthEventDetail data={data} />}
+        {type === 'internal_error' && <InternalErrorDetail data={data} />}
+        {type === 'moderation_event' && <ModerationEventDetail data={data} />}
+        {type === 'connection_error' && <ConnectionErrorDetail data={data} />}
+        {(type === 'mcp_elicitation_request' || type === 'mcp_elicitation_response') && <McpElicitationDetail data={data} />}
+        {(type === 'mcp_sampling_request' || type === 'mcp_sampling_response') && <McpSamplingDetail data={data} />}
+        {type === 'prompt_compression' && <PromptCompressionDetail data={data} />}
+        {type === 'firewall_decision' && <FirewallDecisionDetail data={data} />}
+        {type === 'sse_connection' && <SseConnectionDetail data={data} />}
       </div>
     </ScrollArea>
   )
@@ -488,6 +501,240 @@ function RoutingDetail({ data }: { data: EventData }) {
       {data.candidate_models && (
         <Field label="Candidates" value={(data.candidate_models as string[]).join(', ')} />
       )}
+    </div>
+  )
+}
+
+// ---- New event detail components ----
+
+function AuthErrorDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Error Type" value={data.error_type as string} />
+        <Field label="Status Code" value={String(data.status_code)} />
+        <Field label="Endpoint" value={data.endpoint as string} />
+        {data.reason && <Field label="Reason" value={data.reason as string} />}
+      </div>
+      <div className="text-xs">
+        <span className="text-muted-foreground font-medium">Message:</span>
+        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+          {data.message as string}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+function RateLimitDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Reason" value={data.reason as string} />
+        <Field label="Status Code" value={String(data.status_code)} />
+        <Field label="Endpoint" value={data.endpoint as string} />
+        {data.retry_after_secs != null && <Field label="Retry After" value={`${data.retry_after_secs}s`} />}
+      </div>
+      <div className="text-xs">
+        <span className="text-muted-foreground font-medium">Message:</span>
+        <pre className="mt-1 p-2 bg-amber-500/10 rounded text-xs whitespace-pre-wrap text-amber-700 dark:text-amber-400">
+          {data.message as string}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+function ValidationErrorDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Endpoint" value={data.endpoint as string} />
+        <Field label="Status Code" value={String(data.status_code)} />
+        {data.field && <Field label="Field" value={data.field as string} />}
+      </div>
+      <div className="text-xs">
+        <span className="text-muted-foreground font-medium">Message:</span>
+        <pre className="mt-1 p-2 bg-yellow-500/10 rounded text-xs whitespace-pre-wrap text-yellow-700 dark:text-yellow-400">
+          {data.message as string}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+function McpServerEventDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="flex items-center gap-1 text-xs">
+          <Server className="h-3 w-3 text-muted-foreground" />
+          <span className="text-muted-foreground">Server:</span>
+          <span>{(data.server_name || data.server_id) as string}</span>
+        </div>
+        <Field label="Action" value={data.action as string} />
+      </div>
+      <div className="text-xs">
+        <span className="text-muted-foreground font-medium">Message:</span>
+        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+          {data.message as string}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+function OAuthEventDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Action" value={data.action as string} />
+        <Field label="Status Code" value={String(data.status_code)} />
+        {data.client_id_hint && <Field label="Client" value={data.client_id_hint as string} />}
+      </div>
+      <div className="text-xs">
+        <span className="text-muted-foreground font-medium">Message:</span>
+        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+          {data.message as string}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+function InternalErrorDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Error Type" value={data.error_type as string} />
+        <Field label="Status Code" value={String(data.status_code)} />
+      </div>
+      <div className="text-xs">
+        <span className="text-muted-foreground font-medium">Message:</span>
+        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+          {data.message as string}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+function ModerationEventDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Reason" value={data.reason as string} />
+        <Field label="Status Code" value={String(data.status_code)} />
+      </div>
+      <div className="text-xs">
+        <span className="text-muted-foreground font-medium">Message:</span>
+        <pre className="mt-1 p-2 bg-orange-500/10 rounded text-xs whitespace-pre-wrap text-orange-700 dark:text-orange-400">
+          {data.message as string}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+function ConnectionErrorDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Transport" value={data.transport as string} />
+        <Field label="Action" value={data.action as string} />
+      </div>
+      <div className="text-xs">
+        <span className="text-muted-foreground font-medium">Message:</span>
+        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+          {data.message as string}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+function McpElicitationDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="flex items-center gap-1 text-xs">
+          <Server className="h-3 w-3 text-muted-foreground" />
+          <span className="text-muted-foreground">Server:</span>
+          <span>{(data.server_name || data.server_id) as string}</span>
+        </div>
+        {data.action && <Field label="Action" value={data.action as string} />}
+        {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+      </div>
+      {data.message && (
+        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
+          {data.message as string}
+        </pre>
+      )}
+      {data.schema && <JsonSection title="Schema" data={data.schema as unknown} defaultOpen={false} />}
+      {data.content && <JsonSection title="Content" data={data.content as unknown} defaultOpen={true} />}
+    </div>
+  )
+}
+
+function McpSamplingDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="flex items-center gap-1 text-xs">
+          <Server className="h-3 w-3 text-muted-foreground" />
+          <span className="text-muted-foreground">Server:</span>
+          <span>{(data.server_name || data.server_id) as string}</span>
+        </div>
+        {data.action && <Field label="Action" value={data.action as string} />}
+        {data.message_count != null && <Field label="Messages" value={String(data.message_count)} />}
+        {data.model_hint && <Field label="Model Hint" value={data.model_hint as string} />}
+        {data.model_used && <Field label="Model Used" value={data.model_used as string} />}
+        {data.max_tokens != null && <Field label="Max Tokens" value={String(data.max_tokens)} />}
+        {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+      </div>
+      {data.content_preview && (
+        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
+          {data.content_preview as string}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function PromptCompressionDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Method" value={data.method as string} />
+        <Field label="Reduction" value={`${((data.reduction_percent as number) ?? 0).toFixed(1)}%`} />
+        <Field label="Original Tokens" value={String(data.original_tokens)} />
+        <Field label="Compressed Tokens" value={String(data.compressed_tokens)} />
+        <Field label="Duration" value={`${data.duration_ms}ms`} />
+      </div>
+    </div>
+  )
+}
+
+function FirewallDecisionDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Type" value={data.firewall_type as string} />
+        <Field label="Item" value={data.item_name as string} />
+        <Field label="Action" value={data.action as string} />
+        {data.duration && <Field label="Duration" value={data.duration as string} />}
+      </div>
+    </div>
+  )
+}
+
+function SseConnectionDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Session" value={data.session_id as string} />
+        <Field label="Action" value={data.action as string} />
+      </div>
     </div>
   )
 }

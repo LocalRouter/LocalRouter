@@ -14,8 +14,10 @@ const typeGroups = [
   { label: 'All Events', value: 'all' },
   { label: 'LLM', value: 'llm' },
   { label: 'MCP', value: 'mcp' },
+  { label: 'Auth & Access', value: 'auth' },
   { label: 'Security', value: 'security' },
   { label: 'Routing', value: 'routing' },
+  { label: 'Errors', value: 'errors' },
   { label: 'Other', value: 'other' },
 ]
 
@@ -27,6 +29,10 @@ const typeGroupMap: Record<string, MonitorEventType[]> = {
     'mcp_prompt_get', 'mcp_prompt_response',
     'mcp_elicitation_request', 'mcp_elicitation_response',
     'mcp_sampling_request', 'mcp_sampling_response',
+    'mcp_server_event',
+  ],
+  auth: [
+    'auth_error', 'access_denied', 'oauth_event',
   ],
   security: [
     'guardrail_request', 'guardrail_response',
@@ -34,6 +40,10 @@ const typeGroupMap: Record<string, MonitorEventType[]> = {
     'secret_scan_request', 'secret_scan_response',
   ],
   routing: ['route_llm_request', 'route_llm_response', 'routing_decision'],
+  errors: [
+    'rate_limit_event', 'validation_error', 'internal_error',
+    'moderation_event', 'connection_error',
+  ],
   other: ['prompt_compression', 'firewall_decision', 'sse_connection'],
 }
 

@@ -16,7 +16,7 @@ use axum::{
 use std::convert::Infallible;
 use uuid::Uuid;
 
-use super::helpers::{check_mcp_access, get_enabled_client_from_manager};
+use super::helpers::{check_mcp_access_with_state, get_enabled_client_from_manager};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::ApiErrorResponse;
 use crate::state::{AppState, SseConnectionManager, SseMessage};
@@ -156,7 +156,7 @@ pub async fn mcp_gateway_get_handler(
         };
 
         // Enforce client mode: block LLM-only and MCP-via-LLM clients from direct MCP access
-        if let Err(e) = check_mcp_access(&client) {
+        if let Err(e) = check_mcp_access_with_state(&state, &client) {
             return e.into_response();
         }
 
@@ -522,7 +522,7 @@ pub async fn mcp_gateway_handler(
         };
 
         // Enforce client mode: block LLM-only and MCP-via-LLM clients from direct MCP access
-        if let Err(e) = check_mcp_access(&client) {
+        if let Err(e) = check_mcp_access_with_state(&state, &client) {
             return e.into_response();
         }
 

@@ -816,6 +816,9 @@ pub struct AppState {
     /// Sampling passthrough manager for Both/McpOnly mode
     pub sampling_passthrough_manager:
         Arc<lr_mcp::gateway::sampling_approval::SamplingPassthroughManager>,
+
+    /// In-memory monitor event store for real-time traffic inspection
+    pub monitor_store: Arc<lr_monitor::MonitorEventStore>,
 }
 
 impl AppState {
@@ -876,7 +879,7 @@ impl AppState {
         // Wrap notification_tx in Arc before struct init so it can be shared
         let notification_broadcast = Arc::new(notification_tx);
 
-        Self {
+        let result = Self {
             router,
             client_manager,
             token_store,
@@ -912,6 +915,7 @@ impl AppState {
             mcp_via_llm_manager: {
                 let manager = McpViaLlmManager::new(mcp_via_llm_config);
                 manager.update_context_management_config(context_management_config);
+                // Monitor callback is wired after monitor_store is available (see below)
                 Arc::new(manager)
             },
             sampling_approval_manager: Arc::new(
@@ -923,7 +927,18 @@ impl AppState {
             sampling_passthrough_manager: Arc::new(
                 lr_mcp::gateway::sampling_approval::SamplingPassthroughManager::new(120),
             ),
-        }
+            monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
+        };
+
+        // Wire MCP via LLM monitor callback
+        let monitor = result.monitor_store.clone();
+        result.mcp_via_llm_manager.set_monitor_emit(Arc::new(
+            move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
+                monitor.push(event_type, client_id, client_name, request_id, data, status, duration_ms);
+            },
+        ));
+
+        result
     }
 
     /// Set the safety engine
@@ -955,6 +970,20 @@ impl AppState {
             mc.record_feature_event("feature_context_mgmt", tokens_saved, 0.0);
         });
 
+        // Wire MCP monitor events to the monitor store
+        let monitor = self.monitor_store.clone();
+        mcp_gateway.set_on_monitor_event(move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
+            monitor.push(event_type, client_id, client_name, request_id, data, status, duration_ms);
+        });
+
+        // Wire MCP server manager monitor events to the monitor store
+        let monitor = self.monitor_store.clone();
+        mcp_server_manager.set_monitor_emit(Arc::new(
+            move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
+                monitor.push(event_type, client_id, client_name, request_id, data, status, duration_ms);
+            },
+        ));
+
         Self {
             mcp_server_manager,
             mcp_gateway,
@@ -978,7 +1007,15 @@ impl AppState {
         // Also set app handle on health cache for event emission
         self.health_cache.set_app_handle(handle.clone());
         // Also set app handle on SSE connection manager for connection events
-        self.sse_connection_manager.set_app_handle(handle);
+        self.sse_connection_manager.set_app_handle(handle.clone());
+        // Also set app handle on monitor store for event emission
+        {
+            let h = handle;
+            self.monitor_store.set_emitter(move |event_name, payload| {
+                use tauri::Emitter;
+                let _ = h.emit(event_name, payload);
+            });
+        }
     }
 
     /// Set the tray graph manager (called after Tauri initialization when it's created)

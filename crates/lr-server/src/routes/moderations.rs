@@ -11,7 +11,7 @@ use axum::{
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access, get_enabled_client};
+use super::helpers::{check_llm_access_with_state, get_enabled_client};
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
 use crate::types::{ModerationInput, ModerationRequest, ModerationResponse, ModerationResult};
@@ -43,18 +43,35 @@ pub async fn moderations(
     // Emit event
     state.emit_event("llm-request", "moderation");
 
+    // Emit monitor event for traffic inspection
+    let request_json = serde_json::to_value(&request).unwrap_or_default();
+    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+        &state,
+        None,
+        "/v1/moderations",
+        request.model.as_deref().unwrap_or("localrouter-guardrails"),
+        false,
+        &request_json,
+    );
+
     // Record client activity
     state.record_client_activity(&auth.api_key_id);
 
     // Validate client is enabled and has LLM access
     if auth.api_key_id != "internal-test" {
         let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access(&client)?;
+        check_llm_access_with_state(&state, &client)?;
     }
 
     // Check if moderation endpoint is enabled
     let config = state.config_manager.get();
     if !config.guardrails.moderation_api_enabled {
+        super::monitor_helpers::emit_moderation_event(
+            &state,
+            "endpoint_disabled",
+            "Moderation API endpoint is disabled",
+            503,
+        );
         return Err(ApiErrorResponse::service_unavailable(
             "Moderation API endpoint is disabled. Enable it in Settings > GuardRails.",
         ));
@@ -66,6 +83,12 @@ pub async fn moderations(
         guard
             .as_ref()
             .ok_or_else(|| {
+                super::monitor_helpers::emit_moderation_event(
+                    &state,
+                    "no_models_configured",
+                    "No safety models configured",
+                    503,
+                );
                 ApiErrorResponse::service_unavailable(
                     "No safety models configured. Add safety models in Settings > GuardRails.",
                 )
@@ -74,6 +97,12 @@ pub async fn moderations(
     };
 
     if !engine.has_models() {
+        super::monitor_helpers::emit_moderation_event(
+            &state,
+            "no_models_loaded",
+            "No safety models loaded",
+            503,
+        );
         return Err(ApiErrorResponse::service_unavailable(
             "No safety models loaded. Add safety models in Settings > GuardRails.",
         ));
@@ -86,6 +115,14 @@ pub async fn moderations(
     };
 
     if texts.is_empty() || texts.iter().all(|t| t.is_empty()) {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            None,
+            "/v1/moderations",
+            Some("input"),
+            "input cannot be empty",
+            400,
+        );
         return Err(ApiErrorResponse::bad_request("input cannot be empty").with_param("input"));
     }
 
@@ -112,6 +149,24 @@ pub async fn moderations(
         &auth.api_key_id[..8.min(auth.api_key_id.len())],
         texts.len(),
         response.results.iter().filter(|r| r.flagged).count(),
+    );
+
+    // Emit monitor response event
+    let flagged_count = response.results.iter().filter(|r| r.flagged).count();
+    super::monitor_helpers::emit_llm_response(
+        &state,
+        None,
+        &response.id,
+        "localrouter",
+        &response.model,
+        200,
+        0,
+        0,
+        None,
+        0,
+        Some("stop"),
+        &format!("[{} input(s), {} flagged]", texts.len(), flagged_count),
+        false,
     );
 
     Ok(Json(response).into_response())
@@ -264,6 +319,7 @@ mod tests {
         SafetyCheckResult {
             verdicts: vec![SafetyVerdict {
                 model_id: "test".into(),
+                model_label: None,
                 is_safe,
                 flagged_categories,
                 confidence: None,

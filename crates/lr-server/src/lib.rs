@@ -211,6 +211,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         client_manager: state.client_manager.clone(),
         token_store: state.token_store.clone(),
         token_rate_limiter: Arc::new(dashmap::DashMap::new()),
+        monitor_store: state.monitor_store.clone(),
     };
 
     let oauth_routes = Router::new()

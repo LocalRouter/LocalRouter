@@ -8,7 +8,7 @@ use axum::{
     Json,
 };
 
-use super::helpers::{check_llm_access, get_client_with_strategy};
+use super::helpers::{check_llm_access_with_state, get_client_with_strategy};
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
 use crate::types::{ModelData, ModelPricing, ModelsResponse};
@@ -40,7 +40,7 @@ pub async fn list_models<B>(
 
     // Get enabled client and strategy
     let (client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
-    check_llm_access(&client)?;
+    check_llm_access_with_state(&state, &client)?;
 
     // If auto-routing is enabled, return ONLY the auto router model
     // This simplifies the client experience - they see one model to use
@@ -144,7 +144,7 @@ pub async fn get_model<B>(
 
     // Get enabled client and strategy
     let (client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
-    check_llm_access(&client)?;
+    check_llm_access_with_state(&state, &client)?;
 
     // Special handling for auto router virtual model
     if let Some(auto_config) = &strategy.auto_config {
@@ -194,10 +194,28 @@ pub async fn get_model<B>(
     let model_info = all_models
         .iter()
         .find(|m| m.id.eq_ignore_ascii_case(&model_id))
-        .ok_or_else(|| ApiErrorResponse::not_found(format!("Model '{}' not found", model_id)))?;
+        .ok_or_else(|| {
+            super::monitor_helpers::emit_access_denied_for_client(
+                &state,
+                &auth_context.api_key_id,
+                "model_not_found",
+                "/v1/models/{id}",
+                &format!("Model '{}' not found", model_id),
+                404,
+            );
+            ApiErrorResponse::not_found(format!("Model '{}' not found", model_id))
+        })?;
 
     // Check if strategy allows access to this model
     if !strategy.is_model_allowed(&model_info.provider, &model_info.id) {
+        super::monitor_helpers::emit_access_denied_for_client(
+            &state,
+            &auth_context.api_key_id,
+            "model_not_allowed",
+            "/v1/models/{id}",
+            &format!("API key does not have access to model '{}'", model_id),
+            403,
+        );
         return Err(ApiErrorResponse::forbidden(format!(
             "API key does not have access to model '{}'",
             model_id
@@ -255,10 +273,18 @@ pub async fn get_model_pricing<B>(
 
     // Get enabled client and strategy
     let (client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
-    check_llm_access(&client)?;
+    check_llm_access_with_state(&state, &client)?;
 
     // Check if strategy allows access to this model
     if !strategy.is_model_allowed(&provider, &model) {
+        super::monitor_helpers::emit_access_denied_for_client(
+            &state,
+            &auth_context.api_key_id,
+            "model_not_allowed",
+            "/v1/models/{provider}/{model}/pricing",
+            &format!("API key does not have access to model '{}/{}'", provider, model),
+            403,
+        );
         return Err(ApiErrorResponse::forbidden(format!(
             "API key does not have access to model '{}/{}'",
             provider, model

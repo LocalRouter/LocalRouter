@@ -39,11 +39,32 @@ pub async fn image_generations(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "image");
 
+    // Emit monitor event for traffic inspection
+    let request_json = serde_json::to_value(&request).unwrap_or_default();
+    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+        &state,
+        None,
+        "/v1/images/generations",
+        &request.model,
+        false,
+        &request_json,
+    );
+
     // Record client activity for connection graph
     state.record_client_activity(&auth.api_key_id);
 
     // Validate request
-    validate_request(&request)?;
+    if let Err(e) = validate_request(&request) {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            None,
+            "/v1/images/generations",
+            e.error.error.param.as_deref(),
+            &e.error.error.message,
+            400,
+        );
+        return Err(e);
+    }
 
     let started_at = Instant::now();
 
@@ -55,6 +76,14 @@ pub async fn image_generations(
         if request.model.starts_with("dall-e") {
             ("openai".to_string(), request.model.clone())
         } else {
+            super::monitor_helpers::emit_validation_error(
+                &state,
+                None,
+                "/v1/images/generations",
+                Some("model"),
+                "Model must be in provider/model format or a recognized model name",
+                400,
+            );
             return Err(ApiErrorResponse::bad_request(
                 "Model must be in provider/model format or a recognized model name (dall-e-2, dall-e-3)",
             )
@@ -67,6 +96,14 @@ pub async fn image_generations(
         .provider_registry
         .get_provider(&provider_name)
         .ok_or_else(|| {
+            super::monitor_helpers::emit_validation_error(
+                &state,
+                None,
+                "/v1/images/generations",
+                Some("model"),
+                &format!("Provider '{}' not found", provider_name),
+                400,
+            );
             ApiErrorResponse::bad_request(format!("Provider '{}' not found", provider_name))
                 .with_param("model")
         })?;
@@ -88,7 +125,24 @@ pub async fn image_generations(
         .generate_image(provider_request)
         .await
         .map_err(|e| {
-            tracing::error!("Image generation failed: {}", e);
+            let latency = Instant::now().duration_since(started_at).as_millis() as u64;
+
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                None,
+                None,
+                &provider_name,
+                &request.model,
+                502,
+                &e.to_string(),
+            );
+
+            tracing::error!(
+                "Image generation failed: latency={}ms, error={}",
+                latency,
+                e
+            );
             ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
         })?;
 
@@ -114,6 +168,24 @@ pub async fn image_generations(
         auth.api_key_id,
         request.model,
         latency_ms
+    );
+
+    // Emit monitor response event
+    let image_count = api_response.data.len();
+    super::monitor_helpers::emit_llm_response(
+        &state,
+        None,
+        "",
+        &provider_name,
+        &request.model,
+        200,
+        0,
+        0,
+        None,
+        latency_ms,
+        Some("stop"),
+        &format!("[{} image(s) generated]", image_count),
+        false,
     );
 
     Ok(Json(api_response).into_response())

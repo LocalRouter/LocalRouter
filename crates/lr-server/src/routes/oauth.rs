@@ -17,6 +17,7 @@ use std::time::Instant;
 use utoipa::ToSchema;
 
 use lr_clients::{ClientManager, TokenStore};
+use lr_monitor;
 
 /// OAuth 2.0 token request (client credentials flow)
 ///
@@ -99,6 +100,7 @@ pub struct OAuthState {
     pub client_manager: Arc<ClientManager>,
     pub token_store: Arc<TokenStore>,
     pub token_rate_limiter: Arc<DashMap<String, Vec<Instant>>>,
+    pub monitor_store: Arc<lr_monitor::MonitorEventStore>,
 }
 
 /// Extract client credentials from Basic Auth header
@@ -179,6 +181,23 @@ pub async fn token_endpoint(
 ) -> Response {
     // Verify grant type
     if request.grant_type != "client_credentials" {
+        state.monitor_store.push(
+            lr_monitor::MonitorEventType::OAuthEvent,
+            None,
+            None,
+            None,
+            lr_monitor::MonitorEventData::OAuthEvent {
+                action: "unsupported_grant_type".to_string(),
+                client_id_hint: None,
+                message: format!(
+                    "Unsupported grant type: {}",
+                    request.grant_type
+                ),
+                status_code: 400,
+            },
+            lr_monitor::EventStatus::Error,
+            None,
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(TokenErrorResponse::unsupported_grant_type()),
@@ -196,6 +215,20 @@ pub async fn token_endpoint(
             match extract_basic_auth(auth.to_str().ok()) {
                 Some((id, secret)) => (id, secret),
                 None => {
+                    state.monitor_store.push(
+                        lr_monitor::MonitorEventType::OAuthEvent,
+                        None,
+                        None,
+                        None,
+                        lr_monitor::MonitorEventData::OAuthEvent {
+                            action: "invalid_auth_header".to_string(),
+                            client_id_hint: None,
+                            message: "Invalid Authorization header format".to_string(),
+                            status_code: 400,
+                        },
+                        lr_monitor::EventStatus::Error,
+                        None,
+                    );
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(TokenErrorResponse::invalid_request(
@@ -206,6 +239,20 @@ pub async fn token_endpoint(
                 }
             }
         } else {
+            state.monitor_store.push(
+                lr_monitor::MonitorEventType::OAuthEvent,
+                None,
+                None,
+                None,
+                lr_monitor::MonitorEventData::OAuthEvent {
+                    action: "missing_credentials".to_string(),
+                    client_id_hint: None,
+                    message: "Missing client credentials".to_string(),
+                    status_code: 400,
+                },
+                lr_monitor::EventStatus::Error,
+                None,
+            );
             return (
                 StatusCode::BAD_REQUEST,
                 Json(TokenErrorResponse::invalid_request(
@@ -230,6 +277,20 @@ pub async fn token_endpoint(
         attempts.retain(|t| *t > one_minute_ago);
 
         if attempts.len() >= MAX_TOKEN_REQUESTS_PER_MINUTE {
+            state.monitor_store.push(
+                lr_monitor::MonitorEventType::OAuthEvent,
+                Some(client_id.clone()),
+                None,
+                None,
+                lr_monitor::MonitorEventData::OAuthEvent {
+                    action: "rate_limited".to_string(),
+                    client_id_hint: Some(client_id.clone()),
+                    message: "Too many token requests. Try again later.".to_string(),
+                    status_code: 429,
+                },
+                lr_monitor::EventStatus::Error,
+                None,
+            );
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(TokenErrorResponse {
@@ -252,6 +313,20 @@ pub async fn token_endpoint(
     {
         Ok(Some(client)) => client,
         Ok(None) => {
+            state.monitor_store.push(
+                lr_monitor::MonitorEventType::OAuthEvent,
+                Some(client_id.clone()),
+                None,
+                None,
+                lr_monitor::MonitorEventData::OAuthEvent {
+                    action: "credential_validation_failed".to_string(),
+                    client_id_hint: Some(client_id.clone()),
+                    message: "Client authentication failed".to_string(),
+                    status_code: 401,
+                },
+                lr_monitor::EventStatus::Error,
+                None,
+            );
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(TokenErrorResponse::invalid_client()),
@@ -260,6 +335,20 @@ pub async fn token_endpoint(
         }
         Err(e) => {
             tracing::error!("Error verifying client credentials: {}", e);
+            state.monitor_store.push(
+                lr_monitor::MonitorEventType::OAuthEvent,
+                Some(client_id.clone()),
+                None,
+                None,
+                lr_monitor::MonitorEventData::OAuthEvent {
+                    action: "verification_error".to_string(),
+                    client_id_hint: Some(client_id.clone()),
+                    message: format!("Error verifying client credentials: {}", e),
+                    status_code: 500,
+                },
+                lr_monitor::EventStatus::Error,
+                None,
+            );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(TokenErrorResponse::invalid_request("Internal server error")),
@@ -285,6 +374,20 @@ pub async fn token_endpoint(
         }
         Err(e) => {
             tracing::error!("Error generating access token: {}", e);
+            state.monitor_store.push(
+                lr_monitor::MonitorEventType::OAuthEvent,
+                Some(client.id.clone()),
+                None,
+                None,
+                lr_monitor::MonitorEventData::OAuthEvent {
+                    action: "token_generation_failed".to_string(),
+                    client_id_hint: Some(client.id.clone()),
+                    message: format!("Error generating access token: {}", e),
+                    status_code: 500,
+                },
+                lr_monitor::EventStatus::Error,
+                None,
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(TokenErrorResponse::invalid_request(

@@ -16,7 +16,7 @@ use chrono::Utc;
 use futures::stream::StreamExt;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access, get_client_with_strategy};
+use super::helpers::{check_llm_access_with_state, get_client_with_strategy};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -303,7 +303,7 @@ pub async fn chat_completions(
 
     // Enforce client mode: block MCP-only clients from LLM endpoints
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_llm_access(client)?;
+        check_llm_access_with_state(&state, client)?;
     }
 
     // Secret scanning: check outbound request for leaked secrets (before guardrails)

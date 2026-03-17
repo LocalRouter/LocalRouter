@@ -24,6 +24,20 @@ use std::sync::Arc;
 /// Receives the server_id and the notification.
 pub type NotificationCallback = Arc<dyn Fn(String, JsonRpcNotification) + Send + Sync>;
 
+/// Callback type for emitting monitor events from the MCP server manager.
+pub type MonitorEmitFn = Arc<
+    dyn Fn(
+            lr_monitor::MonitorEventType,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            lr_monitor::MonitorEventData,
+            lr_monitor::EventStatus,
+            Option<u64>,
+        ) + Send
+        + Sync,
+>;
+
 /// Cached shell environment for spawning subprocess commands.
 ///
 /// On macOS, GUI apps don't inherit the user's shell PATH. This lazily fetches
@@ -143,6 +157,9 @@ pub struct McpServerManager {
 
     /// Next handler ID (atomic counter)
     next_handler_id: Arc<std::sync::atomic::AtomicU64>,
+
+    /// Optional monitor event callback
+    monitor_emit: Arc<parking_lot::RwLock<Option<MonitorEmitFn>>>,
 }
 
 /// Health status for an MCP server
@@ -194,6 +211,7 @@ impl McpServerManager {
             oauth_manager: Arc::new(McpOAuthManager::new()),
             notification_handlers: Arc::new(DashMap::new()),
             next_handler_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            monitor_emit: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
@@ -214,6 +232,36 @@ impl McpServerManager {
             oauth_manager: Arc::new(oauth_manager),
             notification_handlers: Arc::new(DashMap::new()),
             next_handler_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            monitor_emit: Arc::new(parking_lot::RwLock::new(None)),
+        }
+    }
+
+    /// Set the monitor event callback.
+    pub fn set_monitor_emit(&self, emit: MonitorEmitFn) {
+        *self.monitor_emit.write() = Some(emit);
+    }
+
+    /// Emit a monitor event if the callback is set.
+    fn emit_monitor_event(
+        &self,
+        event_type: lr_monitor::MonitorEventType,
+        client_id: Option<String>,
+        client_name: Option<String>,
+        request_id: Option<String>,
+        data: lr_monitor::MonitorEventData,
+        status: lr_monitor::EventStatus,
+        duration_ms: Option<u64>,
+    ) {
+        if let Some(cb) = self.monitor_emit.read().as_ref() {
+            cb(
+                event_type,
+                client_id,
+                client_name,
+                request_id,
+                data,
+                status,
+                duration_ms,
+            );
         }
     }
 
@@ -386,16 +434,32 @@ impl McpServerManager {
         tracing::info!("Starting MCP server: {} ({})", config.name, server_id);
 
         #[allow(deprecated)]
-        match config.transport {
-            McpTransportType::Stdio => {
-                self.start_stdio_server(server_id, &config).await?;
-            }
+        let result = match config.transport {
+            McpTransportType::Stdio => self.start_stdio_server(server_id, &config).await,
             McpTransportType::Sse | McpTransportType::HttpSse => {
-                self.start_sse_server(server_id, &config).await?;
+                self.start_sse_server(server_id, &config).await
             }
             McpTransportType::WebSocket => {
-                self.start_websocket_server(server_id, &config).await?;
+                self.start_websocket_server(server_id, &config).await
             }
+        };
+
+        if let Err(ref e) = result {
+            self.emit_monitor_event(
+                lr_monitor::MonitorEventType::McpServerEvent,
+                None,
+                None,
+                None,
+                lr_monitor::MonitorEventData::McpServerEvent {
+                    server_id: server_id.to_string(),
+                    server_name: Some(config.name.clone()),
+                    action: "connection_failed".to_string(),
+                    message: format!("{}", e),
+                },
+                lr_monitor::EventStatus::Error,
+                None,
+            );
+            return result;
         }
 
         tracing::info!("MCP server started: {}", server_id);
@@ -539,16 +603,46 @@ impl McpServerManager {
                         match keychain.get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref) {
                             Ok(Some(secret)) => secret,
                             Ok(None) => {
+                                let msg = format!(
+                                    "OAuth client secret not found for server: {}",
+                                    server_id
+                                );
                                 tracing::warn!(
                                     "OAuth client secret not found in keychain for MCP server"
                                 );
-                                return Err(AppError::Mcp(format!(
-                                    "OAuth client secret not found for server: {}",
-                                    server_id
-                                )));
+                                self.emit_monitor_event(
+                                    lr_monitor::MonitorEventType::OAuthEvent,
+                                    None,
+                                    None,
+                                    None,
+                                    lr_monitor::MonitorEventData::OAuthEvent {
+                                        action: "secret_retrieval_failed".to_string(),
+                                        client_id_hint: Some(server_id.to_string()),
+                                        message: msg.clone(),
+                                        status_code: 500,
+                                    },
+                                    lr_monitor::EventStatus::Error,
+                                    None,
+                                );
+                                return Err(AppError::Mcp(msg));
                             }
                             Err(e) => {
-                                tracing::error!("Failed to retrieve OAuth client secret: {}", e);
+                                let msg = format!("Failed to retrieve OAuth client secret: {}", e);
+                                tracing::error!("{}", msg);
+                                self.emit_monitor_event(
+                                    lr_monitor::MonitorEventType::OAuthEvent,
+                                    None,
+                                    None,
+                                    None,
+                                    lr_monitor::MonitorEventData::OAuthEvent {
+                                        action: "secret_retrieval_failed".to_string(),
+                                        client_id_hint: Some(server_id.to_string()),
+                                        message: msg,
+                                        status_code: 500,
+                                    },
+                                    lr_monitor::EventStatus::Error,
+                                    None,
+                                );
                                 return Err(e);
                             }
                         };
@@ -626,14 +720,44 @@ impl McpServerManager {
                             );
                         }
                         Ok(None) => {
-                            tracing::warn!("OAuth browser token not found in keychain for MCP server. User must authenticate via browser first.");
-                            return Err(AppError::Mcp(format!(
+                            let msg = format!(
                                 "OAuth browser authentication required for server: {}. Please complete browser authentication first.",
                                 server_id
-                            )));
+                            );
+                            tracing::warn!("OAuth browser token not found in keychain for MCP server. User must authenticate via browser first.");
+                            self.emit_monitor_event(
+                                lr_monitor::MonitorEventType::OAuthEvent,
+                                None,
+                                None,
+                                None,
+                                lr_monitor::MonitorEventData::OAuthEvent {
+                                    action: "browser_token_failed".to_string(),
+                                    client_id_hint: Some(server_id.to_string()),
+                                    message: msg.clone(),
+                                    status_code: 401,
+                                },
+                                lr_monitor::EventStatus::Error,
+                                None,
+                            );
+                            return Err(AppError::Mcp(msg));
                         }
                         Err(e) => {
-                            tracing::error!("Failed to retrieve OAuth browser token: {}", e);
+                            let msg = format!("Failed to retrieve OAuth browser token: {}", e);
+                            tracing::error!("{}", msg);
+                            self.emit_monitor_event(
+                                lr_monitor::MonitorEventType::OAuthEvent,
+                                None,
+                                None,
+                                None,
+                                lr_monitor::MonitorEventData::OAuthEvent {
+                                    action: "browser_token_failed".to_string(),
+                                    client_id_hint: Some(server_id.to_string()),
+                                    message: msg,
+                                    status_code: 500,
+                                },
+                                lr_monitor::EventStatus::Error,
+                                None,
+                            );
                             return Err(e);
                         }
                     }
@@ -744,16 +868,46 @@ impl McpServerManager {
                         match keychain.get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref) {
                             Ok(Some(secret)) => secret,
                             Ok(None) => {
+                                let msg = format!(
+                                    "OAuth client secret not found for server: {}",
+                                    server_id
+                                );
                                 tracing::warn!(
                                     "OAuth client secret not found in keychain for MCP server"
                                 );
-                                return Err(AppError::Mcp(format!(
-                                    "OAuth client secret not found for server: {}",
-                                    server_id
-                                )));
+                                self.emit_monitor_event(
+                                    lr_monitor::MonitorEventType::OAuthEvent,
+                                    None,
+                                    None,
+                                    None,
+                                    lr_monitor::MonitorEventData::OAuthEvent {
+                                        action: "secret_retrieval_failed".to_string(),
+                                        client_id_hint: Some(server_id.to_string()),
+                                        message: msg.clone(),
+                                        status_code: 500,
+                                    },
+                                    lr_monitor::EventStatus::Error,
+                                    None,
+                                );
+                                return Err(AppError::Mcp(msg));
                             }
                             Err(e) => {
-                                tracing::error!("Failed to retrieve OAuth client secret: {}", e);
+                                let msg = format!("Failed to retrieve OAuth client secret: {}", e);
+                                tracing::error!("{}", msg);
+                                self.emit_monitor_event(
+                                    lr_monitor::MonitorEventType::OAuthEvent,
+                                    None,
+                                    None,
+                                    None,
+                                    lr_monitor::MonitorEventData::OAuthEvent {
+                                        action: "secret_retrieval_failed".to_string(),
+                                        client_id_hint: Some(server_id.to_string()),
+                                        message: msg,
+                                        status_code: 500,
+                                    },
+                                    lr_monitor::EventStatus::Error,
+                                    None,
+                                );
                                 return Err(e);
                             }
                         };
@@ -1008,11 +1162,33 @@ impl McpServerManager {
                 self.check_server_readiness(&config).await
             };
 
+        let server_name = config
+            .map(|c| c.name)
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        // Emit monitor event for unhealthy running servers (disconnected)
+        if status == HealthStatus::Unhealthy {
+            if let Some(ref err_msg) = error {
+                self.emit_monitor_event(
+                    lr_monitor::MonitorEventType::McpServerEvent,
+                    None,
+                    None,
+                    None,
+                    lr_monitor::MonitorEventData::McpServerEvent {
+                        server_id: server_id.to_string(),
+                        server_name: Some(server_name.clone()),
+                        action: "disconnected".to_string(),
+                        message: err_msg.clone(),
+                    },
+                    lr_monitor::EventStatus::Error,
+                    None,
+                );
+            }
+        }
+
         McpServerHealth {
             server_id: server_id.to_string(),
-            server_name: config
-                .map(|c| c.name)
-                .unwrap_or_else(|| "Unknown".to_string()),
+            server_name,
             status,
             latency_ms,
             error,
@@ -1427,6 +1603,21 @@ impl McpServerManager {
         for server_id in server_ids {
             if let Err(e) = self.stop_server(&server_id).await {
                 tracing::error!("Failed to stop server {}: {}", server_id, e);
+                let server_name = self.get_config(&server_id).map(|c| c.name);
+                self.emit_monitor_event(
+                    lr_monitor::MonitorEventType::McpServerEvent,
+                    None,
+                    None,
+                    None,
+                    lr_monitor::MonitorEventData::McpServerEvent {
+                        server_id: server_id.clone(),
+                        server_name,
+                        action: "stop_failed".to_string(),
+                        message: format!("Failed to stop server during shutdown: {}", e),
+                    },
+                    lr_monitor::EventStatus::Error,
+                    None,
+                );
             }
         }
     }

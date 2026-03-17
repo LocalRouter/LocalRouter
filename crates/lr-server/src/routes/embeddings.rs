@@ -10,7 +10,7 @@ use axum::{
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access, get_enabled_client, get_enabled_client_from_manager};
+use super::helpers::{check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
@@ -46,23 +46,55 @@ pub async fn embeddings(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "embedding");
 
+    // Emit monitor event for traffic inspection
+    let request_json = serde_json::to_value(&request).unwrap_or_default();
+    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        "/v1/embeddings",
+        &request.model,
+        false,
+        &request_json,
+    );
+
     // Record client activity for connection graph
     state.record_client_activity(&auth.api_key_id);
 
     // Validate client is enabled and mode allows LLM access
     {
         let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access(&client)?;
+        check_llm_access_with_state(&state, &client)?;
     }
 
     // Validate request
-    validate_request(&request)?;
+    if let Err(e) = validate_request(&request) {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/embeddings",
+            e.error.error.param.as_deref(),
+            &e.error.error.message,
+            400,
+        );
+        return Err(e);
+    }
 
     // Validate client provider access (if using client auth)
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
 
     // Check rate limits
-    check_rate_limits(&state, &auth, &request).await?;
+    if let Err(e) = check_rate_limits(&state, &auth, &request).await {
+        super::monitor_helpers::emit_rate_limit_event(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "rate_limit_exceeded",
+            "/v1/embeddings",
+            &e.error.error.message,
+            429,
+            None,
+        );
+        return Err(e);
+    }
 
     // Log request summary
     {
@@ -139,6 +171,17 @@ pub async fn embeddings(
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
 
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                client_auth.as_ref().map(|ext| ext),
+                Some(&request_id),
+                "unknown",
+                &request.model,
+                502,
+                &e.to_string(),
+            );
+
             tracing::error!("Embedding request failed: {}", e);
             return Err(ApiErrorResponse::bad_gateway(format!(
                 "Provider error: {}",
@@ -204,6 +247,23 @@ pub async fn embeddings(
     ) {
         tracing::warn!("Failed to write access log: {}", e);
     }
+
+    // Emit monitor response event
+    super::monitor_helpers::emit_llm_response(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        &request_id,
+        &provider,
+        &response.model,
+        200,
+        response.usage.prompt_tokens as u64,
+        0,
+        Some(cost),
+        latency_ms,
+        None,
+        "",
+        false,
+    );
 
     // Convert provider response to API response
     let api_response = EmbeddingResponse {
@@ -394,7 +454,7 @@ async fn validate_client_provider_access(
             })
             .or(matching_models.first())
             .ok_or_else(|| {
-                ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
+                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
                     .with_param("model")
             })?;
 
@@ -410,6 +470,15 @@ async fn validate_client_provider_access(
             client.id,
             provider,
             model_id
+        );
+
+        super::monitor_helpers::emit_access_denied_for_client(
+            state,
+            &client.id,
+            "model_not_allowed",
+            "/v1/embeddings",
+            &format!("Access denied: Client is not authorized to use model '{}/{}'", provider, model_id),
+            403,
         );
 
         return Err(ApiErrorResponse::forbidden(format!(

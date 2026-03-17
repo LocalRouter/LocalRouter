@@ -13,7 +13,7 @@ use axum::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde_json::json;
 
-use super::helpers::{check_mcp_access, get_enabled_client_from_manager};
+use super::helpers::{check_mcp_access_with_state, get_enabled_client_from_manager};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::ApiErrorResponse;
 use crate::state::AppState;
@@ -76,7 +76,7 @@ pub async fn mcp_websocket_handler(
     };
 
     // Enforce client mode: block LLM-only and MCP-via-LLM clients from direct MCP access
-    if let Err(e) = check_mcp_access(&client) {
+    if let Err(e) = check_mcp_access_with_state(&state, &client) {
         return e.into_response();
     }
 

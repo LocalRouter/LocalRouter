@@ -6,6 +6,28 @@ use crate::middleware::error::ApiErrorResponse;
 use crate::state::AppState;
 use lr_config::{Client, Strategy};
 
+/// Emit an AccessDenied monitor event from helpers.
+fn emit_access_denied(state: &AppState, client_id: &str, reason: &str, message: &str, status_code: u16) {
+    let client_name = state
+        .client_manager
+        .get_client(client_id)
+        .map(|c| c.name.clone());
+    state.monitor_store.push(
+        lr_monitor::MonitorEventType::AccessDenied,
+        Some(client_id.to_string()),
+        client_name,
+        None,
+        lr_monitor::MonitorEventData::AccessDenied {
+            reason: reason.to_string(),
+            endpoint: String::new(),
+            message: message.to_string(),
+            status_code,
+        },
+        lr_monitor::EventStatus::Error,
+        None,
+    );
+}
+
 /// Result type for helper functions
 pub type HelperResult<T> = Result<T, ApiErrorResponse>;
 
@@ -45,10 +67,14 @@ pub fn get_enabled_client(state: &AppState, client_id: &str) -> HelperResult<Cli
         .clients
         .iter()
         .find(|c| c.id == client_id)
-        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?
+        .ok_or_else(|| {
+            emit_access_denied(state, client_id, "client_not_found", "Client not found", 401);
+            ApiErrorResponse::unauthorized("Client not found")
+        })?
         .clone();
 
     if !client.enabled {
+        emit_access_denied(state, client_id, "client_disabled", "Client is disabled", 403);
         return Err(ApiErrorResponse::forbidden("Client is disabled"));
     }
 
@@ -89,10 +115,14 @@ pub fn get_client_with_strategy(
         .clients
         .iter()
         .find(|c| c.id == client_id)
-        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?
+        .ok_or_else(|| {
+            emit_access_denied(state, client_id, "client_not_found", "Client not found", 401);
+            ApiErrorResponse::unauthorized("Client not found")
+        })?
         .clone();
 
     if !client.enabled {
+        emit_access_denied(state, client_id, "client_disabled", "Client is disabled", 403);
         return Err(ApiErrorResponse::forbidden("Client is disabled"));
     }
 
@@ -101,6 +131,13 @@ pub fn get_client_with_strategy(
         .iter()
         .find(|s| s.id == client.strategy_id)
         .ok_or_else(|| {
+            emit_access_denied(
+                state,
+                client_id,
+                "strategy_not_found",
+                &format!("Strategy '{}' not found", client.strategy_id),
+                500,
+            );
             ApiErrorResponse::internal_error(format!(
                 "Strategy '{}' not found for client '{}'",
                 client.strategy_id, client.id
@@ -132,9 +169,13 @@ pub fn get_enabled_client_from_manager(state: &AppState, client_id: &str) -> Hel
     let client = state
         .client_manager
         .get_client(client_id)
-        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
+        .ok_or_else(|| {
+            emit_access_denied(state, client_id, "client_not_found", "Client not found", 401);
+            ApiErrorResponse::unauthorized("Client not found")
+        })?;
 
     if !client.enabled {
+        emit_access_denied(state, client_id, "client_disabled", "Client is disabled", 403);
         return Err(ApiErrorResponse::forbidden("Client is disabled"));
     }
 
@@ -143,6 +184,23 @@ pub fn get_enabled_client_from_manager(state: &AppState, client_id: &str) -> Hel
 
 /// Check that a client is allowed to access LLM endpoints.
 /// Returns 403 if client mode is `McpOnly`.
+pub fn check_llm_access_with_state(state: &AppState, client: &Client) -> HelperResult<()> {
+    if client.client_mode == lr_config::ClientMode::McpOnly {
+        emit_access_denied(
+            state,
+            &client.id,
+            "mcp_only_client_llm",
+            "Client is in MCP-only mode and cannot access LLM endpoints",
+            403,
+        );
+        return Err(ApiErrorResponse::forbidden(
+            "Client is in MCP-only mode and cannot access LLM endpoints",
+        ));
+    }
+    Ok(())
+}
+
+/// Compatibility wrapper — does not emit monitor events.
 pub fn check_llm_access(client: &Client) -> HelperResult<()> {
     if client.client_mode == lr_config::ClientMode::McpOnly {
         return Err(ApiErrorResponse::forbidden(
@@ -154,6 +212,37 @@ pub fn check_llm_access(client: &Client) -> HelperResult<()> {
 
 /// Check that a client is allowed to access MCP endpoints directly.
 /// Returns 403 if client mode is `LlmOnly` or `McpViaLlm`.
+pub fn check_mcp_access_with_state(state: &AppState, client: &Client) -> HelperResult<()> {
+    match client.client_mode {
+        lr_config::ClientMode::LlmOnly => {
+            emit_access_denied(
+                state,
+                &client.id,
+                "llm_only_client_mcp",
+                "Client is in LLM-only mode and cannot access MCP endpoints",
+                403,
+            );
+            Err(ApiErrorResponse::forbidden(
+                "Client is in LLM-only mode and cannot access MCP endpoints",
+            ))
+        }
+        lr_config::ClientMode::McpViaLlm => {
+            emit_access_denied(
+                state,
+                &client.id,
+                "mcp_via_llm_direct_mcp",
+                "Client is in MCP-via-LLM mode. MCP tools are available through LLM chat completions, not direct MCP access",
+                403,
+            );
+            Err(ApiErrorResponse::forbidden(
+                "Client is in MCP-via-LLM mode. MCP tools are available through LLM chat completions, not direct MCP access",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Compatibility wrapper — does not emit monitor events.
 pub fn check_mcp_access(client: &Client) -> HelperResult<()> {
     match client.client_mode {
         lr_config::ClientMode::LlmOnly => Err(ApiErrorResponse::forbidden(
