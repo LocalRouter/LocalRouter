@@ -88,7 +88,7 @@ impl SafetyEngine {
                             provider.base_url.clone(),
                             provider.api_key.clone(),
                             model_name.clone(),
-                            true, // use Ollama API
+                            false, // use OpenAI-compatible /v1/completions for logprobs support
                         ))),
                         // Cloud providers use /v1/chat/completions
                         "groq" | "deepinfra" | "togetherai" | "mistral" | "anthropic"
@@ -401,7 +401,11 @@ impl SafetyEngine {
 
         for (i, result) in results.into_iter().enumerate() {
             match result {
-                Ok(verdict) => {
+                Ok(mut verdict) => {
+                    // Set the human-readable label from the model's display_name
+                    if let Some(model) = models_to_run.get(i) {
+                        verdict.model_label = Some(model.display_name().to_string());
+                    }
                     if verdict.flagged_categories.is_empty() && !verdict.is_safe {
                         // Model says unsafe but didn't specify categories (e.g. Llama Guard
                         // with no parseable S-codes). Generate a generic action.
@@ -415,18 +419,19 @@ impl SafetyEngine {
 
                     // Collect flagged categories as actions (default: Ask)
                     for flagged in &verdict.flagged_categories {
-                        // Skip if below confidence threshold
-                        if let Some(conf) = flagged.confidence {
-                            if conf < self.confidence_threshold {
-                                continue;
-                            }
+                        // Skip if below confidence threshold.
+                        // When confidence is None (text-parsed, no logprobs),
+                        // treat as full confidence (fail-closed).
+                        let conf = flagged.confidence.unwrap_or(1.0);
+                        if conf < self.confidence_threshold {
+                            continue;
                         }
 
                         all_actions.push(CategoryActionRequired {
                             category: flagged.category.clone(),
                             action: CategoryAction::Ask,
                             model_id: verdict.model_id.clone(),
-                            confidence: flagged.confidence,
+                            confidence: Some(conf),
                         });
                     }
                     verdicts.push(verdict);
@@ -552,6 +557,7 @@ mod tests {
                 id: id.to_string(),
                 verdict: SafetyVerdict {
                     model_id: id.to_string(),
+                    model_label: None,
                     is_safe: true,
                     flagged_categories: vec![],
                     confidence: None,
@@ -566,6 +572,7 @@ mod tests {
                 id: id.to_string(),
                 verdict: SafetyVerdict {
                     model_id: id.to_string(),
+                    model_label: None,
                     is_safe: false,
                     flagged_categories: categories,
                     confidence: None,
@@ -580,6 +587,7 @@ mod tests {
                 id: id.to_string(),
                 verdict: SafetyVerdict {
                     model_id: id.to_string(),
+                    model_label: None,
                     is_safe: false,
                     flagged_categories: vec![],
                     confidence: None,
@@ -713,6 +721,30 @@ mod tests {
         assert!(!result.is_safe); // one model flagged it
         assert_eq!(result.verdicts.len(), 2);
         assert_eq!(result.actions_required.len(), 1);
+    }
+
+    /// Test that None confidence (text-parsed, no logprobs) is treated as 1.0
+    #[tokio::test]
+    async fn test_engine_none_confidence_treated_as_full() {
+        let engine = SafetyEngine::new(
+            vec![Arc::new(MockSafetyModel::unsafe_with_categories(
+                "mock",
+                vec![FlaggedCategory {
+                    category: SafetyCategory::Jailbreak,
+                    confidence: None, // no logprobs available
+                    native_label: "jailbreak".to_string(),
+                }],
+            ))],
+            0.99, // very high threshold
+        );
+
+        let result = engine
+            .check_text("test message", ScanDirection::Input)
+            .await;
+        // None confidence → treated as 1.0, which passes even 0.99 threshold
+        assert!(!result.is_safe);
+        assert_eq!(result.actions_required.len(), 1);
+        assert_eq!(result.actions_required[0].confidence, Some(1.0));
     }
 
     /// Test single model filtering (Bug 7 fix)

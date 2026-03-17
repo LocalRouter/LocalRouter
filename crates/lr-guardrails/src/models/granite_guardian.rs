@@ -297,8 +297,12 @@ impl GraniteGuardianModel {
                     enabled.contains(&cat.category)
                 } else {
                     // Default: skip RAG categories (they need retrieval context
-                    // and produce noise on standard text input)
+                    // and produce noise on standard text input) and the vague
+                    // "harm" catch-all (maps to SocialBias) which causes many
+                    // false positives with its broad "harmful by common-sense"
+                    // definition
                     !Self::is_rag_category(&cat.category)
+                        && cat.category != SafetyCategory::SocialBias
                 }
             })
             .collect()
@@ -373,6 +377,7 @@ impl SafetyModel for GraniteGuardianModel {
 
         Ok(SafetyVerdict {
             model_id: self.model_id.clone(),
+            model_label: None,
             is_safe,
             flagged_categories: flagged,
             confidence: None,
