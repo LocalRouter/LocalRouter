@@ -191,12 +191,15 @@ impl ClientManager {
 
     /// Get the secret for a client by internal ID
     ///
+    /// If the secret is missing from the keychain (e.g., keychain cleared,
+    /// switched keychain backends), a new secret is auto-generated and stored.
+    /// This self-healing prevents clients from becoming unusable.
+    ///
     /// # Arguments
     /// * `id` - The internal client ID (not client_id)
     ///
     /// # Returns
-    /// * `Ok(Some(secret))` if secret exists
-    /// * `Ok(None)` if secret doesn't exist
+    /// * `Ok(Some(secret))` - the existing or newly generated secret
     /// * `Err` on keychain access error
     pub fn get_secret(&self, id: &str) -> AppResult<Option<String>> {
         tracing::debug!(
@@ -206,11 +209,31 @@ impl ClientManager {
         );
         let result = self.keychain.get(CLIENT_SERVICE, id)?;
 
-        if result.is_none() {
-            tracing::warn!("Client secret not found in keychain: {}", id);
+        if let Some(secret) = result {
+            return Ok(Some(secret));
         }
 
-        Ok(result)
+        // Verify the client actually exists before generating a secret
+        let exists = self.clients.read().iter().any(|c| c.id == id);
+        if !exists {
+            return Ok(None);
+        }
+
+        // Self-heal: generate and store a new secret
+        tracing::warn!(
+            "Client secret not found in keychain for '{}', generating new secret",
+            id
+        );
+        let secret = crypto::generate_api_key()
+            .map_err(|e| AppError::Config(format!("Failed to generate client secret: {}", e)))?;
+        self.keychain
+            .store(CLIENT_SERVICE, id, &secret)
+            .map_err(|e| {
+                AppError::Config(format!("Failed to store regenerated client secret: {}", e))
+            })?;
+        tracing::info!("Regenerated missing secret for client '{}'", id);
+
+        Ok(Some(secret))
     }
 
     /// Verify client secret for direct bearer token authentication
