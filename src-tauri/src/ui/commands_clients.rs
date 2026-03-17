@@ -34,6 +34,8 @@ pub struct ClientInfo {
     pub strategy_id: String,
     /// Per-client context management override (None = inherit global, Some(false) = disabled)
     pub context_management_enabled: Option<bool>,
+    /// Per-client catalog compression override (None = inherit global)
+    pub catalog_compression_enabled: Option<bool>,
     pub created_at: String,
     pub last_used: Option<String>,
     /// Unified MCP permissions (hierarchical Allow/Ask/Off)
@@ -80,6 +82,7 @@ pub async fn list_clients(
             enabled: c.enabled,
             strategy_id: c.strategy_id.clone(),
             context_management_enabled: c.context_management_enabled,
+            catalog_compression_enabled: c.catalog_compression_enabled,
             created_at: c.created_at.to_rfc3339(),
             last_used: c.last_used.map(|t| t.to_rfc3339()),
             mcp_permissions: c.mcp_permissions.clone(),
@@ -150,6 +153,7 @@ pub async fn create_client(
         enabled: client.enabled,
         strategy_id: client.strategy_id.clone(),
         context_management_enabled: client.context_management_enabled,
+        catalog_compression_enabled: client.catalog_compression_enabled,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
         mcp_permissions: client.mcp_permissions.clone(),
@@ -370,6 +374,7 @@ pub async fn clone_client(
         enabled: new_client.enabled,
         strategy_id: new_client.strategy_id.clone(),
         context_management_enabled: new_client.context_management_enabled,
+        catalog_compression_enabled: new_client.catalog_compression_enabled,
         created_at: new_client.created_at.to_rfc3339(),
         last_used: None,
         mcp_permissions: new_client.mcp_permissions.clone(),

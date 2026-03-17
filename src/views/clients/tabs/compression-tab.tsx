@@ -39,7 +39,7 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
         } satisfies GetClientCompressionConfigParams as Record<string, unknown>),
         invoke<PromptCompressionConfig>("get_compression_config"),
       ])
-      setConfig(clientConfig)
+      setConfig({ ...clientConfig, enabled: clientConfig.enabled ?? null })
       setGlobalConfig(global)
     } catch (err) {
       console.error("Failed to load compression config:", err)
