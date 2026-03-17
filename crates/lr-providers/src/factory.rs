@@ -984,11 +984,7 @@ impl ProviderFactory for PerplexityProviderFactory {
     }
 
     fn default_free_tier(&self) -> FreeTierKind {
-        FreeTierKind::CreditBased {
-            budget_usd: 5.0,
-            reset_period: lr_config::FreeTierResetPeriod::Monthly,
-            detection: lr_config::CreditDetection::LocalOnly,
-        }
+        FreeTierKind::None
     }
 }
 
