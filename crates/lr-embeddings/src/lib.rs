@@ -7,7 +7,7 @@ pub mod downloader;
 pub mod model;
 
 use model::SentenceEmbedder;
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::info;
@@ -17,8 +17,11 @@ pub use model::EMBEDDING_DIM;
 /// Embedding service managing the sentence embedding model lifecycle.
 ///
 /// Shared across all ContentStore instances via `Arc<EmbeddingService>`.
+/// Uses a `Mutex` (not `RwLock`) because Metal/CUDA forward passes require
+/// exclusive access to the GPU command buffer — concurrent "read" operations
+/// would race on the underlying device.
 pub struct EmbeddingService {
-    model: Arc<RwLock<Option<SentenceEmbedder>>>,
+    model: Arc<Mutex<Option<SentenceEmbedder>>>,
     model_dir: PathBuf,
 }
 
@@ -30,7 +33,7 @@ impl EmbeddingService {
     pub fn new(config_dir: &Path) -> Self {
         let model_dir = config_dir.join("embeddings").join("all-MiniLM-L6-v2");
         Self {
-            model: Arc::new(RwLock::new(None)),
+            model: Arc::new(Mutex::new(None)),
             model_dir,
         }
     }
@@ -47,7 +50,8 @@ impl EmbeddingService {
 
     /// Load the model into memory. No-op if already loaded.
     pub fn ensure_loaded(&self) -> Result<(), String> {
-        if self.model.read().is_some() {
+        let mut guard = self.model.lock();
+        if guard.is_some() {
             return Ok(());
         }
 
@@ -57,13 +61,13 @@ impl EmbeddingService {
 
         info!("Loading embedding model from {:?}", self.model_dir);
         let embedder = SentenceEmbedder::new(&self.model_dir)?;
-        *self.model.write() = Some(embedder);
+        *guard = Some(embedder);
         Ok(())
     }
 
     /// Whether the model is currently loaded in memory.
     pub fn is_loaded(&self) -> bool {
-        self.model.read().is_some()
+        self.model.lock().is_some()
     }
 
     /// Embed a single text into a 384-dimensional vector.
@@ -71,7 +75,7 @@ impl EmbeddingService {
     /// Automatically loads the model if not yet loaded.
     pub fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
         self.ensure_loaded()?;
-        let guard = self.model.read();
+        let guard = self.model.lock();
         guard.as_ref().unwrap().embed(text)
     }
 
@@ -80,7 +84,7 @@ impl EmbeddingService {
     /// Automatically loads the model if not yet loaded.
     pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
         self.ensure_loaded()?;
-        let guard = self.model.read();
+        let guard = self.model.lock();
         guard.as_ref().unwrap().embed_batch(texts)
     }
 

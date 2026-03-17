@@ -45,10 +45,12 @@ impl SentenceEmbedder {
         };
 
         // sentence-transformers models store weights without a "bert." prefix
-        let model = BertModel::load(vb.clone(), &config).or_else(|_| {
-            // Fall back to "bert." prefix (standard HuggingFace BERT format)
-            BertModel::load(vb.pp("bert"), &config)
-        }).map_err(|e| format!("Failed to load BERT model: {}", e))?;
+        let model = BertModel::load(vb.clone(), &config)
+            .or_else(|_| {
+                // Fall back to "bert." prefix (standard HuggingFace BERT format)
+                BertModel::load(vb.pp("bert"), &config)
+            })
+            .map_err(|e| format!("Failed to load BERT model: {}", e))?;
 
         let tokenizer_file = model_dir.join("tokenizer.json");
         if !tokenizer_file.exists() {
@@ -184,7 +186,7 @@ fn model_config() -> Config {
     }
 }
 
-/// Select the best available compute device
+/// Select the best available compute device.
 fn select_device() -> Device {
     #[cfg(target_os = "macos")]
     {
@@ -210,5 +212,9 @@ fn select_device() -> Device {
     Device::Cpu
 }
 
+// SAFETY: SentenceEmbedder contains candle types (BertModel, Device) that hold
+// Metal/CUDA resources without implementing Send/Sync. These are safe to move
+// across threads, but concurrent access to the GPU command buffer is NOT safe.
+// Callers MUST serialize access via a Mutex (see EmbeddingService).
 unsafe impl Send for SentenceEmbedder {}
 unsafe impl Sync for SentenceEmbedder {}

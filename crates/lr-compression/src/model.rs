@@ -358,7 +358,7 @@ fn model_config(model_size: &str) -> Config {
     }
 }
 
-/// Select the best available compute device
+/// Select the best available compute device.
 fn select_device() -> Device {
     #[cfg(target_os = "macos")]
     {
@@ -384,5 +384,9 @@ fn select_device() -> Device {
     Device::Cpu
 }
 
+// SAFETY: CompressorModel contains candle types (BertModel, Device) that hold
+// Metal/CUDA resources without implementing Send/Sync. These are safe to move
+// across threads, but concurrent access to the GPU command buffer is NOT safe.
+// Callers MUST serialize access via a Mutex (see CompressionService).
 unsafe impl Send for CompressorModel {}
 unsafe impl Sync for CompressorModel {}

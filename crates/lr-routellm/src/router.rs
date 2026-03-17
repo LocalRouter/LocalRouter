@@ -33,6 +33,8 @@ impl RouterWrapper {
     }
 }
 
-// Implement Send + Sync to allow sharing across threads
+// SAFETY: RouterWrapper contains CandleRouter which holds Metal/CUDA resources.
+// Safe to move across threads, but concurrent GPU access is NOT safe.
+// Callers MUST serialize access via a Mutex (see RouteLLMService).
 unsafe impl Send for RouterWrapper {}
 unsafe impl Sync for RouterWrapper {}

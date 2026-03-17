@@ -29,10 +29,15 @@ use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
-/// Global RouteLLM service state
+/// Global RouteLLM service state.
+///
+/// The router is wrapped in a `Mutex` (not `RwLock`) because Metal/CUDA forward
+/// passes require exclusive access to the GPU command buffer — concurrent
+/// operations would race on the underlying device and cause driver-level
+/// assertion failures (e.g. `AGXG14XFamilyCommandBuffer` crashes on macOS).
 pub struct RouteLLMService {
-    /// Loaded router (if initialized)
-    router: Arc<RwLock<Option<RouterWrapper>>>,
+    /// Loaded router (if initialized). Uses `Mutex` to serialize GPU access.
+    router: Arc<Mutex<Option<RouterWrapper>>>,
 
     /// Initialization lock (prevents concurrent initialization)
     init_lock: Arc<Mutex<()>>,
@@ -55,7 +60,7 @@ impl RouteLLMService {
     /// Create a new RouteLLM service with custom paths
     pub fn new(model_path: PathBuf, tokenizer_path: PathBuf, idle_timeout_secs: u64) -> Self {
         Self {
-            router: Arc::new(RwLock::new(None)),
+            router: Arc::new(Mutex::new(None)),
             init_lock: Arc::new(Mutex::new(())),
             is_initializing: Arc::new(RwLock::new(false)),
             last_access: Arc::new(RwLock::new(None)),
@@ -85,7 +90,7 @@ impl RouteLLMService {
         let _lock = self.init_lock.lock().await;
 
         // Check again if already initialized (another task might have initialized while we waited)
-        if self.router.read().await.is_some() {
+        if self.router.lock().await.is_some() {
             return Ok(()); // Already initialized
         }
 
@@ -136,7 +141,7 @@ impl RouteLLMService {
         // Handle initialization result
         let router = result?;
 
-        *self.router.write().await = Some(router);
+        *self.router.lock().await = Some(router);
         *self.last_access.write().await = Some(Instant::now());
 
         info!("RouteLLM Candle router initialized successfully");
@@ -150,21 +155,20 @@ impl RouteLLMService {
     /// - win_rate: probability between 0.0 and 1.0
     pub async fn predict(&self, prompt: &str) -> RouteLLMResult<(bool, f32)> {
         // Initialize if needed
-        if self.router.read().await.is_none() {
+        if self.router.lock().await.is_none() {
             self.initialize().await?;
         }
 
-        // Calculate win rate while holding the read lock
-        // We use block_in_place to avoid blocking the async runtime
+        // Calculate win rate while holding the mutex — exclusive access is required
+        // because Metal/CUDA command encoding is not thread-safe.
         let prompt_owned = prompt.to_string();
         let win_rate = {
-            let router_guard = self.router.read().await;
+            let router_guard = self.router.lock().await;
             let router = router_guard
                 .as_ref()
                 .ok_or_else(|| RouteLLMError::Internal("Router not initialized".into()))?;
 
-            // Run the blocking calculation
-            // Since this is just ~10ms, we can afford to hold the lock
+            // Run the blocking calculation (~10ms)
             router.calculate_strong_win_rate(&prompt_owned)?
         };
 
@@ -191,7 +195,7 @@ impl RouteLLMService {
     /// Manually unload models from memory
     pub async fn unload(&self) {
         info!("Unloading RouteLLM models from memory");
-        *self.router.write().await = None;
+        *self.router.lock().await = None;
         *self.last_access.write().await = None;
         *self.is_initializing.write().await = false; // Reset initialization flag
         info!("RouteLLM models unloaded");
@@ -199,7 +203,7 @@ impl RouteLLMService {
 
     /// Check if models are loaded
     pub async fn is_loaded(&self) -> bool {
-        self.router.read().await.is_some()
+        self.router.lock().await.is_some()
     }
 
     /// Get current status

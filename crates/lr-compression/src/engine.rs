@@ -9,13 +9,17 @@ use lr_utils::paths;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 use tracing::info;
 
-/// Compression service managing model lifecycle
+/// Compression service managing model lifecycle.
+///
+/// Uses a `Mutex` (not `RwLock`) because Metal/CUDA forward passes require
+/// exclusive access to the GPU command buffer — concurrent "read" operations
+/// would race on the underlying device.
 pub struct CompressionService {
     config: PromptCompressionConfig,
-    model: Arc<RwLock<Option<CompressorModel>>>,
+    model: Arc<Mutex<Option<CompressorModel>>>,
     model_path: PathBuf,
     tokenizer_path: PathBuf,
 }
@@ -31,7 +35,7 @@ impl CompressionService {
 
         Ok(Self {
             config,
-            model: Arc::new(RwLock::new(None)),
+            model: Arc::new(Mutex::new(None)),
             model_path,
             tokenizer_path,
         })
@@ -40,7 +44,7 @@ impl CompressionService {
     /// Get current status
     pub async fn get_status(&self) -> CompressionStatus {
         let downloaded = downloader::is_downloaded(&self.model_path, &self.tokenizer_path);
-        let loaded = self.model.read().await.is_some();
+        let loaded = self.model.lock().await.is_some();
 
         let model_size_bytes = if downloaded {
             std::fs::metadata(self.model_path.join("model.safetensors"))
@@ -71,7 +75,8 @@ impl CompressionService {
 
     /// Load the model into memory (blocking — call from spawn_blocking)
     pub async fn load(&self) -> Result<(), String> {
-        if self.model.read().await.is_some() {
+        let mut guard = self.model.lock().await;
+        if guard.is_some() {
             return Ok(());
         }
 
@@ -89,14 +94,14 @@ impl CompressionService {
         .await
         .map_err(|e| format!("Task join error: {}", e))??;
 
-        *self.model.write().await = Some(loaded);
+        *guard = Some(loaded);
         info!("Compression model loaded into memory");
         Ok(())
     }
 
     /// Unload model from memory
     pub async fn unload(&self) {
-        *self.model.write().await = None;
+        *self.model.lock().await = None;
         info!("Compression model unloaded");
     }
 
@@ -108,13 +113,17 @@ impl CompressionService {
         preserve_quoted: bool,
     ) -> Result<(String, usize, usize, Vec<usize>, Vec<usize>), String> {
         // Lazy-load model if not loaded
-        if self.model.read().await.is_none() {
-            self.load().await?;
+        {
+            let guard = self.model.lock().await;
+            if guard.is_none() {
+                drop(guard);
+                self.load().await?;
+            }
         }
 
         let text_owned = text.to_string();
-        let model_guard = self.model.read().await;
-        let model = model_guard.as_ref().ok_or("Model not loaded")?;
+        let guard = self.model.lock().await;
+        let model = guard.as_ref().ok_or("Model not loaded")?;
 
         let protected_mask = if preserve_quoted {
             let words: Vec<&str> = text_owned.split_whitespace().collect();
@@ -142,8 +151,12 @@ impl CompressionService {
         let original_count = messages.len();
 
         // Lazy-load model
-        if self.model.read().await.is_none() {
-            self.load().await?;
+        {
+            let guard = self.model.lock().await;
+            if guard.is_none() {
+                drop(guard);
+                self.load().await?;
+            }
         }
 
         let preserve_recent = preserve_recent as usize;
@@ -159,8 +172,8 @@ impl CompressionService {
             messages.len()
         };
 
-        let model_guard = self.model.read().await;
-        let model = model_guard.as_ref().ok_or("Model not loaded")?;
+        let guard = self.model.lock().await;
+        let model = guard.as_ref().ok_or("Model not loaded")?;
 
         for (idx, msg) in messages.iter().enumerate() {
             let is_recent = idx >= recent_start;
@@ -232,5 +245,7 @@ impl CompressionService {
     }
 }
 
+// SAFETY: CompressionService's internal model Mutex serializes all GPU access.
+// The remaining fields (config, paths) are inherently Send+Sync.
 unsafe impl Send for CompressionService {}
 unsafe impl Sync for CompressionService {}

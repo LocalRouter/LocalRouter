@@ -464,7 +464,10 @@ fn softmax(x: &Tensor) -> RouteLLMResult<Vec<f32>> {
     Ok(probs)
 }
 
-// Implement Send + Sync to allow sharing across threads
+// SAFETY: CandleRouter contains candle types (BertModel, Device) that hold
+// Metal/CUDA resources without implementing Send/Sync. These are safe to move
+// across threads, but concurrent access to the GPU command buffer is NOT safe.
+// Callers MUST serialize access via a Mutex (see RouteLLMService).
 unsafe impl Send for CandleRouter {}
 unsafe impl Sync for CandleRouter {}
 

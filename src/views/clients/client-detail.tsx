@@ -190,14 +190,14 @@ export function ClientDetail({
                     <TabsTrigger value="llm"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM</TabsTrigger>
                     <TabsTrigger value="mcp"><TAB_ICONS.mcp className={TAB_ICON_CLASS} />MCP</TabsTrigger>
                   </TabsList>
-                  <TabsContent value="llm">
+                  <TabsContent value="llm" forceMount className="data-[state=inactive]:hidden">
                     <LlmTab
                       initialMode="client"
                       initialClientId={client.client_id}
                       hideModeSwitcher
                     />
                   </TabsContent>
-                  <TabsContent value="mcp">
+                  <TabsContent value="mcp" forceMount className="data-[state=inactive]:hidden">
                     <McpTab
                       initialMode="client"
                       initialClientId={client.client_id}
