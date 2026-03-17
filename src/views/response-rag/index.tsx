@@ -402,6 +402,7 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
               searchPlaceholder='e.g. "rate limiting", "login endpoint"'
               defaultMode="index"
               showModeToggle={false}
+              alwaysShowCompressed
             />
           </div>
         </TabsContent>

@@ -22,6 +22,8 @@ interface ContentStorePreviewProps {
   defaultMode?: "index" | "compress"
   /** Show Index/Compress toggle. When false, uses defaultMode without a toggle. */
   showModeToggle?: boolean
+  /** Always show the compressed preview card regardless of mode. */
+  alwaysShowCompressed?: boolean
 }
 
 export function ContentStorePreview({
@@ -31,6 +33,7 @@ export function ContentStorePreview({
   searchPlaceholder = 'Search query... (e.g. "rate limiting", "login endpoint")',
   defaultMode = "index",
   showModeToggle = true,
+  alwaysShowCompressed = false,
 }: ContentStorePreviewProps) {
   const [content, setContent] = useState("")
   const [indexResult, setIndexResult] = useState<RagPreviewIndexResult | null>(null)
@@ -195,8 +198,8 @@ export function ContentStorePreview({
         </CardContent>
       </Card>
 
-      {/* Card 2: Compressed Preview (compress mode only) */}
-      {mode === "compress" && indexResult && (
+      {/* Card 2: Compressed Preview */}
+      {(mode === "compress" || alwaysShowCompressed) && indexResult && (
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center justify-between">
