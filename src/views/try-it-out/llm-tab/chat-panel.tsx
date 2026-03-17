@@ -126,7 +126,7 @@ export function ChatPanel({
 
   const handleSend = async () => {
     if (!input.trim() && attachedImages.length === 0) return
-    if (isLoading || !openaiClient || !selectedModel) return
+    if (isLoading || !openaiClient || !selectedModel?.trim()) return
 
     // Build message content
     const userMessageContent: OpenAI.ChatCompletionContentPart[] = []
@@ -217,10 +217,10 @@ export function ChatPanel({
           frequency_penalty: parameters.frequencyPenalty,
           presence_penalty: parameters.presencePenalty,
           stream_options: { include_usage: true },
+          ...optionalParams,
         },
         {
           signal: abortControllerRef.current.signal,
-          body: optionalParams,
         }
       )
 

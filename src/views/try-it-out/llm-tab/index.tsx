@@ -282,7 +282,7 @@ interface LlmTabProps {
 
 export function LlmTab({ initialMode, initialProvider, initialClientId, hideModeSwitcher, hideProviderSelector }: LlmTabProps) {
   const [activeSubtab, setActiveSubtab] = useState("chat")
-  const [mode, setMode] = useState<TestMode>("client")
+  const [mode, setMode] = useState<TestMode>(initialMode ?? "client")
   const [serverPort, setServerPort] = useState<number | null>(null)
 
   // Client mode state
@@ -297,7 +297,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
   // Direct mode state
   const [providers, setProviders] = useState<Provider[]>([])
-  const [selectedProvider, setSelectedProvider] = useState<string>("")
+  const [selectedProvider, setSelectedProvider] = useState<string>(initialProvider ?? "")
   const { models: incrementalModels } = useIncrementalModels({ refreshOnMount: false })
   const providerModels = useMemo<ProviderModel[]>(() => incrementalModels.map(m => ({ id: m.id, provider: m.provider })), [incrementalModels])
   const [internalTestToken, setInternalTestToken] = useState<string | null>(null)
@@ -341,15 +341,15 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
         // DEPRECATED: setStrategies(strategiesList)
         setProviders(providersList.filter(p => p.enabled))
 
-        // Set default selections
-        if (clientsList.length > 0) {
+        // Set default selections only if not provided via props
+        if (!initialClientId && clientsList.length > 0) {
           setSelectedClientId(clientsList[0].id)
         }
         // DEPRECATED: Strategy default selection removed
         // if (strategiesList.length > 0) {
         //   setSelectedStrategy(strategiesList[0].name)
         // }
-        if (providersList.filter(p => p.enabled).length > 0) {
+        if (!initialProvider && providersList.filter(p => p.enabled).length > 0) {
           setSelectedProvider(providersList.filter(p => p.enabled)[0].instance_name)
         }
       } catch (error) {
@@ -361,26 +361,16 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
     init()
   }, [])
 
-  // Apply initial props once data is loaded
+  // Apply initial client ID once clients are loaded (needs id lookup from client_id)
   useEffect(() => {
-    if (initialMode) {
-      setMode(initialMode)
-    }
-    if (initialMode === "direct" && initialProvider && providers.length > 0) {
-      const match = providers.find(p => p.instance_name === initialProvider)
-      if (match) {
-        setSelectedProvider(initialProvider)
-        setSelectedModel("")
-      }
-    }
-    if (initialMode === "client" && initialClientId && clients.length > 0) {
+    if (initialClientId && clients.length > 0) {
       const match = clients.find(c => c.client_id === initialClientId)
       if (match) {
         setSelectedClientId(match.id)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialMode, initialProvider, initialClientId, providers.length, clients.length])
+  }, [initialClientId, clients.length])
 
   // Fetch client API key when client changes
   useEffect(() => {
