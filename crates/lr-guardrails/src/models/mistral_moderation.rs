@@ -159,12 +159,7 @@ impl SafetyModel for MistralModerationModel {
 #[derive(Debug, Clone, Serialize)]
 struct MistralModerationRequest {
     model: String,
-    input: Vec<MistralModerationInput>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct MistralModerationInput {
-    text: String,
+    input: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -211,9 +206,7 @@ impl MistralModerationExecutor {
 
         let body = MistralModerationRequest {
             model: model.to_string(),
-            input: vec![MistralModerationInput {
-                text: input.to_string(),
-            }],
+            input: input.to_string(),
         };
 
         let mut req = self.http_client.post(&url).json(&body);
