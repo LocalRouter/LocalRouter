@@ -400,7 +400,7 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
               sourceLabel="tool-response:1"
               responseThresholdBytes={config?.response_threshold_bytes ?? DEFAULT_RESPONSE_THRESHOLD_BYTES}
               searchPlaceholder='e.g. "rate limiting", "login endpoint"'
-              defaultMode="compress"
+              defaultMode="index"
               showModeToggle={false}
             />
           </div>
