@@ -18,6 +18,7 @@ import {
   MODEL_FAMILY_GROUPS,
   PROVIDER_MODEL_NAMES,
   CLOUD_PROVIDER_TYPES,
+  CLOUD_MODEL_PRICING,
 } from "@/constants/safety-model-variants"
 import type { ProviderInstanceInfo } from "@/types/tauri-commands"
 
@@ -47,15 +48,45 @@ interface ProviderModelEntry {
   available: boolean
 }
 
+interface DetailedModel {
+  model_id: string
+  provider_type: string
+  input_price_per_million?: number | null
+  output_price_per_million?: number | null
+}
+
+function formatPrice(input: number, output: number): string {
+  if (input === 0 && output === 0) return "Free"
+  const fmt = (v: number) => v < 0.01 ? `$${v.toFixed(3)}` : v < 1 ? `$${v.toFixed(2)}` : `$${Math.round(v)}`
+  return input === output
+    ? `${fmt(input)}/1M tokens`
+    : `${fmt(input)}/${fmt(output)} per 1M tokens`
+}
+
 export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPickerProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderInstanceInfo[]>([])
+  const [catalogPricing, setCatalogPricing] = useState<Map<string, string>>(new Map())
   const { models: incrementalModels, isFullyLoaded } = useIncrementalModels()
   const loading = !isFullyLoaded && incrementalModels.length === 0
 
   useEffect(() => {
     invoke<ProviderInstanceInfo[]>("list_provider_instances")
       .then(setProviders)
+      .catch(() => {})
+
+    // Load catalog pricing for cloud models
+    invoke<DetailedModel[]>("list_all_models_detailed")
+      .then(models => {
+        const pricing = new Map<string, string>()
+        for (const m of models) {
+          if (m.input_price_per_million != null && m.output_price_per_million != null) {
+            // Key: "providerType:modelId"
+            pricing.set(`${m.provider_type}:${m.model_id}`, formatPrice(m.input_price_per_million, m.output_price_per_million))
+          }
+        }
+        setCatalogPricing(pricing)
+      })
       .catch(() => {})
   }, [])
 
@@ -106,6 +137,17 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
       e => e.modelType === modelType && e.provider.instance_name === providerId
     ) ?? null
   }, [selectedKey, providerEntries])
+
+  /** Look up pricing: catalog first, then static fallback */
+  const getPricingLabel = (entry: ProviderModelEntry): string | null => {
+    // Try catalog (models.dev) pricing first
+    const catalogKey = `${entry.provider.provider_type}:${entry.modelName}`
+    const catalogPrice = catalogPricing.get(catalogKey)
+    if (catalogPrice) return catalogPrice
+
+    // Fall back to static known prices for specialty moderation models
+    return CLOUD_MODEL_PRICING[entry.modelType]?.[entry.provider.provider_type] ?? null
+  }
 
   const handleAction = () => {
     if (!selectedEntry) return
@@ -167,8 +209,9 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
                       const isCloudModel = CLOUD_PROVIDER_TYPES.has(entry.provider.provider_type)
 
                       if (entry.available) {
+                        const pricing = getPricingLabel(entry)
                         const readyLabel = isCloudModel
-                          ? ` — ${entry.provider.instance_name} (Free)`
+                          ? ` — ${entry.provider.instance_name} (${pricing || 'Cloud'})`
                           : ` — Ready on ${entry.provider.instance_name}`
                         return (
                           <SelectItem key={key} value={key} className="text-xs pl-6" disabled={alreadyAdded}>

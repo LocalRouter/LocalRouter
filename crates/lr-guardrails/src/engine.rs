@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use tracing::{debug, info, warn};
 
-use crate::executor::{ModelExecutor, ProviderExecutor};
+use crate::executor::{ChatCompletionExecutor, ModelExecutor, ProviderExecutor};
 use crate::models;
 use crate::safety_model::*;
 use crate::text_extractor;
@@ -77,18 +77,36 @@ impl SafetyEngine {
         let load_errors: Vec<(String, String)> = Vec::new();
 
         for model_cfg in safety_models {
-            // Build provider-based executor
+            // Build provider-based executor, choosing between legacy completions
+            // and chat completions based on provider type
             let executor = if let (Some(provider_id), Some(model_name)) =
                 (&model_cfg.provider_id, &model_cfg.model_name)
             {
                 if let Some(provider) = provider_lookup.get(provider_id) {
-                    let use_ollama = provider.provider_type == "ollama";
-                    Arc::new(ModelExecutor::Provider(ProviderExecutor::new(
-                        provider.base_url.clone(),
-                        provider.api_key.clone(),
-                        model_name.clone(),
-                        use_ollama,
-                    )))
+                    match provider.provider_type.as_str() {
+                        "ollama" => Arc::new(ModelExecutor::Provider(ProviderExecutor::new(
+                            provider.base_url.clone(),
+                            provider.api_key.clone(),
+                            model_name.clone(),
+                            true, // use Ollama API
+                        ))),
+                        // Cloud providers use /v1/chat/completions
+                        "groq" | "deepinfra" | "togetherai" | "mistral" | "anthropic"
+                        | "openai" | "openrouter" | "cohere" | "gemini" | "perplexity"
+                        | "cerebras" | "xai" => {
+                            Arc::new(ModelExecutor::ChatProvider(ChatCompletionExecutor::new(
+                                provider.base_url.clone(),
+                                provider.api_key.clone(),
+                            )))
+                        }
+                        // Local providers (lmstudio, localai, etc.) use legacy /v1/completions
+                        _ => Arc::new(ModelExecutor::Provider(ProviderExecutor::new(
+                            provider.base_url.clone(),
+                            provider.api_key.clone(),
+                            model_name.clone(),
+                            false,
+                        ))),
+                    }
                 } else {
                     warn!(
                         "Provider '{}' not found for safety model '{}', skipping",
@@ -164,6 +182,35 @@ impl SafetyEngine {
                         continue;
                     }
                 }
+                "mistral_moderation" => {
+                    // Mistral moderation uses its own executor (calls /v1/moderations)
+                    if let Some(provider) = model_cfg
+                        .provider_id
+                        .as_ref()
+                        .and_then(|id| provider_lookup.get(id))
+                    {
+                        let mod_executor =
+                            Arc::new(models::mistral_moderation::MistralModerationExecutor::new(
+                                provider.base_url.clone(),
+                                provider.api_key.clone(),
+                            ));
+                        Arc::new(models::mistral_moderation::MistralModerationModel::new(
+                            model_cfg.id.clone(),
+                            mod_executor,
+                            model_cfg
+                                .model_name
+                                .clone()
+                                .unwrap_or_else(|| "mistral-moderation-latest".to_string()),
+                            enabled_cats,
+                        ))
+                    } else {
+                        warn!(
+                            "Provider not found for Mistral moderation model '{}', skipping",
+                            model_cfg.id
+                        );
+                        continue;
+                    }
+                }
                 other => {
                     warn!("Unknown safety model type '{}', skipping", other);
                     continue;
@@ -225,6 +272,7 @@ impl SafetyEngine {
                 is_safe: true,
                 actions_required: vec![],
                 total_duration_ms: 0,
+                errors: vec![],
             };
         }
 
@@ -254,6 +302,7 @@ impl SafetyEngine {
                 is_safe: true,
                 actions_required: vec![],
                 total_duration_ms: 0,
+                errors: vec![],
             };
         }
 
@@ -330,6 +379,7 @@ impl SafetyEngine {
                 is_safe: true,
                 actions_required: vec![],
                 total_duration_ms: 0,
+                errors: vec![],
             };
         }
 
@@ -347,8 +397,9 @@ impl SafetyEngine {
 
         let mut verdicts = Vec::new();
         let mut all_actions = Vec::new();
+        let mut errors = Vec::new();
 
-        for result in results {
+        for (i, result) in results.into_iter().enumerate() {
             match result {
                 Ok(verdict) => {
                     if verdict.flagged_categories.is_empty() && !verdict.is_safe {
@@ -381,7 +432,15 @@ impl SafetyEngine {
                     verdicts.push(verdict);
                 }
                 Err(e) => {
-                    warn!("Safety model check failed: {}", e);
+                    let model_id = models_to_run
+                        .get(i)
+                        .map(|m| m.id().to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    warn!("Safety model '{}' check failed: {}", model_id, e);
+                    errors.push(SafetyModelError {
+                        model_id,
+                        error: e,
+                    });
                 }
             }
         }
@@ -391,9 +450,10 @@ impl SafetyEngine {
         let total_duration_ms = start.elapsed().as_millis() as u64;
 
         debug!(
-            "Safety check: {} models, {} verdicts, {} actions, {}ms",
+            "Safety check: {} models, {} verdicts, {} errors, {} actions, {}ms",
             self.models.len(),
             verdicts.len(),
+            errors.len(),
             all_actions.len(),
             total_duration_ms
         );
@@ -403,6 +463,7 @@ impl SafetyEngine {
             is_safe,
             actions_required: all_actions,
             total_duration_ms,
+            errors,
         }
     }
 }
@@ -442,6 +503,7 @@ mod tests {
             is_safe: true,
             actions_required: vec![],
             total_duration_ms: 0,
+            errors: vec![],
         };
         assert!(!result.needs_approval());
         assert!(!result.needs_notification());
@@ -457,6 +519,7 @@ mod tests {
                 confidence: Some(0.9),
             }],
             total_duration_ms: 0,
+            errors: vec![],
         };
         assert!(result_with_ask.needs_approval());
         assert!(result_with_ask.has_flags());
@@ -471,6 +534,7 @@ mod tests {
                 confidence: Some(0.8),
             }],
             total_duration_ms: 0,
+            errors: vec![],
         };
         assert!(result_with_notify.needs_notification());
         assert!(!result_with_notify.needs_approval());

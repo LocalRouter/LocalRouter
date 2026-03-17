@@ -719,6 +719,18 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             let provider_type_str = match p.provider_type {
                                 config::ProviderType::Ollama => "ollama",
                                 config::ProviderType::LMStudio => "lmstudio",
+                                config::ProviderType::OpenAI => "openai",
+                                config::ProviderType::Groq => "groq",
+                                config::ProviderType::DeepInfra => "deepinfra",
+                                config::ProviderType::TogetherAI => "togetherai",
+                                config::ProviderType::Mistral => "mistral",
+                                config::ProviderType::Anthropic => "anthropic",
+                                config::ProviderType::Cohere => "cohere",
+                                config::ProviderType::OpenRouter => "openrouter",
+                                config::ProviderType::Gemini => "gemini",
+                                config::ProviderType::Perplexity => "perplexity",
+                                config::ProviderType::Cerebras => "cerebras",
+                                config::ProviderType::XAI => "xai",
                                 config::ProviderType::Jan => "jan",
                                 config::ProviderType::GPT4All => "gpt4all",
                                 config::ProviderType::LocalAI => "localai",
@@ -752,16 +764,58 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     config::ProviderType::LlamaCpp => {
                                         "http://localhost:8080".to_string()
                                     }
+                                    config::ProviderType::OpenAI => {
+                                        "https://api.openai.com/v1".to_string()
+                                    }
+                                    config::ProviderType::Groq => {
+                                        "https://api.groq.com/openai/v1".to_string()
+                                    }
+                                    config::ProviderType::DeepInfra => {
+                                        "https://api.deepinfra.com/v1/openai".to_string()
+                                    }
+                                    config::ProviderType::TogetherAI => {
+                                        "https://api.together.xyz/v1".to_string()
+                                    }
+                                    config::ProviderType::Mistral => {
+                                        "https://api.mistral.ai/v1".to_string()
+                                    }
+                                    config::ProviderType::Anthropic => {
+                                        "https://api.anthropic.com/v1".to_string()
+                                    }
+                                    config::ProviderType::Cohere => {
+                                        "https://api.cohere.com/v1".to_string()
+                                    }
+                                    config::ProviderType::OpenRouter => {
+                                        "https://openrouter.ai/api/v1".to_string()
+                                    }
+                                    config::ProviderType::Gemini => {
+                                        "https://generativelanguage.googleapis.com/v1beta"
+                                            .to_string()
+                                    }
+                                    config::ProviderType::Perplexity => {
+                                        "https://api.perplexity.ai".to_string()
+                                    }
+                                    config::ProviderType::Cerebras => {
+                                        "https://api.cerebras.ai/v1".to_string()
+                                    }
+                                    config::ProviderType::XAI => {
+                                        "https://api.x.ai/v1".to_string()
+                                    }
                                     _ => "http://localhost:8080".to_string(),
                                 });
 
-                            // API key from provider_config (not keychain for safety models)
+                            // Try provider_config first, then fall back to keychain for cloud providers
                             let api_key = p
                                 .provider_config
                                 .as_ref()
                                 .and_then(|cfg| cfg.get("api_key"))
                                 .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
+                                .map(|s| s.to_string())
+                                .or_else(|| {
+                                    lr_providers::key_storage::get_provider_key(&p.name)
+                                        .ok()
+                                        .flatten()
+                                });
 
                             provider_lookup.insert(
                                 p.name.clone(),

@@ -5,6 +5,7 @@
 pub mod custom;
 pub mod granite_guardian;
 pub mod llama_guard;
+pub mod mistral_moderation;
 pub mod nemotron;
 pub mod openai_moderation;
 pub mod shield_gemma;

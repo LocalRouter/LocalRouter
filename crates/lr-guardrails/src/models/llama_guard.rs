@@ -7,7 +7,7 @@
 //! HF: meta-llama/Llama-Guard-4-12B (gated)
 //! Ollama: llama-guard4
 
-use crate::executor::{CompletionRequest, ModelExecutor};
+use crate::executor::{ChatCompletionRequest, ChatMessage, CompletionRequest, ModelExecutor};
 use crate::safety_model::*;
 use std::sync::Arc;
 
@@ -110,6 +110,55 @@ impl LlamaGuardModel {
         prompt
     }
 
+    /// Build chat messages for cloud providers that use /v1/chat/completions
+    fn build_chat_messages(&self, input: &SafetyCheckInput) -> Vec<ChatMessage> {
+        // System message with safety taxonomy
+        let mut system_content = String::new();
+        system_content
+            .push_str("Task: Check if there is unsafe content in the conversation according to our safety policy with the below categories.\n\n");
+        system_content.push_str("<BEGIN UNSAFE CONTENT CATEGORIES>\n");
+
+        for (cat, code, desc) in CATEGORIES {
+            if let Some(ref enabled) = self.enabled_categories {
+                if !enabled.contains(cat) {
+                    continue;
+                }
+            }
+            system_content.push_str(&format!("{}: {}\n", code, desc));
+        }
+
+        system_content.push_str("<END UNSAFE CONTENT CATEGORIES>\n\n");
+        system_content.push_str("Provide your safety assessment for the above conversation.\n");
+        system_content
+            .push_str("- First line must read 'safe' or 'unsafe'.\n");
+        system_content.push_str(
+            "- If unsafe, a second line must include a comma-separated list of violated categories.",
+        );
+
+        // User message with the conversation to check
+        let mut user_content = String::new();
+        user_content.push_str("<BEGIN CONVERSATION>\n\n");
+        for msg in &input.messages {
+            let role = match msg.role.as_str() {
+                "system" | "assistant" => "Agent",
+                _ => "User",
+            };
+            user_content.push_str(&format!("{}: {}\n\n", role, msg.content));
+        }
+        user_content.push_str("<END CONVERSATION>");
+
+        vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: system_content,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: user_content,
+            },
+        ]
+    }
+
     /// Parse the model output into a verdict
     fn parse_output(&self, output: &str) -> (bool, Vec<FlaggedCategory>) {
         let trimmed = output.trim();
@@ -172,18 +221,31 @@ impl SafetyModel for LlamaGuardModel {
 
     async fn check(&self, input: &SafetyCheckInput) -> Result<SafetyVerdict, String> {
         let start = std::time::Instant::now();
-        let prompt = self.build_prompt(input);
 
-        let response = self
-            .executor
-            .complete(CompletionRequest {
-                model: self.model_name.clone(),
-                prompt,
-                max_tokens: Some(32),
-                temperature: Some(0.0),
-                logprobs: None,
-            })
-            .await?;
+        let response = if self.executor.is_chat_provider() {
+            // Cloud providers (Groq, DeepInfra, Together AI) use chat completions
+            let messages = self.build_chat_messages(input);
+            self.executor
+                .chat_complete(ChatCompletionRequest {
+                    model: self.model_name.clone(),
+                    messages,
+                    max_tokens: Some(32),
+                    temperature: Some(0.0),
+                })
+                .await?
+        } else {
+            // Local providers (Ollama, LM Studio) use raw prompt completions
+            let prompt = self.build_prompt(input);
+            self.executor
+                .complete(CompletionRequest {
+                    model: self.model_name.clone(),
+                    prompt,
+                    max_tokens: Some(32),
+                    temperature: Some(0.0),
+                    logprobs: None,
+                })
+                .await?
+        };
 
         let (is_safe, flagged) = self.parse_output(&response.text);
 

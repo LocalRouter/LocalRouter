@@ -3470,6 +3470,22 @@ pub async fn rebuild_safety_engine(
             let provider_type_str = match p.provider_type {
                 lr_config::ProviderType::Ollama => "ollama",
                 lr_config::ProviderType::LMStudio => "lmstudio",
+                lr_config::ProviderType::OpenAI => "openai",
+                lr_config::ProviderType::Groq => "groq",
+                lr_config::ProviderType::DeepInfra => "deepinfra",
+                lr_config::ProviderType::TogetherAI => "togetherai",
+                lr_config::ProviderType::Mistral => "mistral",
+                lr_config::ProviderType::Anthropic => "anthropic",
+                lr_config::ProviderType::Cohere => "cohere",
+                lr_config::ProviderType::OpenRouter => "openrouter",
+                lr_config::ProviderType::Gemini => "gemini",
+                lr_config::ProviderType::Perplexity => "perplexity",
+                lr_config::ProviderType::Cerebras => "cerebras",
+                lr_config::ProviderType::XAI => "xai",
+                lr_config::ProviderType::Jan => "jan",
+                lr_config::ProviderType::GPT4All => "gpt4all",
+                lr_config::ProviderType::LocalAI => "localai",
+                lr_config::ProviderType::LlamaCpp => "llamacpp",
                 _ => "openai_compatible",
             };
 
@@ -3482,15 +3498,55 @@ pub async fn rebuild_safety_engine(
                 .unwrap_or_else(|| match p.provider_type {
                     lr_config::ProviderType::Ollama => "http://localhost:11434".to_string(),
                     lr_config::ProviderType::LMStudio => "http://localhost:1234".to_string(),
+                    lr_config::ProviderType::Jan => "http://localhost:1337".to_string(),
+                    lr_config::ProviderType::GPT4All => "http://localhost:4891".to_string(),
+                    lr_config::ProviderType::LocalAI => "http://localhost:8080".to_string(),
+                    lr_config::ProviderType::LlamaCpp => "http://localhost:8080".to_string(),
+                    lr_config::ProviderType::OpenAI => "https://api.openai.com/v1".to_string(),
+                    lr_config::ProviderType::Groq => {
+                        "https://api.groq.com/openai/v1".to_string()
+                    }
+                    lr_config::ProviderType::DeepInfra => {
+                        "https://api.deepinfra.com/v1/openai".to_string()
+                    }
+                    lr_config::ProviderType::TogetherAI => {
+                        "https://api.together.xyz/v1".to_string()
+                    }
+                    lr_config::ProviderType::Mistral => {
+                        "https://api.mistral.ai/v1".to_string()
+                    }
+                    lr_config::ProviderType::Anthropic => {
+                        "https://api.anthropic.com/v1".to_string()
+                    }
+                    lr_config::ProviderType::Cohere => "https://api.cohere.com/v1".to_string(),
+                    lr_config::ProviderType::OpenRouter => {
+                        "https://openrouter.ai/api/v1".to_string()
+                    }
+                    lr_config::ProviderType::Gemini => {
+                        "https://generativelanguage.googleapis.com/v1beta".to_string()
+                    }
+                    lr_config::ProviderType::Perplexity => {
+                        "https://api.perplexity.ai".to_string()
+                    }
+                    lr_config::ProviderType::Cerebras => {
+                        "https://api.cerebras.ai/v1".to_string()
+                    }
+                    lr_config::ProviderType::XAI => "https://api.x.ai/v1".to_string(),
                     _ => "http://localhost:8080".to_string(),
                 });
 
+            // Try provider_config first, then fall back to keychain for cloud providers
             let api_key = p
                 .provider_config
                 .as_ref()
                 .and_then(|cfg| cfg.get("api_key"))
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    lr_providers::key_storage::get_provider_key(&p.name)
+                        .ok()
+                        .flatten()
+                });
 
             provider_lookup.insert(
                 p.name.clone(),
@@ -3758,6 +3814,19 @@ pub async fn test_safety_model(
         .check_text_single_model(&text, lr_guardrails::ScanDirection::Input, &model_id)
         .await;
 
+    // If the model had errors, return the first error
+    if let Some(err) = result.errors.first() {
+        return Err(format!("Model '{}' failed: {}", err.model_id, err.error));
+    }
+
+    // If no verdicts and no errors, the model wasn't found in the engine
+    if result.verdicts.is_empty() {
+        return Err(format!(
+            "Model '{}' not loaded in safety engine. Try rebuilding the engine.",
+            model_id
+        ));
+    }
+
     serde_json::to_value(&result.verdicts).map_err(|e| e.to_string())
 }
 
@@ -3774,22 +3843,24 @@ pub async fn get_all_safety_categories(
     // Fields match the TypeScript SafetyCategoryInfo interface:
     //   category, display_name, description, supported_by
     let categories = vec![
-        serde_json::json!({"category": "violent_crimes", "display_name": "Violent Crimes", "description": "Content promoting or depicting violence or violent crimes", "supported_by": ["llama_guard", "nemotron", "granite_guardian"]}),
+        serde_json::json!({"category": "violent_crimes", "display_name": "Violent Crimes", "description": "Content promoting or depicting violence or violent crimes", "supported_by": ["llama_guard", "nemotron", "granite_guardian", "openai_moderation"]}),
         serde_json::json!({"category": "non_violent_crimes", "display_name": "Non-Violent Crimes", "description": "Content related to non-violent criminal activities", "supported_by": ["llama_guard", "nemotron"]}),
         serde_json::json!({"category": "sex_crimes", "display_name": "Sex Crimes", "description": "Content related to sex-related crimes", "supported_by": ["llama_guard", "nemotron"]}),
-        serde_json::json!({"category": "child_exploitation", "display_name": "Child Exploitation", "description": "Content involving child sexual exploitation", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "child_exploitation", "display_name": "Child Exploitation", "description": "Content involving child sexual exploitation", "supported_by": ["llama_guard", "nemotron", "openai_moderation"]}),
         serde_json::json!({"category": "defamation", "display_name": "Defamation", "description": "Content that defames individuals or groups", "supported_by": ["llama_guard", "nemotron"]}),
         serde_json::json!({"category": "specialized_advice", "display_name": "Specialized Advice", "description": "Unqualified professional advice (medical, legal, financial)", "supported_by": ["llama_guard", "nemotron"]}),
         serde_json::json!({"category": "privacy", "display_name": "Privacy", "description": "Content that violates personal privacy", "supported_by": ["llama_guard", "nemotron"]}),
         serde_json::json!({"category": "intellectual_property", "display_name": "Intellectual Property", "description": "Content that infringes intellectual property rights", "supported_by": ["llama_guard", "nemotron"]}),
         serde_json::json!({"category": "indiscriminate_weapons", "display_name": "Indiscriminate Weapons", "description": "Content related to weapons of mass destruction", "supported_by": ["llama_guard", "nemotron"]}),
-        serde_json::json!({"category": "hate", "display_name": "Hate", "description": "Content promoting hatred or discrimination", "supported_by": ["llama_guard", "nemotron", "shield_gemma", "granite_guardian"]}),
-        serde_json::json!({"category": "self_harm", "display_name": "Self-Harm", "description": "Content promoting self-harm or suicide", "supported_by": ["llama_guard", "nemotron"]}),
-        serde_json::json!({"category": "sexual_content", "display_name": "Sexual Content", "description": "Sexually explicit or inappropriate content", "supported_by": ["llama_guard", "nemotron", "shield_gemma", "granite_guardian"]}),
+        serde_json::json!({"category": "hate", "display_name": "Hate", "description": "Content promoting hatred or discrimination", "supported_by": ["llama_guard", "nemotron", "shield_gemma", "granite_guardian", "openai_moderation"]}),
+        serde_json::json!({"category": "self_harm", "display_name": "Self-Harm", "description": "Content promoting self-harm or suicide", "supported_by": ["llama_guard", "nemotron", "openai_moderation"]}),
+        serde_json::json!({"category": "sexual_content", "display_name": "Sexual Content", "description": "Sexually explicit or inappropriate content", "supported_by": ["llama_guard", "nemotron", "shield_gemma", "granite_guardian", "openai_moderation"]}),
         serde_json::json!({"category": "elections", "display_name": "Elections", "description": "Content related to election interference", "supported_by": ["llama_guard", "nemotron"]}),
         serde_json::json!({"category": "code_interpreter_abuse", "display_name": "Code Interpreter Abuse", "description": "Attempts to abuse code interpreter capabilities", "supported_by": ["llama_guard", "nemotron"]}),
         serde_json::json!({"category": "dangerous_content", "display_name": "Dangerous Content", "description": "Content facilitating harmful activities", "supported_by": ["shield_gemma"]}),
-        serde_json::json!({"category": "harassment", "display_name": "Harassment", "description": "Content targeting individuals with harmful intent", "supported_by": ["shield_gemma"]}),
+        serde_json::json!({"category": "harassment", "display_name": "Harassment", "description": "Content targeting individuals with harmful intent", "supported_by": ["shield_gemma", "openai_moderation"]}),
+        serde_json::json!({"category": "illegal_activity", "display_name": "Illegal Activity", "description": "Content promoting or facilitating illegal activities", "supported_by": ["nemotron", "openai_moderation"]}),
+        serde_json::json!({"category": "criminal_planning", "display_name": "Criminal Planning", "description": "Content related to planning violent criminal acts", "supported_by": ["nemotron", "openai_moderation"]}),
         serde_json::json!({"category": "jailbreak", "display_name": "Jailbreak", "description": "Attempts to bypass AI safety guidelines", "supported_by": ["granite_guardian"]}),
         serde_json::json!({"category": "social_bias", "display_name": "Social Bias", "description": "Content reinforcing social stereotypes or biases", "supported_by": ["granite_guardian"]}),
         serde_json::json!({"category": "profanity", "display_name": "Profanity", "description": "Vulgar or offensive language", "supported_by": ["nemotron", "granite_guardian"]}),

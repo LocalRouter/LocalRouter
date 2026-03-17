@@ -1,7 +1,7 @@
 //! Inference executors for safety models
 //!
 //! Routes inference through an already-configured LLM provider (Ollama, LM Studio,
-//! or any OpenAI-compatible API).
+//! or any OpenAI-compatible API). Also supports cloud providers via /v1/chat/completions.
 
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -48,9 +48,29 @@ pub struct TopLogprob {
     pub logprob: f64,
 }
 
+/// Chat message for chat completions requests
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// Chat completion request sent to a provider via /v1/chat/completions
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatCompletionRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+}
+
 /// Unified executor that routes inference through a provider API
 pub enum ModelExecutor {
     Provider(ProviderExecutor),
+    /// Chat completions executor for cloud providers (Groq, DeepInfra, Together AI, etc.)
+    ChatProvider(ChatCompletionExecutor),
     /// OpenAI moderation executor — uses /v1/moderations instead of completions.
     /// The actual executor lives in models::openai_moderation; this variant exists
     /// so the enum is extensible without breaking existing code.
@@ -62,8 +82,26 @@ impl ModelExecutor {
     pub async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, String> {
         match self {
             Self::Provider(executor) => executor.complete(request).await,
+            Self::ChatProvider(_) => Err("ChatProvider does not support legacy completions — use chat_complete() instead".to_string()),
             Self::Moderation => Err("Moderation executor does not support completions — use OpenAIModerationModel directly".to_string()),
         }
+    }
+
+    /// Run a chat completion and return generated text
+    pub async fn chat_complete(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<CompletionResponse, String> {
+        match self {
+            Self::ChatProvider(executor) => executor.chat_complete(request).await,
+            Self::Provider(_) => Err("Provider executor does not support chat completions — use complete() instead".to_string()),
+            Self::Moderation => Err("Moderation executor does not support chat completions".to_string()),
+        }
+    }
+
+    /// Returns true if this executor uses chat completions format
+    pub fn is_chat_provider(&self) -> bool {
+        matches!(self, Self::ChatProvider(_))
     }
 }
 
@@ -200,6 +238,88 @@ impl ProviderExecutor {
         let text = resp_json["response"].as_str().unwrap_or("").to_string();
 
         // Ollama doesn't return logprobs in standard /api/generate
+        Ok(CompletionResponse {
+            text,
+            logprobs: None,
+        })
+    }
+}
+
+/// Executor that sends chat completion requests to cloud provider APIs
+///
+/// Used for cloud-hosted safety models (e.g. Llama Guard 4 on Groq, DeepInfra, Together AI)
+/// that only expose /v1/chat/completions, not the legacy /v1/completions endpoint.
+pub struct ChatCompletionExecutor {
+    http_client: reqwest::Client,
+    base_url: String,
+    api_key: Option<String>,
+}
+
+impl ChatCompletionExecutor {
+    pub fn new(base_url: String, api_key: Option<String>) -> Self {
+        Self {
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_default(),
+            base_url,
+            api_key,
+        }
+    }
+
+    /// Send chat completion via /v1/chat/completions endpoint
+    async fn chat_complete(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<CompletionResponse, String> {
+        let base = self.base_url.trim_end_matches('/');
+        // Some providers include /v1 in base_url, some don't
+        let url = if base.ends_with("/v1") || base.ends_with("/openai") {
+            format!("{}/chat/completions", base)
+        } else {
+            format!("{}/v1/chat/completions", base)
+        };
+
+        let body = serde_json::json!({
+            "model": request.model,
+            "messages": request.messages,
+            "max_tokens": request.max_tokens.unwrap_or(32),
+            "temperature": request.temperature.unwrap_or(0.0),
+            "stream": false,
+        });
+
+        let mut req = self.http_client.post(&url).json(&body);
+        if let Some(ref key) = self.api_key {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("Chat completion request failed: {}", e))?;
+        let status = resp.status();
+        let resp_text = resp
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read chat completion response: {}", e))?;
+
+        if !status.is_success() {
+            return Err(format!(
+                "Chat completion endpoint returned {}: {}",
+                status, resp_text
+            ));
+        }
+
+        let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
+            .map_err(|e| format!("Invalid chat completion JSON: {}", e))?;
+
+        // Extract text from choices[0].message.content
+        let text = resp_json["choices"]
+            .get(0)
+            .and_then(|c| c["message"]["content"].as_str())
+            .unwrap_or("")
+            .to_string();
+
         Ok(CompletionResponse {
             text,
             logprobs: None,
