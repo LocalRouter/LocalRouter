@@ -2177,6 +2177,38 @@ impl McpGateway {
             }
         }
 
+        // Send initialize to running servers to get instructions/description
+        let init_request = JsonRpcRequest::new(
+            Some(json!("_preview_init")),
+            "initialize".to_string(),
+            Some(json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "LocalRouter",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            })),
+        );
+        let timeout = Duration::from_secs(self.config.server_timeout_seconds);
+        let init_results_raw = broadcast_request(
+            &running_ids,
+            init_request,
+            &self.server_manager,
+            timeout,
+            0, // no retries for preview
+        )
+        .await;
+        let (init_successes, _) = separate_results(init_results_raw);
+        let init_results: std::collections::HashMap<String, InitializeResult> = init_successes
+            .into_iter()
+            .filter_map(|(server_id, value)| {
+                serde_json::from_value::<InitializeResult>(value)
+                    .ok()
+                    .map(|result| (server_id, result))
+            })
+            .collect();
+
         // Fetch tools, resources, prompts from running servers
         let tools = self
             .fetch_and_merge_tools(
@@ -2217,7 +2249,7 @@ impl McpGateway {
             .map(|(p, _)| p)
             .unwrap_or_default();
 
-        // Build server infos from the fetched data (no init results, so no description/instructions)
+        // Build server infos using init results for instructions/description
         let server_infos: Vec<McpServerInstructionInfo> = running_ids
             .iter()
             .map(|id| {
@@ -2226,10 +2258,11 @@ impl McpGateway {
                     .get_config(id)
                     .map(|c| c.name.clone())
                     .unwrap_or_else(|| id.clone());
+                let init = init_results.get(id);
                 McpServerInstructionInfo {
                     name,
-                    instructions: None,
-                    description: None,
+                    instructions: init.and_then(|r| r.instructions.clone()),
+                    description: init.and_then(|r| r.server_info.description.clone()),
                     tool_names: tools
                         .iter()
                         .filter(|t| t.server_id == *id)
@@ -2249,14 +2282,32 @@ impl McpGateway {
             })
             .collect();
 
-        Ok(InstructionsContext {
+        let ctx = InstructionsContext {
             servers: server_infos,
             unavailable_servers: unavailable,
             context_management_enabled: false,
             catalog_compression: None,
             virtual_instructions: Vec::new(),
             ..Default::default()
-        })
+        };
+
+        // Cache the context in a lightweight preview session so subsequent
+        // calls (e.g. threshold slider changes) don't rebuild from scratch.
+        let preview_session_id = format!("_preview_{}", client_id);
+        let session = Arc::new(RwLock::new(GatewaySession::new(
+            client_id.to_string(),
+            running_ids,
+            Duration::from_secs(300), // 5 min TTL for preview sessions
+            0,
+            Vec::new(),
+        )));
+        {
+            let mut session_write = session.write().await;
+            session_write.instructions_context = Some(ctx.clone());
+        }
+        self.sessions.insert(preview_session_id, session);
+
+        Ok(ctx)
     }
 
     /// Fetch tool/resource/prompt catalogs from all running servers for preview detail display.
