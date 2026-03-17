@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 // DEPRECATED: Route unused - Strategy mode hidden
-import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Loader2, ChevronsUpDown, Check, Search } from "lucide-react"
+import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Volume2, Mic, Loader2, ChevronsUpDown, Check, Search } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -31,6 +31,8 @@ import { createOpenAIClient } from "@/lib/openai-client"
 import { ChatPanel } from "./chat-panel"
 import { ImagesPanel } from "./images-panel"
 import { EmbeddingsPanel } from "./embeddings-panel"
+import { SpeechPanel } from "./speech-panel"
+import { TranscribePanel } from "./transcribe-panel"
 
 interface ServerConfig {
   host: string
@@ -858,6 +860,14 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
             <Hash className="h-3 w-3" />
             Embeddings
           </TabsTrigger>
+          <TabsTrigger value="speech" className="flex items-center gap-1">
+            <Volume2 className="h-3 w-3" />
+            Speech
+          </TabsTrigger>
+          <TabsTrigger value="transcribe" className="flex items-center gap-1">
+            <Mic className="h-3 w-3" />
+            Transcribe
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="chat" className="flex-1 min-h-0 mt-4">
@@ -879,6 +889,22 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
         <TabsContent value="embeddings" className="flex-1 min-h-0 mt-4">
           <EmbeddingsPanel
+            openaiClient={openaiClient}
+            isReady={isReady()}
+            selectedModel={getModelWithProvider()}
+          />
+        </TabsContent>
+
+        <TabsContent value="speech" className="flex-1 min-h-0 mt-4">
+          <SpeechPanel
+            openaiClient={openaiClient}
+            isReady={isReady()}
+            selectedModel={getModelWithProvider()}
+          />
+        </TabsContent>
+
+        <TabsContent value="transcribe" className="flex-1 min-h-0 mt-4">
+          <TranscribePanel
             openaiClient={openaiClient}
             isReady={isReady()}
             selectedModel={getModelWithProvider()}
