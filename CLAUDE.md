@@ -132,7 +132,7 @@ export LOCALROUTER_KEYCHAIN=file  # WARNING: plain text secrets!
 
 ## Documentation
 
-Plans in `./plan/` directory (176 documents). Key files:
+Plans in `./plan/` directory (223 documents). Key files:
 - `plan/2026-01-14-ARCHITECTURE.md` - System design
 - `plan/2026-01-14-PROGRESS.md` - Feature tracking
 - `plan/2026-01-17-MCP_AUTH_REDESIGN.md` - Client architecture
@@ -151,14 +151,21 @@ Plans in `./plan/` directory (176 documents). Key files:
 **Types**: feat, fix, docs, test, refactor, chore
 
 ### Plan Documentation (CRITICAL)
-Every implementation plan **must** be saved to `./plan/` at the **start** of implementation:
+
+Every implementation plan **must** be saved to `./plan/` and every plan **must** include the mandatory final steps below.
+
+#### First Step: Save the Plan (BEFORE any code)
+
+The **very first step** of any implementation task is saving the plan to `./plan/`:
 - **Filename**: `plan/YYYY-MM-DD-SHORT_DESCRIPTION.md` (use today's date)
 - **Content**: The full plan including goals, approach, files to modify, and any architectural decisions
-- **When**: Save the plan file **before** writing any code, immediately after the plan is approved — this is the **very first step** of any implementation task
+- **When**: Save the plan file **before** writing any code, immediately after the plan is approved
 - This applies to all plans created via Claude Code's plan mode or any multi-step implementation task
 - Update `plan/2026-01-14-PROGRESS.md` if the plan adds or completes a tracked feature
 
-Every plan **must** include these final steps:
+#### Final Steps: Review, Test, Bug Hunt (AFTER implementation)
+
+Every plan **must** include these mandatory final steps after all implementation is complete:
 
 1. **Plan Review**: Review the plan against the implementation — identify any missed changes, behaviors, or edge cases that were specified in the plan but not yet implemented, and implement them
 2. **Test Coverage Review**: Review code coverage for all new/modified code — add tests for any uncovered paths, edge cases, or error handling
