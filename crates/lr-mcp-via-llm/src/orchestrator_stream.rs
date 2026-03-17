@@ -798,6 +798,7 @@ async fn execute_resource_read_background(
             permissions.context_management_overrides.clone(),
             permissions.mcp_sampling_permission.clone(),
             permissions.mcp_elicitation_permission.clone(),
+            permissions.memory_enabled,
             request,
         ),
     )
@@ -857,6 +858,7 @@ async fn execute_resource_read_background(
                     permissions.context_management_overrides.clone(),
                     permissions.mcp_sampling_permission.clone(),
                     permissions.mcp_elicitation_permission.clone(),
+                    permissions.memory_enabled,
                     skill_request,
                 ),
             )
@@ -923,6 +925,7 @@ async fn execute_prompt_get_background(
             permissions.context_management_overrides.clone(),
             permissions.mcp_sampling_permission.clone(),
             permissions.mcp_elicitation_permission.clone(),
+            permissions.memory_enabled,
             request,
         ),
     )

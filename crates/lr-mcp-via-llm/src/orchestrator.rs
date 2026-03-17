@@ -60,6 +60,7 @@ impl GatewayPermissions {
             }),
             mcp_sampling_permission: client.mcp_sampling_permission.clone(),
             mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
+            memory_enabled: client.memory_enabled,
         }
     }
 }
@@ -822,6 +823,7 @@ pub async fn execute_mcp_tool_background(
             permissions.context_management_overrides.clone(),
             permissions.mcp_sampling_permission.clone(),
             permissions.mcp_elicitation_permission.clone(),
+            permissions.memory_enabled,
             request,
         ),
     )

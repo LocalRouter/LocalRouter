@@ -57,6 +57,7 @@ pub struct GatewayClient<'a> {
     context_management_overrides: Option<lr_config::ContextManagementOverrides>,
     mcp_sampling_permission: lr_config::PermissionState,
     mcp_elicitation_permission: lr_config::PermissionState,
+    memory_enabled: Option<bool>,
 }
 
 /// Build the MCP initialize capabilities JSON based on permission settings.
@@ -125,6 +126,7 @@ impl<'a> GatewayClient<'a> {
             }),
             mcp_sampling_permission: client.mcp_sampling_permission.clone(),
             mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
+            memory_enabled: client.memory_enabled,
         }
     }
 
@@ -154,6 +156,7 @@ impl<'a> GatewayClient<'a> {
                 self.context_management_overrides.clone(),
                 self.mcp_sampling_permission.clone(),
                 self.mcp_elicitation_permission.clone(),
+                self.memory_enabled,
                 request,
             )
             .await
