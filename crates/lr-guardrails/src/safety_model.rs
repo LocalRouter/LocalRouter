@@ -168,6 +168,9 @@ pub struct SafetyCheckInput {
 pub struct SafetyVerdict {
     /// Which model produced this verdict
     pub model_id: String,
+    /// Human-readable display name for the model
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_label: Option<String>,
     /// Overall safe/unsafe determination
     pub is_safe: bool,
     /// Which categories were flagged

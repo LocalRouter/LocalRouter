@@ -144,6 +144,7 @@ impl SafetyModel for OpenAIModerationModel {
 
         Ok(SafetyVerdict {
             model_id: self.model_id.clone(),
+            model_label: None,
             is_safe,
             flagged_categories,
             confidence: None,

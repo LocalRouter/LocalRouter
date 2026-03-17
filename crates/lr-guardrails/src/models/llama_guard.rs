@@ -251,6 +251,7 @@ impl SafetyModel for LlamaGuardModel {
 
         Ok(SafetyVerdict {
             model_id: self.model_id.clone(),
+            model_label: None,
             is_safe,
             flagged_categories: flagged,
             confidence: None,

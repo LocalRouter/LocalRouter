@@ -382,7 +382,7 @@ export function FirewallApprovalCard({
             {guardrailVerdicts.map((verdict) => (
               <div key={verdict.model_id} className="bg-muted/50 rounded px-2 py-1.5 text-xs space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold">{verdict.model_id}</span>
+                  <span className="font-semibold">{verdict.model_label || verdict.model_id}</span>
                   <div className="flex items-center gap-1.5">
                     <span className="text-muted-foreground text-[10px]">{verdict.check_duration_ms}ms</span>
                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${verdict.is_safe ? "bg-emerald-500 text-white" : "bg-red-500 text-white"}`}>
