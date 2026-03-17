@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { PermissionTreeSelector } from "./PermissionTreeSelector"
-import { IndexingStateButton } from "./IndexingStateButton"
+import { IndexingStateButton, IndexingStateButtonWithDefault } from "./IndexingStateButton"
 import type { TreeNode } from "./types"
 import type {
   IndexingState,
@@ -108,12 +108,10 @@ export function ClientToolsIndexingTree({
     }
   }
 
-  const handleGlobalChange = async (state: IndexingState) => {
+  const handleGlobalChange = async (state: IndexingState | null) => {
     setSaving(true)
     try {
-      // If same as config default, clear the override
-      const shouldClear = state === globalDefault
-      const params = shouldClear
+      const params = state === null
         ? { clientId, level: "global_clear" }
         : { clientId, level: "global", state }
 
@@ -136,6 +134,15 @@ export function ClientToolsIndexingTree({
         onPermissionChange={handlePermissionChange}
         onGlobalChange={handleGlobalChange}
         renderButton={(props) => <IndexingStateButton {...props} />}
+        renderGlobalButton={(childRollupStates) => (
+          <IndexingStateButtonWithDefault
+            value={permissions?.global ?? null}
+            globalDefault={globalDefault}
+            onChange={handleGlobalChange}
+            disabled={saving}
+            childRollupStates={childRollupStates}
+          />
+        )}
         disabled={saving}
         globalLabel="All Client Tools"
         emptyMessage="Specific client tools will appear here when client connects and reports its available tools."

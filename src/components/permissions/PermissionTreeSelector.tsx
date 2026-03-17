@@ -21,6 +21,8 @@ export interface PermissionTreeSelectorProps<S extends string> {
   onGlobalChange: (state: S) => void
   /** Render the state button for each node */
   renderButton: (props: TreeButtonProps<S>) => ReactNode
+  /** Optional: override the global row button (receives child rollup states) */
+  renderGlobalButton?: (childRollupStates: Set<S>) => ReactNode
   disabled?: boolean
   globalLabel?: string
   emptyMessage?: string
@@ -41,6 +43,7 @@ export function PermissionTreeSelector<S extends string>({
   emptyMessage = "No items found",
   loading = false,
   defaultExpanded = false,
+  renderGlobalButton,
 }: PermissionTreeSelectorProps<S>) {
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => {
     if (!defaultExpanded) return new Set<string>()
@@ -255,13 +258,16 @@ export function PermissionTreeSelector<S extends string>({
           className="flex items-center gap-2 px-3 py-3 border-b bg-background sticky top-0 z-10"
         >
           <span className="font-semibold text-sm flex-1 min-w-0 truncate">{globalLabel}</span>
-          <div className="shrink-0">{renderButton({
-            value: globalPermission,
-            onChange: onGlobalChange,
-            disabled,
-            size: "sm",
-            childRollupStates: globalChildRollupStates,
-          })}</div>
+          <div className="shrink-0">{renderGlobalButton
+            ? renderGlobalButton(globalChildRollupStates)
+            : renderButton({
+                value: globalPermission,
+                onChange: onGlobalChange,
+                disabled,
+                size: "sm",
+                childRollupStates: globalChildRollupStates,
+              })
+          }</div>
         </div>
 
         {/* Tree nodes or empty message */}
