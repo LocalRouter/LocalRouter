@@ -60,6 +60,17 @@ pub async fn chat_completions(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "chat");
 
+    // Emit monitor event for traffic inspection
+    let request_json = serde_json::to_value(&request).unwrap_or_default();
+    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        "/v1/chat/completions",
+        &request.model,
+        request.stream,
+        &request_json,
+    );
+
     // Record client activity for connection graph
     state.record_client_activity(&auth.api_key_id);
 
@@ -193,6 +204,18 @@ pub async fn chat_completions(
                         })?;
 
                     use lr_mcp::gateway::firewall::FirewallApprovalAction;
+
+                    // Emit firewall decision for auto-router popup
+                    let ar_action_str = format!("{:?}", response.action);
+                    super::monitor_helpers::emit_firewall_decision(
+                        &state,
+                        client_auth.as_ref().map(|e| &e.0),
+                        "auto_router",
+                        &auto_config.model_name,
+                        &ar_action_str,
+                        None,
+                    );
+
                     match response.action {
                         FirewallApprovalAction::AllowOnce
                         | FirewallApprovalAction::AllowSession
@@ -446,6 +469,35 @@ pub async fn chat_completions(
                 compression_tokens_saved,
             )
             .await;
+        }
+    }
+
+    // Emit transformed request event if any transformations were applied
+    {
+        let mut transformations = Vec::new();
+        if compression_tokens_saved > 0 {
+            transformations.push(format!("compression (-{} tokens)", compression_tokens_saved));
+        }
+        if provider_request.pre_computed_routing.is_some() {
+            let tier = provider_request.pre_computed_routing.as_ref().map(|r| {
+                if r.is_strong { "strong" } else { "weak" }
+            }).unwrap_or("unknown");
+            transformations.push(format!("routellm ({})", tier));
+        }
+        if guardrail_handle.is_some() {
+            transformations.push("guardrails".to_string());
+        }
+        if !transformations.is_empty() {
+            let req_json = serde_json::to_value(&request).unwrap_or_default();
+            super::monitor_helpers::emit_llm_request_transformed(
+                &state,
+                client_auth.as_ref().map(|e| e),
+                "/v1/chat/completions",
+                &request.model,
+                request.stream,
+                &req_json,
+                transformations,
+            );
         }
     }
 
@@ -768,7 +820,7 @@ async fn validate_model_access(
             .iter()
             .find(|m| m.id.eq_ignore_ascii_case(&request.model))
             .ok_or_else(|| {
-                ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
+                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
                     .with_param("model")
             })?;
 
@@ -849,7 +901,7 @@ async fn validate_client_provider_access(
             })
             .or(matching_models.first())
             .ok_or_else(|| {
-                ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
+                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
                     .with_param("model")
             })?;
 
@@ -1013,7 +1065,7 @@ async fn check_model_firewall_permission(
             })
             .or(matching_models.first())
             .ok_or_else(|| {
-                ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
+                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
                     .with_param("model")
             })?;
 
@@ -1217,6 +1269,7 @@ async fn run_prompt_compression(
         })
         .collect();
 
+    let comp_start = std::time::Instant::now();
     let result = engine
         .compress_messages(
             &messages,
@@ -1228,6 +1281,23 @@ async fn run_prompt_compression(
             compression_notice,
         )
         .await?;
+    let comp_duration = comp_start.elapsed().as_millis() as u64;
+
+    // Emit prompt compression monitor event
+    let reduction_pct = if result.original_tokens > 0 {
+        (1.0 - (result.compressed_tokens as f64 / result.original_tokens as f64)) * 100.0
+    } else {
+        0.0
+    };
+    super::monitor_helpers::emit_prompt_compression(
+        state,
+        client_context,
+        result.original_tokens as u64,
+        result.compressed_tokens as u64,
+        reduction_pct,
+        comp_duration,
+        "llmlingua",
+    );
 
     Ok(Some(result))
 }
@@ -1288,9 +1358,35 @@ async fn run_guardrails_scan(
     }
 
     let request_json = serde_json::to_value(request).unwrap_or_default();
+
+    // Emit guardrail request event
+    let model_names: Vec<String> = vec!["guardrails".to_string()];
+    let text_preview = lr_guardrails::text_extractor::extract_request_text(&request_json)
+        .first()
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    super::monitor_helpers::emit_guardrail_request(
+        state,
+        client_context,
+        "request",
+        &text_preview,
+        model_names,
+    );
+
+    let started = std::time::Instant::now();
     let result = engine.check_input(&request_json).await;
+    let latency_ms = started.elapsed().as_millis() as u64;
 
     if result.is_safe {
+        super::monitor_helpers::emit_guardrail_response(
+            state,
+            client_context,
+            "request",
+            "pass",
+            vec![],
+            "none",
+            latency_ms,
+        );
         return Ok(None);
     }
 
@@ -1305,8 +1401,37 @@ async fn run_guardrails_scan(
         .collect();
     let result = result.apply_client_category_overrides(&overrides);
     if result.is_safe {
+        super::monitor_helpers::emit_guardrail_response(
+            state,
+            client_context,
+            "request",
+            "pass",
+            vec![],
+            "none",
+            latency_ms,
+        );
         return Ok(None);
     }
+
+    // Emit flagged guardrail response
+    let flagged_cats: Vec<lr_monitor::FlaggedCategory> = result
+        .actions_required
+        .iter()
+        .map(|a| lr_monitor::FlaggedCategory {
+            category: a.category.to_string(),
+            confidence: a.confidence.unwrap_or(0.0) as f64,
+            action: format!("{:?}", a.action),
+        })
+        .collect();
+    super::monitor_helpers::emit_guardrail_response(
+        state,
+        client_context,
+        "request",
+        "flagged",
+        flagged_cats,
+        "ask",
+        latency_ms,
+    );
 
     tracing::info!(
         "Safety check: {} flagged categories for client {} (model: {})",
@@ -1459,6 +1584,16 @@ async fn handle_guardrail_approval(
             ApiErrorResponse::internal_error(format!("Guardrail approval failed: {}", e))
         })?;
 
+    let action_str = format!("{:?}", response.action);
+    super::monitor_helpers::emit_firewall_decision(
+        state,
+        client_context,
+        "guardrail",
+        &request.model,
+        &action_str,
+        None,
+    );
+
     match response.action {
         FirewallApprovalAction::AllowOnce
         | FirewallApprovalAction::AllowSession
@@ -1576,9 +1711,29 @@ async fn run_secret_scan_check(
         })
         .collect();
 
+    // Emit secret scan request event
+    let scan_text_preview = texts.first().map(|t| t.text.as_str()).unwrap_or("");
+    let rules_count = if scanner.has_rules() { scanner.rule_metadata().len() } else { 0 };
+    super::monitor_helpers::emit_secret_scan_request(
+        state,
+        Some(client_ctx),
+        scan_text_preview,
+        rules_count,
+    );
+
+    let scan_start = std::time::Instant::now();
     let result = scanner.scan(&texts);
+    let scan_latency = scan_start.elapsed().as_millis() as u64;
 
     if result.findings.is_empty() {
+        super::monitor_helpers::emit_secret_scan_response(
+            state,
+            Some(client_ctx),
+            0,
+            serde_json::json!([]),
+            "pass",
+            scan_latency,
+        );
         return Ok(());
     }
 
@@ -1586,6 +1741,18 @@ async fn run_secret_scan_check(
         "Secret scan found {} potential secrets in request from client {}",
         result.findings.len(),
         client_ctx.client_id
+    );
+
+    let findings_json =
+        serde_json::to_value(&result.findings).unwrap_or(serde_json::json!([]));
+    let action_name = format!("{:?}", effective_action).to_lowercase();
+    super::monitor_helpers::emit_secret_scan_response(
+        state,
+        Some(client_ctx),
+        result.findings.len(),
+        findings_json,
+        &action_name,
+        scan_latency,
     );
 
     match effective_action {
@@ -1663,6 +1830,16 @@ async fn handle_secret_scan_approval(
         .map_err(|e| {
             ApiErrorResponse::internal_error(format!("Secret scan approval failed: {}", e))
         })?;
+
+    let action_str = format!("{:?}", response.action);
+    super::monitor_helpers::emit_firewall_decision(
+        state,
+        Some(client_ctx),
+        "secret_scan",
+        &request.model,
+        &action_str,
+        None,
+    );
 
     match response.action {
         FirewallApprovalAction::AllowOnce
@@ -2730,6 +2907,17 @@ async fn handle_non_streaming(
                 latency,
             );
 
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                client_auth.as_ref().map(|ext| ext),
+                Some(&generation_id),
+                "unknown",
+                &request.model,
+                502,
+                &e.to_string(),
+            );
+
             // Log to access log (persistent storage)
             if let Err(log_err) = state.access_logger.log_failure(
                 &auth.api_key_id,
@@ -2859,6 +3047,44 @@ async fn build_non_streaming_response(
         })
         .to_string(),
     );
+
+    // Emit monitor event for traffic inspection
+    {
+        let content_preview = response
+            .choices
+            .first()
+            .map(|c| match &c.message.content {
+                lr_providers::ChatMessageContent::Text(t) => t.clone(),
+                lr_providers::ChatMessageContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        lr_providers::ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+            })
+            .unwrap_or_default();
+        let finish_reason = response
+            .choices
+            .first()
+            .and_then(|c| c.finish_reason.as_deref());
+        super::monitor_helpers::emit_llm_response(
+            &state,
+            _client_auth.as_ref().map(|e| e),
+            &generation_id,
+            &response.provider,
+            &response.model,
+            200,
+            incremental_prompt_tokens as u64,
+            response.usage.completion_tokens as u64,
+            Some(cost),
+            latency_ms,
+            finish_reason,
+            &content_preview,
+            false,
+        );
+    }
 
     // Note: Router already records usage for rate limiting, so we don't need to do it here
 
@@ -3073,6 +3299,17 @@ async fn handle_streaming(
                 latency,
             );
 
+            // Emit monitor error event
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                _client_auth.as_ref().map(|ext| ext),
+                Some(&generation_id),
+                "unknown",
+                &model,
+                502,
+                &e.to_string(),
+            );
+
             // Log to access log (persistent storage)
             if let Err(log_err) = state.access_logger.log_failure(
                 &auth.api_key_id,
@@ -3144,6 +3381,14 @@ async fn handle_streaming(
     let content_accumulator_map = content_accumulator.clone();
     let finish_reason_map = finish_reason.clone();
     let completion_tx_map = completion_tx.clone();
+
+    // Emit pending monitor event for streaming response
+    let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
+        &state,
+        _client_auth.as_ref().map(|e| e),
+        &generation_id,
+        &model,
+    );
 
     // Clone for tracking after stream completes
     let state_clone = state.clone();
@@ -3379,6 +3624,20 @@ async fn handle_streaming(
                 "timestamp": created_at_clone.to_rfc3339(),
             })
             .to_string(),
+        );
+
+        // Complete the pending monitor event with final streaming data
+        super::monitor_helpers::complete_llm_response(
+            &state_clone,
+            &monitor_event_id,
+            &provider,
+            &model_clone,
+            prompt_tokens as u64,
+            completion_tokens as u64,
+            Some(cost),
+            latency_ms,
+            Some(&finish_reason_final),
+            &completion_content,
         );
 
         let generation_details = GenerationDetails {
