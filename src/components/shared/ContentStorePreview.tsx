@@ -20,6 +20,8 @@ interface ContentStorePreviewProps {
   responseThresholdBytes: number
   searchPlaceholder?: string
   defaultMode?: "index" | "compress"
+  /** Show Index/Compress toggle. When false, uses defaultMode without a toggle. */
+  showModeToggle?: boolean
 }
 
 export function ContentStorePreview({
@@ -28,6 +30,7 @@ export function ContentStorePreview({
   responseThresholdBytes,
   searchPlaceholder = 'Search query... (e.g. "rate limiting", "login endpoint")',
   defaultMode = "index",
+  showModeToggle = true,
 }: ContentStorePreviewProps) {
   const [content, setContent] = useState("")
   const [indexResult, setIndexResult] = useState<RagPreviewIndexResult | null>(null)
@@ -165,7 +168,7 @@ export function ContentStorePreview({
               </>
             )}
           </div>
-          <div className="flex items-center gap-1 rounded-md border p-0.5 w-fit">
+          {showModeToggle && <div className="flex items-center gap-1 rounded-md border p-0.5 w-fit">
             <button
               type="button"
               onClick={() => setMode("index")}
@@ -188,7 +191,7 @@ export function ContentStorePreview({
             >
               Compress
             </button>
-          </div>
+          </div>}
         </CardContent>
       </Card>
 
