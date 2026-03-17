@@ -2053,6 +2053,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Safety model management commands
             ui::commands::add_safety_model,
             ui::commands::remove_safety_model,
+            ui::commands::toggle_safety_model,
             // Provider model pull commands
             ui::commands::pull_provider_model,
             // Connection graph commands

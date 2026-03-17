@@ -1940,9 +1940,9 @@ pub struct SafetyModelConfig {
     pub label: String,
     /// Model type: "llama_guard_4", "shield_gemma", "nemotron", "granite_guardian"
     pub model_type: String,
-    /// Migration shim: old enabled flag (deserialize only, not serialized).
-    /// Presence in the safety_models list means the model is active.
-    #[serde(default, skip_serializing)]
+    /// Whether this safety model is active. Disabled models stay in config
+    /// but are skipped during guardrails checks.
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Use existing provider (e.g. "ollama", "openrouter")
     #[serde(default)]

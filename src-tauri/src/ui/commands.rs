@@ -2996,6 +2996,7 @@ pub async fn debug_trigger_firewall_popup(
         Some(lr_mcp::gateway::firewall::GuardrailApprovalDetails {
             verdicts: vec![serde_json::json!({
                 "model_id": "llamaguard-3",
+                "model_label": "Llama Guard 3",
                 "is_safe": false,
                 "flagged_categories": [
                     {"category": "violence", "confidence": 0.92},
@@ -3562,6 +3563,7 @@ pub async fn rebuild_safety_engine(
         let model_inputs: Vec<lr_guardrails::SafetyModelConfigInput> = guardrails_config
             .safety_models
             .iter()
+            .filter(|m| m.enabled)
             .map(|m| lr_guardrails::SafetyModelConfigInput {
                 id: m.id.clone(),
                 model_type: m.model_type.clone(),
@@ -3586,9 +3588,15 @@ pub async fn rebuild_safety_engine(
             tracing::warn!("Safety model '{}' failed to load: {}", model_id, error);
         }
 
+        let disabled_count = guardrails_config
+            .safety_models
+            .iter()
+            .filter(|m| !m.enabled)
+            .count();
         tracing::info!(
-            "Safety engine rebuilt: {} models loaded, {} failed",
+            "Safety engine rebuilt: {} models loaded, {} disabled, {} failed",
             engine.model_count(),
+            disabled_count,
             engine.load_errors().len(),
         );
         state.replace_safety_engine(engine);
@@ -3942,6 +3950,41 @@ pub async fn remove_safety_model(
     config_manager
         .update(|config| {
             config.guardrails.safety_models.retain(|m| m.id != model_id);
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Toggle a safety model's enabled/disabled state
+#[tauri::command]
+pub async fn toggle_safety_model(
+    model_id: String,
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    {
+        let config = config_manager.get();
+        config
+            .guardrails
+            .safety_models
+            .iter()
+            .find(|m| m.id == model_id)
+            .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
+    }
+
+    config_manager
+        .update(|config| {
+            if let Some(model) = config
+                .guardrails
+                .safety_models
+                .iter_mut()
+                .find(|m| m.id == model_id)
+            {
+                model.enabled = enabled;
+            }
         })
         .map_err(|e| e.to_string())?;
 

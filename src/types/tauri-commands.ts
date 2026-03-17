@@ -2539,6 +2539,7 @@ export interface SafetyModelConfig {
   id: string
   label: string
   model_type: string
+  enabled: boolean
   provider_id: string | null
   model_name: string | null
   confidence_threshold: number | null
@@ -2575,6 +2576,7 @@ export interface FlaggedCategory {
 /** Verdict from a single safety model check */
 export interface SafetyVerdict {
   model_id: string
+  model_label?: string
   is_safe: boolean
   flagged_categories: FlaggedCategory[]
   confidence: number | null
@@ -2652,6 +2654,12 @@ export interface AddSafetyModelParams {
 /** Params for remove_safety_model */
 export interface RemoveSafetyModelParams {
   modelId: string
+}
+
+/** Params for toggle_safety_model */
+export interface ToggleSafetyModelParams {
+  modelId: string
+  enabled: boolean
 }
 
 /** Params for pull_provider_model */

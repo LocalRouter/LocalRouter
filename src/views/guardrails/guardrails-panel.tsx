@@ -19,6 +19,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
 import { SafetyModelPicker, type PickerSelection } from "@/components/guardrails/SafetyModelPicker"
 import { GuardrailsTab as GuardrailsTryItOut } from "@/views/try-it-out/guardrails-tab"
 import { cn } from "@/lib/utils"
@@ -31,6 +33,7 @@ interface GuardrailsPanelProps {
   loadErrors: Record<string, string>
   onPickerSelect: (selection: PickerSelection) => void
   onRemoveModel: (modelId: string) => void
+  onToggleModel: (modelId: string, enabled: boolean) => void
 }
 
 export function GuardrailsPanel({
@@ -38,6 +41,7 @@ export function GuardrailsPanel({
   loadErrors,
   onPickerSelect,
   onRemoveModel,
+  onToggleModel,
 }: GuardrailsPanelProps) {
   const [search, setSearch] = useState("")
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
@@ -96,7 +100,8 @@ export function GuardrailsPanel({
                       }}
                       className={cn(
                         "flex items-center gap-3 p-3 rounded-md cursor-pointer",
-                        selectedModelId === model.id ? "bg-accent" : "hover:bg-muted"
+                        selectedModelId === model.id ? "bg-accent" : "hover:bg-muted",
+                        !model.enabled && "opacity-50"
                       )}
                     >
                       <div className="flex-1 min-w-0">
@@ -105,6 +110,9 @@ export function GuardrailsPanel({
                           {model.provider_id}/{model.model_name}
                         </p>
                       </div>
+                      {!model.enabled && (
+                        <Badge variant="secondary" className="text-[10px] shrink-0">Disabled</Badge>
+                      )}
                       {hasError && (
                         <Badge variant="destructive" className="text-[10px] shrink-0">Error</Badge>
                       )}
@@ -201,6 +209,29 @@ export function GuardrailsPanel({
 
                 <TabsContent value="settings">
                   <div className="space-y-4">
+                    {/* Enable/Disable */}
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Model Status</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <Label>Enabled</Label>
+                            <p className="text-sm text-muted-foreground">
+                              {selectedModel.enabled
+                                ? "This model is active and used for guardrails checks."
+                                : "This model is disabled and will not be used for guardrails checks."}
+                            </p>
+                          </div>
+                          <Switch
+                            checked={selectedModel.enabled}
+                            onCheckedChange={(checked) => onToggleModel(selectedModel.id, checked)}
+                          />
+                        </div>
+                      </CardContent>
+                    </Card>
+
                     {/* Danger Zone */}
                     <Card className="border-red-200 dark:border-red-900">
                       <CardHeader>

@@ -152,6 +152,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       enabled: true,
       strategy_id: 'strategy-default',
       context_management_enabled: null,
+      catalog_compression_enabled: null,
       created_at: new Date().toISOString(),
       last_used: null,
       mcp_permissions: { global: 'ask' as const, servers: {}, tools: {}, resources: {}, prompts: {} },
@@ -2753,9 +2754,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_guardrails_config': () => ({
     scan_requests: true,
     safety_models: [
-      { id: 'llama_guard', label: 'Llama Guard 3 1B via Ollama', model_type: 'llama_guard', provider_id: 'ollama', model_name: 'llama-guard3:1b', confidence_threshold: null, enabled_categories: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
-      { id: 'granite_guardian', label: 'Granite Guardian 3.0 2B via Ollama', model_type: 'granite_guardian', provider_id: 'ollama', model_name: 'granite3-guardian:2b', confidence_threshold: null, enabled_categories: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
-      { id: 'mistral_mod', label: 'Mistral Moderation via Mistral', model_type: 'mistral_moderation', provider_id: 'mistral', model_name: 'mistral-moderation-latest', confidence_threshold: null, enabled_categories: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'llama_guard', label: 'Llama Guard 3 1B via Ollama', model_type: 'llama_guard', enabled: true, provider_id: 'ollama', model_name: 'llama-guard3:1b', confidence_threshold: null, enabled_categories: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'granite_guardian', label: 'Granite Guardian 3.0 2B via Ollama', model_type: 'granite_guardian', enabled: true, provider_id: 'ollama', model_name: 'granite3-guardian:2b', confidence_threshold: null, enabled_categories: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'mistral_mod', label: 'Mistral Moderation via Mistral', model_type: 'mistral_moderation', enabled: true, provider_id: 'mistral', model_name: 'mistral-moderation-latest', confidence_threshold: null, enabled_categories: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
     ],
     category_actions: [
       { category: '__global', action: 'ask' },
@@ -2855,6 +2856,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'remove_safety_model': () => {
     toast.success('Safety model removed (demo)')
+    return null
+  },
+  'toggle_safety_model': (args) => {
+    toast.success(`Safety model ${args?.enabled ? 'enabled' : 'disabled'} (demo)`)
     return null
   },
   'pull_provider_model': (args) => {

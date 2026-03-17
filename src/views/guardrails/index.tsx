@@ -24,6 +24,7 @@ import type {
   UpdateGuardrailsConfigParams,
   AddSafetyModelParams,
   RemoveSafetyModelParams,
+  ToggleSafetyModelParams,
   PullProviderModelParams,
 } from "@/types/tauri-commands"
 
@@ -150,11 +151,26 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
     }
   }
 
+  const handleToggleModel = async (modelId: string, enabled: boolean) => {
+    try {
+      await invoke("toggle_safety_model", {
+        modelId,
+        enabled,
+      } satisfies ToggleSafetyModelParams as Record<string, unknown>)
+      toast.success(enabled ? "Safety model enabled" : "Safety model disabled")
+      await loadConfig()
+      rebuildEngine()
+    } catch (err) {
+      toast.error(`Failed to toggle model: ${err}`)
+    }
+  }
+
   const handlePickerSelect = async (selection: PickerSelection) => {
     const modelConfig: SafetyModelConfig = {
       id: "",
       label: selection.label,
       model_type: selection.modelType,
+      enabled: true,
       provider_id: selection.providerId,
       model_name: selection.modelName,
       confidence_threshold: null,
@@ -357,6 +373,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
             loadErrors={loadErrors}
             onPickerSelect={handlePickerSelect}
             onRemoveModel={handleRemoveModel}
+            onToggleModel={handleToggleModel}
           />
         </TabsContent>
 
