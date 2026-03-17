@@ -1005,7 +1005,7 @@ async fn validate_client_provider_access(
             })
             .or(matching_models.first())
             .ok_or_else(|| {
-                ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
+                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
                     .with_param("model")
             })?;
 
@@ -1738,6 +1738,7 @@ mod tests {
             text: "a".repeat(600),
             message_index: Some(0),
             label: "user".to_string(),
+            role: "user".to_string(),
         }];
         let result = build_flagged_text_preview(&texts);
         assert!(result.len() <= 500);
@@ -1759,6 +1760,7 @@ mod tests {
             text,
             message_index: Some(0),
             label: "user".to_string(),
+            role: "user".to_string(),
         }];
         let result = build_flagged_text_preview(&texts);
         // Must not panic and must be valid UTF-8
@@ -1774,6 +1776,7 @@ mod tests {
             text,
             message_index: Some(0),
             label: "user".to_string(),
+            role: "user".to_string(),
         }];
         let result = build_flagged_text_preview(&texts);
         assert!(result.ends_with("..."));
@@ -1785,6 +1788,7 @@ mod tests {
             text: "Hello".to_string(),
             message_index: Some(0),
             label: "user".to_string(),
+            role: "user".to_string(),
         }];
         let result = build_flagged_text_preview(&texts);
         assert_eq!(result, "[user] Hello");
@@ -1798,11 +1802,13 @@ mod tests {
                 text: "system prompt".to_string(),
                 message_index: Some(0),
                 label: "system".to_string(),
+                role: "system".to_string(),
             },
             ExtractedText {
                 text: "user message".to_string(),
                 message_index: Some(1),
                 label: "user".to_string(),
+                role: "user".to_string(),
             },
         ];
         let result = build_flagged_text_preview(&texts);

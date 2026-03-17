@@ -261,7 +261,7 @@ impl SafetyEngine {
         let messages: Vec<SafetyMessage> = texts
             .into_iter()
             .map(|t| SafetyMessage {
-                role: t.label.clone(),
+                role: t.role,
                 content: t.text,
             })
             .collect();

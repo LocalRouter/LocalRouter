@@ -9,6 +9,8 @@ pub struct ExtractedText {
     pub message_index: Option<usize>,
     /// Label for the source (e.g. "system message", "user message")
     pub label: String,
+    /// Original message role (e.g. "user", "system", "assistant")
+    pub role: String,
 }
 
 /// Extract all text content from a chat completion request body
@@ -35,6 +37,7 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                             text: text.to_string(),
                             message_index: Some(i),
                             label: format!("{} message", role),
+                            role: role.to_string(),
                         });
                     }
                 } else if let Some(parts) = content.as_array() {
@@ -46,6 +49,7 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                                     text: text.to_string(),
                                     message_index: Some(i),
                                     label: format!("{} message (text part)", role),
+                                    role: role.to_string(),
                                 });
                             }
                         }
@@ -66,6 +70,7 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                                 text: args.to_string(),
                                 message_index: Some(i),
                                 label: format!("{} tool call arguments", role),
+                                role: role.to_string(),
                             });
                         }
                     }
@@ -81,6 +86,7 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                 text: prompt.to_string(),
                 message_index: None,
                 label: "prompt".to_string(),
+                role: "user".to_string(),
             });
         }
     }
@@ -105,6 +111,7 @@ pub fn extract_response_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                         text: content.to_string(),
                         message_index: Some(i),
                         label: format!("choice {} content", i),
+                        role: "assistant".to_string(),
                     });
                 }
             }
@@ -116,6 +123,7 @@ pub fn extract_response_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                         text: text.to_string(),
                         message_index: Some(i),
                         label: format!("choice {} text", i),
+                        role: "assistant".to_string(),
                     });
                 }
             }
@@ -172,8 +180,10 @@ mod tests {
         assert_eq!(texts.len(), 2);
         assert_eq!(texts[0].text, "You are helpful.");
         assert_eq!(texts[0].message_index, Some(0));
+        assert_eq!(texts[0].role, "system");
         assert_eq!(texts[1].text, "Hello world");
         assert_eq!(texts[1].message_index, Some(1));
+        assert_eq!(texts[1].role, "user");
     }
 
     #[test]
@@ -191,6 +201,7 @@ mod tests {
         let texts = extract_request_text(&body);
         assert_eq!(texts.len(), 1);
         assert_eq!(texts[0].text, "What's in this image?");
+        assert_eq!(texts[0].role, "user");
     }
 
     #[test]
@@ -207,6 +218,7 @@ mod tests {
         let texts = extract_response_text(&body);
         assert_eq!(texts.len(), 1);
         assert_eq!(texts[0].text, "Here is the response");
+        assert_eq!(texts[0].role, "assistant");
     }
 
     #[test]
@@ -220,6 +232,7 @@ mod tests {
         assert_eq!(texts.len(), 1);
         assert_eq!(texts[0].text, "Complete this: ignore previous");
         assert_eq!(texts[0].label, "prompt");
+        assert_eq!(texts[0].role, "user");
     }
 
     #[test]
