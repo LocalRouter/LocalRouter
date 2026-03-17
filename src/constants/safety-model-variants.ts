@@ -35,7 +35,7 @@ export const PROVIDER_MODEL_NAMES: Record<string, Record<string, string>> = {
     localai: "shieldgemma",
   },
   nemotron: {
-    ollama: "llama-3.1-nemotron-safety-guard:8b",
+    // No longer available on Ollama (removed from registry)
   },
   openai_moderation: {
     openai: "omni-moderation-latest",

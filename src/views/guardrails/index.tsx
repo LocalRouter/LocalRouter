@@ -101,6 +101,28 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
     }
   }, [])
 
+  // Listen for model pull completion/failure events
+  useEffect(() => {
+    const onComplete = listenSafe<{ provider_id: string; model_name: string }>(
+      "provider-model-pull-complete",
+      (event) => {
+        toast.success(`Pulled "${event.payload.model_name}" successfully`)
+        rebuildEngine()
+      },
+    )
+    const onFailed = listenSafe<{ provider_id: string; model_name: string; error: string }>(
+      "provider-model-pull-failed",
+      (event) => {
+        toast.error(`Failed to pull "${event.payload.model_name}": ${event.payload.error}`)
+      },
+    )
+
+    return () => {
+      onComplete.cleanup()
+      onFailed.cleanup()
+    }
+  }, [rebuildEngine])
+
   const saveConfig = async (newConfig: GuardrailsConfig) => {
     try {
       await invoke("update_guardrails_config", {
