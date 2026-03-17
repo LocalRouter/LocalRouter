@@ -341,6 +341,7 @@ impl McpGateway {
             None,                            // context_management_overrides
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
+            None,                                  // memory_enabled
             request,
         )
         .await
@@ -367,6 +368,7 @@ impl McpGateway {
         context_management_overrides: Option<lr_config::ContextManagementOverrides>,
         mcp_sampling_permission: lr_config::PermissionState,
         mcp_elicitation_permission: lr_config::PermissionState,
+        memory_enabled: Option<bool>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -411,6 +413,7 @@ impl McpGateway {
                 c.context_management_enabled = overrides.context_management_enabled;
                 c.catalog_compression_enabled = overrides.catalog_compression_enabled;
             }
+            c.memory_enabled = memory_enabled;
             c
         };
 
