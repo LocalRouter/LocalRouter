@@ -708,7 +708,7 @@ impl ModelProvider for OllamaProvider {
 
                     chunks
                 }
-                Err(e) => vec![Err(AppError::Provider(format!("Stream error: {}", e)))],
+                Err(e) => vec![Err(AppError::Provider(crate::http_client::format_stream_error(&e)))],
             };
 
             futures::stream::iter(chunks)
@@ -751,7 +751,7 @@ impl ModelProvider for OllamaProvider {
 
         let stream = response.bytes_stream().map(|result| {
             result
-                .map_err(|e| AppError::Provider(format!("Stream error: {}", e)))
+                .map_err(|e| AppError::Provider(crate::http_client::format_stream_error(&e)))
                 .and_then(|bytes| {
                     // Ollama streams NDJSON — each line is a JSON object
                     let text = String::from_utf8_lossy(&bytes);

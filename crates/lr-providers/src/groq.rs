@@ -446,7 +446,7 @@ impl ModelProvider for GroqProvider {
 
                     chunks
                 }
-                Err(e) => vec![Err(AppError::Provider(format!("Stream error: {}", e)))],
+                Err(e) => vec![Err(AppError::Provider(crate::http_client::format_stream_error(&e)))],
             };
 
             futures::stream::iter(chunks)
