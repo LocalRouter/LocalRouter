@@ -50,8 +50,8 @@ pub fn convert_sampling_to_chat_request(
         logprobs: None,
         top_logprobs: None,
         response_format: None,
-        tools: None,
-        tool_choice: None,
+        tools: sampling_req.tools,
+        tool_choice: sampling_req.tool_choice,
         extensions: None,
         pre_computed_routing: None,
         n: None,
@@ -85,9 +85,9 @@ fn convert_sampling_message_to_chat(msg: SamplingMessage) -> ChatMessage {
     ChatMessage {
         role: msg.role,
         content,
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
+        tool_calls: msg.tool_calls,
+        tool_call_id: msg.tool_call_id,
+        name: msg.name,
     }
 }
 
@@ -118,17 +118,20 @@ pub fn convert_chat_to_sampling_response(
             "stop" => "end_turn",
             "length" => "max_tokens",
             "content_filter" => "end_turn",
-            "tool_calls" => "end_turn",
+            "tool_calls" => "tool_calls",
             _ => "end_turn",
         })
         .unwrap_or("end_turn")
         .to_string();
+
+    let tool_calls = choice.message.tool_calls.clone();
 
     Ok(SamplingResponse {
         model: chat_resp.model,
         stop_reason,
         role: "assistant".to_string(),
         content,
+        tool_calls,
     })
 }
 
@@ -143,6 +146,9 @@ mod tests {
             messages: vec![SamplingMessage {
                 role: "user".to_string(),
                 content: SamplingContent::Text("Hello, world!".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             }],
             model_preferences: None,
             system_prompt: None,
@@ -150,6 +156,8 @@ mod tests {
             temperature: Some(0.7),
             stop_sequences: None,
             metadata: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let chat_req = convert_sampling_to_chat_request(sampling_req).unwrap();
@@ -166,6 +174,9 @@ mod tests {
             messages: vec![SamplingMessage {
                 role: "user".to_string(),
                 content: SamplingContent::Text("Hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             }],
             model_preferences: None,
             system_prompt: Some("You are a helpful assistant".to_string()),
@@ -173,6 +184,8 @@ mod tests {
             temperature: None,
             stop_sequences: None,
             metadata: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let chat_req = convert_sampling_to_chat_request(sampling_req).unwrap();
@@ -190,6 +203,9 @@ mod tests {
                 "type": "text",
                 "text": "Hello from structured content"
             })),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         };
 
         let chat_msg = convert_sampling_message_to_chat(msg);
@@ -203,73 +219,101 @@ mod tests {
     }
 
     // --- Tool call preservation tests ---
-    // These tests document that the MCP sampling conversion currently strips
-    // tool_calls and tool_call_id from messages. This is a known limitation:
-    // the MCP SamplingMessage type doesn't have fields for tool_calls/tool_call_id,
-    // so multi-turn conversations with tool use lose this information when converted.
 
     #[test]
-    fn test_convert_sampling_message_sets_tool_calls_to_none() {
+    fn test_convert_sampling_message_preserves_tool_calls() {
+        use lr_providers::{FunctionCall, ToolCall};
+
         let msg = SamplingMessage {
             role: "assistant".to_string(),
-            content: SamplingContent::Text("I'll search for that.".to_string()),
+            content: SamplingContent::Text(String::new()),
+            tool_calls: Some(vec![ToolCall {
+                id: "call_abc123".to_string(),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: "search_code".to_string(),
+                    arguments: r#"{"query": "guardrails"}"#.to_string(),
+                },
+            }]),
+            tool_call_id: None,
+            name: None,
         };
 
         let chat_msg = convert_sampling_message_to_chat(msg);
 
         assert_eq!(chat_msg.role, "assistant");
-        // BUG: tool_calls are always None even for assistant messages that should have them.
-        // The MCP SamplingMessage type has no field for tool_calls, so they cannot be preserved.
-        assert!(
-            chat_msg.tool_calls.is_none(),
-            "tool_calls should be None (current limitation: MCP SamplingMessage has no tool_calls field)"
-        );
+        assert!(chat_msg.tool_calls.is_some());
+        let tc = &chat_msg.tool_calls.unwrap()[0];
+        assert_eq!(tc.id, "call_abc123");
+        assert_eq!(tc.function.name, "search_code");
     }
 
     #[test]
-    fn test_convert_sampling_message_sets_tool_call_id_to_none() {
+    fn test_convert_sampling_message_preserves_tool_call_id() {
         let msg = SamplingMessage {
             role: "tool".to_string(),
             content: SamplingContent::Text("Tool result content".to_string()),
+            tool_calls: None,
+            tool_call_id: Some("call_abc123".to_string()),
+            name: Some("search_code".to_string()),
         };
 
         let chat_msg = convert_sampling_message_to_chat(msg);
 
         assert_eq!(chat_msg.role, "tool");
-        // BUG: tool_call_id is always None even for tool role messages that require it.
-        // Without tool_call_id, the LLM provider cannot match tool results to tool calls.
-        assert!(
-            chat_msg.tool_call_id.is_none(),
-            "tool_call_id should be None (current limitation: MCP SamplingMessage has no tool_call_id field)"
-        );
-        assert!(
-            chat_msg.name.is_none(),
-            "name should be None (current limitation: MCP SamplingMessage has no name field)"
-        );
+        assert_eq!(chat_msg.tool_call_id.as_deref(), Some("call_abc123"));
+        assert_eq!(chat_msg.name.as_deref(), Some("search_code"));
     }
 
     #[test]
-    fn test_convert_sampling_request_strips_tool_calls_from_multi_turn_conversation() {
-        // Simulates a multi-turn conversation where an external client (e.g., opencode)
-        // sends message history that originally included tool calls.
-        // The MCP sampling protocol cannot represent tool_calls, so they are lost.
+    fn test_convert_sampling_message_none_tool_fields_pass_through() {
+        let msg = SamplingMessage {
+            role: "user".to_string(),
+            content: SamplingContent::Text("Hello".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        };
+
+        let chat_msg = convert_sampling_message_to_chat(msg);
+        assert!(chat_msg.tool_calls.is_none());
+        assert!(chat_msg.tool_call_id.is_none());
+        assert!(chat_msg.name.is_none());
+    }
+
+    #[test]
+    fn test_multi_turn_tool_use_conversation_roundtrip() {
+        use lr_providers::{FunctionCall, FunctionDefinition, Tool, ToolCall, ToolChoice};
+
         let sampling_req = SamplingRequest {
             messages: vec![
                 SamplingMessage {
                     role: "user".to_string(),
                     content: SamplingContent::Text("Find GuardRails implementation".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
-                // This was originally an assistant message with tool_calls, but the MCP
-                // SamplingMessage type can only carry content, not tool_calls.
                 SamplingMessage {
                     role: "assistant".to_string(),
                     content: SamplingContent::Text(String::new()),
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_abc".to_string(),
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name: "search_code".to_string(),
+                            arguments: r#"{"query":"guardrails"}"#.to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                    name: None,
                 },
-                // This was originally a tool role message with tool_call_id, but again
-                // the MCP SamplingMessage type cannot carry tool_call_id.
                 SamplingMessage {
                     role: "tool".to_string(),
                     content: SamplingContent::Text("Found 697 matches...".to_string()),
+                    tool_calls: None,
+                    tool_call_id: Some("call_abc".to_string()),
+                    name: Some("search_code".to_string()),
                 },
             ],
             model_preferences: None,
@@ -278,6 +322,15 @@ mod tests {
             temperature: None,
             stop_sequences: None,
             metadata: None,
+            tools: Some(vec![Tool {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: "search_code".to_string(),
+                    description: Some("Search for code".to_string()),
+                    parameters: serde_json::json!({"type": "object"}),
+                },
+            }]),
+            tool_choice: Some(ToolChoice::Auto("auto".to_string())),
         };
 
         let chat_req = convert_sampling_to_chat_request(sampling_req).unwrap();
@@ -289,29 +342,42 @@ mod tests {
         assert_eq!(chat_req.messages[2].role, "assistant");
         assert_eq!(chat_req.messages[3].role, "tool");
 
-        // The assistant message has no tool_calls — this breaks the OpenAI protocol
-        // because a tool result message follows without a preceding tool call.
-        assert!(
-            chat_req.messages[2].tool_calls.is_none(),
-            "BUG: assistant message should have tool_calls but MCP sampling strips them"
+        // Assistant message preserves tool_calls
+        assert!(chat_req.messages[2].tool_calls.is_some());
+        assert_eq!(
+            chat_req.messages[2].tool_calls.as_ref().unwrap()[0].id,
+            "call_abc"
         );
 
-        // The tool message has no tool_call_id — providers will reject this
-        assert!(
-            chat_req.messages[3].tool_call_id.is_none(),
-            "BUG: tool message should have tool_call_id but MCP sampling strips it"
+        // Tool message preserves tool_call_id and name
+        assert_eq!(
+            chat_req.messages[3].tool_call_id.as_deref(),
+            Some("call_abc")
         );
+        assert_eq!(
+            chat_req.messages[3].name.as_deref(),
+            Some("search_code")
+        );
+
+        // Tools definition is forwarded
+        assert!(chat_req.tools.is_some());
+        assert_eq!(chat_req.tools.unwrap()[0].function.name, "search_code");
+
+        // Tool choice is forwarded
+        assert!(chat_req.tool_choice.is_some());
     }
 
     #[test]
-    fn test_convert_sampling_request_does_not_forward_tools_definition() {
-        // The CompletionRequest produced by sampling conversion never includes
-        // tools definitions, even though the downstream LLM may need them for
-        // multi-turn tool calling.
+    fn test_convert_sampling_request_forwards_tools() {
+        use lr_providers::{FunctionDefinition, Tool, ToolChoice};
+
         let sampling_req = SamplingRequest {
             messages: vec![SamplingMessage {
                 role: "user".to_string(),
                 content: SamplingContent::Text("Hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             }],
             model_preferences: None,
             system_prompt: None,
@@ -319,27 +385,54 @@ mod tests {
             temperature: None,
             stop_sequences: None,
             metadata: None,
+            tools: Some(vec![Tool {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: "search".to_string(),
+                    description: Some("Search for code".to_string()),
+                    parameters: serde_json::json!({"type": "object"}),
+                },
+            }]),
+            tool_choice: Some(ToolChoice::Auto("auto".to_string())),
         };
 
         let chat_req = convert_sampling_to_chat_request(sampling_req).unwrap();
 
-        assert!(
-            chat_req.tools.is_none(),
-            "tools should be None — sampling conversion never passes tool definitions"
-        );
-        assert!(
-            chat_req.tool_choice.is_none(),
-            "tool_choice should be None — sampling conversion never passes tool_choice"
-        );
+        assert!(chat_req.tools.is_some());
+        assert_eq!(chat_req.tools.unwrap()[0].function.name, "search");
+        assert!(chat_req.tool_choice.is_some());
     }
 
     #[test]
-    fn test_convert_response_discards_tool_calls_from_llm() {
+    fn test_convert_sampling_request_no_tools_passes_none() {
+        let sampling_req = SamplingRequest {
+            messages: vec![SamplingMessage {
+                role: "user".to_string(),
+                content: SamplingContent::Text("Hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            model_preferences: None,
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            stop_sequences: None,
+            metadata: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let chat_req = convert_sampling_to_chat_request(sampling_req).unwrap();
+
+        assert!(chat_req.tools.is_none());
+        assert!(chat_req.tool_choice.is_none());
+    }
+
+    #[test]
+    fn test_convert_response_preserves_tool_calls() {
         use lr_providers::{CompletionChoice, CompletionResponse, FunctionCall, TokenUsage, ToolCall};
 
-        // When the LLM responds with tool_calls (finish_reason: "tool_calls"),
-        // the sampling conversion silently discards them and maps the finish
-        // reason to "end_turn".
         let chat_resp = CompletionResponse {
             id: "chatcmpl-123".to_string(),
             object: "chat.completion".to_string(),
@@ -381,23 +474,14 @@ mod tests {
 
         let sampling_resp = convert_chat_to_sampling_response(chat_resp).unwrap();
 
-        // The tool_calls are silently discarded — the response only contains empty text
-        match &sampling_resp.content {
-            SamplingContent::Text(text) => {
-                assert_eq!(text, "", "Tool call response content should be empty text");
-            }
-            _ => panic!("Expected text content"),
-        }
-
-        // finish_reason "tool_calls" is mapped to "end_turn" — the caller has no way
-        // to know that the LLM wanted to make a tool call
-        assert_eq!(
-            sampling_resp.stop_reason, "end_turn",
-            "BUG: finish_reason 'tool_calls' is silently mapped to 'end_turn', losing the signal that the LLM wanted to call a tool"
-        );
-
+        assert_eq!(sampling_resp.stop_reason, "tool_calls");
         assert_eq!(sampling_resp.role, "assistant");
         assert_eq!(sampling_resp.model, "gpt-4");
+
+        assert!(sampling_resp.tool_calls.is_some());
+        let tc = &sampling_resp.tool_calls.unwrap()[0];
+        assert_eq!(tc.id, "call_abc123");
+        assert_eq!(tc.function.name, "search_code");
     }
 
     #[test]
@@ -448,6 +532,7 @@ mod tests {
         }
         assert_eq!(sampling_resp.stop_reason, "end_turn");
         assert_eq!(sampling_resp.model, "claude-sonnet-4-20250514");
+        assert!(sampling_resp.tool_calls.is_none());
     }
 
     #[test]
@@ -500,11 +585,9 @@ mod tests {
             convert_chat_to_sampling_response(make_resp("content_filter")).unwrap().stop_reason,
             "end_turn"
         );
-        // tool_calls finish_reason is lost — mapped to end_turn
         assert_eq!(
             convert_chat_to_sampling_response(make_resp("tool_calls")).unwrap().stop_reason,
-            "end_turn",
-            "tool_calls finish_reason is silently mapped to end_turn"
+            "tool_calls"
         );
     }
 
@@ -577,7 +660,6 @@ mod tests {
 
         let sampling_resp = convert_chat_to_sampling_response(chat_resp).unwrap();
 
-        // Parts content should be converted to Structured (JSON)
         match &sampling_resp.content {
             SamplingContent::Structured(value) => {
                 assert!(value.is_array() || value.is_object(), "Should be structured JSON");

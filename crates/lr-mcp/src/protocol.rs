@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+use lr_providers::{Tool, ToolCall, ToolChoice};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -454,11 +455,35 @@ pub struct RootsListResult {
 /// Message in a sampling request
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SamplingMessage {
-    /// Role of the message sender ("user", "assistant", or "system")
+    /// Role of the message sender ("user", "assistant", "tool", or "system")
     pub role: String,
 
     /// Message content (text or structured)
     pub content: SamplingContent,
+
+    /// Tool calls made by the assistant (only for assistant role).
+    /// Extension to MCP spec for OpenAI-compatible tool calling.
+    #[serde(
+        rename = "toolCalls",
+        alias = "tool_calls",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub tool_calls: Option<Vec<ToolCall>>,
+
+    /// Tool call ID this message responds to (only for tool role).
+    /// Extension to MCP spec for OpenAI-compatible tool calling.
+    #[serde(
+        rename = "toolCallId",
+        alias = "tool_call_id",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub tool_call_id: Option<String>,
+
+    /// Function name (only for tool role)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
 }
 
 /// Content of a sampling message
@@ -536,6 +561,21 @@ pub struct SamplingRequest {
     /// Additional metadata
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+
+    /// Tool definitions for function calling.
+    /// Extension to MCP spec for OpenAI-compatible tool calling.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tools: Option<Vec<Tool>>,
+
+    /// Tool choice mode (auto, none, or specific function).
+    /// Extension to MCP spec for OpenAI-compatible tool calling.
+    #[serde(
+        rename = "toolChoice",
+        alias = "tool_choice",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub tool_choice: Option<ToolChoice>,
 }
 
 /// LLM completion response
@@ -546,13 +586,23 @@ pub struct SamplingResponse {
 
     /// Reason the generation stopped
     #[serde(rename = "stopReason")]
-    pub stop_reason: String, // "end_turn", "max_tokens", "stop_sequence"
+    pub stop_reason: String, // "end_turn", "max_tokens", "stop_sequence", "tool_calls"
 
     /// Role of the responder (always "assistant")
     pub role: String,
 
     /// Generated content
     pub content: SamplingContent,
+
+    /// Tool calls made by the assistant in the response.
+    /// Extension to MCP spec for OpenAI-compatible tool calling.
+    #[serde(
+        rename = "toolCalls",
+        alias = "tool_calls",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[cfg(test)]
@@ -739,15 +789,20 @@ mod tests {
         let msg = SamplingMessage {
             role: "user".to_string(),
             content: SamplingContent::Text("Hello, world!".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("user"));
         assert!(json.contains("Hello, world!"));
+        assert!(!json.contains("toolCalls"), "None fields should be omitted");
 
         // Round-trip
         let parsed: SamplingMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.role, "user");
+        assert!(parsed.tool_calls.is_none());
         if let SamplingContent::Text(text) = parsed.content {
             assert_eq!(text, "Hello, world!");
         } else {
@@ -763,6 +818,9 @@ mod tests {
                 "type": "text",
                 "text": "Structured response"
             })),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -809,6 +867,9 @@ mod tests {
             messages: vec![SamplingMessage {
                 role: "user".to_string(),
                 content: SamplingContent::Text("Analyze this data".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             }],
             model_preferences: Some(ModelPreferences {
                 hints: Some(vec![ModelHint {
@@ -823,18 +884,22 @@ mod tests {
             temperature: Some(0.7),
             stop_sequences: None,
             metadata: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("Analyze this data"));
         assert!(json.contains("systemPrompt"));
         assert!(json.contains("maxTokens"));
+        assert!(!json.contains("tools"), "None fields should be omitted");
 
         // Round-trip
         let parsed: SamplingRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.messages.len(), 1);
         assert_eq!(parsed.max_tokens, Some(1500));
         assert_eq!(parsed.temperature, Some(0.7));
+        assert!(parsed.tools.is_none());
     }
 
     #[test]
@@ -844,16 +909,109 @@ mod tests {
             stop_reason: "end_turn".to_string(),
             role: "assistant".to_string(),
             content: SamplingContent::Text("Here is my analysis...".to_string()),
+            tool_calls: None,
         };
 
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("claude-sonnet-4-20250514"));
         assert!(json.contains("stopReason"));
         assert!(json.contains("end_turn"));
+        assert!(!json.contains("toolCalls"), "None fields should be omitted");
 
         // Round-trip
         let parsed: SamplingResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.model, "claude-sonnet-4-20250514");
         assert_eq!(parsed.stop_reason, "end_turn");
+        assert!(parsed.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_sampling_message_with_tool_calls_serialization() {
+        use lr_providers::FunctionCall;
+
+        let msg = SamplingMessage {
+            role: "assistant".to_string(),
+            content: SamplingContent::Text(String::new()),
+            tool_calls: Some(vec![ToolCall {
+                id: "call_abc".to_string(),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: "search".to_string(),
+                    arguments: r#"{"q":"test"}"#.to_string(),
+                },
+            }]),
+            tool_call_id: None,
+            name: None,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("toolCalls"));
+
+        let parsed: SamplingMessage = serde_json::from_str(&json).unwrap();
+        assert!(parsed.tool_calls.is_some());
+        assert_eq!(parsed.tool_calls.unwrap()[0].id, "call_abc");
+    }
+
+    #[test]
+    fn test_sampling_message_tool_calls_snake_case_alias() {
+        let json = r#"{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]}"#;
+        let parsed: SamplingMessage = serde_json::from_str(json).unwrap();
+        assert!(parsed.tool_calls.is_some());
+        assert_eq!(parsed.tool_calls.unwrap()[0].id, "call_1");
+    }
+
+    #[test]
+    fn test_sampling_message_with_tool_call_id() {
+        let msg = SamplingMessage {
+            role: "tool".to_string(),
+            content: SamplingContent::Text("result".to_string()),
+            tool_calls: None,
+            tool_call_id: Some("call_abc".to_string()),
+            name: Some("search".to_string()),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("toolCallId"));
+
+        let parsed: SamplingMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tool_call_id.as_deref(), Some("call_abc"));
+        assert_eq!(parsed.name.as_deref(), Some("search"));
+    }
+
+    #[test]
+    fn test_sampling_message_tool_call_id_snake_case_alias() {
+        let json = r#"{"role":"tool","content":"result","tool_call_id":"call_1","name":"search"}"#;
+        let parsed: SamplingMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(parsed.name.as_deref(), Some("search"));
+    }
+
+    #[test]
+    fn test_sampling_response_with_tool_calls() {
+        use lr_providers::FunctionCall;
+
+        let resp = SamplingResponse {
+            model: "gpt-4".to_string(),
+            stop_reason: "tool_calls".to_string(),
+            role: "assistant".to_string(),
+            content: SamplingContent::Text(String::new()),
+            tool_calls: Some(vec![ToolCall {
+                id: "call_xyz".to_string(),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: "search_code".to_string(),
+                    arguments: r#"{"query":"guardrails"}"#.to_string(),
+                },
+            }]),
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("toolCalls"));
+        assert!(json.contains("tool_calls")); // stop_reason value
+
+        let parsed: SamplingResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.stop_reason, "tool_calls");
+        assert!(parsed.tool_calls.is_some());
+        assert_eq!(parsed.tool_calls.unwrap()[0].function.name, "search_code");
     }
 }

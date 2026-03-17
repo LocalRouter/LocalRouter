@@ -4484,6 +4484,9 @@ pub async fn debug_trigger_sampling_approval_popup(
         messages: vec![SamplingMessage {
             role: "user".to_string(),
             content: SamplingContent::Text("What is the capital of France?".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         model_preferences: None,
         system_prompt: Some("You are a helpful geography assistant.".to_string()),
@@ -4491,6 +4494,8 @@ pub async fn debug_trigger_sampling_approval_popup(
         max_tokens: Some(500),
         stop_sequences: None,
         metadata: None,
+        tools: None,
+        tool_choice: None,
     };
 
     // Create the pending approval session

@@ -449,6 +449,9 @@ mod tests {
             messages: vec![SamplingMessage {
                 role: "user".to_string(),
                 content: SamplingContent::Text("Hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             }],
             model_preferences: None,
             system_prompt: Some("You are a test assistant".to_string()),
@@ -456,6 +459,8 @@ mod tests {
             max_tokens: Some(100),
             stop_sequences: None,
             metadata: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 
