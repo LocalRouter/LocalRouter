@@ -67,6 +67,13 @@ pub async fn run_agentic_loop_streaming(
         if let Some(instructions) = instructions {
             orchestrator::inject_server_instructions(&mut request, &instructions);
         }
+    } else {
+        // Gateway was already initialized (e.g. by list_tools_for_preview) —
+        // pick up any pending instructions that were stored at that time.
+        let pending = session.write().pending_gateway_instructions.take();
+        if let Some(instructions) = pending {
+            orchestrator::inject_server_instructions(&mut request, &instructions);
+        }
     }
 
     // Fetch MCP tools

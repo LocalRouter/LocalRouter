@@ -41,6 +41,7 @@ pub(crate) struct GatewayPermissions {
     pub context_management_overrides: Option<lr_config::ContextManagementOverrides>,
     pub mcp_sampling_permission: lr_config::PermissionState,
     pub mcp_elicitation_permission: lr_config::PermissionState,
+    pub memory_enabled: Option<bool>,
 }
 
 impl GatewayPermissions {
@@ -111,6 +112,13 @@ pub async fn run_agentic_loop(
         let instructions = gw_client.initialize().await?;
         session.write().gateway_initialized = true;
         if let Some(instructions) = instructions {
+            inject_server_instructions(&mut request, &instructions);
+        }
+    } else {
+        // Gateway was already initialized (e.g. by list_tools_for_preview) —
+        // pick up any pending instructions that were stored at that time.
+        let pending = session.write().pending_gateway_instructions.take();
+        if let Some(instructions) = pending {
             inject_server_instructions(&mut request, &instructions);
         }
     }

@@ -177,8 +177,10 @@ impl McpViaLlmManager {
         );
 
         if !gateway_initialized {
-            gw_client.initialize().await?;
-            session.write().gateway_initialized = true;
+            let instructions = gw_client.initialize().await?;
+            let mut s = session.write();
+            s.gateway_initialized = true;
+            s.pending_gateway_instructions = instructions;
         }
 
         let mcp_tools = gw_client.list_tools().await?;
