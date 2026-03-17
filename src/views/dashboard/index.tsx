@@ -193,7 +193,7 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
     setWizardOpen(false)
     if (onViewChange) {
       // Use | separator to match parseSubTab in ClientsView
-      onViewChange("clients", `${clientId}|config`)
+      onViewChange("clients", `${clientId}|info`)
     }
   }
 

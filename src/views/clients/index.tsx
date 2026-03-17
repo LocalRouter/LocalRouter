@@ -115,7 +115,7 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
   const handleWizardComplete = (clientId: string) => {
     setWizardOpen(false)
     loadClients()
-    onTabChange("clients", `${clientId}|config`)
+    onTabChange("clients", `${clientId}|info`)
   }
 
   // Handle add/<templateId> navigation from command palette

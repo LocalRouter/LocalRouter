@@ -21,13 +21,13 @@ const stateConfig: Record<CategoryActionState, { label: string; activeClass: str
   },
   notify: {
     label: "Ask",
-    activeClass: "bg-blue-500 text-white",
-    rollupClass: "bg-blue-500/30 text-blue-600"
+    activeClass: "bg-amber-500 text-white",
+    rollupClass: "bg-amber-500/30 text-amber-600"
   },
   ask: {
     label: "Warn",
-    activeClass: "bg-amber-500 text-white",
-    rollupClass: "bg-amber-500/30 text-amber-600"
+    activeClass: "bg-blue-500 text-white",
+    rollupClass: "bg-blue-500/30 text-blue-600"
   },
   allow: {
     label: "Off",

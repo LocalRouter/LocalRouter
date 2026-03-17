@@ -368,9 +368,13 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
               : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
         )}
         onClick={() => {
-          onViewChange(group.id)
-          if (!isOpen) {
-            setCollapsibleOpen(prev => ({ ...prev, [group.id]: true }))
+          if (isGroupActive) {
+            toggleOpen()
+          } else {
+            onViewChange(group.id)
+            if (!isOpen) {
+              setCollapsibleOpen(prev => ({ ...prev, [group.id]: true }))
+            }
           }
         }}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onViewChange(group.id) } }}
@@ -572,9 +576,13 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
               : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
         )}
         onClick={() => {
-          onViewChange(groupId)
-          if (!isOpen) {
-            setCollapsibleOpen(prev => ({ ...prev, [groupId]: true }))
+          if (isGroupActive) {
+            toggleOpen()
+          } else {
+            onViewChange(groupId)
+            if (!isOpen) {
+              setCollapsibleOpen(prev => ({ ...prev, [groupId]: true }))
+            }
           }
         }}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onViewChange(groupId) } }}
@@ -626,7 +634,9 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   )}
                 >
-                  <StaticIcon className="h-4 w-4 shrink-0" />
+                  <span className="shrink-0 inline-flex items-center justify-center w-[24px] h-[24px]">
+                    <StaticIcon className="h-5 w-5" />
+                  </span>
                   <span className="truncate text-left text-sm">{item.label}</span>
                 </button>
               )

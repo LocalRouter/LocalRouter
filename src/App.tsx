@@ -81,7 +81,7 @@ function App() {
     }
     setShowSetupWizard(false)
     // Navigate to the newly created client
-    handleViewChange('clients', `${clientId}/config`)
+    handleViewChange('clients', `${clientId}|info`)
   }
 
   useEffect(() => {
