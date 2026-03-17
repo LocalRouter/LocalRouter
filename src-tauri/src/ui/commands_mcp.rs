@@ -821,9 +821,7 @@ pub async fn start_mcp_health_checks(
                 // Update centralized health cache so aggregate status (tray + sidebar) recalculates
                 use lr_providers::health_cache::ItemHealth;
                 let item_health = match health.status {
-                    lr_mcp::manager::HealthStatus::Ready => {
-                        ItemHealth::ready(health.server_name)
-                    }
+                    lr_mcp::manager::HealthStatus::Ready => ItemHealth::ready(health.server_name),
                     lr_mcp::manager::HealthStatus::Healthy => {
                         ItemHealth::healthy(health.server_name, health.latency_ms)
                     }
