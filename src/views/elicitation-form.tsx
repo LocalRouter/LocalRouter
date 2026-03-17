@@ -152,7 +152,7 @@ export function ElicitationForm() {
 
     return () => {
       if (timer) clearTimeout(timer)
-      unlistenPromise.then(fn => fn())
+      unlistenPromise.then(fn => { try { fn() } catch {} }).catch(() => {})
     }
   }, [loading, details, buttonsReady])
 

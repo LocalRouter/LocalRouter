@@ -2,6 +2,23 @@ import { useEffect, useRef } from 'react'
 import { listen, type EventCallback } from '@tauri-apps/api/event'
 
 /**
+ * Safely call an unlisten function, catching both sync throws and async
+ * rejections from the Tauri 2.x bug where `unlisten_js_script` accesses
+ * `listeners[eventId].handlerId` without a null-check.
+ */
+function safeUnlisten(fn: () => void) {
+  try {
+    const result = fn() as unknown
+    // Catch async rejections (Tauri unlisten may return a rejecting promise)
+    if (result && typeof (result as Promise<void>).catch === 'function') {
+      ;(result as Promise<void>).catch(() => {})
+    }
+  } catch {
+    /* Tauri unlisten bug — safe to ignore */
+  }
+}
+
+/**
  * Safe wrapper around Tauri's `listen()` that handles React StrictMode
  * double-mount/unmount and the Tauri 2.x bug where `unlisten_js_script`
  * doesn't null-check `listeners[eventId]` before accessing `.handlerId`.
@@ -28,7 +45,7 @@ export function useTauriListener<T>(
       .then((fn) => {
         if (cancelled) {
           // Component already unmounted — clean up immediately
-          try { fn() } catch { /* Tauri unlisten bug — safe to ignore */ }
+          safeUnlisten(fn)
         } else {
           unlisten = fn
         }
@@ -40,7 +57,7 @@ export function useTauriListener<T>(
     return () => {
       cancelled = true
       if (unlisten) {
-        try { unlisten() } catch { /* Tauri unlisten bug — safe to ignore */ }
+        safeUnlisten(unlisten)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -63,7 +80,7 @@ export function listenSafe<T>(
   })
     .then((fn) => {
       if (cancelled) {
-        try { fn() } catch { /* ignore */ }
+        safeUnlisten(fn)
       } else {
         unlisten = fn
       }
@@ -75,7 +92,7 @@ export function listenSafe<T>(
     cleanup: () => {
       cancelled = true
       if (unlisten) {
-        try { unlisten() } catch { /* ignore */ }
+        safeUnlisten(unlisten)
       }
     },
   }
