@@ -30,7 +30,7 @@ export function TryItOutPanel({ onClose }: TryItOutPanelProps) {
 
   const selectedClient = clients.find(c => c.client_id === selectedClientId)
   const showLlm = selectedClient ? selectedClient.client_mode !== 'mcp_only' : false
-  const showMcp = selectedClient ? selectedClient.client_mode !== 'llm_only' : false
+  const showMcp = selectedClient ? (selectedClient.client_mode === 'both' || selectedClient.client_mode === 'mcp_only') : false
 
   // Auto-switch tab when selected client doesn't support the current tab
   useEffect(() => {
