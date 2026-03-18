@@ -3011,7 +3011,7 @@ async fn handle_non_streaming(
 async fn build_non_streaming_response(
     state: AppState,
     auth: AuthContext,
-    _client_auth: Option<Extension<ClientAuthContext>>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     request: ChatCompletionRequest,
     response: lr_providers::CompletionResponse,
     generation_id: String,
@@ -3125,7 +3125,7 @@ async fn build_non_streaming_response(
             .and_then(|c| c.finish_reason.as_deref());
         super::monitor_helpers::emit_llm_response(
             &state,
-            _client_auth.as_ref().map(|e| e),
+            client_auth.as_ref().map(|e| e),
             &generation_id,
             &response.provider,
             &response.model,
@@ -3299,7 +3299,7 @@ async fn build_non_streaming_response(
 async fn handle_streaming(
     state: AppState,
     auth: AuthContext,
-    _client_auth: Option<Extension<ClientAuthContext>>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     request: ChatCompletionRequest,
     provider_request: ProviderCompletionRequest,
     compression_tokens_saved: u64,
@@ -3356,7 +3356,7 @@ async fn handle_streaming(
             // Emit monitor error event
             super::monitor_helpers::emit_llm_error(
                 &state,
-                _client_auth.as_ref().map(|ext| ext),
+                client_auth.as_ref().map(|ext| ext),
                 Some(&generation_id),
                 "unknown",
                 &model,
@@ -3439,7 +3439,7 @@ async fn handle_streaming(
     // Emit pending monitor event for streaming response
     let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
         &state,
-        _client_auth.as_ref().map(|e| e),
+        client_auth.as_ref().map(|e| e),
         &generation_id,
         &model,
     );

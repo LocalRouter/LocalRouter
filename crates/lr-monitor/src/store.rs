@@ -68,8 +68,8 @@ impl MonitorEventStore {
         let summary = to_summary(&event);
 
         {
-            let mut events = self.events.write();
             let cap = *self.max_capacity.read();
+            let mut events = self.events.write();
             while events.len() >= cap {
                 events.pop_front();
             }

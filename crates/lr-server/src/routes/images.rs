@@ -41,7 +41,7 @@ pub async fn image_generations(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+    let monitor_request_id = super::monitor_helpers::emit_llm_request(
         &state,
         None,
         "/v1/images/generations",
@@ -131,7 +131,7 @@ pub async fn image_generations(
             super::monitor_helpers::emit_llm_error(
                 &state,
                 None,
-                None,
+                Some(&monitor_request_id),
                 &provider_name,
                 &request.model,
                 502,
@@ -175,7 +175,7 @@ pub async fn image_generations(
     super::monitor_helpers::emit_llm_response(
         &state,
         None,
-        "",
+        &monitor_request_id,
         &provider_name,
         &request.model,
         200,
