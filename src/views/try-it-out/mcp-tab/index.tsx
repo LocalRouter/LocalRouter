@@ -778,7 +778,8 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
         >
           <CardHeader className="pb-0 flex-shrink-0">
             <TooltipProvider>
-              <TabsList className="w-fit">
+              <TabsList className="h-auto flex-wrap gap-1">
+                {/* Info group */}
                 <TabsTrigger value="welcome" className="flex items-center gap-1">
                   <BookOpen className="h-3 w-3" />
                   Welcome
@@ -787,6 +788,8 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                   <Info className="h-3 w-3" />
                   Connection
                 </TabsTrigger>
+                <div className="mx-1 h-4 w-px bg-border" />
+                {/* Capabilities group */}
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span>
@@ -841,6 +844,8 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                     <TooltipContent>Server does not support prompts</TooltipContent>
                   )}
                 </Tooltip>
+                <div className="mx-1 h-4 w-px bg-border" />
+                {/* Server-initiated group */}
                 <TabsTrigger value="sampling" className="flex items-center gap-1 relative">
                   <Radio className="h-3 w-3" />
                   Sampling
