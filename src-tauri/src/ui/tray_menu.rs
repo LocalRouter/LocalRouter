@@ -114,7 +114,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
     // 2. Open dashboard (immediately after header)
     menu_builder = menu_builder.text(
         "open_dashboard",
-        format!("{ICON_PAD}⌘{ICON_PAD} Settings..."),
+        format!("{ICON_PAD}⌘{ICON_PAD} Open..."),
     );
 
     // 3. Copy URL (LLM and MCP)
