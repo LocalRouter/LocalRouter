@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import fs from 'fs'
 import type { Plugin } from 'vite'
 
 // Custom plugin to resolve @/ imports based on the importing file's location
@@ -70,10 +71,48 @@ function forceProductionForApp(): Plugin {
   }
 }
 
+// Serve icons from the single source of truth (dist/icons/) instead of
+// maintaining a duplicate copy in website/public/icons/.
+// Dev: middleware serves files directly. Build: copies into output.
+function sharedIcons(): Plugin {
+  const iconsDir = path.resolve(__dirname, '../dist/icons')
+
+  return {
+    name: 'shared-icons',
+    configureServer(server) {
+      server.middlewares.use('/icons', (req, res, next) => {
+        const filePath = path.join(iconsDir, req.url?.split('?')[0] || '')
+        if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+          return next()
+        }
+        const ext = path.extname(filePath).toLowerCase()
+        const mime: Record<string, string> = {
+          '.png': 'image/png', '.svg': 'image/svg+xml',
+          '.gif': 'image/gif', '.jpg': 'image/jpeg', '.ico': 'image/x-icon',
+        }
+        res.setHeader('Content-Type', mime[ext] || 'application/octet-stream')
+        fs.createReadStream(filePath).pipe(res)
+      })
+    },
+    writeBundle(options) {
+      const outDir = options.dir || path.resolve(__dirname, 'dist')
+      const outIcons = path.join(outDir, 'icons')
+      fs.mkdirSync(outIcons, { recursive: true })
+      for (const file of fs.readdirSync(iconsDir)) {
+        const src = path.join(iconsDir, file)
+        if (fs.statSync(src).isFile()) {
+          fs.copyFileSync(src, path.join(outIcons, file))
+        }
+      }
+    },
+  }
+}
+
 export default defineConfig({
   plugins: [
     resolveAppAlias(),
     forceProductionForApp(),
+    sharedIcons(),
     react(),
   ],
   base: '/',
