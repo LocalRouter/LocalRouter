@@ -33,6 +33,7 @@ lr-server = { workspace = true }
 lr-marketplace = { workspace = true }
 lr-guardrails = { workspace = true }
 lr-secret-scanner = { workspace = true }
+lr-monitor = { workspace = true }
 lr-coding-agents = { workspace = true }
 lr-compression = { workspace = true }
 lr-embeddings = { workspace = true }

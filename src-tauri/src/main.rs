@@ -2167,6 +2167,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Clipboard commands
             ui::commands::copy_image_to_clipboard,
             ui::commands::copy_text_to_clipboard,
+            // Monitor commands
+            ui::commands_monitor::get_monitor_events,
+            ui::commands_monitor::get_monitor_event_detail,
+            ui::commands_monitor::clear_monitor_events,
+            ui::commands_monitor::get_monitor_stats,
+            ui::commands_monitor::set_monitor_max_capacity,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

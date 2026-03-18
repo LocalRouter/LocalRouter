@@ -25,6 +25,7 @@ members = [
     "crates/lr-secret-scanner",
     "crates/lr-memory",
     "crates/lr-embeddings",
+    "crates/lr-monitor",
 ]
 resolver = "2"
 
@@ -61,6 +62,7 @@ lr-context = { path = "crates/lr-context" }
 lr-secret-scanner = { path = "crates/lr-secret-scanner" }
 lr-memory = { path = "crates/lr-memory" }
 lr-embeddings = { path = "crates/lr-embeddings" }
+lr-monitor = { path = "crates/lr-monitor" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
