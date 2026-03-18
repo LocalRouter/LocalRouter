@@ -34,9 +34,9 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
   'age': '28'
   "score": "  95.5 ",
   "role": "admin", "active": "yes",
-  "tags": ["developer" "lead"],
+  "tags": [developer lead],
   "extra_field": True,
-  "status": "pending"
+  "status": "pENDING"
 }
 \`\`\``)
   const [testSchema, setTestSchema] = useState(JSON.stringify({
