@@ -3209,6 +3209,23 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
 
   // ============================================================================
+  // Monitor
+  // ============================================================================
+  'get_monitor_events': (args) => ({
+    events: mockData.monitorEvents.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)),
+    total: mockData.monitorEvents.length,
+  }),
+  'get_monitor_event_detail': (args) =>
+    mockData.monitorEvents.find((e: { id: string }) => e.id === args?.eventId) ?? null,
+  'clear_monitor_events': () => null,
+  'get_monitor_stats': () => ({
+    total_events: mockData.monitorEvents.length,
+    max_capacity: 1000,
+    events_by_type: {},
+  }),
+  'set_monitor_max_capacity': () => null,
+
+  // ============================================================================
   // App Info & System
   // ============================================================================
   'get_app_version': () => '0.1.0-demo',
