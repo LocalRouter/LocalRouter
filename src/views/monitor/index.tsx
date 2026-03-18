@@ -81,19 +81,17 @@ export function MonitorView() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {filterBar}
-      <ResizablePanelGroup direction="horizontal" className="flex-1">
-        <ResizablePanel defaultSize={60} minSize={30}>
-          <div className="flex flex-col h-full">
-            {eventSplit}
-          </div>
-        </ResizablePanel>
-        <ResizableHandle withHandle />
-        <ResizablePanel defaultSize={40} minSize={15}>
-          <TryItOutPanel onClose={() => setTryItOutOpen(false)} />
-        </ResizablePanel>
-      </ResizablePanelGroup>
-    </div>
+    <ResizablePanelGroup direction="horizontal" className="h-full">
+      <ResizablePanel defaultSize={60} minSize={30}>
+        <div className="flex flex-col h-full">
+          {filterBar}
+          {eventSplit}
+        </div>
+      </ResizablePanel>
+      <ResizableHandle withHandle />
+      <ResizablePanel defaultSize={40} minSize={15}>
+        <TryItOutPanel onClose={() => setTryItOutOpen(false)} />
+      </ResizablePanel>
+    </ResizablePanelGroup>
   )
 }
