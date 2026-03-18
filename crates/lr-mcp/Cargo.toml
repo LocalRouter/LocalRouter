@@ -43,6 +43,7 @@ lr-coding-agents = { workspace = true }
 lr-providers = { workspace = true }
 lr-context = { path = "../lr-context", features = ["vector"] }
 lr-embeddings = { workspace = true }
+lr-monitor = { workspace = true }
 once_cell = { workspace = true }
 utoipa = { workspace = true }
 async-stream = { workspace = true }

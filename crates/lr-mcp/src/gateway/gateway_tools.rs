@@ -233,6 +233,13 @@ impl McpGateway {
             return Ok(resp.clone());
         }
 
+        // Capture firewall action for monitor event before destructuring
+        let mon_firewall_action = match &firewall_result {
+            FirewallDecisionResult::Proceed => None,
+            FirewallDecisionResult::ProceedWithEdits { .. } => Some("proceed_with_edits".to_string()),
+            FirewallDecisionResult::Blocked(_) => Some("blocked".to_string()),
+        };
+
         // Transform request: Strip namespace
         let mut transformed_request = request.clone();
         if let Some(params) = transformed_request.params.as_mut() {
@@ -260,11 +267,42 @@ impl McpGateway {
             transformed_request.id
         );
 
+        // Emit monitor event for MCP tool call
+        let (mon_client_id, mon_client_name) = {
+            let s = session.read().await;
+            (Some(s.client_id.clone()), Some(s.client_name.clone()))
+        };
+        let arguments = transformed_request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("arguments"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        self.emit_monitor_event(
+            lr_monitor::MonitorEventType::McpToolCall,
+            mon_client_id.clone(),
+            mon_client_name.clone(),
+            None,
+            lr_monitor::MonitorEventData::McpToolCall {
+                tool_name: tool_name.clone(),
+                server_id: server_id.clone(),
+                server_name: None,
+                arguments,
+                firewall_action: mon_firewall_action,
+            },
+            lr_monitor::EventStatus::Complete,
+            None,
+        );
+
+        let tool_call_start = std::time::Instant::now();
+
         // Route to server
         let result = self
             .server_manager
             .send_request(&server_id, transformed_request)
             .await;
+
+        let tool_call_latency = tool_call_start.elapsed().as_millis() as u64;
 
         match &result {
             Ok(response) => {
@@ -274,12 +312,68 @@ impl McpGateway {
                     response.id,
                     response.error.is_some()
                 );
+
+                // Emit monitor event for MCP tool response
+                let response_preview = response
+                    .result
+                    .as_ref()
+                    .map(|r| {
+                        let s = serde_json::to_string(r).unwrap_or_default();
+                        if s.len() > 2000 {
+                            format!("{}...", &s[..2000])
+                        } else {
+                            s
+                        }
+                    })
+                    .unwrap_or_default();
+                let error_msg = response
+                    .error
+                    .as_ref()
+                    .map(|e| e.message.clone());
+                self.emit_monitor_event(
+                    lr_monitor::MonitorEventType::McpToolResponse,
+                    mon_client_id.clone(),
+                    mon_client_name.clone(),
+                    None,
+                    lr_monitor::MonitorEventData::McpToolResponse {
+                        tool_name: tool_name.clone(),
+                        server_id: server_id.clone(),
+                        latency_ms: tool_call_latency,
+                        success: response.error.is_none(),
+                        response_preview,
+                        error: error_msg,
+                    },
+                    if response.error.is_some() {
+                        lr_monitor::EventStatus::Error
+                    } else {
+                        lr_monitor::EventStatus::Complete
+                    },
+                    Some(tool_call_latency),
+                );
             }
             Err(e) => {
                 tracing::error!(
                     "Gateway failed to get response from server {}: {}",
                     server_id,
                     e
+                );
+
+                // Emit monitor error event for MCP tool response
+                self.emit_monitor_event(
+                    lr_monitor::MonitorEventType::McpToolResponse,
+                    mon_client_id,
+                    mon_client_name,
+                    None,
+                    lr_monitor::MonitorEventData::McpToolResponse {
+                        tool_name: tool_name.clone(),
+                        server_id: server_id.clone(),
+                        latency_ms: tool_call_latency,
+                        success: false,
+                        response_preview: String::new(),
+                        error: Some(e.to_string()),
+                    },
+                    lr_monitor::EventStatus::Error,
+                    Some(tool_call_latency),
                 );
             }
         }

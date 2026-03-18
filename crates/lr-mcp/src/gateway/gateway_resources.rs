@@ -279,10 +279,72 @@ impl McpGateway {
         }
         // If routed by URI, leave parameters unchanged - backend will handle its own URIs
 
+        // Emit monitor event for resource read
+        let (mon_client_id, mon_client_name) = {
+            let s = session.read().await;
+            (Some(s.client_id.clone()), Some(s.client_name.clone()))
+        };
+        let mon_uri = resource_name
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| original_name.clone());
+        self.emit_monitor_event(
+            lr_monitor::MonitorEventType::McpResourceRead,
+            mon_client_id.clone(),
+            mon_client_name.clone(),
+            None,
+            lr_monitor::MonitorEventData::McpResourceRead {
+                uri: mon_uri.clone(),
+                server_id: server_id.clone(),
+                server_name: None,
+            },
+            lr_monitor::EventStatus::Complete,
+            None,
+        );
+
+        let start = std::time::Instant::now();
+
         // Route to server
-        self.server_manager
+        let result = self
+            .server_manager
             .send_request(&server_id, transformed_request)
-            .await
+            .await;
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        // Emit monitor event for resource response
+        let (success, response_preview, error_msg) = match &result {
+            Ok(resp) => {
+                let preview = resp
+                    .result
+                    .as_ref()
+                    .map(|r| {
+                        let s = serde_json::to_string(r).unwrap_or_default();
+                        if s.len() > 2000 { format!("{}...", &s[..2000]) } else { s }
+                    })
+                    .unwrap_or_default();
+                let err = resp.error.as_ref().map(|e| e.message.clone());
+                (resp.error.is_none(), preview, err)
+            }
+            Err(e) => (false, String::new(), Some(e.to_string())),
+        };
+        self.emit_monitor_event(
+            lr_monitor::MonitorEventType::McpResourceResponse,
+            mon_client_id,
+            mon_client_name,
+            None,
+            lr_monitor::MonitorEventData::McpResourceResponse {
+                uri: mon_uri,
+                server_id,
+                latency_ms,
+                success,
+                content_preview: response_preview,
+                error: error_msg,
+            },
+            if success { lr_monitor::EventStatus::Complete } else { lr_monitor::EventStatus::Error },
+            Some(latency_ms),
+        );
+
+        result
     }
 
     /// Handle resources/subscribe request
