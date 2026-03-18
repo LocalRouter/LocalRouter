@@ -112,6 +112,24 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
                 format!("guardrail: {} [{}]", result, cats.join(", "))
             }
         }
+        MonitorEventData::GuardrailResponseCheckRequest { direction, .. } => {
+            format!("response guardrail scan ({})", direction)
+        }
+        MonitorEventData::GuardrailResponseCheckResponse {
+            result,
+            flagged_categories,
+            ..
+        } => {
+            if flagged_categories.is_empty() {
+                format!("response guardrail: {}", result)
+            } else {
+                let cats: Vec<&str> = flagged_categories
+                    .iter()
+                    .map(|c| c.category.as_str())
+                    .collect();
+                format!("response guardrail: {} [{}]", result, cats.join(", "))
+            }
+        }
         MonitorEventData::SecretScanRequest { .. } => "secret scan check".to_string(),
         MonitorEventData::SecretScanResponse {
             findings_count,

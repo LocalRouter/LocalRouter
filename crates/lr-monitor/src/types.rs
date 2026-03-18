@@ -361,6 +361,19 @@ pub enum MonitorEventData {
         action_taken: String,
         latency_ms: u64,
     },
+    /// Guardrail check on the LLM response (output safety check).
+    GuardrailResponseCheckRequest {
+        direction: String,
+        text_preview: String,
+        models_used: Vec<String>,
+    },
+    GuardrailResponseCheckResponse {
+        direction: String,
+        result: String,
+        flagged_categories: Vec<FlaggedCategory>,
+        action_taken: String,
+        latency_ms: u64,
+    },
     SecretScanRequest {
         text_preview: String,
         rules_count: usize,

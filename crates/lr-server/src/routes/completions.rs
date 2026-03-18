@@ -1110,6 +1110,15 @@ async fn validate_client_provider_access(
             model_id
         );
 
+        super::monitor_helpers::emit_access_denied_for_client(
+            state,
+            &client.id,
+            "model_not_allowed",
+            "/v1/completions",
+            &format!("Access denied: Client is not authorized to use model '{}/{}'", provider, model_id),
+            403,
+        );
+
         return Err(ApiErrorResponse::forbidden(format!(
             "Access denied: Client is not authorized to use model '{}/{}'. Contact administrator to grant access.",
             provider, model_id

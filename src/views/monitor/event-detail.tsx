@@ -62,7 +62,7 @@ export function EventDetail({ event }: EventDetailProps) {
         {type === 'mcp_tool_response' && <McpToolResponseDetail data={data} />}
         {(type === 'mcp_resource_read' || type === 'mcp_prompt_get') && <McpRequestDetail data={data} />}
         {(type === 'mcp_resource_response' || type === 'mcp_prompt_response') && <McpResponseDetail data={data} />}
-        {(type === 'guardrail_request' || type === 'guardrail_response') && <GuardrailDetail data={data} />}
+        {(type === 'guardrail_request' || type === 'guardrail_response' || type === 'guardrail_response_check_request' || type === 'guardrail_response_check_response') && <GuardrailDetail data={data} />}
         {(type === 'secret_scan_request' || type === 'secret_scan_response') && <SecretScanDetail data={data} />}
         {(type === 'route_llm_request' || type === 'route_llm_response' || type === 'routing_decision') && <RoutingDetail data={data} />}
         {(type === 'auth_error' || type === 'access_denied') && <AuthErrorDetail data={data} />}
