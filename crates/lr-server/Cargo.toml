@@ -52,6 +52,7 @@ lr-embeddings = { workspace = true }
 lr-mcp-via-llm = { workspace = true }
 lr-memory = { workspace = true }
 lr-secret-scanner = { workspace = true }
+lr-monitor = { workspace = true }
 
 [features]
 default = []

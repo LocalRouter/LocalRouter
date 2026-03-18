@@ -7,6 +7,7 @@ pub mod embeddings;
 pub mod generation;
 pub mod helpers;
 pub mod images;
+pub mod monitor_helpers;
 pub mod mcp;
 pub mod mcp_ws;
 pub mod models;
