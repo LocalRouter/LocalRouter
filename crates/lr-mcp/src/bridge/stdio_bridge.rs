@@ -423,6 +423,7 @@ mod tests {
                 mcp_elicitation_permission: PermissionState::Ask,
                 catalog_compression_enabled: None,
                 client_tools_indexing: None,
+                memory_enabled: None,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -461,6 +462,7 @@ mod tests {
                 mcp_elicitation_permission: PermissionState::Ask,
                 catalog_compression_enabled: None,
                 client_tools_indexing: None,
+                memory_enabled: None,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -499,6 +501,7 @@ mod tests {
                 mcp_elicitation_permission: PermissionState::Ask,
                 catalog_compression_enabled: None,
                 client_tools_indexing: None,
+                memory_enabled: None,
             },
         ];
         config

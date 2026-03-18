@@ -55,6 +55,7 @@ fn test_config() -> AppConfig {
                 mcp_elicitation_permission: lr_config::PermissionState::Ask,
                 catalog_compression_enabled: None,
                 client_tools_indexing: None,
+                memory_enabled: None,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -93,6 +94,7 @@ fn test_config() -> AppConfig {
                 mcp_elicitation_permission: lr_config::PermissionState::Ask,
                 catalog_compression_enabled: None,
                 client_tools_indexing: None,
+                memory_enabled: None,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -131,6 +133,7 @@ fn test_config() -> AppConfig {
                 mcp_elicitation_permission: lr_config::PermissionState::Ask,
                 catalog_compression_enabled: None,
                 client_tools_indexing: None,
+                memory_enabled: None,
             },
         ],
         ..Default::default()

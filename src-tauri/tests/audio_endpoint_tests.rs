@@ -68,6 +68,7 @@ fn create_test_client(id: &str, strategy_id: &str) -> Client {
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
         catalog_compression_enabled: None,
         client_tools_indexing: None,
+        memory_enabled: None,
     }
 }
 
@@ -570,7 +571,7 @@ async fn test_audio_transcription_valid_response_formats() {
             .unwrap();
 
         // Should NOT be 400 for response_format — it should pass validation
-        // and fail later at provider routing (502) since no provider is configured
+        // and fail later at provider routing (502) or model not found (404)
         assert_ne!(
             response.status().as_u16(),
             400,

@@ -80,6 +80,7 @@ fn create_test_config(
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
         catalog_compression_enabled: None,
         client_tools_indexing: None,
+        memory_enabled: None,
     };
 
     AppConfig {
@@ -538,6 +539,7 @@ async fn test_disabled_client_returns_unauthorized() {
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
         catalog_compression_enabled: None,
         client_tools_indexing: None,
+        memory_enabled: None,
     };
 
     let config = AppConfig {
@@ -597,6 +599,7 @@ async fn test_client_with_missing_strategy() {
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
         catalog_compression_enabled: None,
         client_tools_indexing: None,
+        memory_enabled: None,
     };
 
     let config = AppConfig {
@@ -1195,6 +1198,7 @@ fn create_free_tier_config(
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
         catalog_compression_enabled: None,
         client_tools_indexing: None,
+        memory_enabled: None,
     };
 
     AppConfig {

@@ -58,6 +58,7 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         mcp_elicitation_permission: lr_config::PermissionState::Ask,
         catalog_compression_enabled: None,
         client_tools_indexing: None,
+        memory_enabled: None,
     }
 }
 
