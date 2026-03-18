@@ -79,7 +79,17 @@ pub async fn completions(
     }
 
     // Validate request
-    validate_request(&request)?;
+    if let Err(e) = validate_request(&request) {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/completions",
+            e.error.error.param.as_deref(),
+            &e.error.error.message,
+            400,
+        );
+        return Err(e);
+    }
 
     // Validate client provider access (if using client auth)
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
@@ -98,7 +108,18 @@ pub async fn completions(
     };
 
     // Check rate limits (in parallel with guardrails scan)
-    check_rate_limits(&state, &auth, &request).await?;
+    if let Err(e) = check_rate_limits(&state, &auth, &request).await {
+        super::monitor_helpers::emit_rate_limit_event(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "rate_limit_exceeded",
+            "/v1/completions",
+            &e.error.error.message,
+            429,
+            None,
+        );
+        return Err(e);
+    }
 
     // Log request summary
     {

@@ -75,7 +75,17 @@ pub async fn chat_completions(
     state.record_client_activity(&auth.api_key_id);
 
     // Validate request
-    validate_request(&request)?;
+    if let Err(e) = validate_request(&request) {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "/v1/chat/completions",
+            e.error.error.param.as_deref(),
+            &e.error.error.message,
+            400,
+        );
+        return Err(e);
+    }
 
     // Check auto-routing permission for this client's strategy
     if let Ok((client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
@@ -254,6 +264,14 @@ pub async fn chat_completions(
                             }
                         }
                         _ => {
+                            super::monitor_helpers::emit_access_denied_for_client(
+                                &state,
+                                &auth.api_key_id,
+                                "auto_routing_denied",
+                                "/v1/chat/completions",
+                                "Auto-routing denied by user",
+                                403,
+                            );
                             return Err(ApiErrorResponse::forbidden("Auto-routing denied by user"));
                         }
                     }
@@ -299,7 +317,18 @@ pub async fn chat_completions(
     }
 
     // Check rate limits first (reject early before spawning parallel work)
-    check_rate_limits(&state, &auth, &request).await?;
+    if let Err(e) = check_rate_limits(&state, &auth, &request).await {
+        super::monitor_helpers::emit_rate_limit_event(
+            &state,
+            client_auth.as_ref().map(|e| e),
+            "rate_limit_exceeded",
+            "/v1/chat/completions",
+            &e.error.error.message,
+            429,
+            None,
+        );
+        return Err(e);
+    }
 
     // Enforce client mode: block MCP-only clients from LLM endpoints
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
@@ -800,6 +829,14 @@ async fn validate_model_access(
     if let Some((provider, model_id)) = request.model.split_once('/') {
         // Provider specified in request
         if !selection.is_model_allowed(provider, model_id) {
+            super::monitor_helpers::emit_access_denied_for_client(
+                state,
+                &auth.api_key_id,
+                "model_not_allowed",
+                "/v1/chat/completions",
+                &format!("Access denied for model '{}'", request.model),
+                403,
+            );
             return Err(ApiErrorResponse::forbidden(format!(
                 "Model '{}' is not accessible with this API key. Check your API key's model selection settings.",
                 request.model
@@ -826,6 +863,14 @@ async fn validate_model_access(
 
         // Check if allowed
         if !selection.is_model_allowed(&matching_model.provider, &matching_model.id) {
+            super::monitor_helpers::emit_access_denied_for_client(
+                state,
+                &auth.api_key_id,
+                "model_not_allowed",
+                "/v1/chat/completions",
+                &format!("Access denied for model '{}'", request.model),
+                403,
+            );
             return Err(ApiErrorResponse::forbidden(format!(
                 "Model '{}' is not accessible with this API key. Check your API key's model selection settings.",
                 request.model
