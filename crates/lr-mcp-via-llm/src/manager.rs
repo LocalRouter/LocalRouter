@@ -19,6 +19,20 @@ use crate::orchestrator_stream;
 use crate::session::{McpViaLlmSession, PendingMixedExecution};
 
 /// Manages MCP via LLM sessions and orchestrates agentic tool execution
+/// Callback type for emitting monitor events from the orchestrator.
+pub type MonitorEmitFn = Arc<
+    dyn Fn(
+            lr_monitor::MonitorEventType,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            lr_monitor::MonitorEventData,
+            lr_monitor::EventStatus,
+            Option<u64>,
+        ) + Send
+        + Sync,
+>;
+
 pub struct McpViaLlmManager {
     /// Sessions indexed by client_id
     pub(crate) sessions_by_client: DashMap<String, Vec<Arc<RwLock<McpViaLlmSession>>>>,
@@ -33,6 +47,8 @@ pub struct McpViaLlmManager {
     seen_client_tools: DashMap<String, std::collections::HashSet<String>>,
     /// Optional memory service for auto-capturing conversation transcripts
     memory_service: RwLock<Option<Arc<lr_memory::MemoryService>>>,
+    /// Optional monitor event callback
+    pub(crate) monitor_emit: parking_lot::RwLock<Option<MonitorEmitFn>>,
 }
 
 impl McpViaLlmManager {
@@ -44,7 +60,13 @@ impl McpViaLlmManager {
             context_management_config: RwLock::new(lr_config::ContextManagementConfig::default()),
             seen_client_tools: DashMap::new(),
             memory_service: RwLock::new(None),
+            monitor_emit: parking_lot::RwLock::new(None),
         }
+    }
+
+    /// Set the monitor event callback.
+    pub fn set_monitor_emit(&self, emit: MonitorEmitFn) {
+        *self.monitor_emit.write() = Some(emit);
     }
 
     /// Set the memory service for auto-capturing conversation transcripts.
@@ -287,6 +309,43 @@ impl McpViaLlmManager {
             return self.handle_orchestrator_result(&client.id, result);
         }
 
+        // Build monitor callback for transformed request event
+        let on_transformed: orchestrator::TransformedRequestCallback = {
+            let emit = self.monitor_emit.read().clone();
+            let client_id = client.id.clone();
+            let client_name = client.name.clone();
+            let endpoint = "/v1/chat/completions".to_string();
+            let model = request.model.clone();
+            let stream = request.stream;
+            emit.map(|emit_fn| -> Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send> {
+                Box::new(move |request_body: serde_json::Value, transformations: Vec<String>| {
+                    let message_count = request_body.get("messages")
+                        .and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
+                    let tools = request_body.get("tools").and_then(|t| t.as_array());
+                    let has_tools = tools.is_some_and(|t| !t.is_empty());
+                    let tool_count = tools.map(|t| t.len()).unwrap_or(0);
+                    emit_fn(
+                        lr_monitor::MonitorEventType::LlmRequestTransformed,
+                        Some(client_id),
+                        Some(client_name),
+                        None,
+                        lr_monitor::MonitorEventData::LlmRequestTransformed {
+                            endpoint,
+                            model,
+                            stream,
+                            message_count,
+                            has_tools,
+                            tool_count,
+                            request_body,
+                            transformations_applied: transformations,
+                        },
+                        lr_monitor::EventStatus::Complete,
+                        None,
+                    );
+                })
+            })
+        };
+
         // Normal flow: run the agentic loop
         let result = orchestrator::run_agentic_loop(
             gateway,
@@ -299,6 +358,7 @@ impl McpViaLlmManager {
             guardrail_gate,
             None,
             memory_svc,
+            on_transformed,
         )
         .await?;
 
@@ -444,6 +504,43 @@ impl McpViaLlmManager {
             }
         }
 
+        // Build monitor callback for transformed request event (streaming)
+        let on_transformed_stream: orchestrator::TransformedRequestCallback = {
+            let emit = self.monitor_emit.read().clone();
+            let client_id = client.id.clone();
+            let client_name = client.name.clone();
+            let endpoint = "/v1/chat/completions".to_string();
+            let model = request.model.clone();
+            let stream = request.stream;
+            emit.map(|emit_fn| -> Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send> {
+                Box::new(move |request_body: serde_json::Value, transformations: Vec<String>| {
+                    let message_count = request_body.get("messages")
+                        .and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
+                    let tools = request_body.get("tools").and_then(|t| t.as_array());
+                    let has_tools = tools.is_some_and(|t| !t.is_empty());
+                    let tool_count = tools.map(|t| t.len()).unwrap_or(0);
+                    emit_fn(
+                        lr_monitor::MonitorEventType::LlmRequestTransformed,
+                        Some(client_id),
+                        Some(client_name),
+                        None,
+                        lr_monitor::MonitorEventData::LlmRequestTransformed {
+                            endpoint,
+                            model,
+                            stream,
+                            message_count,
+                            has_tools,
+                            tool_count,
+                            request_body,
+                            transformations_applied: transformations,
+                        },
+                        lr_monitor::EventStatus::Complete,
+                        None,
+                    );
+                })
+            })
+        };
+
         orchestrator_stream::run_agentic_loop_streaming(
             gateway,
             router,
@@ -455,6 +552,7 @@ impl McpViaLlmManager {
             self.pending_executions.clone(),
             guardrail_gate,
             memory_svc,
+            on_transformed_stream,
         )
         .await
     }

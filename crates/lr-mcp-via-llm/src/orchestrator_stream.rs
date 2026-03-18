@@ -46,6 +46,7 @@ pub async fn run_agentic_loop_streaming(
     pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
     guardrail_gate: Option<crate::manager::GuardrailGate>,
     memory_service: Option<Arc<lr_memory::MemoryService>>,
+    on_transformed_request: orchestrator::TransformedRequestCallback,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
 {
     let started_at = Instant::now();
@@ -153,6 +154,19 @@ pub async fn run_agentic_loop_streaming(
                 tracing::warn!("MCP via LLM streaming: failed to list prompts: {}", e);
             }
         }
+    }
+
+    // Emit the transformed request event (after all MCP injections)
+    if let Some(callback) = on_transformed_request {
+        let mut transformations = vec!["mcp_tool_injection".to_string()];
+        if config.expose_resources_as_tools {
+            transformations.push("mcp_resource_read_tool".to_string());
+        }
+        if config.inject_prompts {
+            transformations.push("mcp_prompt_injection".to_string());
+        }
+        let request_json = serde_json::to_value(&request).unwrap_or_default();
+        callback(request_json, transformations);
     }
 
     // Capture state needed for the spawned task

@@ -84,6 +84,11 @@ pub enum OrchestratorResult {
 /// If `guardrail_gate` is provided, it will be awaited after the first LLM call
 /// returns but before executing any tools or returning a response. This allows
 /// guardrails to run in parallel with the LLM call for lower latency.
+/// Callback for emitting the transformed request event from the orchestrator.
+pub type TransformedRequestCallback = Option<
+    Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>,
+>;
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agentic_loop(
     gateway: Arc<McpGateway>,
@@ -96,6 +101,7 @@ pub async fn run_agentic_loop(
     mut guardrail_gate: Option<crate::manager::GuardrailGate>,
     initial_usage_entries: Option<Vec<lr_providers::TokenUsage>>,
     memory_service: Option<Arc<lr_memory::MemoryService>>,
+    on_transformed_request: TransformedRequestCallback,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
     let started_at = Instant::now();
     let timeout = std::time::Duration::from_secs(config.max_loop_timeout_seconds);
@@ -206,6 +212,19 @@ pub async fn run_agentic_loop(
                 tracing::warn!("MCP via LLM: failed to list prompts: {}", e);
             }
         }
+    }
+
+    // Emit the transformed request event (after all MCP injections)
+    if let Some(callback) = on_transformed_request {
+        let mut transformations = vec!["mcp_tool_injection".to_string()];
+        if config.expose_resources_as_tools {
+            transformations.push("mcp_resource_read_tool".to_string());
+        }
+        if config.inject_prompts {
+            transformations.push("mcp_prompt_injection".to_string());
+        }
+        let request_json = serde_json::to_value(&request).unwrap_or_default();
+        callback(request_json, transformations);
     }
 
     let mut total_prompt_tokens: u64 = 0;
@@ -774,6 +793,7 @@ pub async fn resume_after_mixed(
         None,
         initial_usage_entries,
         None, // memory_service not passed through resume path
+        None, // no transformed request callback on resume
     )
     .await
 }

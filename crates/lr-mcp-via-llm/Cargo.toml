@@ -14,6 +14,7 @@ lr-providers = { workspace = true }
 lr-mcp = { workspace = true }
 lr-router = { workspace = true }
 lr-memory = { workspace = true }
+lr-monitor = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
