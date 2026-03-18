@@ -2790,6 +2790,15 @@ async fn handle_non_streaming_parallel(
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                client_auth.as_ref().map(|ext| ext),
+                Some(&generation_id),
+                "unknown",
+                "unknown",
+                502,
+                &e.to_string(),
+            );
             return Err(ApiErrorResponse::bad_gateway(format!(
                 "Provider error: {}",
                 e
@@ -3790,12 +3799,29 @@ async fn handle_streaming_parallel(
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
+            super::monitor_helpers::emit_llm_error(
+                &state,
+                client_auth.as_ref().map(|ext| ext),
+                Some(&generation_id),
+                "unknown",
+                &model,
+                502,
+                &e.to_string(),
+            );
             return Err(ApiErrorResponse::bad_gateway(format!(
                 "Provider error: {}",
                 e
             )));
         }
     };
+
+    // Emit pending monitor event for streaming response
+    let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
+        &state,
+        client_auth.as_ref().map(|e| e),
+        &generation_id,
+        &model,
+    );
 
     // Guardrail gate: signals whether the response should be flushed or denied
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3863,6 +3889,7 @@ async fn handle_streaming_parallel(
         let auth_clone = auth.clone();
         let request_user = request.user.clone();
         let request_messages = request.messages.clone();
+        let monitor_event_id = monitor_event_id.clone();
         let mut gate_rx = gate_rx;
         let mut stream = stream;
 
@@ -4203,6 +4230,20 @@ async fn handle_streaming_parallel(
             ) {
                 tracing::warn!("Failed to write access log: {}", e);
             }
+
+            // Complete the pending monitor event with final streaming data
+            super::monitor_helpers::complete_llm_response(
+                &state_clone,
+                &monitor_event_id,
+                &provider,
+                &model_clone,
+                prompt_tokens as u64,
+                completion_tokens as u64,
+                Some(cost),
+                latency_ms,
+                Some(&finish_reason_val),
+                &content_accumulator,
+            );
 
             state_clone.emit_event(
                 "metrics-updated",
