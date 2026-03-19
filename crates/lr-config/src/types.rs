@@ -1257,8 +1257,16 @@ impl FirewallRules {
     }
 }
 
+fn default_skill_tool_name() -> String {
+    "SkillRead".to_string()
+}
+
+fn default_skill_read_file_tool_name() -> String {
+    "SkillReadFile".to_string()
+}
+
 /// Skills configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SkillsConfig {
     /// Unified list of skill source paths (directories, zip files, .skill files)
     #[serde(default)]
@@ -1272,6 +1280,14 @@ pub struct SkillsConfig {
     #[serde(default)]
     pub async_enabled: bool,
 
+    /// Tool name for the skill read meta-tool (default: "SkillRead")
+    #[serde(default = "default_skill_tool_name")]
+    pub tool_name: String,
+
+    /// Tool name for internal skill file reading (default: "SkillReadFile")
+    #[serde(default = "default_skill_read_file_tool_name")]
+    pub read_file_tool_name: String,
+
     /// Migration shim: old auto_scan_directories (deserialize only)
     #[serde(default, skip_serializing)]
     pub auto_scan_directories: Vec<String>,
@@ -1279,6 +1295,20 @@ pub struct SkillsConfig {
     /// Migration shim: old skill_paths (deserialize only)
     #[serde(default, skip_serializing)]
     pub skill_paths: Vec<String>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            disabled_skills: Vec::new(),
+            async_enabled: false,
+            tool_name: default_skill_tool_name(),
+            read_file_tool_name: default_skill_read_file_tool_name(),
+            auto_scan_directories: Vec::new(),
+            skill_paths: Vec::new(),
+        }
+    }
 }
 
 /// Approval mode for coding agent tool/question approvals
@@ -1764,6 +1794,14 @@ impl CodingAgentsPermissions {
     }
 }
 
+fn default_marketplace_search_tool_name() -> String {
+    "MarketplaceSearch".to_string()
+}
+
+fn default_marketplace_install_tool_name() -> String {
+    "MarketplaceInstall".to_string()
+}
+
 /// Marketplace configuration for MCP server and skill discovery
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MarketplaceConfig {
@@ -1786,6 +1824,14 @@ pub struct MarketplaceConfig {
     /// Skill source repos to browse
     #[serde(default = "default_marketplace_skill_sources")]
     pub skill_sources: Vec<MarketplaceSkillSource>,
+
+    /// Search tool name (default: "MarketplaceSearch")
+    #[serde(default = "default_marketplace_search_tool_name")]
+    pub search_tool_name: String,
+
+    /// Install tool name (default: "MarketplaceInstall")
+    #[serde(default = "default_marketplace_install_tool_name")]
+    pub install_tool_name: String,
 }
 
 impl Default for MarketplaceConfig {
@@ -1796,6 +1842,8 @@ impl Default for MarketplaceConfig {
             enabled: false,
             registry_url: default_marketplace_registry_url(),
             skill_sources: default_marketplace_skill_sources(),
+            search_tool_name: default_marketplace_search_tool_name(),
+            install_tool_name: default_marketplace_install_tool_name(),
         }
     }
 }

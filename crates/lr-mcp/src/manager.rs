@@ -440,9 +440,7 @@ impl McpServerManager {
             McpTransportType::Sse | McpTransportType::HttpSse => {
                 self.start_sse_server(server_id, &config).await
             }
-            McpTransportType::WebSocket => {
-                self.start_websocket_server(server_id, &config).await
-            }
+            McpTransportType::WebSocket => self.start_websocket_server(server_id, &config).await,
         };
 
         if let Err(ref e) = result {
@@ -600,53 +598,52 @@ impl McpServerManager {
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
 
                     // Get client secret from keychain
-                    let client_secret =
-                        match keychain.get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref) {
-                            Ok(Some(secret)) => secret,
-                            Ok(None) => {
-                                let msg = format!(
-                                    "OAuth client secret not found for server: {}",
-                                    server_id
-                                );
-                                tracing::warn!(
-                                    "OAuth client secret not found in keychain for MCP server"
-                                );
-                                self.emit_monitor_event(
-                                    lr_monitor::MonitorEventType::OAuthEvent,
-                                    None,
-                                    None,
-                                    None,
-                                    lr_monitor::MonitorEventData::OAuthEvent {
-                                        action: "secret_retrieval_failed".to_string(),
-                                        client_id_hint: Some(server_id.to_string()),
-                                        message: msg.clone(),
-                                        status_code: 500,
-                                    },
-                                    lr_monitor::EventStatus::Error,
-                                    None,
-                                );
-                                return Err(AppError::Mcp(msg));
-                            }
-                            Err(e) => {
-                                let msg = format!("Failed to retrieve OAuth client secret: {}", e);
-                                tracing::error!("{}", msg);
-                                self.emit_monitor_event(
-                                    lr_monitor::MonitorEventType::OAuthEvent,
-                                    None,
-                                    None,
-                                    None,
-                                    lr_monitor::MonitorEventData::OAuthEvent {
-                                        action: "secret_retrieval_failed".to_string(),
-                                        client_id_hint: Some(server_id.to_string()),
-                                        message: msg,
-                                        status_code: 500,
-                                    },
-                                    lr_monitor::EventStatus::Error,
-                                    None,
-                                );
-                                return Err(e);
-                            }
-                        };
+                    let client_secret = match keychain
+                        .get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)
+                    {
+                        Ok(Some(secret)) => secret,
+                        Ok(None) => {
+                            let msg =
+                                format!("OAuth client secret not found for server: {}", server_id);
+                            tracing::warn!(
+                                "OAuth client secret not found in keychain for MCP server"
+                            );
+                            self.emit_monitor_event(
+                                lr_monitor::MonitorEventType::OAuthEvent,
+                                None,
+                                None,
+                                None,
+                                lr_monitor::MonitorEventData::OAuthEvent {
+                                    action: "secret_retrieval_failed".to_string(),
+                                    client_id_hint: Some(server_id.to_string()),
+                                    message: msg.clone(),
+                                    status_code: 500,
+                                },
+                                lr_monitor::EventStatus::Error,
+                                None,
+                            );
+                            return Err(AppError::Mcp(msg));
+                        }
+                        Err(e) => {
+                            let msg = format!("Failed to retrieve OAuth client secret: {}", e);
+                            tracing::error!("{}", msg);
+                            self.emit_monitor_event(
+                                lr_monitor::MonitorEventType::OAuthEvent,
+                                None,
+                                None,
+                                None,
+                                lr_monitor::MonitorEventData::OAuthEvent {
+                                    action: "secret_retrieval_failed".to_string(),
+                                    client_id_hint: Some(server_id.to_string()),
+                                    message: msg,
+                                    status_code: 500,
+                                },
+                                lr_monitor::EventStatus::Error,
+                                None,
+                            );
+                            return Err(e);
+                        }
+                    };
 
                     // Acquire OAuth token via Client Credentials flow
                     tracing::debug!("Acquiring OAuth token for SSE server: {}", server_id);
@@ -865,53 +862,52 @@ impl McpServerManager {
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
 
                     // Get client secret from keychain
-                    let client_secret =
-                        match keychain.get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref) {
-                            Ok(Some(secret)) => secret,
-                            Ok(None) => {
-                                let msg = format!(
-                                    "OAuth client secret not found for server: {}",
-                                    server_id
-                                );
-                                tracing::warn!(
-                                    "OAuth client secret not found in keychain for MCP server"
-                                );
-                                self.emit_monitor_event(
-                                    lr_monitor::MonitorEventType::OAuthEvent,
-                                    None,
-                                    None,
-                                    None,
-                                    lr_monitor::MonitorEventData::OAuthEvent {
-                                        action: "secret_retrieval_failed".to_string(),
-                                        client_id_hint: Some(server_id.to_string()),
-                                        message: msg.clone(),
-                                        status_code: 500,
-                                    },
-                                    lr_monitor::EventStatus::Error,
-                                    None,
-                                );
-                                return Err(AppError::Mcp(msg));
-                            }
-                            Err(e) => {
-                                let msg = format!("Failed to retrieve OAuth client secret: {}", e);
-                                tracing::error!("{}", msg);
-                                self.emit_monitor_event(
-                                    lr_monitor::MonitorEventType::OAuthEvent,
-                                    None,
-                                    None,
-                                    None,
-                                    lr_monitor::MonitorEventData::OAuthEvent {
-                                        action: "secret_retrieval_failed".to_string(),
-                                        client_id_hint: Some(server_id.to_string()),
-                                        message: msg,
-                                        status_code: 500,
-                                    },
-                                    lr_monitor::EventStatus::Error,
-                                    None,
-                                );
-                                return Err(e);
-                            }
-                        };
+                    let client_secret = match keychain
+                        .get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)
+                    {
+                        Ok(Some(secret)) => secret,
+                        Ok(None) => {
+                            let msg =
+                                format!("OAuth client secret not found for server: {}", server_id);
+                            tracing::warn!(
+                                "OAuth client secret not found in keychain for MCP server"
+                            );
+                            self.emit_monitor_event(
+                                lr_monitor::MonitorEventType::OAuthEvent,
+                                None,
+                                None,
+                                None,
+                                lr_monitor::MonitorEventData::OAuthEvent {
+                                    action: "secret_retrieval_failed".to_string(),
+                                    client_id_hint: Some(server_id.to_string()),
+                                    message: msg.clone(),
+                                    status_code: 500,
+                                },
+                                lr_monitor::EventStatus::Error,
+                                None,
+                            );
+                            return Err(AppError::Mcp(msg));
+                        }
+                        Err(e) => {
+                            let msg = format!("Failed to retrieve OAuth client secret: {}", e);
+                            tracing::error!("{}", msg);
+                            self.emit_monitor_event(
+                                lr_monitor::MonitorEventType::OAuthEvent,
+                                None,
+                                None,
+                                None,
+                                lr_monitor::MonitorEventData::OAuthEvent {
+                                    action: "secret_retrieval_failed".to_string(),
+                                    client_id_hint: Some(server_id.to_string()),
+                                    message: msg,
+                                    status_code: 500,
+                                },
+                                lr_monitor::EventStatus::Error,
+                                None,
+                            );
+                            return Err(e);
+                        }
+                    };
 
                     // Acquire OAuth token
                     tracing::debug!("Acquiring OAuth token for WebSocket server: {}", server_id);

@@ -189,6 +189,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             &self.skill_manager,
             &state.permissions,
             &state.tool_name,
+            "ResourceRead",
         )
         .await
         {

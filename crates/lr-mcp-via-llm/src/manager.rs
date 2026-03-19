@@ -317,33 +317,40 @@ impl McpViaLlmManager {
             let endpoint = "/v1/chat/completions".to_string();
             let model = request.model.clone();
             let stream = request.stream;
-            emit.map(|emit_fn| -> Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send> {
-                Box::new(move |request_body: serde_json::Value, transformations: Vec<String>| {
-                    let message_count = request_body.get("messages")
-                        .and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
-                    let tools = request_body.get("tools").and_then(|t| t.as_array());
-                    let has_tools = tools.is_some_and(|t| !t.is_empty());
-                    let tool_count = tools.map(|t| t.len()).unwrap_or(0);
-                    emit_fn(
-                        lr_monitor::MonitorEventType::LlmRequestTransformed,
-                        Some(client_id),
-                        Some(client_name),
-                        None,
-                        lr_monitor::MonitorEventData::LlmRequestTransformed {
-                            endpoint,
-                            model,
-                            stream,
-                            message_count,
-                            has_tools,
-                            tool_count,
-                            request_body,
-                            transformations_applied: transformations,
+            emit.map(
+                |emit_fn| -> Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send> {
+                    Box::new(
+                        move |request_body: serde_json::Value, transformations: Vec<String>| {
+                            let message_count = request_body
+                                .get("messages")
+                                .and_then(|m| m.as_array())
+                                .map(|a| a.len())
+                                .unwrap_or(0);
+                            let tools = request_body.get("tools").and_then(|t| t.as_array());
+                            let has_tools = tools.is_some_and(|t| !t.is_empty());
+                            let tool_count = tools.map(|t| t.len()).unwrap_or(0);
+                            emit_fn(
+                                lr_monitor::MonitorEventType::LlmRequestTransformed,
+                                Some(client_id),
+                                Some(client_name),
+                                None,
+                                lr_monitor::MonitorEventData::LlmRequestTransformed {
+                                    endpoint,
+                                    model,
+                                    stream,
+                                    message_count,
+                                    has_tools,
+                                    tool_count,
+                                    request_body,
+                                    transformations_applied: transformations,
+                                },
+                                lr_monitor::EventStatus::Complete,
+                                None,
+                            );
                         },
-                        lr_monitor::EventStatus::Complete,
-                        None,
-                    );
-                })
-            })
+                    )
+                },
+            )
         };
 
         // Normal flow: run the agentic loop
@@ -512,33 +519,40 @@ impl McpViaLlmManager {
             let endpoint = "/v1/chat/completions".to_string();
             let model = request.model.clone();
             let stream = request.stream;
-            emit.map(|emit_fn| -> Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send> {
-                Box::new(move |request_body: serde_json::Value, transformations: Vec<String>| {
-                    let message_count = request_body.get("messages")
-                        .and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
-                    let tools = request_body.get("tools").and_then(|t| t.as_array());
-                    let has_tools = tools.is_some_and(|t| !t.is_empty());
-                    let tool_count = tools.map(|t| t.len()).unwrap_or(0);
-                    emit_fn(
-                        lr_monitor::MonitorEventType::LlmRequestTransformed,
-                        Some(client_id),
-                        Some(client_name),
-                        None,
-                        lr_monitor::MonitorEventData::LlmRequestTransformed {
-                            endpoint,
-                            model,
-                            stream,
-                            message_count,
-                            has_tools,
-                            tool_count,
-                            request_body,
-                            transformations_applied: transformations,
+            emit.map(
+                |emit_fn| -> Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send> {
+                    Box::new(
+                        move |request_body: serde_json::Value, transformations: Vec<String>| {
+                            let message_count = request_body
+                                .get("messages")
+                                .and_then(|m| m.as_array())
+                                .map(|a| a.len())
+                                .unwrap_or(0);
+                            let tools = request_body.get("tools").and_then(|t| t.as_array());
+                            let has_tools = tools.is_some_and(|t| !t.is_empty());
+                            let tool_count = tools.map(|t| t.len()).unwrap_or(0);
+                            emit_fn(
+                                lr_monitor::MonitorEventType::LlmRequestTransformed,
+                                Some(client_id),
+                                Some(client_name),
+                                None,
+                                lr_monitor::MonitorEventData::LlmRequestTransformed {
+                                    endpoint,
+                                    model,
+                                    stream,
+                                    message_count,
+                                    has_tools,
+                                    tool_count,
+                                    request_body,
+                                    transformations_applied: transformations,
+                                },
+                                lr_monitor::EventStatus::Complete,
+                                None,
+                            );
                         },
-                        lr_monitor::EventStatus::Complete,
-                        None,
-                    );
-                })
-            })
+                    )
+                },
+            )
         };
 
         orchestrator_stream::run_agentic_loop_streaming(

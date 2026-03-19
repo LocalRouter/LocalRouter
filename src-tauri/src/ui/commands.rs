@@ -2947,15 +2947,6 @@ pub async fn debug_trigger_firewall_popup(
     let send_multiple = send_multiple.unwrap_or(false);
     let firewall_manager = state.mcp_gateway.firewall_manager.clone();
 
-    // Use a real client from config so persistent actions (AllowPermanent, DenyAlways, etc.)
-    // actually save to config. Falls back to "debug-client" if no clients exist.
-    let config = state.config_manager.get();
-    let (debug_client_id, debug_client_name) = config
-        .clients
-        .first()
-        .map(|c| (c.id.clone(), c.name.clone()))
-        .unwrap_or(("debug-client".to_string(), "Debug Test Client".to_string()));
-
     // Configure based on popup type
     let (tool_name, server_name, arguments_preview, is_model_request, is_free_tier_fallback) =
         match popup_type {
@@ -2981,7 +2972,7 @@ pub async fn debug_trigger_firewall_popup(
                 false,
             ),
             DebugFirewallType::Marketplace => (
-                "marketplace__install_package".to_string(),
+                "MarketplaceInstall".to_string(),
                 "marketplace".to_string(),
                 r#"{"package": "code-review-tool", "version": "1.2.0"}"#.to_string(),
                 false,
@@ -3131,7 +3122,7 @@ pub async fn debug_trigger_firewall_popup(
                 false,
             ),
             DebugFirewallType::Marketplace => (
-                "marketplace__run_lint".to_string(),
+                "MarketplaceInstall".to_string(),
                 "marketplace".to_string(),
                 r#"{"target": "src/", "fix": true}"#.to_string(),
                 false,
@@ -3223,8 +3214,8 @@ pub async fn debug_trigger_firewall_popup(
 
         let session = lr_mcp::gateway::firewall::FirewallApprovalSession {
             request_id: request_id.clone(),
-            client_id: debug_client_id.clone(),
-            client_name: debug_client_name.clone(),
+            client_id: "debug-client".to_string(),
+            client_name: "Debug Test Client".to_string(),
             tool_name: debug_session.tool_name,
             server_name: debug_session.server_name,
             arguments_preview: debug_session.arguments_preview,

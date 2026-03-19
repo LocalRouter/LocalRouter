@@ -199,12 +199,14 @@ pub fn is_skill_tool(
 /// `Ok(None)` if it's not a skill tool (should be routed elsewhere).
 ///
 /// `configured_tool_name` is the configured name for the meta-tool (e.g. "SkillRead").
+/// `resource_read_name` is the name of the resource read tool (e.g. "ResourceRead").
 pub async fn handle_skill_tool_call(
     tool_name: &str,
     arguments: &serde_json::Value,
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
     configured_tool_name: &str,
+    resource_read_name: &str,
 ) -> Result<Option<SkillToolResult>, String> {
     if tool_name != configured_tool_name {
         return Ok(None);
@@ -232,7 +234,7 @@ pub async fn handle_skill_tool_call(
         return Err(format!("Skill '{}' is disabled", skill_name));
     }
 
-    let response = build_skill_read_response(&skill);
+    let response = build_skill_read_response(&skill, resource_read_name);
     Ok(Some(SkillToolResult::Response(response)))
 }
 
@@ -309,7 +311,10 @@ pub fn read_skill_file(
 ///
 /// Shows skill file paths as resource_read-compatible names
 /// (e.g. `<skill>/scripts/build.sh`) instead of absolute disk paths.
-fn build_skill_read_response(skill: &SkillDefinition) -> serde_json::Value {
+fn build_skill_read_response(
+    skill: &SkillDefinition,
+    resource_read_name: &str,
+) -> serde_json::Value {
     let mut text = String::new();
     let skill_name = &skill.metadata.name;
 
@@ -334,10 +339,13 @@ fn build_skill_read_response(skill: &SkillDefinition) -> serde_json::Value {
 
     text.push('\n');
 
-    // File listings with resource_read-compatible paths
+    // File listings with ResourceRead-compatible paths
     if !skill.scripts.is_empty() {
         text.push_str("## Scripts\n\n");
-        text.push_str("Read with `resource_read(name=\"...\")`.\n\n");
+        text.push_str(&format!(
+            "Read with `{}(name=\"...\")`.\n\n",
+            resource_read_name
+        ));
         for script in &skill.scripts {
             text.push_str(&format!("- `{}/{}`\n", skill_name, script));
         }
@@ -346,7 +354,10 @@ fn build_skill_read_response(skill: &SkillDefinition) -> serde_json::Value {
 
     if !skill.references.is_empty() {
         text.push_str("## References\n\n");
-        text.push_str("Read with `resource_read(name=\"...\")`.\n\n");
+        text.push_str(&format!(
+            "Read with `{}(name=\"...\")`.\n\n",
+            resource_read_name
+        ));
         for reference in &skill.references {
             text.push_str(&format!("- `{}/{}`\n", skill_name, reference));
         }
@@ -355,7 +366,10 @@ fn build_skill_read_response(skill: &SkillDefinition) -> serde_json::Value {
 
     if !skill.assets.is_empty() {
         text.push_str("## Assets\n\n");
-        text.push_str("Read with `resource_read(name=\"...\")`.\n\n");
+        text.push_str(&format!(
+            "Read with `{}(name=\"...\")`.\n\n",
+            resource_read_name
+        ));
         for asset in &skill.assets {
             text.push_str(&format!("- `{}/{}`\n", skill_name, asset));
         }

@@ -1238,6 +1238,7 @@ mod guardrail_tests {
             Some(gate),
             None,
             None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -1284,6 +1285,7 @@ mod guardrail_tests {
             &config,
             vec![],
             Some(gate),
+            None,
             None,
             None,
         )
@@ -1335,6 +1337,7 @@ mod guardrail_tests {
             &config,
             vec![],
             Some(gate),
+            None,
             None,
             None,
         )

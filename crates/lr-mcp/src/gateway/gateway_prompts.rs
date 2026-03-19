@@ -224,7 +224,11 @@ impl McpGateway {
                     .as_ref()
                     .map(|r| {
                         let s = serde_json::to_string(r).unwrap_or_default();
-                        if s.len() > 2000 { format!("{}...", &s[..2000]) } else { s }
+                        if s.len() > 2000 {
+                            format!("{}...", &s[..2000])
+                        } else {
+                            s
+                        }
                     })
                     .unwrap_or_default();
                 let err = resp.error.as_ref().map(|e| e.message.clone());
@@ -245,7 +249,11 @@ impl McpGateway {
                 content_preview: response_preview,
                 error: error_msg,
             },
-            if success { lr_monitor::EventStatus::Complete } else { lr_monitor::EventStatus::Error },
+            if success {
+                lr_monitor::EventStatus::Complete
+            } else {
+                lr_monitor::EventStatus::Error
+            },
             Some(latency_ms),
         );
 

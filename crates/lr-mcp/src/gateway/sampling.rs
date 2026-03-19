@@ -354,10 +354,7 @@ mod tests {
             chat_req.messages[3].tool_call_id.as_deref(),
             Some("call_abc")
         );
-        assert_eq!(
-            chat_req.messages[3].name.as_deref(),
-            Some("search_code")
-        );
+        assert_eq!(chat_req.messages[3].name.as_deref(), Some("search_code"));
 
         // Tools definition is forwarded
         assert!(chat_req.tools.is_some());
@@ -431,7 +428,9 @@ mod tests {
 
     #[test]
     fn test_convert_response_preserves_tool_calls() {
-        use lr_providers::{CompletionChoice, CompletionResponse, FunctionCall, TokenUsage, ToolCall};
+        use lr_providers::{
+            CompletionChoice, CompletionResponse, FunctionCall, TokenUsage, ToolCall,
+        };
 
         let chat_resp = CompletionResponse {
             id: "chatcmpl-123".to_string(),
@@ -526,7 +525,10 @@ mod tests {
 
         match &sampling_resp.content {
             SamplingContent::Text(text) => {
-                assert_eq!(text, "The GuardRails implementation is in crates/lr-guardrails/");
+                assert_eq!(
+                    text,
+                    "The GuardRails implementation is in crates/lr-guardrails/"
+                );
             }
             _ => panic!("Expected text content"),
         }
@@ -574,19 +576,27 @@ mod tests {
         };
 
         assert_eq!(
-            convert_chat_to_sampling_response(make_resp("stop")).unwrap().stop_reason,
+            convert_chat_to_sampling_response(make_resp("stop"))
+                .unwrap()
+                .stop_reason,
             "end_turn"
         );
         assert_eq!(
-            convert_chat_to_sampling_response(make_resp("length")).unwrap().stop_reason,
+            convert_chat_to_sampling_response(make_resp("length"))
+                .unwrap()
+                .stop_reason,
             "max_tokens"
         );
         assert_eq!(
-            convert_chat_to_sampling_response(make_resp("content_filter")).unwrap().stop_reason,
+            convert_chat_to_sampling_response(make_resp("content_filter"))
+                .unwrap()
+                .stop_reason,
             "end_turn"
         );
         assert_eq!(
-            convert_chat_to_sampling_response(make_resp("tool_calls")).unwrap().stop_reason,
+            convert_chat_to_sampling_response(make_resp("tool_calls"))
+                .unwrap()
+                .stop_reason,
             "tool_calls"
         );
     }
@@ -662,7 +672,10 @@ mod tests {
 
         match &sampling_resp.content {
             SamplingContent::Structured(value) => {
-                assert!(value.is_array() || value.is_object(), "Should be structured JSON");
+                assert!(
+                    value.is_array() || value.is_object(),
+                    "Should be structured JSON"
+                );
             }
             _ => panic!("Expected structured content for Parts input"),
         }

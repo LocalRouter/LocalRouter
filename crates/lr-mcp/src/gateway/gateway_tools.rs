@@ -236,7 +236,9 @@ impl McpGateway {
         // Capture firewall action for monitor event before destructuring
         let mon_firewall_action = match &firewall_result {
             FirewallDecisionResult::Proceed => None,
-            FirewallDecisionResult::ProceedWithEdits { .. } => Some("proceed_with_edits".to_string()),
+            FirewallDecisionResult::ProceedWithEdits { .. } => {
+                Some("proceed_with_edits".to_string())
+            }
             FirewallDecisionResult::Blocked(_) => Some("blocked".to_string()),
         };
 
@@ -326,10 +328,7 @@ impl McpGateway {
                         }
                     })
                     .unwrap_or_default();
-                let error_msg = response
-                    .error
-                    .as_ref()
-                    .map(|e| e.message.clone());
+                let error_msg = response.error.as_ref().map(|e| e.message.clone());
                 self.emit_monitor_event(
                     lr_monitor::MonitorEventType::McpToolResponse,
                     mon_client_id.clone(),

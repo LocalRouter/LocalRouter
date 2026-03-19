@@ -536,14 +536,14 @@ mod tool_classification_tests {
 
     #[test]
     fn mixed() {
-        let mcp: HashSet<String> = ["fs__read", "resource_read"]
+        let mcp: HashSet<String> = ["fs__read", "ResourceRead"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         let calls = [
             tc("1", "fs__read"),
             tc("2", "client_search"),
-            tc("3", "resource_read"),
+            tc("3", "ResourceRead"),
         ];
         let (m, c): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 2);
@@ -553,8 +553,8 @@ mod tool_classification_tests {
 
     #[test]
     fn resource_read_classified_as_mcp() {
-        let mcp: HashSet<String> = ["resource_read"].iter().map(|s| s.to_string()).collect();
-        let calls = [tc("1", "resource_read")];
+        let mcp: HashSet<String> = ["ResourceRead"].iter().map(|s| s.to_string()).collect();
+        let calls = [tc("1", "ResourceRead")];
         let (m, _): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 1);
     }

@@ -85,9 +85,8 @@ pub enum OrchestratorResult {
 /// returns but before executing any tools or returning a response. This allows
 /// guardrails to run in parallel with the LLM call for lower latency.
 /// Callback for emitting the transformed request event from the orchestrator.
-pub type TransformedRequestCallback = Option<
-    Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>,
->;
+pub type TransformedRequestCallback =
+    Option<Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>>;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agentic_loop(
@@ -976,8 +975,8 @@ pub(crate) fn content_to_string(value: &Value) -> String {
     }
 }
 
-/// The single resource_read tool name.
-pub(crate) const RESOURCE_READ_TOOL_NAME: &str = "resource_read";
+/// The single ResourceRead tool name.
+pub(crate) const RESOURCE_READ_TOOL_NAME: &str = "ResourceRead";
 
 /// Inject a single `resource_read` tool into the request.
 ///

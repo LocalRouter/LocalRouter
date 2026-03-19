@@ -407,7 +407,7 @@ impl McpGateway {
             None,                            // context_management_overrides
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
-            None,                                  // memory_enabled
+            None,                            // memory_enabled
             request,
         )
         .await

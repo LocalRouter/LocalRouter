@@ -2673,8 +2673,8 @@ mod tests {
                     section_title: "Marketplace".to_string(),
                     content: "Use marketplace tools to discover and install new MCP servers and skills.\n".to_string(),
                     tool_names: vec![
-                        "marketplace__search".to_string(),
-                        "marketplace__install".to_string(),
+                        "MarketplaceSearch".to_string(),
+                        "MarketplaceInstall".to_string(),
                     ],
                     priority: 20,
                 },
@@ -2695,7 +2695,7 @@ mod tests {
 
         // Virtual tool annotations (still listed)
         assert!(instructions.contains("`skill_get_info` (tool)"));
-        assert!(instructions.contains("`marketplace__search` (tool)"));
+        assert!(instructions.contains("`MarketplaceSearch` (tool)"));
         // Regular MCP tools/resources/prompts NOT listed in welcome
         assert!(!instructions.contains("`filesystem__read_file` (tool)"));
         assert!(!instructions.contains("`knowledge__search` (tool)"));
