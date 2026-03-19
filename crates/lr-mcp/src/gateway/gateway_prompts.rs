@@ -180,7 +180,7 @@ impl McpGateway {
             }
         }
 
-        // Emit monitor event for prompt get
+        // Emit pending monitor event for prompt get
         let (mon_client_id, mon_client_name) = {
             let s = session.read().await;
             (Some(s.client_id.clone()), Some(s.client_name.clone()))
@@ -191,18 +191,22 @@ impl McpGateway {
             .and_then(|p| p.get("arguments"))
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        self.emit_monitor_event(
+        let mon_event_id = self.emit_monitor_event(
             lr_monitor::MonitorEventType::McpPromptGet,
-            mon_client_id.clone(),
-            mon_client_name.clone(),
+            mon_client_id,
+            mon_client_name,
             None,
             lr_monitor::MonitorEventData::McpPromptGet {
                 prompt_name: prompt_name.to_string(),
                 server_id: server_id.clone(),
                 server_name: None,
                 arguments: mon_args,
+                latency_ms: None,
+                success: None,
+                content_preview: None,
+                error: None,
             },
-            lr_monitor::EventStatus::Complete,
+            lr_monitor::EventStatus::Pending,
             None,
         );
 
@@ -216,7 +220,7 @@ impl McpGateway {
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        // Emit monitor event for prompt response
+        // Update monitor event with response data
         let (success, response_preview, error_msg) = match &result {
             Ok(resp) => {
                 let preview = resp
@@ -236,25 +240,30 @@ impl McpGateway {
             }
             Err(e) => (false, String::new(), Some(e.to_string())),
         };
-        self.emit_monitor_event(
-            lr_monitor::MonitorEventType::McpPromptResponse,
-            mon_client_id,
-            mon_client_name,
-            None,
-            lr_monitor::MonitorEventData::McpPromptResponse {
-                prompt_name: prompt_name.to_string(),
-                server_id,
-                latency_ms,
-                success,
-                content_preview: response_preview,
-                error: error_msg,
-            },
-            if success {
-                lr_monitor::EventStatus::Complete
-            } else {
-                lr_monitor::EventStatus::Error
-            },
-            Some(latency_ms),
+        let status = if success {
+            lr_monitor::EventStatus::Complete
+        } else {
+            lr_monitor::EventStatus::Error
+        };
+        self.update_monitor_event(
+            &mon_event_id,
+            Box::new(move |event| {
+                event.status = status;
+                event.duration_ms = Some(latency_ms);
+                if let lr_monitor::MonitorEventData::McpPromptGet {
+                    latency_ms: ref mut lm,
+                    success: ref mut s,
+                    content_preview: ref mut cp,
+                    error: ref mut e,
+                    ..
+                } = &mut event.data
+                {
+                    *lm = Some(latency_ms);
+                    *s = Some(success);
+                    *cp = Some(response_preview);
+                    *e = error_msg;
+                }
+            }),
         );
 
         result

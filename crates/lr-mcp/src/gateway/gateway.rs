@@ -65,24 +65,29 @@ pub struct McpGateway {
     /// Callback to record context management bytes saved (wired to metrics DB)
     pub(crate) on_context_saved: parking_lot::RwLock<Option<Arc<dyn Fn(u64) + Send + Sync>>>,
 
-    /// Callback to emit monitor events (wired to MonitorEventStore)
+    /// Callback to emit monitor events (wired to MonitorEventStore). Returns event ID.
     #[allow(clippy::type_complexity)]
     pub(crate) on_monitor_event: parking_lot::RwLock<
         Option<
             Arc<
                 dyn Fn(
                         lr_monitor::MonitorEventType,
-                        Option<String>,
-                        Option<String>,
-                        Option<String>,
+                        Option<String>, // client_id
+                        Option<String>, // client_name
+                        Option<String>, // session_id
                         lr_monitor::MonitorEventData,
                         lr_monitor::EventStatus,
-                        Option<u64>,
-                    ) + Send
+                        Option<u64>, // duration_ms
+                    ) -> String
+                    + Send
                     + Sync,
             >,
         >,
     >,
+
+    /// Callback to update an existing monitor event (wired to MonitorEventStore)
+    pub(crate) on_monitor_update:
+        parking_lot::RwLock<Option<super::super::manager::MonitorUpdateFn>>,
 }
 
 impl McpGateway {
@@ -146,6 +151,7 @@ impl McpGateway {
             virtual_servers: parking_lot::RwLock::new(Vec::new()),
             on_context_saved: parking_lot::RwLock::new(None),
             on_monitor_event: parking_lot::RwLock::new(None),
+            on_monitor_update: parking_lot::RwLock::new(None),
         }
     }
 
@@ -154,7 +160,7 @@ impl McpGateway {
         *self.on_context_saved.write() = Some(Arc::new(callback));
     }
 
-    /// Set callback to emit monitor events to the MonitorEventStore
+    /// Set callback to emit monitor events to the MonitorEventStore. Returns event ID.
     #[allow(clippy::type_complexity)]
     pub fn set_on_monitor_event<
         F: Fn(
@@ -165,7 +171,8 @@ impl McpGateway {
                 lr_monitor::MonitorEventData,
                 lr_monitor::EventStatus,
                 Option<u64>,
-            ) + Send
+            ) -> String
+            + Send
             + Sync
             + 'static,
     >(
@@ -175,28 +182,46 @@ impl McpGateway {
         *self.on_monitor_event.write() = Some(Arc::new(callback));
     }
 
-    /// Emit a monitor event if the callback is set.
+    /// Set callback to update existing monitor events.
+    pub fn set_on_monitor_update(&self, callback: super::super::manager::MonitorUpdateFn) {
+        *self.on_monitor_update.write() = Some(callback);
+    }
+
+    /// Emit a monitor event if the callback is set. Returns the event ID.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_monitor_event(
         &self,
         event_type: lr_monitor::MonitorEventType,
         client_id: Option<String>,
         client_name: Option<String>,
-        request_id: Option<String>,
+        session_id: Option<String>,
         data: lr_monitor::MonitorEventData,
         status: lr_monitor::EventStatus,
         duration_ms: Option<u64>,
-    ) {
+    ) -> String {
         if let Some(cb) = self.on_monitor_event.read().as_ref() {
             cb(
                 event_type,
                 client_id,
                 client_name,
-                request_id,
+                session_id,
                 data,
                 status,
                 duration_ms,
-            );
+            )
+        } else {
+            String::new()
+        }
+    }
+
+    /// Update an existing monitor event by ID.
+    pub(crate) fn update_monitor_event(
+        &self,
+        event_id: &str,
+        updater: Box<dyn FnOnce(&mut lr_monitor::MonitorEvent) + Send>,
+    ) {
+        if let Some(cb) = self.on_monitor_update.read().as_ref() {
+            cb(event_id, updater);
         }
     }
 

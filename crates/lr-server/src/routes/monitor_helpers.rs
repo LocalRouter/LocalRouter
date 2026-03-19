@@ -1,14 +1,21 @@
 //! Helper functions for emitting monitor events from route handlers.
+//!
+//! Combined events follow the emit-then-update pattern:
+//! 1. `emit_*()` creates a Pending event with request data, returns the event ID
+//! 2. `complete_*()` updates the event with response data and sets status to Complete/Error
 
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::state::AppState;
 use axum::Extension;
 use lr_monitor::{EventStatus, MonitorEventData, MonitorEventType};
 
-/// Emit an LlmRequest monitor event. Returns the event ID for linking to the response.
-pub fn emit_llm_request(
+// ---- LLM Call (combined: request + transform + response/error) ----
+
+/// Emit a pending LlmCall event at the start of a request. Returns the event ID.
+pub fn emit_llm_call(
     state: &AppState,
     client_auth: Option<&Extension<ClientAuthContext>>,
+    session_id: Option<&str>,
     endpoint: &str,
     model: &str,
     stream: bool,
@@ -27,11 +34,11 @@ pub fn emit_llm_request(
     let tool_count = tools.map(|t| t.len()).unwrap_or(0);
 
     state.monitor_store.push(
-        MonitorEventType::LlmRequest,
+        MonitorEventType::LlmCall,
         client_id,
         client_name,
-        None,
-        MonitorEventData::LlmRequest {
+        session_id.map(|s| s.to_string()),
+        MonitorEventData::LlmCall {
             endpoint: endpoint.to_string(),
             model: model.to_string(),
             stream,
@@ -39,61 +46,51 @@ pub fn emit_llm_request(
             has_tools,
             tool_count,
             request_body: truncate_json(request_body, 10_000),
+            transformed_body: None,
+            transformations_applied: None,
+            provider: None,
+            status_code: None,
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            cost_usd: None,
+            latency_ms: None,
+            finish_reason: None,
+            content_preview: None,
+            streamed: None,
+            error: None,
         },
-        EventStatus::Complete,
+        EventStatus::Pending,
         None,
     )
 }
 
-/// Emit an LlmRequestTransformed event showing the final request after all
-/// transformations (compression, RouteLLM, MCP tool injection, etc.).
-pub fn emit_llm_request_transformed(
+/// Update the LlmCall event with transformation data (compression, MCP tools, etc.).
+pub fn update_llm_call_transformed(
     state: &AppState,
-    client_auth: Option<&Extension<ClientAuthContext>>,
-    endpoint: &str,
-    model: &str,
-    stream: bool,
+    event_id: &str,
     request_body: &serde_json::Value,
     transformations: Vec<String>,
 ) {
-    let (client_id, client_name) = resolve_client(state, client_auth);
-
-    let message_count = request_body
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-
-    let tools = request_body.get("tools").and_then(|t| t.as_array());
-    let has_tools = tools.is_some_and(|t| !t.is_empty());
-    let tool_count = tools.map(|t| t.len()).unwrap_or(0);
-
-    state.monitor_store.push(
-        MonitorEventType::LlmRequestTransformed,
-        client_id,
-        client_name,
-        None,
-        MonitorEventData::LlmRequestTransformed {
-            endpoint: endpoint.to_string(),
-            model: model.to_string(),
-            stream,
-            message_count,
-            has_tools,
-            tool_count,
-            request_body: truncate_json(request_body, 10_000),
-            transformations_applied: transformations,
-        },
-        EventStatus::Complete,
-        None,
-    );
+    let body = truncate_json(request_body, 10_000);
+    state.monitor_store.update(event_id, |event| {
+        if let MonitorEventData::LlmCall {
+            transformed_body,
+            transformations_applied,
+            ..
+        } = &mut event.data
+        {
+            *transformed_body = Some(body);
+            *transformations_applied = Some(transformations);
+        }
+    });
 }
 
-/// Emit an LlmResponse monitor event for a completed non-streaming response.
+/// Complete the LlmCall event with response data (non-streaming or stream finished).
 #[allow(clippy::too_many_arguments)]
-pub fn emit_llm_response(
+pub fn complete_llm_call(
     state: &AppState,
-    client_auth: Option<&Extension<ClientAuthContext>>,
-    request_id: &str,
+    event_id: &str,
     provider: &str,
     model: &str,
     status_code: u16,
@@ -105,89 +102,17 @@ pub fn emit_llm_response(
     content_preview: &str,
     streamed: bool,
 ) {
-    let (client_id, client_name) = resolve_client(state, client_auth);
-
-    state.monitor_store.push(
-        MonitorEventType::LlmResponse,
-        client_id,
-        client_name,
-        Some(request_id.to_string()),
-        MonitorEventData::LlmResponse {
-            provider: provider.to_string(),
-            model: model.to_string(),
-            status_code,
-            input_tokens,
-            output_tokens,
-            total_tokens: input_tokens + output_tokens,
-            cost_usd,
-            latency_ms,
-            finish_reason: finish_reason.map(|s| s.to_string()),
-            content_preview: truncate_string(content_preview, 2000),
-            streamed,
-        },
-        EventStatus::Complete,
-        Some(latency_ms),
-    );
-}
-
-/// Emit a pending LlmResponse for streaming (will be updated when stream completes).
-/// Returns the monitor event ID.
-pub fn emit_llm_response_pending(
-    state: &AppState,
-    client_auth: Option<&Extension<ClientAuthContext>>,
-    request_id: &str,
-    model: &str,
-) -> String {
-    let (client_id, client_name) = resolve_client(state, client_auth);
-
-    state.monitor_store.push(
-        MonitorEventType::LlmResponse,
-        client_id,
-        client_name,
-        Some(request_id.to_string()),
-        MonitorEventData::LlmResponse {
-            provider: String::new(),
-            model: model.to_string(),
-            status_code: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            cost_usd: None,
-            latency_ms: 0,
-            finish_reason: None,
-            content_preview: String::new(),
-            streamed: true,
-        },
-        EventStatus::Pending,
-        None,
-    )
-}
-
-/// Update a pending streaming LlmResponse with final data.
-#[allow(clippy::too_many_arguments)]
-pub fn complete_llm_response(
-    state: &AppState,
-    monitor_event_id: &str,
-    provider: &str,
-    model: &str,
-    input_tokens: u64,
-    output_tokens: u64,
-    cost_usd: Option<f64>,
-    latency_ms: u64,
-    finish_reason: Option<&str>,
-    content_preview: &str,
-) {
-    let finish_reason = finish_reason.map(|s| s.to_string());
     let provider = provider.to_string();
     let model = model.to_string();
+    let finish_reason = finish_reason.map(|s| s.to_string());
     let content_preview = truncate_string(content_preview, 2000);
 
-    state.monitor_store.update(monitor_event_id, |event| {
+    state.monitor_store.update(event_id, |event| {
         event.status = EventStatus::Complete;
         event.duration_ms = Some(latency_ms);
-        if let MonitorEventData::LlmResponse {
-            provider: ref mut p,
+        if let MonitorEventData::LlmCall {
             model: ref mut m,
+            provider: ref mut p,
             status_code: ref mut sc,
             input_tokens: ref mut it,
             output_tokens: ref mut ot,
@@ -196,49 +121,54 @@ pub fn complete_llm_response(
             latency_ms: ref mut lm,
             finish_reason: ref mut fr,
             content_preview: ref mut cp,
+            streamed: ref mut st,
             ..
         } = &mut event.data
         {
-            *p = provider;
             *m = model;
-            *sc = 200;
-            *it = input_tokens;
-            *ot = output_tokens;
-            *tt = input_tokens + output_tokens;
+            *p = Some(provider);
+            *sc = Some(status_code);
+            *it = Some(input_tokens);
+            *ot = Some(output_tokens);
+            *tt = Some(input_tokens + output_tokens);
             *cu = cost_usd;
-            *lm = latency_ms;
+            *lm = Some(latency_ms);
             *fr = finish_reason;
-            *cp = content_preview;
+            *cp = Some(content_preview);
+            *st = Some(streamed);
         }
     });
 }
 
-/// Emit an LlmError monitor event.
-pub fn emit_llm_error(
+/// Complete the LlmCall event with an error.
+pub fn complete_llm_call_error(
     state: &AppState,
-    client_auth: Option<&Extension<ClientAuthContext>>,
-    request_id: Option<&str>,
+    event_id: &str,
     provider: &str,
     model: &str,
     status_code: u16,
-    error: &str,
+    error_msg: &str,
 ) {
-    let (client_id, client_name) = resolve_client(state, client_auth);
+    let provider = provider.to_string();
+    let model = model.to_string();
+    let error_msg = truncate_string(error_msg, 1000);
 
-    state.monitor_store.push(
-        MonitorEventType::LlmError,
-        client_id,
-        client_name,
-        request_id.map(|s| s.to_string()),
-        MonitorEventData::LlmError {
-            provider: provider.to_string(),
-            model: model.to_string(),
-            status_code,
-            error: truncate_string(error, 1000),
-        },
-        EventStatus::Error,
-        None,
-    );
+    state.monitor_store.update(event_id, |event| {
+        event.status = EventStatus::Error;
+        if let MonitorEventData::LlmCall {
+            model: ref mut m,
+            provider: ref mut p,
+            status_code: ref mut sc,
+            error: ref mut e,
+            ..
+        } = &mut event.data
+        {
+            *m = model;
+            *p = Some(provider);
+            *sc = Some(status_code);
+            *e = Some(error_msg);
+        }
+    });
 }
 
 // ---- Auth & Access Control events ----
@@ -271,6 +201,7 @@ pub fn emit_auth_error(
 pub fn emit_access_denied(
     state: &AppState,
     client_auth: Option<&Extension<ClientAuthContext>>,
+    session_id: Option<&str>,
     reason: &str,
     endpoint: &str,
     message: &str,
@@ -282,7 +213,7 @@ pub fn emit_access_denied(
         MonitorEventType::AccessDenied,
         client_id,
         client_name,
-        None,
+        session_id.map(|s| s.to_string()),
         MonitorEventData::AccessDenied {
             reason: reason.to_string(),
             endpoint: endpoint.to_string(),
@@ -298,6 +229,7 @@ pub fn emit_access_denied(
 pub fn emit_access_denied_for_client(
     state: &AppState,
     client_id: &str,
+    session_id: Option<&str>,
     reason: &str,
     endpoint: &str,
     message: &str,
@@ -312,7 +244,7 @@ pub fn emit_access_denied_for_client(
         MonitorEventType::AccessDenied,
         Some(client_id.to_string()),
         client_name,
-        None,
+        session_id.map(|s| s.to_string()),
         MonitorEventData::AccessDenied {
             reason: reason.to_string(),
             endpoint: endpoint.to_string(),
@@ -327,9 +259,11 @@ pub fn emit_access_denied_for_client(
 // ---- Rate Limiting events ----
 
 /// Emit a RateLimitEvent monitor event.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_rate_limit_event(
     state: &AppState,
     client_auth: Option<&Extension<ClientAuthContext>>,
+    session_id: Option<&str>,
     reason: &str,
     endpoint: &str,
     message: &str,
@@ -342,7 +276,7 @@ pub fn emit_rate_limit_event(
         MonitorEventType::RateLimitEvent,
         client_id,
         client_name,
-        None,
+        session_id.map(|s| s.to_string()),
         MonitorEventData::RateLimitEvent {
             reason: reason.to_string(),
             endpoint: endpoint.to_string(),
@@ -361,6 +295,7 @@ pub fn emit_rate_limit_event(
 pub fn emit_validation_error(
     state: &AppState,
     client_auth: Option<&Extension<ClientAuthContext>>,
+    session_id: Option<&str>,
     endpoint: &str,
     field: Option<&str>,
     message: &str,
@@ -372,7 +307,7 @@ pub fn emit_validation_error(
         MonitorEventType::ValidationError,
         client_id,
         client_name,
-        None,
+        session_id.map(|s| s.to_string()),
         MonitorEventData::ValidationError {
             endpoint: endpoint.to_string(),
             field: field.map(|f| f.to_string()),
@@ -448,116 +383,187 @@ pub fn emit_internal_error(state: &AppState, error_type: &str, message: &str, st
     );
 }
 
-// ---- Guardrail events ----
+// ---- Guardrail events (combined: request + response) ----
 
-/// Emit a GuardrailRequest event before running safety checks.
-pub fn emit_guardrail_request(
+/// Emit a pending GuardrailScan event before running input safety checks. Returns event ID.
+pub fn emit_guardrail_scan(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
+    session_id: Option<&str>,
     direction: &str,
     text_preview: &str,
     models_used: Vec<String>,
-) {
+) -> String {
     let (client_id, client_name) = resolve_client_ctx(state, client_ctx);
     state.monitor_store.push(
-        MonitorEventType::GuardrailRequest,
+        MonitorEventType::GuardrailScan,
         client_id,
         client_name,
-        None,
-        MonitorEventData::GuardrailRequest {
+        session_id.map(|s| s.to_string()),
+        MonitorEventData::GuardrailScan {
             direction: direction.to_string(),
             text_preview: truncate_string(text_preview, 500),
             models_used,
+            result: None,
+            flagged_categories: None,
+            action_taken: None,
+            latency_ms: None,
         },
         EventStatus::Pending,
         None,
-    );
+    )
 }
 
-/// Emit a GuardrailResponse event after safety check completes.
-pub fn emit_guardrail_response(
+/// Complete a GuardrailScan event with the scan result.
+pub fn complete_guardrail_scan(
     state: &AppState,
-    client_ctx: Option<&ClientAuthContext>,
-    direction: &str,
+    event_id: &str,
     result: &str,
     flagged_categories: Vec<lr_monitor::FlaggedCategory>,
     action_taken: &str,
     latency_ms: u64,
 ) {
-    let (client_id, client_name) = resolve_client_ctx(state, client_ctx);
-    state.monitor_store.push(
-        MonitorEventType::GuardrailResponse,
-        client_id,
-        client_name,
-        None,
-        MonitorEventData::GuardrailResponse {
-            direction: direction.to_string(),
-            result: result.to_string(),
-            flagged_categories,
-            action_taken: action_taken.to_string(),
-            latency_ms,
-        },
-        EventStatus::Complete,
-        Some(latency_ms),
-    );
+    state.monitor_store.update(event_id, |event| {
+        event.status = EventStatus::Complete;
+        event.duration_ms = Some(latency_ms);
+        if let MonitorEventData::GuardrailScan {
+            result: ref mut r,
+            flagged_categories: ref mut fc,
+            action_taken: ref mut at,
+            latency_ms: ref mut lm,
+            ..
+        } = &mut event.data
+        {
+            *r = Some(result.to_string());
+            *fc = Some(flagged_categories);
+            *at = Some(action_taken.to_string());
+            *lm = Some(latency_ms);
+        }
+    });
 }
 
-// ---- Secret scan events ----
-
-/// Emit a SecretScanRequest event before scanning.
-pub fn emit_secret_scan_request(
+/// Emit a pending GuardrailResponseScan event for output safety checks. Returns event ID.
+pub fn emit_guardrail_response_scan(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
+    session_id: Option<&str>,
+    direction: &str,
     text_preview: &str,
-    rules_count: usize,
-) {
+    models_used: Vec<String>,
+) -> String {
     let (client_id, client_name) = resolve_client_ctx(state, client_ctx);
     state.monitor_store.push(
-        MonitorEventType::SecretScanRequest,
+        MonitorEventType::GuardrailResponseScan,
         client_id,
         client_name,
-        None,
-        MonitorEventData::SecretScanRequest {
+        session_id.map(|s| s.to_string()),
+        MonitorEventData::GuardrailResponseScan {
+            direction: direction.to_string(),
             text_preview: truncate_string(text_preview, 500),
-            rules_count,
+            models_used,
+            result: None,
+            flagged_categories: None,
+            action_taken: None,
+            latency_ms: None,
         },
         EventStatus::Pending,
         None,
-    );
+    )
 }
 
-/// Emit a SecretScanResponse event after scanning.
-pub fn emit_secret_scan_response(
+/// Complete a GuardrailResponseScan event with the scan result.
+pub fn complete_guardrail_response_scan(
+    state: &AppState,
+    event_id: &str,
+    result: &str,
+    flagged_categories: Vec<lr_monitor::FlaggedCategory>,
+    action_taken: &str,
+    latency_ms: u64,
+) {
+    state.monitor_store.update(event_id, |event| {
+        event.status = EventStatus::Complete;
+        event.duration_ms = Some(latency_ms);
+        if let MonitorEventData::GuardrailResponseScan {
+            result: ref mut r,
+            flagged_categories: ref mut fc,
+            action_taken: ref mut at,
+            latency_ms: ref mut lm,
+            ..
+        } = &mut event.data
+        {
+            *r = Some(result.to_string());
+            *fc = Some(flagged_categories);
+            *at = Some(action_taken.to_string());
+            *lm = Some(latency_ms);
+        }
+    });
+}
+
+// ---- Secret scan events (combined: request + response) ----
+
+/// Emit a pending SecretScan event before scanning. Returns event ID.
+pub fn emit_secret_scan(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
+    session_id: Option<&str>,
+    text_preview: &str,
+    rules_count: usize,
+) -> String {
+    let (client_id, client_name) = resolve_client_ctx(state, client_ctx);
+    state.monitor_store.push(
+        MonitorEventType::SecretScan,
+        client_id,
+        client_name,
+        session_id.map(|s| s.to_string()),
+        MonitorEventData::SecretScan {
+            text_preview: truncate_string(text_preview, 500),
+            rules_count,
+            findings_count: None,
+            findings: None,
+            action_taken: None,
+            latency_ms: None,
+        },
+        EventStatus::Pending,
+        None,
+    )
+}
+
+/// Complete a SecretScan event with scan results.
+pub fn complete_secret_scan(
+    state: &AppState,
+    event_id: &str,
     findings_count: usize,
     findings: serde_json::Value,
     action_taken: &str,
     latency_ms: u64,
 ) {
-    let (client_id, client_name) = resolve_client_ctx(state, client_ctx);
-    state.monitor_store.push(
-        MonitorEventType::SecretScanResponse,
-        client_id,
-        client_name,
-        None,
-        MonitorEventData::SecretScanResponse {
-            findings_count,
-            findings,
-            action_taken: action_taken.to_string(),
-            latency_ms,
-        },
-        EventStatus::Complete,
-        Some(latency_ms),
-    );
+    state.monitor_store.update(event_id, |event| {
+        event.status = EventStatus::Complete;
+        event.duration_ms = Some(latency_ms);
+        if let MonitorEventData::SecretScan {
+            findings_count: ref mut fc,
+            findings: ref mut f,
+            action_taken: ref mut at,
+            latency_ms: ref mut lm,
+            ..
+        } = &mut event.data
+        {
+            *fc = Some(findings_count);
+            *f = Some(findings);
+            *at = Some(action_taken.to_string());
+            *lm = Some(latency_ms);
+        }
+    });
 }
 
 // ---- Routing events ----
 
 /// Emit a RoutingDecision event when final model routing is determined.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_routing_decision(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
+    session_id: Option<&str>,
     routing_type: &str,
     original_model: &str,
     final_model: &str,
@@ -569,7 +575,7 @@ pub fn emit_routing_decision(
         MonitorEventType::RoutingDecision,
         client_id,
         client_name,
-        None,
+        session_id.map(|s| s.to_string()),
         MonitorEventData::RoutingDecision {
             routing_type: routing_type.to_string(),
             original_model: original_model.to_string(),
@@ -585,9 +591,11 @@ pub fn emit_routing_decision(
 // ---- Prompt compression events ----
 
 /// Emit a PromptCompression event after compression completes.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_prompt_compression(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
+    session_id: Option<&str>,
     original_tokens: u64,
     compressed_tokens: u64,
     reduction_percent: f64,
@@ -599,7 +607,7 @@ pub fn emit_prompt_compression(
         MonitorEventType::PromptCompression,
         client_id,
         client_name,
-        None,
+        session_id.map(|s| s.to_string()),
         MonitorEventData::PromptCompression {
             original_tokens,
             compressed_tokens,
@@ -618,6 +626,7 @@ pub fn emit_prompt_compression(
 pub fn emit_firewall_decision(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
+    session_id: Option<&str>,
     firewall_type: &str,
     item_name: &str,
     action: &str,
@@ -628,7 +637,7 @@ pub fn emit_firewall_decision(
         MonitorEventType::FirewallDecision,
         client_id,
         client_name,
-        None,
+        session_id.map(|s| s.to_string()),
         MonitorEventData::FirewallDecision {
             firewall_type: firewall_type.to_string(),
             item_name: item_name.to_string(),
@@ -678,7 +687,7 @@ fn resolve_client_ctx(
 
 /// Truncate a JSON value to approximately max_bytes by converting to string,
 /// truncating, and wrapping in a descriptive object if too large.
-fn truncate_json(value: &serde_json::Value, max_bytes: usize) -> serde_json::Value {
+pub fn truncate_json(value: &serde_json::Value, max_bytes: usize) -> serde_json::Value {
     let serialized = serde_json::to_string(value).unwrap_or_default();
     if serialized.len() <= max_bytes {
         value.clone()

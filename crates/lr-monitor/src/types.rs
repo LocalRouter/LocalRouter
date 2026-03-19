@@ -24,14 +24,14 @@ pub struct MonitorEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_name: Option<String>,
 
-    /// Shared request ID linking request/response pairs
+    /// Session ID grouping all events from one API request
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
+    pub session_id: Option<String>,
 
     /// Type-specific event data
     pub data: MonitorEventData,
 
-    /// Current status (pending for in-flight streaming, complete, or error)
+    /// Current status (pending for in-flight, complete, or error)
     pub status: EventStatus,
 
     /// Duration in milliseconds (filled on completion)
@@ -55,6 +55,9 @@ pub struct MonitorEventSummary {
     pub duration_ms: Option<u64>,
     /// One-line summary for display in the list
     pub summary: String,
+    /// Session ID grouping all events from one API request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,63 +71,35 @@ pub enum EventStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MonitorEventType {
-    // LLM
-    LlmRequest,
-    LlmRequestTransformed,
-    LlmResponse,
-    LlmError,
+    // LLM (combined: request + transform + response/error)
+    LlmCall,
 
-    // MCP
+    // MCP (combined: request + response)
     McpToolCall,
-    McpToolResponse,
     McpResourceRead,
-    McpResourceResponse,
     McpPromptGet,
-    McpPromptResponse,
-    McpElicitationRequest,
-    McpElicitationResponse,
-    McpSamplingRequest,
-    McpSamplingResponse,
+    McpElicitation,
+    McpSampling,
 
-    // Security
-    GuardrailRequest,
-    GuardrailResponse,
-    GuardrailResponseCheckRequest,
-    GuardrailResponseCheckResponse,
-    SecretScanRequest,
-    SecretScanResponse,
+    // Security (combined: request + response)
+    GuardrailScan,
+    GuardrailResponseScan,
+    SecretScan,
 
-    // Routing
-    RouteLlmRequest,
-    RouteLlmResponse,
+    // Routing (combined: request + response)
+    RouteLlmClassify,
+
+    // Standalone events
     RoutingDecision,
-
-    // Auth & Access Control
     AuthError,
     AccessDenied,
-
-    // Rate Limiting
     RateLimitEvent,
-
-    // Validation
     ValidationError,
-
-    // Provider / MCP Server Health
     McpServerEvent,
-
-    // OAuth
     OAuthEvent,
-
-    // Internal
     InternalError,
-
-    // Moderation
     ModerationEvent,
-
-    // Connection / Transport
     ConnectionError,
-
-    // Other
     PromptCompression,
     FirewallDecision,
     SseConnection,
@@ -134,28 +109,16 @@ impl MonitorEventType {
     /// Human-readable label for display.
     pub fn label(&self) -> &'static str {
         match self {
-            Self::LlmRequest => "LLM Request",
-            Self::LlmRequestTransformed => "LLM Request (Final)",
-            Self::LlmResponse => "LLM Response",
-            Self::LlmError => "LLM Error",
+            Self::LlmCall => "LLM Call",
             Self::McpToolCall => "MCP Tool Call",
-            Self::McpToolResponse => "MCP Tool Response",
             Self::McpResourceRead => "MCP Resource Read",
-            Self::McpResourceResponse => "MCP Resource Response",
             Self::McpPromptGet => "MCP Prompt Get",
-            Self::McpPromptResponse => "MCP Prompt Response",
-            Self::McpElicitationRequest => "MCP Elicitation Request",
-            Self::McpElicitationResponse => "MCP Elicitation Response",
-            Self::McpSamplingRequest => "MCP Sampling Request",
-            Self::McpSamplingResponse => "MCP Sampling Response",
-            Self::GuardrailRequest => "Guardrail Request",
-            Self::GuardrailResponse => "Guardrail Response",
-            Self::GuardrailResponseCheckRequest => "Guardrail Response Check",
-            Self::GuardrailResponseCheckResponse => "Guardrail Response Check Result",
-            Self::SecretScanRequest => "Secret Scan Request",
-            Self::SecretScanResponse => "Secret Scan Response",
-            Self::RouteLlmRequest => "RouteLLM Request",
-            Self::RouteLlmResponse => "RouteLLM Response",
+            Self::McpElicitation => "MCP Elicitation",
+            Self::McpSampling => "MCP Sampling",
+            Self::GuardrailScan => "Guardrail Scan",
+            Self::GuardrailResponseScan => "Guardrail Response Scan",
+            Self::SecretScan => "Secret Scan",
+            Self::RouteLlmClassify => "RouteLLM Classify",
             Self::RoutingDecision => "Routing Decision",
             Self::AuthError => "Auth Error",
             Self::AccessDenied => "Access Denied",
@@ -175,26 +138,14 @@ impl MonitorEventType {
     /// Category for grouping/coloring in UI.
     pub fn category(&self) -> &'static str {
         match self {
-            Self::LlmRequest | Self::LlmRequestTransformed | Self::LlmResponse | Self::LlmError => {
-                "llm"
-            }
+            Self::LlmCall => "llm",
             Self::McpToolCall
-            | Self::McpToolResponse
             | Self::McpResourceRead
-            | Self::McpResourceResponse
             | Self::McpPromptGet
-            | Self::McpPromptResponse
-            | Self::McpElicitationRequest
-            | Self::McpElicitationResponse
-            | Self::McpSamplingRequest
-            | Self::McpSamplingResponse => "mcp",
-            Self::GuardrailRequest
-            | Self::GuardrailResponse
-            | Self::GuardrailResponseCheckRequest
-            | Self::GuardrailResponseCheckResponse
-            | Self::SecretScanRequest
-            | Self::SecretScanResponse => "security",
-            Self::RouteLlmRequest | Self::RouteLlmResponse | Self::RoutingDecision => "routing",
+            | Self::McpElicitation
+            | Self::McpSampling => "mcp",
+            Self::GuardrailScan | Self::GuardrailResponseScan | Self::SecretScan => "security",
+            Self::RouteLlmClassify | Self::RoutingDecision => "routing",
             Self::AuthError | Self::AccessDenied | Self::OAuthEvent => "auth",
             Self::RateLimitEvent => "rate_limit",
             Self::ValidationError => "validation",
@@ -209,11 +160,15 @@ impl MonitorEventType {
 }
 
 /// Type-specific event payload. Uses serde tag for frontend dispatch.
+///
+/// Combined events (request+response merged) use `Option<T>` for response fields
+/// that are filled via `update()` when the operation completes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MonitorEventData {
-    // ---- LLM ----
-    LlmRequest {
+    // ---- LLM (combined: request + transform + response/error) ----
+    LlmCall {
+        // Request fields (populated at creation)
         endpoint: String,
         model: String,
         stream: bool,
@@ -222,46 +177,43 @@ pub enum MonitorEventData {
         tool_count: usize,
         /// Full request body (may be truncated for very large requests)
         request_body: serde_json::Value,
-    },
-    /// The final request after all transformations have been applied.
-    /// Emitted right before the request is sent to the provider.
-    LlmRequestTransformed {
-        endpoint: String,
-        model: String,
-        stream: bool,
-        message_count: usize,
-        has_tools: bool,
-        tool_count: usize,
-        /// Full transformed request body
-        request_body: serde_json::Value,
-        /// Which transformations were applied
-        transformations_applied: Vec<String>,
-    },
-    LlmResponse {
-        provider: String,
-        model: String,
-        status_code: u16,
-        input_tokens: u64,
-        output_tokens: u64,
-        total_tokens: u64,
+
+        // Transformation fields (filled via update when transformations applied)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        transformed_body: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        transformations_applied: Option<Vec<String>>,
+
+        // Response fields (filled on completion)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status_code: Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cost_usd: Option<f64>,
-        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         finish_reason: Option<String>,
-        /// First N chars of response content
-        content_preview: String,
-        streamed: bool,
-    },
-    LlmError {
-        provider: String,
-        model: String,
-        status_code: u16,
-        error: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_preview: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        streamed: Option<bool>,
+
+        // Error field (filled only on error)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 
-    // ---- MCP ----
+    // ---- MCP (combined: request + response) ----
     McpToolCall {
+        // Request
         tool_name: String,
         server_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -269,63 +221,71 @@ pub enum MonitorEventData {
         arguments: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         firewall_action: Option<String>,
-    },
-    McpToolResponse {
-        tool_name: String,
-        server_id: String,
-        latency_ms: u64,
-        success: bool,
-        response_preview: String,
+
+        // Response (filled on completion)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        success: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_preview: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
     McpResourceRead {
+        // Request
         uri: String,
         server_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         server_name: Option<String>,
-    },
-    McpResourceResponse {
-        uri: String,
-        server_id: String,
-        latency_ms: u64,
-        success: bool,
-        content_preview: String,
+
+        // Response (filled on completion)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        success: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_preview: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
     McpPromptGet {
+        // Request
         prompt_name: String,
         server_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         server_name: Option<String>,
         arguments: serde_json::Value,
-    },
-    McpPromptResponse {
-        prompt_name: String,
-        server_id: String,
-        latency_ms: u64,
-        success: bool,
-        content_preview: String,
+
+        // Response (filled on completion)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        success: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_preview: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    McpElicitationRequest {
+    McpElicitation {
+        // Request
         server_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         server_name: Option<String>,
         message: String,
         schema: serde_json::Value,
-    },
-    McpElicitationResponse {
-        server_id: String,
+
+        // Response (filled on completion)
         /// "submitted", "cancelled", "timeout"
-        action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<serde_json::Value>,
-        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
     },
-    McpSamplingRequest {
+    McpSampling {
+        // Request
         server_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         server_name: Option<String>,
@@ -334,71 +294,90 @@ pub enum MonitorEventData {
         model_hint: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         max_tokens: Option<u64>,
-    },
-    McpSamplingResponse {
-        server_id: String,
+
+        // Response (filled on completion)
         /// "approved", "rejected"
-        action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         model_used: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         content_preview: Option<String>,
-        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
     },
 
-    // ---- Security ----
-    GuardrailRequest {
-        /// "request" or "response"
+    // ---- Security (combined: request + response) ----
+    GuardrailScan {
+        /// "request" — input safety scan
         direction: String,
         text_preview: String,
         models_used: Vec<String>,
-    },
-    GuardrailResponse {
-        direction: String,
+
+        // Response (filled on completion)
         /// "pass" or "flagged"
-        result: String,
-        flagged_categories: Vec<FlaggedCategory>,
-        action_taken: String,
-        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        flagged_categories: Option<Vec<FlaggedCategory>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action_taken: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
     },
     /// Guardrail check on the LLM response (output safety check).
-    GuardrailResponseCheckRequest {
+    GuardrailResponseScan {
+        /// "response" — output safety scan
         direction: String,
         text_preview: String,
         models_used: Vec<String>,
+
+        // Response (filled on completion)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        flagged_categories: Option<Vec<FlaggedCategory>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action_taken: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
     },
-    GuardrailResponseCheckResponse {
-        direction: String,
-        result: String,
-        flagged_categories: Vec<FlaggedCategory>,
-        action_taken: String,
-        latency_ms: u64,
-    },
-    SecretScanRequest {
+    SecretScan {
+        // Request
         text_preview: String,
         rules_count: usize,
-    },
-    SecretScanResponse {
-        findings_count: usize,
-        findings: serde_json::Value,
+
+        // Response (filled on completion)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        findings_count: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        findings: Option<serde_json::Value>,
         /// "notify", "ask", "block"
-        action_taken: String,
-        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action_taken: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
     },
 
-    // ---- Routing ----
-    RouteLlmRequest {
+    // ---- Routing (combined: request + response) ----
+    RouteLlmClassify {
+        // Request
         original_model: String,
         threshold: f64,
-    },
-    RouteLlmResponse {
-        win_rate: f64,
-        threshold: f64,
+
+        // Response (filled on completion)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        win_rate: Option<f64>,
         /// "strong" or "weak"
-        selected_tier: String,
-        routed_model: String,
-        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        selected_tier: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        routed_model: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
     },
+
+    // ---- Standalone events (unchanged structure) ----
     RoutingDecision {
         /// "auto_router", "model_firewall", "routellm", "direct"
         routing_type: String,
@@ -538,6 +517,8 @@ pub struct MonitorEventFilter {
     pub status: Option<EventStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Response for paginated event list queries.

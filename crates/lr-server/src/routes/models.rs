@@ -198,6 +198,7 @@ pub async fn get_model<B>(
             super::monitor_helpers::emit_access_denied_for_client(
                 &state,
                 &auth_context.api_key_id,
+                None,
                 "model_not_found",
                 "/v1/models/{id}",
                 &format!("Model '{}' not found", model_id),
@@ -211,6 +212,7 @@ pub async fn get_model<B>(
         super::monitor_helpers::emit_access_denied_for_client(
             &state,
             &auth_context.api_key_id,
+            None,
             "model_not_allowed",
             "/v1/models/{id}",
             &format!("API key does not have access to model '{}'", model_id),
@@ -280,6 +282,7 @@ pub async fn get_model_pricing<B>(
         super::monitor_helpers::emit_access_denied_for_client(
             &state,
             &auth_context.api_key_id,
+            None,
             "model_not_allowed",
             "/v1/models/{provider}/{model}/pricing",
             &format!(

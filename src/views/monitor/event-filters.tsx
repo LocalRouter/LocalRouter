@@ -22,24 +22,14 @@ const typeGroups = [
 ]
 
 const typeGroupMap: Record<string, MonitorEventType[]> = {
-  llm: ['llm_request', 'llm_request_transformed', 'llm_response', 'llm_error'],
+  llm: ['llm_call'],
   mcp: [
-    'mcp_tool_call', 'mcp_tool_response',
-    'mcp_resource_read', 'mcp_resource_response',
-    'mcp_prompt_get', 'mcp_prompt_response',
-    'mcp_elicitation_request', 'mcp_elicitation_response',
-    'mcp_sampling_request', 'mcp_sampling_response',
-    'mcp_server_event',
+    'mcp_tool_call', 'mcp_resource_read', 'mcp_prompt_get',
+    'mcp_elicitation', 'mcp_sampling', 'mcp_server_event',
   ],
-  auth: [
-    'auth_error', 'access_denied', 'oauth_event',
-  ],
-  security: [
-    'guardrail_request', 'guardrail_response',
-    'guardrail_response_check_request', 'guardrail_response_check_response',
-    'secret_scan_request', 'secret_scan_response',
-  ],
-  routing: ['route_llm_request', 'route_llm_response', 'routing_decision'],
+  auth: ['auth_error', 'access_denied', 'oauth_event'],
+  security: ['guardrail_scan', 'guardrail_response_scan', 'secret_scan'],
+  routing: ['route_llm_classify', 'routing_decision'],
   errors: [
     'rate_limit_event', 'validation_error', 'internal_error',
     'moderation_event', 'connection_error',

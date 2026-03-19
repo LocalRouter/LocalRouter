@@ -3203,26 +3203,16 @@ export interface MemoryClientInfo {
 // =============================================================================
 
 export type MonitorEventType =
-  | 'llm_request' | 'llm_request_transformed' | 'llm_response' | 'llm_error'
-  | 'mcp_tool_call' | 'mcp_tool_response'
-  | 'mcp_resource_read' | 'mcp_resource_response'
-  | 'mcp_prompt_get' | 'mcp_prompt_response'
-  | 'mcp_elicitation_request' | 'mcp_elicitation_response'
-  | 'mcp_sampling_request' | 'mcp_sampling_response'
-  | 'guardrail_request' | 'guardrail_response'
-  | 'guardrail_response_check_request' | 'guardrail_response_check_response'
-  | 'secret_scan_request' | 'secret_scan_response'
-  | 'route_llm_request' | 'route_llm_response'
-  | 'routing_decision'
-  | 'auth_error' | 'access_denied'
-  | 'rate_limit_event'
-  | 'validation_error'
-  | 'mcp_server_event'
-  | 'oauth_event'
-  | 'internal_error'
-  | 'moderation_event'
-  | 'connection_error'
-  | 'prompt_compression' | 'firewall_decision' | 'sse_connection'
+  | 'llm_call'
+  | 'mcp_tool_call' | 'mcp_resource_read' | 'mcp_prompt_get'
+  | 'mcp_elicitation' | 'mcp_sampling'
+  | 'guardrail_scan' | 'guardrail_response_scan' | 'secret_scan'
+  | 'route_llm_classify'
+  | 'routing_decision' | 'auth_error' | 'access_denied'
+  | 'rate_limit_event' | 'validation_error' | 'mcp_server_event'
+  | 'oauth_event' | 'internal_error' | 'moderation_event'
+  | 'connection_error' | 'prompt_compression' | 'firewall_decision'
+  | 'sse_connection'
 
 export type EventStatus = 'pending' | 'complete' | 'error'
 
@@ -3232,6 +3222,7 @@ export interface MonitorEventSummary {
   sequence: number
   timestamp: string
   event_type: MonitorEventType
+  session_id: string | null
   client_id: string | null
   client_name: string | null
   status: EventStatus
@@ -3245,9 +3236,9 @@ export interface MonitorEvent {
   sequence: number
   timestamp: string
   event_type: MonitorEventType
+  session_id: string | null
   client_id: string | null
   client_name: string | null
-  request_id: string | null
   data: Record<string, unknown>
   status: EventStatus
   duration_ms: number | null
@@ -3269,6 +3260,7 @@ export interface MonitorStats {
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEventFilter */
 export interface MonitorEventFilter {
   event_types: MonitorEventType[] | null
+  session_id: string | null
   client_id: string | null
   status: EventStatus | null
   search: string | null

@@ -20,18 +20,24 @@ use crate::session::{McpViaLlmSession, PendingMixedExecution};
 
 /// Manages MCP via LLM sessions and orchestrates agentic tool execution
 /// Callback type for emitting monitor events from the orchestrator.
+/// Returns the assigned event ID.
 pub type MonitorEmitFn = Arc<
     dyn Fn(
             lr_monitor::MonitorEventType,
-            Option<String>,
-            Option<String>,
-            Option<String>,
+            Option<String>, // client_id
+            Option<String>, // client_name
+            Option<String>, // session_id
             lr_monitor::MonitorEventData,
             lr_monitor::EventStatus,
-            Option<u64>,
-        ) + Send
+            Option<u64>, // duration_ms
+        ) -> String
+        + Send
         + Sync,
 >;
+
+/// Callback type for updating an existing monitor event.
+pub type MonitorUpdateFn =
+    Arc<dyn Fn(&str, Box<dyn FnOnce(&mut lr_monitor::MonitorEvent) + Send>) + Send + Sync>;
 
 pub struct McpViaLlmManager {
     /// Sessions indexed by client_id
@@ -49,6 +55,8 @@ pub struct McpViaLlmManager {
     memory_service: RwLock<Option<Arc<lr_memory::MemoryService>>>,
     /// Optional monitor event callback
     pub(crate) monitor_emit: parking_lot::RwLock<Option<MonitorEmitFn>>,
+    /// Optional monitor update callback
+    pub(crate) monitor_update: parking_lot::RwLock<Option<MonitorUpdateFn>>,
 }
 
 impl McpViaLlmManager {
@@ -61,12 +69,18 @@ impl McpViaLlmManager {
             seen_client_tools: DashMap::new(),
             memory_service: RwLock::new(None),
             monitor_emit: parking_lot::RwLock::new(None),
+            monitor_update: parking_lot::RwLock::new(None),
         }
     }
 
     /// Set the monitor event callback.
     pub fn set_monitor_emit(&self, emit: MonitorEmitFn) {
         *self.monitor_emit.write() = Some(emit);
+    }
+
+    /// Set the monitor update callback.
+    pub fn set_monitor_update(&self, update: MonitorUpdateFn) {
+        *self.monitor_update.write() = Some(update);
     }
 
     /// Set the memory service for auto-capturing conversation transcripts.
@@ -232,6 +246,7 @@ impl McpViaLlmManager {
     ///
     /// If `guardrail_gate` is provided, the orchestrator will await it after the
     /// first LLM call returns but before executing any tools or returning a response.
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_request(
         &self,
         gateway: Arc<McpGateway>,
@@ -240,6 +255,7 @@ impl McpViaLlmManager {
         request: CompletionRequest,
         allowed_servers: Vec<String>,
         guardrail_gate: Option<GuardrailGate>,
+        llm_call_event_id: Option<String>,
     ) -> Result<lr_providers::CompletionResponse, McpViaLlmError> {
         let config = self.config();
         let session = self.get_or_create_session(&client.id);
@@ -309,48 +325,32 @@ impl McpViaLlmManager {
             return self.handle_orchestrator_result(&client.id, result);
         }
 
-        // Build monitor callback for transformed request event
+        // Build monitor callback for transformed request — updates the parent LlmCall event
         let on_transformed: orchestrator::TransformedRequestCallback = {
-            let emit = self.monitor_emit.read().clone();
-            let client_id = client.id.clone();
-            let client_name = client.name.clone();
-            let endpoint = "/v1/chat/completions".to_string();
-            let model = request.model.clone();
-            let stream = request.stream;
-            emit.map(
-                |emit_fn| -> Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send> {
-                    Box::new(
-                        move |request_body: serde_json::Value, transformations: Vec<String>| {
-                            let message_count = request_body
-                                .get("messages")
-                                .and_then(|m| m.as_array())
-                                .map(|a| a.len())
-                                .unwrap_or(0);
-                            let tools = request_body.get("tools").and_then(|t| t.as_array());
-                            let has_tools = tools.is_some_and(|t| !t.is_empty());
-                            let tool_count = tools.map(|t| t.len()).unwrap_or(0);
-                            emit_fn(
-                                lr_monitor::MonitorEventType::LlmRequestTransformed,
-                                Some(client_id),
-                                Some(client_name),
-                                None,
-                                lr_monitor::MonitorEventData::LlmRequestTransformed {
-                                    endpoint,
-                                    model,
-                                    stream,
-                                    message_count,
-                                    has_tools,
-                                    tool_count,
-                                    request_body,
-                                    transformations_applied: transformations,
-                                },
-                                lr_monitor::EventStatus::Complete,
-                                None,
-                            );
-                        },
-                    )
-                },
-            )
+            let update_fn = self.monitor_update.read().clone();
+            let event_id = llm_call_event_id.clone();
+            match (update_fn, event_id) {
+                (Some(update_fn), Some(event_id)) => Some(Box::new(
+                    move |request_body: serde_json::Value, transformations: Vec<String>| {
+                        update_fn(
+                            &event_id,
+                            Box::new(move |event| {
+                                if let lr_monitor::MonitorEventData::LlmCall {
+                                    transformed_body,
+                                    transformations_applied,
+                                    ..
+                                } = &mut event.data
+                                {
+                                    *transformed_body = Some(request_body);
+                                    *transformations_applied = Some(transformations);
+                                }
+                            }),
+                        );
+                    },
+                )
+                    as Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>),
+                _ => None,
+            }
         };
 
         // Normal flow: run the agentic loop
@@ -411,6 +411,7 @@ impl McpViaLlmManager {
     ///
     /// If `guardrail_gate` is provided, the orchestrator will await it after the
     /// first LLM stream completes but before executing any tools or sending the finish chunk.
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_streaming_request(
         &self,
         gateway: Arc<McpGateway>,
@@ -419,6 +420,7 @@ impl McpViaLlmManager {
         request: CompletionRequest,
         allowed_servers: Vec<String>,
         guardrail_gate: Option<GuardrailGate>,
+        llm_call_event_id: Option<String>,
     ) -> Result<
         std::pin::Pin<
             Box<
@@ -511,48 +513,32 @@ impl McpViaLlmManager {
             }
         }
 
-        // Build monitor callback for transformed request event (streaming)
+        // Build monitor callback for transformed request — updates the parent LlmCall event
         let on_transformed_stream: orchestrator::TransformedRequestCallback = {
-            let emit = self.monitor_emit.read().clone();
-            let client_id = client.id.clone();
-            let client_name = client.name.clone();
-            let endpoint = "/v1/chat/completions".to_string();
-            let model = request.model.clone();
-            let stream = request.stream;
-            emit.map(
-                |emit_fn| -> Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send> {
-                    Box::new(
-                        move |request_body: serde_json::Value, transformations: Vec<String>| {
-                            let message_count = request_body
-                                .get("messages")
-                                .and_then(|m| m.as_array())
-                                .map(|a| a.len())
-                                .unwrap_or(0);
-                            let tools = request_body.get("tools").and_then(|t| t.as_array());
-                            let has_tools = tools.is_some_and(|t| !t.is_empty());
-                            let tool_count = tools.map(|t| t.len()).unwrap_or(0);
-                            emit_fn(
-                                lr_monitor::MonitorEventType::LlmRequestTransformed,
-                                Some(client_id),
-                                Some(client_name),
-                                None,
-                                lr_monitor::MonitorEventData::LlmRequestTransformed {
-                                    endpoint,
-                                    model,
-                                    stream,
-                                    message_count,
-                                    has_tools,
-                                    tool_count,
-                                    request_body,
-                                    transformations_applied: transformations,
-                                },
-                                lr_monitor::EventStatus::Complete,
-                                None,
-                            );
-                        },
-                    )
-                },
-            )
+            let update_fn = self.monitor_update.read().clone();
+            let event_id = llm_call_event_id.clone();
+            match (update_fn, event_id) {
+                (Some(update_fn), Some(event_id)) => Some(Box::new(
+                    move |request_body: serde_json::Value, transformations: Vec<String>| {
+                        update_fn(
+                            &event_id,
+                            Box::new(move |event| {
+                                if let lr_monitor::MonitorEventData::LlmCall {
+                                    transformed_body,
+                                    transformations_applied,
+                                    ..
+                                } = &mut event.data
+                                {
+                                    *transformed_body = Some(request_body);
+                                    *transformations_applied = Some(transformations);
+                                }
+                            }),
+                        );
+                    },
+                )
+                    as Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>),
+                _ => None,
+            }
         };
 
         orchestrator_stream::run_agentic_loop_streaming(

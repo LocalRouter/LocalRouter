@@ -1,158 +1,225 @@
-use crate::types::{MonitorEvent, MonitorEventData, MonitorEventSummary};
+use crate::types::{EventStatus, MonitorEvent, MonitorEventData, MonitorEventSummary};
 
 /// Generate a one-line summary string from event data for list display.
+/// For combined events, the summary changes based on status (pending vs complete/error).
 pub fn generate_summary(event: &MonitorEvent) -> String {
     match &event.data {
-        // LLM
-        MonitorEventData::LlmRequest {
+        // LLM Call (combined)
+        MonitorEventData::LlmCall {
             endpoint,
             model,
             message_count,
             stream,
-            ..
-        } => {
-            let stream_label = if *stream { " (stream)" } else { "" };
-            format!(
-                "{} → {} ({} msgs{})",
-                endpoint, model, message_count, stream_label
-            )
-        }
-        MonitorEventData::LlmRequestTransformed {
-            model,
-            message_count,
-            tool_count,
-            transformations_applied,
-            ..
-        } => {
-            let transforms = transformations_applied.join(", ");
-            format!(
-                "{} ({} msgs, {} tools) [{}]",
-                model, message_count, tool_count, transforms
-            )
-        }
-        MonitorEventData::LlmResponse {
             provider,
-            model,
             total_tokens,
-            ..
-        } => {
-            format!("{}/{} — {} tokens", provider, model, total_tokens)
-        }
-        MonitorEventData::LlmError {
-            provider,
-            model,
             status_code,
+            error,
             ..
-        } => {
-            format!("{}/{} — HTTP {}", provider, model, status_code)
-        }
+        } => match event.status {
+            EventStatus::Pending => {
+                let stream_label = if *stream { " (stream)" } else { "" };
+                format!(
+                    "{} → {} ({} msgs{})",
+                    endpoint, model, message_count, stream_label
+                )
+            }
+            EventStatus::Complete => {
+                let prov = provider.as_deref().unwrap_or("?");
+                let tokens = total_tokens.unwrap_or(0);
+                format!("{}/{} — {} tokens", prov, model, tokens)
+            }
+            EventStatus::Error => {
+                let prov = provider.as_deref().unwrap_or("?");
+                let code = status_code.unwrap_or(0);
+                let err = error.as_deref().unwrap_or("unknown error");
+                format!("{}/{} — HTTP {} {}", prov, model, code, truncate(err, 40))
+            }
+        },
 
-        // MCP
-        MonitorEventData::McpToolCall { tool_name, .. } => {
-            format!("tools/call → {}", tool_name)
-        }
-        MonitorEventData::McpToolResponse {
-            tool_name, success, ..
-        } => {
-            let status = if *success { "OK" } else { "Error" };
-            format!("tools/call ← {} ({})", tool_name, status)
-        }
-        MonitorEventData::McpResourceRead { uri, .. } => {
-            format!("resources/read → {}", truncate(uri, 60))
-        }
-        MonitorEventData::McpResourceResponse { uri, success, .. } => {
-            let status = if *success { "OK" } else { "Error" };
-            format!("resources/read ← {} ({})", truncate(uri, 50), status)
-        }
-        MonitorEventData::McpPromptGet { prompt_name, .. } => {
-            format!("prompts/get → {}", prompt_name)
-        }
-        MonitorEventData::McpPromptResponse {
+        // MCP Tool Call
+        MonitorEventData::McpToolCall {
+            tool_name,
+            success,
+            error,
+            ..
+        } => match event.status {
+            EventStatus::Pending => {
+                format!("tools/call → {}", tool_name)
+            }
+            EventStatus::Complete => {
+                let status = if success.unwrap_or(true) {
+                    "OK"
+                } else {
+                    "Error"
+                };
+                format!("tools/call {} ({})", tool_name, status)
+            }
+            EventStatus::Error => {
+                let err = error.as_deref().unwrap_or("failed");
+                format!("tools/call {} — {}", tool_name, truncate(err, 40))
+            }
+        },
+
+        // MCP Resource Read
+        MonitorEventData::McpResourceRead {
+            uri,
+            success,
+            error,
+            ..
+        } => match event.status {
+            EventStatus::Pending => {
+                format!("resources/read → {}", truncate(uri, 60))
+            }
+            EventStatus::Complete => {
+                let status = if success.unwrap_or(true) {
+                    "OK"
+                } else {
+                    "Error"
+                };
+                format!("resources/read {} ({})", truncate(uri, 50), status)
+            }
+            EventStatus::Error => {
+                let err = error.as_deref().unwrap_or("failed");
+                format!(
+                    "resources/read {} — {}",
+                    truncate(uri, 40),
+                    truncate(err, 30)
+                )
+            }
+        },
+
+        // MCP Prompt Get
+        MonitorEventData::McpPromptGet {
             prompt_name,
             success,
+            error,
             ..
-        } => {
-            let status = if *success { "OK" } else { "Error" };
-            format!("prompts/get ← {} ({})", prompt_name, status)
-        }
-        MonitorEventData::McpElicitationRequest { message, .. } => {
-            format!("elicitation → {}", truncate(message, 60))
-        }
-        MonitorEventData::McpElicitationResponse { action, .. } => {
-            format!("elicitation ← {}", action)
-        }
-        MonitorEventData::McpSamplingRequest {
+        } => match event.status {
+            EventStatus::Pending => {
+                format!("prompts/get → {}", prompt_name)
+            }
+            EventStatus::Complete => {
+                let status = if success.unwrap_or(true) {
+                    "OK"
+                } else {
+                    "Error"
+                };
+                format!("prompts/get {} ({})", prompt_name, status)
+            }
+            EventStatus::Error => {
+                let err = error.as_deref().unwrap_or("failed");
+                format!("prompts/get {} — {}", prompt_name, truncate(err, 40))
+            }
+        },
+
+        // MCP Elicitation
+        MonitorEventData::McpElicitation {
+            message, action, ..
+        } => match event.status {
+            EventStatus::Pending => {
+                format!("elicitation → {}", truncate(message, 60))
+            }
+            _ => {
+                let act = action.as_deref().unwrap_or("?");
+                format!("elicitation ← {}", act)
+            }
+        },
+
+        // MCP Sampling
+        MonitorEventData::McpSampling {
             message_count,
             model_hint,
+            action,
             ..
-        } => {
-            let model = model_hint.as_deref().unwrap_or("any");
-            format!("sampling → {} msgs ({})", message_count, model)
-        }
-        MonitorEventData::McpSamplingResponse { action, .. } => {
-            format!("sampling ← {}", action)
-        }
+        } => match event.status {
+            EventStatus::Pending => {
+                let model = model_hint.as_deref().unwrap_or("any");
+                format!("sampling → {} msgs ({})", message_count, model)
+            }
+            _ => {
+                let act = action.as_deref().unwrap_or("?");
+                format!("sampling ← {}", act)
+            }
+        },
 
-        // Security
-        MonitorEventData::GuardrailRequest { direction, .. } => {
-            format!("guardrail scan ({})", direction)
-        }
-        MonitorEventData::GuardrailResponse {
+        // Guardrail Scan (input)
+        MonitorEventData::GuardrailScan {
+            direction,
             result,
             flagged_categories,
             ..
-        } => {
-            if flagged_categories.is_empty() {
-                format!("guardrail: {}", result)
-            } else {
-                let cats: Vec<&str> = flagged_categories
-                    .iter()
-                    .map(|c| c.category.as_str())
-                    .collect();
-                format!("guardrail: {} [{}]", result, cats.join(", "))
+        } => match event.status {
+            EventStatus::Pending => {
+                format!("guardrail scan ({})", direction)
             }
-        }
-        MonitorEventData::GuardrailResponseCheckRequest { direction, .. } => {
-            format!("response guardrail scan ({})", direction)
-        }
-        MonitorEventData::GuardrailResponseCheckResponse {
+            _ => {
+                let res = result.as_deref().unwrap_or("?");
+                if let Some(cats) = flagged_categories {
+                    if !cats.is_empty() {
+                        let cat_names: Vec<&str> =
+                            cats.iter().map(|c| c.category.as_str()).collect();
+                        return format!("guardrail: {} [{}]", res, cat_names.join(", "));
+                    }
+                }
+                format!("guardrail: {}", res)
+            }
+        },
+
+        // Guardrail Response Scan (output)
+        MonitorEventData::GuardrailResponseScan {
+            direction,
             result,
             flagged_categories,
             ..
-        } => {
-            if flagged_categories.is_empty() {
-                format!("response guardrail: {}", result)
-            } else {
-                let cats: Vec<&str> = flagged_categories
-                    .iter()
-                    .map(|c| c.category.as_str())
-                    .collect();
-                format!("response guardrail: {} [{}]", result, cats.join(", "))
+        } => match event.status {
+            EventStatus::Pending => {
+                format!("response guardrail scan ({})", direction)
             }
-        }
-        MonitorEventData::SecretScanRequest { .. } => "secret scan check".to_string(),
-        MonitorEventData::SecretScanResponse {
+            _ => {
+                let res = result.as_deref().unwrap_or("?");
+                if let Some(cats) = flagged_categories {
+                    if !cats.is_empty() {
+                        let cat_names: Vec<&str> =
+                            cats.iter().map(|c| c.category.as_str()).collect();
+                        return format!("response guardrail: {} [{}]", res, cat_names.join(", "));
+                    }
+                }
+                format!("response guardrail: {}", res)
+            }
+        },
+
+        // Secret Scan
+        MonitorEventData::SecretScan {
             findings_count,
             action_taken,
             ..
-        } => {
-            format!(
-                "secret scan: {} findings ({})",
-                findings_count, action_taken
-            )
-        }
+        } => match event.status {
+            EventStatus::Pending => "secret scan check".to_string(),
+            _ => {
+                let count = findings_count.unwrap_or(0);
+                let action = action_taken.as_deref().unwrap_or("?");
+                format!("secret scan: {} findings ({})", count, action)
+            }
+        },
 
-        // Routing
-        MonitorEventData::RouteLlmRequest { original_model, .. } => {
-            format!("classify: {}", original_model)
-        }
-        MonitorEventData::RouteLlmResponse {
+        // RouteLLM Classify
+        MonitorEventData::RouteLlmClassify {
+            original_model,
             selected_tier,
             win_rate,
             ..
-        } => {
-            format!("classified: {} (win_rate={:.2})", selected_tier, win_rate)
-        }
+        } => match event.status {
+            EventStatus::Pending => {
+                format!("classify: {}", original_model)
+            }
+            _ => {
+                let tier = selected_tier.as_deref().unwrap_or("?");
+                let rate = win_rate.unwrap_or(0.0);
+                format!("classified: {} (win_rate={:.2})", tier, rate)
+            }
+        },
+
+        // ---- Standalone events (unchanged) ----
         MonitorEventData::RoutingDecision {
             routing_type,
             original_model,
@@ -166,7 +233,6 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             }
         }
 
-        // Auth & Access Control
         MonitorEventData::AuthError {
             error_type,
             endpoint,
@@ -184,7 +250,6 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             format!("HTTP {} {} — {}", status_code, endpoint, reason)
         }
 
-        // Rate Limiting
         MonitorEventData::RateLimitEvent {
             reason,
             status_code,
@@ -193,7 +258,6 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             format!("HTTP {} — {}", status_code, reason)
         }
 
-        // Validation
         MonitorEventData::ValidationError {
             endpoint,
             field,
@@ -207,7 +271,6 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             }
         }
 
-        // MCP Server Health
         MonitorEventData::McpServerEvent {
             server_id,
             action,
@@ -217,7 +280,6 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             format!("{}: {} — {}", server_id, action, truncate(message, 50))
         }
 
-        // OAuth
         MonitorEventData::OAuthEvent {
             action,
             client_id_hint,
@@ -231,7 +293,6 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             }
         }
 
-        // Internal
         MonitorEventData::InternalError {
             error_type,
             status_code,
@@ -245,7 +306,6 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             )
         }
 
-        // Moderation
         MonitorEventData::ModerationEvent {
             reason,
             status_code,
@@ -254,7 +314,6 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             format!("HTTP {} — {}", status_code, reason)
         }
 
-        // Connection
         MonitorEventData::ConnectionError {
             transport,
             action,
@@ -263,7 +322,6 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             format!("{} {} — {}", transport, action, truncate(message, 50))
         }
 
-        // Other
         MonitorEventData::PromptCompression {
             reduction_percent, ..
         } => {
@@ -295,6 +353,7 @@ pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
         status: event.status,
         duration_ms: event.duration_ms,
         summary: generate_summary(event),
+        session_id: event.session_id.clone(),
     }
 }
 

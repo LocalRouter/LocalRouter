@@ -45,7 +45,7 @@ impl MonitorEventStore {
         event_type: MonitorEventType,
         client_id: Option<String>,
         client_name: Option<String>,
-        request_id: Option<String>,
+        session_id: Option<String>,
         data: MonitorEventData,
         status: EventStatus,
         duration_ms: Option<u64>,
@@ -60,7 +60,7 @@ impl MonitorEventStore {
             event_type,
             client_id,
             client_name,
-            request_id,
+            session_id,
             data,
             status,
             duration_ms,
@@ -87,7 +87,7 @@ impl MonitorEventStore {
         id
     }
 
-    /// Update an existing event (e.g., streaming response completion).
+    /// Update an existing event (e.g., combined event completion).
     /// Returns true if the event was found and updated.
     pub fn update<F>(&self, id: &str, updater: F) -> bool
     where
@@ -201,6 +201,12 @@ fn match_filter(event: &MonitorEvent, filter: Option<&MonitorEventFilter>) -> bo
         }
     }
 
+    if let Some(session_id) = &filter.session_id {
+        if event.session_id.as_deref() != Some(session_id.as_str()) {
+            return false;
+        }
+    }
+
     if let Some(search) = &filter.search {
         if !search.is_empty() {
             let summary = crate::summary::generate_summary(event);
@@ -222,13 +228,13 @@ mod tests {
         MonitorEventStore::new(cap)
     }
 
-    fn push_llm_request(store: &MonitorEventStore, model: &str) -> String {
+    fn push_llm_call(store: &MonitorEventStore, model: &str) -> String {
         store.push(
-            MonitorEventType::LlmRequest,
+            MonitorEventType::LlmCall,
             Some("client-1".to_string()),
             Some("Test Client".to_string()),
-            Some(format!("req-{}", Uuid::new_v4())),
-            MonitorEventData::LlmRequest {
+            Some(format!("sess-{}", Uuid::new_v4())),
+            MonitorEventData::LlmCall {
                 endpoint: "/v1/chat/completions".to_string(),
                 model: model.to_string(),
                 stream: false,
@@ -236,30 +242,43 @@ mod tests {
                 has_tools: false,
                 tool_count: 0,
                 request_body: serde_json::json!({"model": model}),
+                transformed_body: None,
+                transformations_applied: None,
+                provider: None,
+                status_code: None,
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                cost_usd: None,
+                latency_ms: None,
+                finish_reason: None,
+                content_preview: None,
+                streamed: None,
+                error: None,
             },
-            EventStatus::Complete,
-            Some(100),
+            EventStatus::Pending,
+            None,
         )
     }
 
     #[test]
     fn test_push_and_get() {
         let store = make_store(100);
-        let id = push_llm_request(&store, "gpt-4");
+        let id = push_llm_call(&store, "gpt-4");
         let event = store.get(&id).unwrap();
         assert_eq!(event.id, id);
-        assert_eq!(event.event_type, MonitorEventType::LlmRequest);
+        assert_eq!(event.event_type, MonitorEventType::LlmCall);
     }
 
     #[test]
     fn test_fifo_eviction() {
         let store = make_store(3);
-        let id1 = push_llm_request(&store, "model-1");
-        let _id2 = push_llm_request(&store, "model-2");
-        let _id3 = push_llm_request(&store, "model-3");
+        let id1 = push_llm_call(&store, "model-1");
+        let _id2 = push_llm_call(&store, "model-2");
+        let _id3 = push_llm_call(&store, "model-3");
 
         // Store is at capacity, push one more
-        let _id4 = push_llm_request(&store, "model-4");
+        let _id4 = push_llm_call(&store, "model-4");
 
         // First event should be evicted
         assert!(store.get(&id1).is_none());
@@ -269,9 +288,9 @@ mod tests {
     #[test]
     fn test_list_newest_first() {
         let store = make_store(100);
-        push_llm_request(&store, "model-a");
-        push_llm_request(&store, "model-b");
-        push_llm_request(&store, "model-c");
+        push_llm_call(&store, "model-a");
+        push_llm_call(&store, "model-b");
+        push_llm_call(&store, "model-c");
 
         let result = store.list(0, 10, None);
         assert_eq!(result.total, 3);
@@ -285,7 +304,7 @@ mod tests {
     fn test_list_pagination() {
         let store = make_store(100);
         for i in 0..10 {
-            push_llm_request(&store, &format!("model-{}", i));
+            push_llm_call(&store, &format!("model-{}", i));
         }
 
         let page1 = store.list(0, 3, None);
@@ -301,7 +320,7 @@ mod tests {
     #[test]
     fn test_filter_by_type() {
         let store = make_store(100);
-        push_llm_request(&store, "gpt-4");
+        push_llm_call(&store, "gpt-4");
         store.push(
             MonitorEventType::McpToolCall,
             Some("client-1".to_string()),
@@ -313,9 +332,13 @@ mod tests {
                 server_name: None,
                 arguments: serde_json::json!({}),
                 firewall_action: None,
+                latency_ms: None,
+                success: None,
+                response_preview: None,
+                error: None,
             },
-            EventStatus::Complete,
-            Some(50),
+            EventStatus::Pending,
+            None,
         );
 
         let filter = MonitorEventFilter {
@@ -328,43 +351,34 @@ mod tests {
     }
 
     #[test]
-    fn test_update() {
+    fn test_update_llm_call_completion() {
         let store = make_store(100);
-        let id = store.push(
-            MonitorEventType::LlmResponse,
-            Some("client-1".to_string()),
-            None,
-            Some("req-1".to_string()),
-            MonitorEventData::LlmResponse {
-                provider: "openai".to_string(),
-                model: "gpt-4".to_string(),
-                status_code: 200,
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
-                cost_usd: None,
-                latency_ms: 0,
-                finish_reason: None,
-                content_preview: String::new(),
-                streamed: true,
-            },
-            EventStatus::Pending,
-            None,
-        );
+        let id = push_llm_call(&store, "gpt-4");
 
+        // Verify initial state
+        let event = store.get(&id).unwrap();
+        assert_eq!(event.status, EventStatus::Pending);
+
+        // Complete the event with response data
         let updated = store.update(&id, |e| {
             e.status = EventStatus::Complete;
             e.duration_ms = Some(1500);
-            if let MonitorEventData::LlmResponse {
+            if let MonitorEventData::LlmCall {
+                provider,
+                status_code,
                 output_tokens,
                 total_tokens,
                 content_preview,
+                streamed,
                 ..
             } = &mut e.data
             {
-                *output_tokens = 150;
-                *total_tokens = 200;
-                *content_preview = "Hello, how can I help?".to_string();
+                *provider = Some("openai".to_string());
+                *status_code = Some(200);
+                *output_tokens = Some(150);
+                *total_tokens = Some(200);
+                *content_preview = Some("Hello, how can I help?".to_string());
+                *streamed = Some(false);
             }
         });
         assert!(updated);
@@ -375,10 +389,73 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_by_session() {
+        let store = make_store(100);
+        let session = "sess-abc".to_string();
+
+        // Push events in the same session
+        store.push(
+            MonitorEventType::LlmCall,
+            Some("client-1".to_string()),
+            None,
+            Some(session.clone()),
+            MonitorEventData::LlmCall {
+                endpoint: "/v1/chat/completions".to_string(),
+                model: "gpt-4".to_string(),
+                stream: false,
+                message_count: 1,
+                has_tools: false,
+                tool_count: 0,
+                request_body: serde_json::json!({}),
+                transformed_body: None,
+                transformations_applied: None,
+                provider: None,
+                status_code: None,
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                cost_usd: None,
+                latency_ms: None,
+                finish_reason: None,
+                content_preview: None,
+                streamed: None,
+                error: None,
+            },
+            EventStatus::Pending,
+            None,
+        );
+        store.push(
+            MonitorEventType::SecretScan,
+            Some("client-1".to_string()),
+            None,
+            Some(session.clone()),
+            MonitorEventData::SecretScan {
+                text_preview: "test".to_string(),
+                rules_count: 5,
+                findings_count: None,
+                findings: None,
+                action_taken: None,
+                latency_ms: None,
+            },
+            EventStatus::Pending,
+            None,
+        );
+        // Different session
+        push_llm_call(&store, "other-model");
+
+        let filter = MonitorEventFilter {
+            session_id: Some(session),
+            ..Default::default()
+        };
+        let result = store.list(0, 10, Some(&filter));
+        assert_eq!(result.total, 2);
+    }
+
+    #[test]
     fn test_clear() {
         let store = make_store(100);
-        push_llm_request(&store, "gpt-4");
-        push_llm_request(&store, "gpt-3.5");
+        push_llm_call(&store, "gpt-4");
+        push_llm_call(&store, "gpt-3.5");
         store.clear();
         assert_eq!(store.stats().total_events, 0);
     }
@@ -387,7 +464,7 @@ mod tests {
     fn test_set_max_capacity_shrink() {
         let store = make_store(10);
         for i in 0..10 {
-            push_llm_request(&store, &format!("model-{}", i));
+            push_llm_call(&store, &format!("model-{}", i));
         }
         assert_eq!(store.stats().total_events, 10);
 
@@ -399,8 +476,8 @@ mod tests {
     #[test]
     fn test_stats_by_type() {
         let store = make_store(100);
-        push_llm_request(&store, "gpt-4");
-        push_llm_request(&store, "gpt-4");
+        push_llm_call(&store, "gpt-4");
+        push_llm_call(&store, "gpt-4");
         store.push(
             MonitorEventType::McpToolCall,
             None,
@@ -412,15 +489,19 @@ mod tests {
                 server_name: None,
                 arguments: serde_json::json!({}),
                 firewall_action: None,
+                latency_ms: None,
+                success: None,
+                response_preview: None,
+                error: None,
             },
-            EventStatus::Complete,
+            EventStatus::Pending,
             None,
         );
 
         let stats = store.stats();
         assert_eq!(stats.total_events, 3);
         assert_eq!(
-            stats.events_by_type.get(&MonitorEventType::LlmRequest),
+            stats.events_by_type.get(&MonitorEventType::LlmCall),
             Some(&2)
         );
         assert_eq!(

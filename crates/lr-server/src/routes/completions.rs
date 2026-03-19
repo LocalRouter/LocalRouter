@@ -60,11 +60,15 @@ pub async fn completions(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "completion");
 
+    // Generate session ID for correlated monitor events
+    let session_id = uuid::Uuid::new_v4().to_string();
+
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+    let llm_event_id = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
+        Some(&session_id),
         "/v1/completions",
         &request.model,
         request.stream,
@@ -85,6 +89,7 @@ pub async fn completions(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/completions",
             e.error.error.param.as_deref(),
             &e.error.error.message,
@@ -114,6 +119,7 @@ pub async fn completions(
         super::monitor_helpers::emit_rate_limit_event(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "rate_limit_exceeded",
             "/v1/completions",
             &e.error.error.message,
@@ -196,6 +202,7 @@ pub async fn completions(
                 request,
                 provider_request,
                 guardrail_handle,
+                llm_event_id,
             )
             .await
         } else {
@@ -206,6 +213,7 @@ pub async fn completions(
                 request,
                 provider_request,
                 guardrail_handle,
+                llm_event_id,
             )
             .await
         }
@@ -226,9 +234,25 @@ pub async fn completions(
         }
 
         if request.stream {
-            handle_streaming(state, auth, client_auth, request, provider_request).await
+            handle_streaming(
+                state,
+                auth,
+                client_auth,
+                request,
+                provider_request,
+                llm_event_id,
+            )
+            .await
         } else {
-            handle_non_streaming(state, auth, client_auth, request, provider_request).await
+            handle_non_streaming(
+                state,
+                auth,
+                client_auth,
+                request,
+                provider_request,
+                llm_event_id,
+            )
+            .await
         }
     }
 }
@@ -715,6 +739,7 @@ async fn handle_non_streaming_parallel(
     request: CompletionRequest,
     provider_request: ProviderCompletionRequest,
     guardrail_handle: GuardrailHandle,
+    llm_event_id: String,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
     let started_at = Instant::now();
@@ -774,10 +799,9 @@ async fn handle_non_streaming_parallel(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::emit_llm_error(
+            super::monitor_helpers::complete_llm_call_error(
                 &state,
-                client_auth.as_ref(),
-                Some(&generation_id),
+                &llm_event_id,
                 "unknown",
                 &request.model,
                 502,
@@ -796,6 +820,7 @@ async fn handle_non_streaming_parallel(
         generation_id,
         started_at,
         created_at,
+        llm_event_id,
     )
     .await
 }
@@ -806,6 +831,7 @@ async fn handle_non_streaming(
     _client_auth: Option<Extension<ClientAuthContext>>,
     request: CompletionRequest,
     provider_request: ProviderCompletionRequest,
+    llm_event_id: String,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
     let started_at = Instant::now();
@@ -847,10 +873,9 @@ async fn handle_non_streaming(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::emit_llm_error(
+            super::monitor_helpers::complete_llm_call_error(
                 &state,
-                _client_auth.as_ref(),
-                Some(&generation_id),
+                &llm_event_id,
                 "unknown",
                 &request.model,
                 502,
@@ -873,6 +898,7 @@ async fn handle_non_streaming(
         generation_id,
         started_at,
         created_at,
+        llm_event_id,
     )
     .await
 }
@@ -888,6 +914,7 @@ async fn build_non_streaming_response(
     generation_id: String,
     started_at: Instant,
     created_at: chrono::DateTime<Utc>,
+    llm_event_id: String,
 ) -> ApiResult<Response> {
     let completed_at = Instant::now();
 
@@ -959,10 +986,9 @@ async fn build_non_streaming_response(
             .choices
             .first()
             .and_then(|c| c.finish_reason.as_deref());
-        super::monitor_helpers::emit_llm_response(
+        super::monitor_helpers::complete_llm_call(
             &state,
-            _client_auth.as_ref(),
-            &generation_id,
+            &llm_event_id,
             &response.provider,
             &response.model,
             200,
@@ -1115,6 +1141,7 @@ async fn validate_client_provider_access(
         super::monitor_helpers::emit_access_denied_for_client(
             state,
             &client.id,
+            None,
             "model_not_allowed",
             "/v1/completions",
             &format!(
@@ -1149,6 +1176,7 @@ async fn handle_streaming(
     _client_auth: Option<Extension<ClientAuthContext>>,
     request: CompletionRequest,
     provider_request: ProviderCompletionRequest,
+    llm_event_id: String,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
     let created_at = Utc::now();
@@ -1193,10 +1221,9 @@ async fn handle_streaming(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::emit_llm_error(
+            super::monitor_helpers::complete_llm_call_error(
                 &state,
-                _client_auth.as_ref(),
-                Some(&generation_id),
+                &llm_event_id,
                 "unknown",
                 &model,
                 502,
@@ -1209,14 +1236,6 @@ async fn handle_streaming(
             )));
         }
     };
-
-    // Emit pending monitor event for streaming response
-    let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
-        &state,
-        _client_auth.as_ref(),
-        &generation_id,
-        &model,
-    );
 
     // Convert provider stream to SSE stream
     let created_timestamp = created_at.timestamp();
@@ -1405,17 +1424,19 @@ async fn handle_streaming(
         );
 
         // Complete the pending monitor event with final streaming data
-        super::monitor_helpers::complete_llm_response(
+        super::monitor_helpers::complete_llm_call(
             &state_clone,
-            &monitor_event_id,
+            &llm_event_id,
             &provider,
             &model_clone,
+            200,
             prompt_tokens as u64,
             completion_tokens as u64,
             Some(cost),
             latency_ms,
             Some(&finish_reason_final),
             &completion_content,
+            true,
         );
 
         let generation_details = GenerationDetails {
@@ -1465,6 +1486,7 @@ async fn handle_streaming_parallel(
     request: CompletionRequest,
     provider_request: ProviderCompletionRequest,
     guardrail_handle: GuardrailHandle,
+    llm_event_id: String,
 ) -> ApiResult<Response> {
     use tokio::sync::{mpsc, watch};
     use tokio_stream::wrappers::ReceiverStream;
@@ -1507,10 +1529,9 @@ async fn handle_streaming_parallel(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::emit_llm_error(
+            super::monitor_helpers::complete_llm_call_error(
                 &state,
-                client_auth.as_ref(),
-                Some(&generation_id),
+                &llm_event_id,
                 "unknown",
                 &model,
                 502,
@@ -1523,14 +1544,6 @@ async fn handle_streaming_parallel(
             )));
         }
     };
-
-    // Emit pending monitor event for streaming response
-    let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
-        &state,
-        client_auth.as_ref(),
-        &generation_id,
-        &model,
-    );
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum GuardrailGate {
@@ -1828,17 +1841,19 @@ async fn handle_streaming_parallel(
             );
 
             // Complete the pending monitor event with final streaming data
-            super::monitor_helpers::complete_llm_response(
+            super::monitor_helpers::complete_llm_call(
                 &state_clone,
-                &monitor_event_id,
+                &llm_event_id,
                 &provider,
                 &model_clone,
+                200,
                 prompt_tokens as u64,
                 completion_tokens as u64,
                 Some(cost),
                 latency_ms,
                 Some(&finish_reason_val),
                 &content_accumulator,
+                true,
             );
 
             let generation_details = GenerationDetails {

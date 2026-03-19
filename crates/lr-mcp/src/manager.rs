@@ -25,18 +25,24 @@ use std::sync::Arc;
 pub type NotificationCallback = Arc<dyn Fn(String, JsonRpcNotification) + Send + Sync>;
 
 /// Callback type for emitting monitor events from the MCP server manager.
+/// Returns the assigned event ID.
 pub type MonitorEmitFn = Arc<
     dyn Fn(
             lr_monitor::MonitorEventType,
-            Option<String>,
-            Option<String>,
-            Option<String>,
+            Option<String>, // client_id
+            Option<String>, // client_name
+            Option<String>, // session_id
             lr_monitor::MonitorEventData,
             lr_monitor::EventStatus,
-            Option<u64>,
-        ) + Send
+            Option<u64>, // duration_ms
+        ) -> String
+        + Send
         + Sync,
 >;
+
+/// Callback type for updating an existing monitor event.
+pub type MonitorUpdateFn =
+    Arc<dyn Fn(&str, Box<dyn FnOnce(&mut lr_monitor::MonitorEvent) + Send>) + Send + Sync>;
 
 /// Cached shell environment for spawning subprocess commands.
 ///
@@ -241,28 +247,30 @@ impl McpServerManager {
         *self.monitor_emit.write() = Some(emit);
     }
 
-    /// Emit a monitor event if the callback is set.
+    /// Emit a monitor event if the callback is set. Returns the event ID.
     #[allow(clippy::too_many_arguments)]
     fn emit_monitor_event(
         &self,
         event_type: lr_monitor::MonitorEventType,
         client_id: Option<String>,
         client_name: Option<String>,
-        request_id: Option<String>,
+        session_id: Option<String>,
         data: lr_monitor::MonitorEventData,
         status: lr_monitor::EventStatus,
         duration_ms: Option<u64>,
-    ) {
+    ) -> String {
         if let Some(cb) = self.monitor_emit.read().as_ref() {
             cb(
                 event_type,
                 client_id,
                 client_name,
-                request_id,
+                session_id,
                 data,
                 status,
                 duration_ms,
-            );
+            )
+        } else {
+            String::new()
         }
     }
 

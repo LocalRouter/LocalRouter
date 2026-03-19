@@ -46,6 +46,7 @@ pub async fn audio_transcriptions(
     mut multipart: axum::extract::Multipart,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
+    let session_id = uuid::Uuid::new_v4().to_string();
 
     // Emit monitor event for traffic inspection (model not yet known from multipart)
     // Will be emitted after multipart parsing below
@@ -72,6 +73,7 @@ pub async fn audio_transcriptions(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/transcriptions",
             None,
             &msg,
@@ -92,6 +94,7 @@ pub async fn audio_transcriptions(
                             super::monitor_helpers::emit_validation_error(
                                 &state,
                                 client_auth.as_ref(),
+                                Some(&session_id),
                                 "/v1/audio/transcriptions",
                                 Some("file"),
                                 &msg,
@@ -108,6 +111,7 @@ pub async fn audio_transcriptions(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/transcriptions",
                         Some("model"),
                         &msg,
@@ -122,6 +126,7 @@ pub async fn audio_transcriptions(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/transcriptions",
                         Some("language"),
                         &msg,
@@ -136,6 +141,7 @@ pub async fn audio_transcriptions(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/transcriptions",
                         Some("prompt"),
                         &msg,
@@ -150,6 +156,7 @@ pub async fn audio_transcriptions(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/transcriptions",
                         Some("response_format"),
                         &msg,
@@ -164,6 +171,7 @@ pub async fn audio_transcriptions(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/transcriptions",
                         Some("temperature"),
                         &msg,
@@ -175,6 +183,7 @@ pub async fn audio_transcriptions(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/transcriptions",
                         Some("temperature"),
                         "temperature must be a number",
@@ -190,6 +199,7 @@ pub async fn audio_transcriptions(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/transcriptions",
                         Some("timestamp_granularities"),
                         &msg,
@@ -209,6 +219,7 @@ pub async fn audio_transcriptions(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/transcriptions",
             Some("file"),
             "file is required",
@@ -220,6 +231,7 @@ pub async fn audio_transcriptions(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/transcriptions",
             Some("model"),
             "model is required",
@@ -232,6 +244,7 @@ pub async fn audio_transcriptions(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/transcriptions",
             Some("file"),
             "file cannot be empty",
@@ -244,6 +257,7 @@ pub async fn audio_transcriptions(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/transcriptions",
             Some("model"),
             "model cannot be empty",
@@ -258,6 +272,7 @@ pub async fn audio_transcriptions(
             super::monitor_helpers::emit_validation_error(
                 &state,
                 client_auth.as_ref(),
+                Some(&session_id),
                 "/v1/audio/transcriptions",
                 Some("temperature"),
                 "temperature must be between 0 and 1",
@@ -282,6 +297,7 @@ pub async fn audio_transcriptions(
             super::monitor_helpers::emit_validation_error(
                 &state,
                 client_auth.as_ref(),
+                Some(&session_id),
                 "/v1/audio/transcriptions",
                 Some("response_format"),
                 &msg,
@@ -296,9 +312,10 @@ pub async fn audio_transcriptions(
 
     // Emit monitor event for traffic inspection
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/transcriptions"});
-    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+    let llm_event_id = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
+        Some(&session_id),
         "/v1/audio/transcriptions",
         &model,
         false,
@@ -352,10 +369,9 @@ pub async fn audio_transcriptions(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::emit_llm_error(
+            super::monitor_helpers::complete_llm_call_error(
                 &state,
-                client_auth.as_ref(),
-                Some(&request_id),
+                &llm_event_id,
                 "unknown",
                 &model_for_log,
                 502,
@@ -416,10 +432,9 @@ pub async fn audio_transcriptions(
     } else {
         &response.text
     };
-    super::monitor_helpers::emit_llm_response(
+    super::monitor_helpers::complete_llm_call(
         &state,
-        client_auth.as_ref(),
-        &request_id,
+        &llm_event_id,
         &provider,
         &model_for_log,
         200,
@@ -500,6 +515,7 @@ pub async fn audio_translations(
     mut multipart: axum::extract::Multipart,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
+    let session_id = uuid::Uuid::new_v4().to_string();
     state.record_client_activity(&auth.api_key_id);
 
     if auth.api_key_id != "internal-test" {
@@ -520,6 +536,7 @@ pub async fn audio_translations(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/translations",
             None,
             &msg,
@@ -540,6 +557,7 @@ pub async fn audio_translations(
                             super::monitor_helpers::emit_validation_error(
                                 &state,
                                 client_auth.as_ref(),
+                                Some(&session_id),
                                 "/v1/audio/translations",
                                 Some("file"),
                                 &msg,
@@ -556,6 +574,7 @@ pub async fn audio_translations(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/translations",
                         Some("model"),
                         &msg,
@@ -570,6 +589,7 @@ pub async fn audio_translations(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/translations",
                         Some("prompt"),
                         &msg,
@@ -584,6 +604,7 @@ pub async fn audio_translations(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/translations",
                         Some("response_format"),
                         &msg,
@@ -598,6 +619,7 @@ pub async fn audio_translations(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/translations",
                         Some("temperature"),
                         &msg,
@@ -609,6 +631,7 @@ pub async fn audio_translations(
                     super::monitor_helpers::emit_validation_error(
                         &state,
                         client_auth.as_ref(),
+                        Some(&session_id),
                         "/v1/audio/translations",
                         Some("temperature"),
                         "temperature must be a number",
@@ -626,6 +649,7 @@ pub async fn audio_translations(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/translations",
             Some("file"),
             "file is required",
@@ -637,6 +661,7 @@ pub async fn audio_translations(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/translations",
             Some("model"),
             "model is required",
@@ -649,6 +674,7 @@ pub async fn audio_translations(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/translations",
             Some("file"),
             "file cannot be empty",
@@ -661,6 +687,7 @@ pub async fn audio_translations(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/translations",
             Some("model"),
             "model cannot be empty",
@@ -674,6 +701,7 @@ pub async fn audio_translations(
             super::monitor_helpers::emit_validation_error(
                 &state,
                 client_auth.as_ref(),
+                Some(&session_id),
                 "/v1/audio/translations",
                 Some("temperature"),
                 "temperature must be between 0 and 1",
@@ -697,6 +725,7 @@ pub async fn audio_translations(
             super::monitor_helpers::emit_validation_error(
                 &state,
                 client_auth.as_ref(),
+                Some(&session_id),
                 "/v1/audio/translations",
                 Some("response_format"),
                 &msg,
@@ -711,9 +740,10 @@ pub async fn audio_translations(
 
     // Emit monitor event for traffic inspection
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/translations"});
-    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+    let llm_event_id = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
+        Some(&session_id),
         "/v1/audio/translations",
         &model,
         false,
@@ -765,10 +795,9 @@ pub async fn audio_translations(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::emit_llm_error(
+            super::monitor_helpers::complete_llm_call_error(
                 &state,
-                client_auth.as_ref(),
-                Some(&request_id),
+                &llm_event_id,
                 "unknown",
                 &model_for_log,
                 502,
@@ -826,10 +855,9 @@ pub async fn audio_translations(
     } else {
         &response.text
     };
-    super::monitor_helpers::emit_llm_response(
+    super::monitor_helpers::complete_llm_call(
         &state,
-        client_auth.as_ref(),
-        &request_id,
+        &llm_event_id,
         &provider,
         &model_for_log,
         200,
@@ -910,12 +938,14 @@ pub async fn audio_speech(
     Json(request): Json<SpeechRequest>,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
+    let session_id = uuid::Uuid::new_v4().to_string();
 
     // Emit monitor event for traffic inspection
     let monitor_body = serde_json::json!({"model": &request.model, "endpoint": "/v1/audio/speech", "voice": &request.voice});
-    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+    let llm_event_id = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
+        Some(&session_id),
         "/v1/audio/speech",
         &request.model,
         false,
@@ -934,6 +964,7 @@ pub async fn audio_speech(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/audio/speech",
             e.error.error.param.as_deref(),
             &e.error.error.message,
@@ -988,10 +1019,9 @@ pub async fn audio_speech(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::emit_llm_error(
+            super::monitor_helpers::complete_llm_call_error(
                 &state,
-                client_auth.as_ref(),
-                Some(&request_id),
+                &llm_event_id,
                 "unknown",
                 &request.model,
                 502,
@@ -1048,10 +1078,9 @@ pub async fn audio_speech(
     }
 
     // Emit monitor response event
-    super::monitor_helpers::emit_llm_response(
+    super::monitor_helpers::complete_llm_call(
         &state,
-        client_auth.as_ref(),
-        &request_id,
+        &llm_event_id,
         &provider,
         &request.model,
         200,
@@ -1165,6 +1194,7 @@ async fn validate_client_provider_access(
         super::monitor_helpers::emit_access_denied_for_client(
             state,
             &client.id,
+            None,
             "model_not_allowed",
             "/v1/audio",
             &format!(

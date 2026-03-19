@@ -269,7 +269,7 @@ impl McpGateway {
             transformed_request.id
         );
 
-        // Emit monitor event for MCP tool call
+        // Emit pending monitor event for MCP tool call
         let (mon_client_id, mon_client_name) = {
             let s = session.read().await;
             (Some(s.client_id.clone()), Some(s.client_name.clone()))
@@ -280,10 +280,10 @@ impl McpGateway {
             .and_then(|p| p.get("arguments"))
             .cloned()
             .unwrap_or(Value::Null);
-        self.emit_monitor_event(
+        let mon_event_id = self.emit_monitor_event(
             lr_monitor::MonitorEventType::McpToolCall,
-            mon_client_id.clone(),
-            mon_client_name.clone(),
+            mon_client_id,
+            mon_client_name,
             None,
             lr_monitor::MonitorEventData::McpToolCall {
                 tool_name: tool_name.clone(),
@@ -291,8 +291,12 @@ impl McpGateway {
                 server_name: None,
                 arguments,
                 firewall_action: mon_firewall_action,
+                latency_ms: None,
+                success: None,
+                response_preview: None,
+                error: None,
             },
-            lr_monitor::EventStatus::Complete,
+            lr_monitor::EventStatus::Pending,
             None,
         );
 
@@ -306,6 +310,7 @@ impl McpGateway {
 
         let tool_call_latency = tool_call_start.elapsed().as_millis() as u64;
 
+        // Update the monitor event with response data
         match &result {
             Ok(response) => {
                 tracing::info!(
@@ -315,7 +320,6 @@ impl McpGateway {
                     response.error.is_some()
                 );
 
-                // Emit monitor event for MCP tool response
                 let response_preview = response
                     .result
                     .as_ref()
@@ -329,25 +333,31 @@ impl McpGateway {
                     })
                     .unwrap_or_default();
                 let error_msg = response.error.as_ref().map(|e| e.message.clone());
-                self.emit_monitor_event(
-                    lr_monitor::MonitorEventType::McpToolResponse,
-                    mon_client_id.clone(),
-                    mon_client_name.clone(),
-                    None,
-                    lr_monitor::MonitorEventData::McpToolResponse {
-                        tool_name: tool_name.clone(),
-                        server_id: server_id.clone(),
-                        latency_ms: tool_call_latency,
-                        success: response.error.is_none(),
-                        response_preview,
-                        error: error_msg,
-                    },
-                    if response.error.is_some() {
-                        lr_monitor::EventStatus::Error
-                    } else {
-                        lr_monitor::EventStatus::Complete
-                    },
-                    Some(tool_call_latency),
+                let success = response.error.is_none();
+                let status = if success {
+                    lr_monitor::EventStatus::Complete
+                } else {
+                    lr_monitor::EventStatus::Error
+                };
+                self.update_monitor_event(
+                    &mon_event_id,
+                    Box::new(move |event| {
+                        event.status = status;
+                        event.duration_ms = Some(tool_call_latency);
+                        if let lr_monitor::MonitorEventData::McpToolCall {
+                            latency_ms: ref mut lm,
+                            success: ref mut s,
+                            response_preview: ref mut rp,
+                            error: ref mut e,
+                            ..
+                        } = &mut event.data
+                        {
+                            *lm = Some(tool_call_latency);
+                            *s = Some(success);
+                            *rp = Some(response_preview);
+                            *e = error_msg;
+                        }
+                    }),
                 );
             }
             Err(e) => {
@@ -357,22 +367,26 @@ impl McpGateway {
                     e
                 );
 
-                // Emit monitor error event for MCP tool response
-                self.emit_monitor_event(
-                    lr_monitor::MonitorEventType::McpToolResponse,
-                    mon_client_id,
-                    mon_client_name,
-                    None,
-                    lr_monitor::MonitorEventData::McpToolResponse {
-                        tool_name: tool_name.clone(),
-                        server_id: server_id.clone(),
-                        latency_ms: tool_call_latency,
-                        success: false,
-                        response_preview: String::new(),
-                        error: Some(e.to_string()),
-                    },
-                    lr_monitor::EventStatus::Error,
-                    Some(tool_call_latency),
+                let err_msg = e.to_string();
+                self.update_monitor_event(
+                    &mon_event_id,
+                    Box::new(move |event| {
+                        event.status = lr_monitor::EventStatus::Error;
+                        event.duration_ms = Some(tool_call_latency);
+                        if let lr_monitor::MonitorEventData::McpToolCall {
+                            latency_ms: ref mut lm,
+                            success: ref mut s,
+                            response_preview: ref mut rp,
+                            error: ref mut er,
+                            ..
+                        } = &mut event.data
+                        {
+                            *lm = Some(tool_call_latency);
+                            *s = Some(false);
+                            *rp = Some(String::new());
+                            *er = Some(err_msg);
+                        }
+                    }),
                 );
             }
         }

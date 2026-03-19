@@ -54,17 +54,17 @@ export function EventDetail({ event }: EventDetailProps) {
         )}
 
         {/* Type-specific rendering */}
-        {type === 'llm_request' && <LlmRequestDetail data={data} />}
-        {type === 'llm_request_transformed' && <LlmRequestTransformedDetail data={data} />}
-        {type === 'llm_response' && <LlmResponseDetail data={data} />}
-        {type === 'llm_error' && <LlmErrorDetail data={data} />}
+        {type === 'llm_call' && <LlmCallDetail data={data} />}
         {type === 'mcp_tool_call' && <McpToolCallDetail data={data} />}
-        {type === 'mcp_tool_response' && <McpToolResponseDetail data={data} />}
-        {(type === 'mcp_resource_read' || type === 'mcp_prompt_get') && <McpRequestDetail data={data} />}
-        {(type === 'mcp_resource_response' || type === 'mcp_prompt_response') && <McpResponseDetail data={data} />}
-        {(type === 'guardrail_request' || type === 'guardrail_response' || type === 'guardrail_response_check_request' || type === 'guardrail_response_check_response') && <GuardrailDetail data={data} />}
-        {(type === 'secret_scan_request' || type === 'secret_scan_response') && <SecretScanDetail data={data} />}
-        {(type === 'route_llm_request' || type === 'route_llm_response' || type === 'routing_decision') && <RoutingDetail data={data} />}
+        {type === 'mcp_resource_read' && <McpResourceReadDetail data={data} />}
+        {type === 'mcp_prompt_get' && <McpPromptGetDetail data={data} />}
+        {type === 'mcp_elicitation' && <McpElicitationDetail data={data} />}
+        {type === 'mcp_sampling' && <McpSamplingDetail data={data} />}
+        {type === 'guardrail_scan' && <GuardrailDetail data={data} />}
+        {type === 'guardrail_response_scan' && <GuardrailDetail data={data} />}
+        {type === 'secret_scan' && <SecretScanDetail data={data} />}
+        {type === 'route_llm_classify' && <RoutingDetail data={data} />}
+        {type === 'routing_decision' && <RoutingDetail data={data} />}
         {(type === 'auth_error' || type === 'access_denied') && <AuthErrorDetail data={data} />}
         {type === 'rate_limit_event' && <RateLimitDetail data={data} />}
         {type === 'validation_error' && <ValidationErrorDetail data={data} />}
@@ -73,8 +73,6 @@ export function EventDetail({ event }: EventDetailProps) {
         {type === 'internal_error' && <InternalErrorDetail data={data} />}
         {type === 'moderation_event' && <ModerationEventDetail data={data} />}
         {type === 'connection_error' && <ConnectionErrorDetail data={data} />}
-        {(type === 'mcp_elicitation_request' || type === 'mcp_elicitation_response') && <McpElicitationDetail data={data} />}
-        {(type === 'mcp_sampling_request' || type === 'mcp_sampling_response') && <McpSamplingDetail data={data} />}
         {type === 'prompt_compression' && <PromptCompressionDetail data={data} />}
         {type === 'firewall_decision' && <FirewallDecisionDetail data={data} />}
         {type === 'sse_connection' && <SseConnectionDetail data={data} />}
@@ -212,18 +210,21 @@ function ToolsSection({ tools }: { tools: Array<Record<string, unknown>> }) {
 
 // ---- Type-specific detail components ----
 
-function LlmRequestDetail({ data }: { data: EventData }) {
+function LlmCallDetail({ data }: { data: EventData }) {
   const body = data.request_body as Record<string, unknown> | undefined
   const messages = body?.messages as Array<Record<string, unknown>> | undefined
   const tools = body?.tools as Array<Record<string, unknown>> | undefined
+  const transformedBody = data.transformed_body as Record<string, unknown> | undefined
+  const transformations = data.transformations_applied as string[] | undefined
 
   return (
     <div className="space-y-2">
+      {/* Request section */}
       <div className="grid grid-cols-2 gap-2 text-xs">
         <Field label="Endpoint" value={data.endpoint as string} />
         <Field label="Model" value={data.model as string} />
-        <Field label="Stream" value={String(data.stream)} />
-        <Field label="Messages" value={String(data.message_count)} />
+        <Field label="Stream" value={data.stream != null ? String(data.stream) : undefined} />
+        <Field label="Messages" value={data.message_count != null ? String(data.message_count) : undefined} />
         {(data.has_tools as boolean) && <Field label="Tools" value={String(data.tool_count)} />}
       </div>
 
@@ -235,7 +236,6 @@ function LlmRequestDetail({ data }: { data: EventData }) {
         <ToolsSection tools={tools} />
       )}
 
-      {/* Parameters */}
       {body && (
         <JsonSection title="Parameters" data={{
           temperature: body.temperature,
@@ -250,103 +250,67 @@ function LlmRequestDetail({ data }: { data: EventData }) {
       {body && (
         <JsonSection title="Full Request Body" data={body} defaultOpen={false} />
       )}
-    </div>
-  )
-}
 
-function LlmRequestTransformedDetail({ data }: { data: EventData }) {
-  const body = data.request_body as Record<string, unknown> | undefined
-  const messages = body?.messages as Array<Record<string, unknown>> | undefined
-  const tools = body?.tools as Array<Record<string, unknown>> | undefined
-  const transformations = data.transformations_applied as string[] | undefined
-
-  return (
-    <div className="space-y-2">
+      {/* Transformation section */}
       {transformations && transformations.length > 0 && (
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-xs text-muted-foreground font-medium">Applied:</span>
+          <span className="text-xs text-muted-foreground font-medium">Transformations:</span>
           {transformations.map((t, i) => (
             <Badge key={i} variant="secondary" className="text-[10px]">{t}</Badge>
           ))}
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Endpoint" value={data.endpoint as string} />
-        <Field label="Model" value={data.model as string} />
-        <Field label="Stream" value={String(data.stream)} />
-        <Field label="Messages" value={String(data.message_count)} />
-        {(data.has_tools as boolean) && <Field label="Tools" value={String(data.tool_count)} />}
-      </div>
-
-      {messages && messages.length > 0 && (
-        <MessagesSection messages={messages} />
+      {transformedBody && (
+        <JsonSection title="Transformed Body" data={transformedBody} defaultOpen={false} />
       )}
 
-      {tools && tools.length > 0 && (
-        <ToolsSection tools={tools} />
+      {/* Response section (present when status=complete) */}
+      {data.provider && (
+        <>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Field label="Provider" value={data.provider as string} />
+            <Field label="Status" value={data.status_code != null ? String(data.status_code) : undefined} />
+            <Field label="Streamed" value={data.streamed != null ? String(data.streamed) : undefined} />
+          </div>
+
+          {data.total_tokens != null && (
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <Field label="Input Tokens" value={String(data.input_tokens)} />
+              <Field label="Output Tokens" value={String(data.output_tokens)} />
+              <Field label="Total Tokens" value={String(data.total_tokens)} />
+            </div>
+          )}
+
+          {data.cost_usd != null && (
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <Field label="Cost" value={`$${(data.cost_usd as number).toFixed(6)}`} />
+              <Field label="Latency" value={data.latency_ms != null ? `${String(data.latency_ms)}ms` : undefined} />
+            </div>
+          )}
+
+          {data.finish_reason && <Field label="Finish Reason" value={data.finish_reason as string} />}
+
+          {data.content_preview && (
+            <div className="text-xs">
+              <span className="text-muted-foreground font-medium">Content:</span>
+              <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
+                {data.content_preview as string}
+              </pre>
+            </div>
+          )}
+        </>
       )}
 
-      {body && (
-        <JsonSection title="Full Request Body" data={body} defaultOpen={false} />
-      )}
-    </div>
-  )
-}
-
-function LlmResponseDetail({ data }: { data: EventData }) {
-  return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Provider" value={data.provider as string} />
-        <Field label="Model" value={data.model as string} />
-        <Field label="Status" value={String(data.status_code)} />
-        <Field label="Streamed" value={String(data.streamed)} />
-      </div>
-
-      {/* Token usage */}
-      <div className="grid grid-cols-3 gap-2 text-xs">
-        <Field label="Input Tokens" value={String(data.input_tokens)} />
-        <Field label="Output Tokens" value={String(data.output_tokens)} />
-        <Field label="Total Tokens" value={String(data.total_tokens)} />
-      </div>
-
-      {data.cost_usd != null && (
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <Field label="Cost" value={`$${(data.cost_usd as number).toFixed(6)}`} />
-          <Field label="Latency" value={`${String(data.latency_ms)}ms`} />
-        </div>
-      )}
-
-      {data.finish_reason && <Field label="Finish Reason" value={data.finish_reason as string} />}
-
-      {/* Content preview */}
-      {data.content_preview && (
+      {/* Error section (present when status=error) */}
+      {data.error && (
         <div className="text-xs">
-          <span className="text-muted-foreground font-medium">Content:</span>
-          <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-            {data.content_preview as string}
+          <span className="text-muted-foreground font-medium">Error:</span>
+          <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+            {data.error as string}
           </pre>
         </div>
       )}
-    </div>
-  )
-}
-
-function LlmErrorDetail({ data }: { data: EventData }) {
-  return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Provider" value={data.provider as string} />
-        <Field label="Model" value={data.model as string} />
-        <Field label="Status Code" value={String(data.status_code)} />
-      </div>
-      <div className="text-xs">
-        <span className="text-muted-foreground font-medium">Error:</span>
-        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-          {data.error as string}
-        </pre>
-      </div>
     </div>
   )
 }
@@ -366,18 +330,14 @@ function McpToolCallDetail({ data }: { data: EventData }) {
         <Field label="Firewall" value={data.firewall_action as string} />
       )}
       <JsonSection title="Arguments" data={data.arguments as unknown} defaultOpen={true} />
-    </div>
-  )
-}
 
-function McpToolResponseDetail({ data }: { data: EventData }) {
-  return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Tool" value={data.tool_name as string} />
-        <Field label="Success" value={String(data.success)} />
-        <Field label="Latency" value={`${data.latency_ms}ms`} />
-      </div>
+      {/* Response section (present when complete) */}
+      {data.success != null && (
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Success" value={String(data.success)} />
+          {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+        </div>
+      )}
       {data.error && (
         <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
           {data.error as string}
@@ -395,28 +355,52 @@ function McpToolResponseDetail({ data }: { data: EventData }) {
   )
 }
 
-function McpRequestDetail({ data }: { data: EventData }) {
-  const name = (data.uri || data.prompt_name || data.tool_name) as string
+function McpResourceReadDetail({ data }: { data: EventData }) {
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Name" value={name} />
+        <Field label="URI" value={data.uri as string} />
         <Field label="Server" value={(data.server_name || data.server_id) as string} />
       </div>
       {data.arguments && <JsonSection title="Arguments" data={data.arguments as unknown} defaultOpen={true} />}
+
+      {/* Response section (present when complete) */}
+      {data.success != null && (
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Success" value={String(data.success)} />
+          {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+        </div>
+      )}
+      {data.error && (
+        <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+          {data.error as string}
+        </pre>
+      )}
+      {data.content_preview && (
+        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
+          {data.content_preview as string}
+        </pre>
+      )}
     </div>
   )
 }
 
-function McpResponseDetail({ data }: { data: EventData }) {
-  const name = (data.uri || data.prompt_name || data.tool_name) as string
+function McpPromptGetDetail({ data }: { data: EventData }) {
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Name" value={name} />
-        <Field label="Success" value={String(data.success)} />
-        <Field label="Latency" value={`${data.latency_ms}ms`} />
+        <Field label="Prompt" value={data.prompt_name as string} />
+        <Field label="Server" value={(data.server_name || data.server_id) as string} />
       </div>
+      {data.arguments && <JsonSection title="Arguments" data={data.arguments as unknown} defaultOpen={true} />}
+
+      {/* Response section (present when complete) */}
+      {data.success != null && (
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Success" value={String(data.success)} />
+          {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+        </div>
+      )}
       {data.error && (
         <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
           {data.error as string}

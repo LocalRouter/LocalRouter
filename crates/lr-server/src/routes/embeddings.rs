@@ -48,11 +48,15 @@ pub async fn embeddings(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "embedding");
 
+    // Generate session ID for correlated monitor events
+    let session_id = uuid::Uuid::new_v4().to_string();
+
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+    let llm_event_id = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
+        Some(&session_id),
         "/v1/embeddings",
         &request.model,
         false,
@@ -73,6 +77,7 @@ pub async fn embeddings(
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "/v1/embeddings",
             e.error.error.param.as_deref(),
             &e.error.error.message,
@@ -89,6 +94,7 @@ pub async fn embeddings(
         super::monitor_helpers::emit_rate_limit_event(
             &state,
             client_auth.as_ref(),
+            Some(&session_id),
             "rate_limit_exceeded",
             "/v1/embeddings",
             &e.error.error.message,
@@ -174,10 +180,9 @@ pub async fn embeddings(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::emit_llm_error(
+            super::monitor_helpers::complete_llm_call_error(
                 &state,
-                client_auth.as_ref(),
-                Some(&request_id),
+                &llm_event_id,
                 "unknown",
                 &request.model,
                 502,
@@ -251,10 +256,9 @@ pub async fn embeddings(
     }
 
     // Emit monitor response event
-    super::monitor_helpers::emit_llm_response(
+    super::monitor_helpers::complete_llm_call(
         &state,
-        client_auth.as_ref(),
-        &request_id,
+        &llm_event_id,
         &provider,
         &response.model,
         200,
@@ -477,6 +481,7 @@ async fn validate_client_provider_access(
         super::monitor_helpers::emit_access_denied_for_client(
             state,
             &client.id,
+            None,
             "model_not_allowed",
             "/v1/embeddings",
             &format!(

@@ -43,11 +43,15 @@ pub async fn moderations(
     // Emit event
     state.emit_event("llm-request", "moderation");
 
+    // Generate session ID for correlated monitor events
+    let session_id = uuid::Uuid::new_v4().to_string();
+
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let _monitor_request_id = super::monitor_helpers::emit_llm_request(
+    let llm_event_id = super::monitor_helpers::emit_llm_call(
         &state,
         None,
+        Some(&session_id),
         "/v1/moderations",
         request.model.as_deref().unwrap_or("localrouter-guardrails"),
         false,
@@ -118,6 +122,7 @@ pub async fn moderations(
         super::monitor_helpers::emit_validation_error(
             &state,
             None,
+            Some(&session_id),
             "/v1/moderations",
             Some("input"),
             "input cannot be empty",
@@ -153,10 +158,9 @@ pub async fn moderations(
 
     // Emit monitor response event
     let flagged_count = response.results.iter().filter(|r| r.flagged).count();
-    super::monitor_helpers::emit_llm_response(
+    super::monitor_helpers::complete_llm_call(
         &state,
-        None,
-        &response.id,
+        &llm_event_id,
         "localrouter",
         &response.model,
         200,

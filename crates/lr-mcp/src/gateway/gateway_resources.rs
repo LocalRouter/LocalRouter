@@ -279,7 +279,7 @@ impl McpGateway {
         }
         // If routed by URI, leave parameters unchanged - backend will handle its own URIs
 
-        // Emit monitor event for resource read
+        // Emit pending monitor event for resource read
         let (mon_client_id, mon_client_name) = {
             let s = session.read().await;
             (Some(s.client_id.clone()), Some(s.client_name.clone()))
@@ -287,17 +287,21 @@ impl McpGateway {
         let mon_uri = resource_name
             .map(|n| n.to_string())
             .unwrap_or_else(|| original_name.clone());
-        self.emit_monitor_event(
+        let mon_event_id = self.emit_monitor_event(
             lr_monitor::MonitorEventType::McpResourceRead,
-            mon_client_id.clone(),
-            mon_client_name.clone(),
+            mon_client_id,
+            mon_client_name,
             None,
             lr_monitor::MonitorEventData::McpResourceRead {
                 uri: mon_uri.clone(),
                 server_id: server_id.clone(),
                 server_name: None,
+                latency_ms: None,
+                success: None,
+                content_preview: None,
+                error: None,
             },
-            lr_monitor::EventStatus::Complete,
+            lr_monitor::EventStatus::Pending,
             None,
         );
 
@@ -311,7 +315,7 @@ impl McpGateway {
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        // Emit monitor event for resource response
+        // Update monitor event with response data
         let (success, response_preview, error_msg) = match &result {
             Ok(resp) => {
                 let preview = resp
@@ -331,25 +335,30 @@ impl McpGateway {
             }
             Err(e) => (false, String::new(), Some(e.to_string())),
         };
-        self.emit_monitor_event(
-            lr_monitor::MonitorEventType::McpResourceResponse,
-            mon_client_id,
-            mon_client_name,
-            None,
-            lr_monitor::MonitorEventData::McpResourceResponse {
-                uri: mon_uri,
-                server_id,
-                latency_ms,
-                success,
-                content_preview: response_preview,
-                error: error_msg,
-            },
-            if success {
-                lr_monitor::EventStatus::Complete
-            } else {
-                lr_monitor::EventStatus::Error
-            },
-            Some(latency_ms),
+        let status = if success {
+            lr_monitor::EventStatus::Complete
+        } else {
+            lr_monitor::EventStatus::Error
+        };
+        self.update_monitor_event(
+            &mon_event_id,
+            Box::new(move |event| {
+                event.status = status;
+                event.duration_ms = Some(latency_ms);
+                if let lr_monitor::MonitorEventData::McpResourceRead {
+                    latency_ms: ref mut lm,
+                    success: ref mut s,
+                    content_preview: ref mut cp,
+                    error: ref mut e,
+                    ..
+                } = &mut event.data
+                {
+                    *lm = Some(latency_ms);
+                    *s = Some(success);
+                    *cp = Some(response_preview);
+                    *e = error_msg;
+                }
+            }),
         );
 
         result

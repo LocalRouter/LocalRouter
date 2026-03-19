@@ -12,6 +12,7 @@ import type { MonitorEventFilter } from '@/types/tauri-commands'
 export function MonitorView() {
   const [filter, setFilter] = useState<MonitorEventFilter>({
     event_types: null,
+    session_id: null,
     client_id: null,
     status: null,
     search: null,
@@ -20,7 +21,7 @@ export function MonitorView() {
 
   // Only pass filter to backend if it has actual values
   const activeFilter = useMemo(() => {
-    const hasFilter = filter.event_types || filter.client_id || filter.status || filter.search
+    const hasFilter = filter.event_types || filter.session_id || filter.client_id || filter.status || filter.search
     return hasFilter ? filter : null
   }, [filter])
 

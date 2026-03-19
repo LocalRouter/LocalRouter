@@ -930,21 +930,27 @@ impl AppState {
             monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
         };
 
-        // Wire MCP via LLM monitor callback
+        // Wire MCP via LLM monitor callbacks
         let monitor = result.monitor_store.clone();
         result.mcp_via_llm_manager.set_monitor_emit(Arc::new(
-            move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
+            move |event_type, client_id, client_name, session_id, data, status, duration_ms| {
                 monitor.push(
                     event_type,
                     client_id,
                     client_name,
-                    request_id,
+                    session_id,
                     data,
                     status,
                     duration_ms,
-                );
+                )
             },
         ));
+        let monitor = result.monitor_store.clone();
+        result
+            .mcp_via_llm_manager
+            .set_monitor_update(Arc::new(move |id, updater| {
+                monitor.update(id, updater);
+            }));
 
         result
     }
@@ -981,32 +987,38 @@ impl AppState {
         // Wire MCP monitor events to the monitor store
         let monitor = self.monitor_store.clone();
         mcp_gateway.set_on_monitor_event(
-            move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
+            move |event_type, client_id, client_name, session_id, data, status, duration_ms| {
                 monitor.push(
                     event_type,
                     client_id,
                     client_name,
-                    request_id,
+                    session_id,
                     data,
                     status,
                     duration_ms,
-                );
+                )
             },
         );
+
+        // Wire MCP gateway monitor update to the monitor store
+        let monitor = self.monitor_store.clone();
+        mcp_gateway.set_on_monitor_update(Arc::new(move |id, updater| {
+            monitor.update(id, updater);
+        }));
 
         // Wire MCP server manager monitor events to the monitor store
         let monitor = self.monitor_store.clone();
         mcp_server_manager.set_monitor_emit(Arc::new(
-            move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
+            move |event_type, client_id, client_name, session_id, data, status, duration_ms| {
                 monitor.push(
                     event_type,
                     client_id,
                     client_name,
-                    request_id,
+                    session_id,
                     data,
                     status,
                     duration_ms,
-                );
+                )
             },
         ));
 

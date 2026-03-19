@@ -39,11 +39,15 @@ pub async fn image_generations(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "image");
 
+    // Generate session ID for correlated monitor events
+    let session_id = uuid::Uuid::new_v4().to_string();
+
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let monitor_request_id = super::monitor_helpers::emit_llm_request(
+    let llm_event_id = super::monitor_helpers::emit_llm_call(
         &state,
         None,
+        Some(&session_id),
         "/v1/images/generations",
         &request.model,
         false,
@@ -58,6 +62,7 @@ pub async fn image_generations(
         super::monitor_helpers::emit_validation_error(
             &state,
             None,
+            Some(&session_id),
             "/v1/images/generations",
             e.error.error.param.as_deref(),
             &e.error.error.message,
@@ -79,6 +84,7 @@ pub async fn image_generations(
             super::monitor_helpers::emit_validation_error(
                 &state,
                 None,
+                Some(&session_id),
                 "/v1/images/generations",
                 Some("model"),
                 "Model must be in provider/model format or a recognized model name",
@@ -99,6 +105,7 @@ pub async fn image_generations(
             super::monitor_helpers::emit_validation_error(
                 &state,
                 None,
+                Some(&session_id),
                 "/v1/images/generations",
                 Some("model"),
                 &format!("Provider '{}' not found", provider_name),
@@ -128,10 +135,9 @@ pub async fn image_generations(
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
 
             // Emit monitor error event
-            super::monitor_helpers::emit_llm_error(
+            super::monitor_helpers::complete_llm_call_error(
                 &state,
-                None,
-                Some(&monitor_request_id),
+                &llm_event_id,
                 &provider_name,
                 &request.model,
                 502,
@@ -172,10 +178,9 @@ pub async fn image_generations(
 
     // Emit monitor response event
     let image_count = api_response.data.len();
-    super::monitor_helpers::emit_llm_response(
+    super::monitor_helpers::complete_llm_call(
         &state,
-        None,
-        &monitor_request_id,
+        &llm_event_id,
         &provider_name,
         &request.model,
         200,
