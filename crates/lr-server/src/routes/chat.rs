@@ -292,6 +292,11 @@ pub async fn chat_completions(
     // Validate client provider access (if using client auth)
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
 
+    // Enforce client mode: block MCP-only clients from LLM endpoints
+    if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        check_llm_access_with_state(&state, client)?;
+    }
+
     // Check model firewall permission (if using client auth and not auto-routing)
     // Skip for MCP via LLM clients — firewall runs later with augmented request (tools injected)
     if request.model != "localrouter/auto" {
@@ -328,11 +333,6 @@ pub async fn chat_completions(
             None,
         );
         return Err(e);
-    }
-
-    // Enforce client mode: block MCP-only clients from LLM endpoints
-    if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_llm_access_with_state(&state, client)?;
     }
 
     // Secret scanning: check outbound request for leaked secrets (before guardrails)
@@ -2294,6 +2294,14 @@ async fn handle_mcp_via_llm(
         };
         let streaming_repairer_map = streaming_repairer.clone();
 
+        // Emit pending monitor event for streaming response
+        let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
+            &state,
+            client_auth.as_ref(),
+            &generation_id,
+            &model,
+        );
+
         let content_accumulator_map = content_accumulator.clone();
         let finish_reason_map = finish_reason.clone();
         let completion_tx_map = completion_tx.clone();
@@ -2508,6 +2516,20 @@ async fn handle_mcp_via_llm(
                 .to_string(),
             );
 
+            // Complete the pending monitor event with final streaming data
+            super::monitor_helpers::complete_llm_response(
+                &state_clone,
+                &monitor_event_id,
+                &provider,
+                &model_clone,
+                prompt_tokens as u64,
+                completion_tokens as u64,
+                Some(cost),
+                latency_ms,
+                Some(&finish_reason_final),
+                &completion_content,
+            );
+
             let generation_details = GenerationDetails {
                 id: gen_id_clone,
                 model: model_clone,
@@ -2567,6 +2589,45 @@ async fn handle_mcp_via_llm(
         .map_err(|e| ApiErrorResponse::bad_gateway(format!("MCP via LLM error: {}", e)))?;
 
     let completed_at = Instant::now();
+    let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
+
+    // Emit monitor response event
+    {
+        let content_preview = response
+            .choices
+            .first()
+            .map(|c| match &c.message.content {
+                lr_providers::ChatMessageContent::Text(t) => t.clone(),
+                lr_providers::ChatMessageContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        lr_providers::ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+            })
+            .unwrap_or_default();
+        let finish_reason = response
+            .choices
+            .first()
+            .and_then(|c| c.finish_reason.as_deref());
+        super::monitor_helpers::emit_llm_response(
+            &state,
+            client_auth.as_ref(),
+            &generation_id,
+            &response.provider,
+            &response.model,
+            200,
+            response.usage.prompt_tokens as u64,
+            response.usage.completion_tokens as u64,
+            None,
+            latency_ms,
+            finish_reason,
+            &content_preview,
+            false,
+        );
+    }
 
     // Convert provider response to server response
     let api_response = ChatCompletionResponse {
