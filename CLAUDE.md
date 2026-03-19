@@ -160,6 +160,11 @@ The **very first step** of any implementation task is saving the plan to `./plan
 - **Filename**: `plan/YYYY-MM-DD-SHORT_DESCRIPTION.md` (use today's date)
 - **Content**: The full plan including goals, approach, files to modify, and any architectural decisions
 - **When**: Save the plan file **before** writing any code, immediately after the plan is approved
+- **How**: Use the `copy-plan.sh` script to copy from Claude's plan storage:
+  ```bash
+  ./copy-plan.sh <claude-plan-name> <SHORT_DESCRIPTION>
+  ```
+  Example: `./copy-plan.sh iridescent-stargazing-whale MONITOR_EVENT_REDESIGN`
 - This applies to all plans created via Claude Code's plan mode or any multi-step implementation task
 - Update `plan/2026-01-14-PROGRESS.md` if the plan adds or completes a tracked feature
 
