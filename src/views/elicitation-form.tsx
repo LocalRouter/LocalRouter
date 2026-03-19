@@ -255,7 +255,7 @@ export function ElicitationForm() {
             onClick={handleCancel}
             disabled={disabled}
           >
-            Deny
+            Cancel
           </Button>
           <Button
             className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"

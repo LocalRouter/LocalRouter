@@ -99,7 +99,7 @@ Tool names are namespaced by MCP server (e.g., `github__create_issue`) to avoid 
 
 ### Resource Injection
 
-When `expose_resources_as_tools` is enabled (default: `true`), a single `resource_read` tool is injected. The LLM can call it with a resource name (listed in the gateway instructions) to fetch content. This tool also supports reading skill files using the `<skill>/<path>` pattern.
+When `expose_resources_as_tools` is enabled (default: `true`), a single `ResourceRead` tool is injected. The LLM can call it with a resource name (listed in the gateway instructions) to fetch content. This tool also supports reading skill files using the `<skill>/<path>` pattern.
 
 <!-- @entry mcp-via-llm-prompt-injection -->
 
@@ -199,7 +199,7 @@ MCP via LLM is configured globally with per-client overrides available.
 | `max_concurrent_sessions` | `100` | Maximum number of parallel sessions |
 | `max_loop_iterations` | `4` | Maximum agentic loop iterations per request |
 | `max_loop_timeout_seconds` | `300` | Total timeout for the agentic loop |
-| `expose_resources_as_tools` | `true` | Inject a `resource_read` tool for fetching MCP resources |
+| `expose_resources_as_tools` | `true` | Inject a `ResourceRead` tool for fetching MCP resources |
 | `inject_prompts` | `true` | Inject MCP prompt content into conversations |
 
 <!-- @entry mcp-via-llm-config-per-client -->

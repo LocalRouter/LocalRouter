@@ -3,13 +3,6 @@ import { invoke } from "@tauri-apps/api/core"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
 import { LogicalSize } from "@tauri-apps/api/dpi"
 import { Button } from "@/components/ui/Button"
-import { ChevronDown } from "lucide-react"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 
 interface SamplingApprovalDetails {
@@ -161,61 +154,23 @@ export function SamplingApproval() {
           )}
         </div>
 
-        {/* Action Buttons - matching firewall pattern */}
+        {/* Action Buttons */}
         <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
-          {/* Split button: Deny Once + dropdown */}
-          <div className="flex flex-1">
-            <Button
-              variant="destructive"
-              className="flex-1 h-10 rounded-r-none font-bold"
-              onClick={() => handleAction("deny")}
-              disabled={disabled}
-            >
-              Deny Once
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="destructive"
-                  className="h-10 px-2 rounded-l-none border-l border-red-700"
-                  disabled={disabled}
-                >
-                  <ChevronDown className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                <DropdownMenuItem onClick={() => handleAction("deny")}>
-                  Deny Always
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-
-          {/* Split button: Allow Once + dropdown */}
-          <div className="flex flex-1">
-            <Button
-              className="flex-1 h-10 rounded-r-none bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
-              onClick={() => handleAction("allow")}
-              disabled={disabled}
-            >
-              Allow Once
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  className="h-10 px-2 rounded-l-none border-l border-emerald-700 bg-emerald-600 hover:bg-emerald-700 text-white"
-                  disabled={disabled}
-                >
-                  <ChevronDown className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => handleAction("allow")}>
-                  Allow Always
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+          <Button
+            variant="destructive"
+            className="flex-1 h-10 font-bold"
+            onClick={() => handleAction("deny")}
+            disabled={disabled}
+          >
+            Deny
+          </Button>
+          <Button
+            className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+            onClick={() => handleAction("allow")}
+            disabled={disabled}
+          >
+            Allow
+          </Button>
         </div>
       </div>
     </div>

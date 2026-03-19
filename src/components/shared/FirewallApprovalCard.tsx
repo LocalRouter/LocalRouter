@@ -53,6 +53,7 @@ export function getRequestType(details: {
   }
   if (
     details.tool_name.startsWith("skill_") ||
+    details.tool_name.startsWith("Skill") ||
     details.server_name.toLowerCase().includes("skill")
   ) {
     return "skill"
@@ -477,7 +478,7 @@ export function FirewallApprovalCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && (
+              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
                 <DropdownMenuItem onClick={() => onAction?.("deny_session")}>
                   Deny for Session
                 </DropdownMenuItem>
@@ -547,17 +548,17 @@ export function FirewallApprovalCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && (
+              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
                 <DropdownMenuItem onClick={() => onAction?.("allow_session")}>
                   Allow for Session
                 </DropdownMenuItem>
               )}
-              {(isModelRequest || isGuardrailRequest || isFreeTierFallback) && (
+              {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isAutoRouterRequest) && (
                 <DropdownMenuItem onClick={() => onAction?.("allow_1_minute")}>
                   Allow for 1 Minute
                 </DropdownMenuItem>
               )}
-              {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isSecretScanRequest) && (
+              {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isAutoRouterRequest || isSecretScanRequest) && (
                 <DropdownMenuItem onClick={() => onAction?.("allow_1_hour")}>
                   Allow for 1 Hour
                 </DropdownMenuItem>

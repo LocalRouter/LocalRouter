@@ -115,36 +115,43 @@ export function FirewallApproval() {
         setDetails(result)
 
         // Fetch marketplace listing details for install tools
-        if (result.tool_name.includes("marketplace__install")) {
+        // Detect marketplace install by checking tool_name for "marketplace" + "install" (case-insensitive)
+        // to support both old (marketplace__install_*) and new (MarketplaceInstall) naming
+        const toolLower = result.tool_name.toLowerCase()
+        if (toolLower.includes("marketplace") && toolLower.includes("install")) {
           try {
             const args = JSON.parse(result.arguments_preview || "{}")
             const name = args.name as string | undefined
-            if (name) {
-              if (result.tool_name.includes("install_mcp_server")) {
-                const listings = await invoke<McpServerListing[]>("marketplace_search_mcp_servers", { query: name })
-                const listing = listings.find((l) => l.name === name)
-                if (listing) {
-                  setMarketplaceListing({
-                    name: listing.name,
-                    description: listing.description,
-                    homepage: listing.homepage,
-                    vendor: listing.vendor,
-                    install_type: "mcp_server",
-                  })
-                }
-              } else if (result.tool_name.includes("install_skill")) {
-                const listings = await invoke<SkillListing[]>("marketplace_search_skills", { query: name })
-                const listing = listings.find((l) => l.name === name)
-                if (listing) {
-                  setMarketplaceListing({
-                    name: listing.name,
-                    description: listing.description,
-                    author: listing.author,
-                    source_label: listing.source_label,
-                    source_repo: listing.source_repo,
-                    install_type: "skill",
-                  })
-                }
+            // Determine install type: check `type` argument first (new unified tool),
+            // then fall back to checking tool_name substrings (old separate tools)
+            const installType = (args.type as string | undefined)
+              ?? (result.tool_name.includes("install_mcp_server") ? "mcp"
+                : result.tool_name.includes("install_skill") ? "skill"
+                : undefined)
+            if (name && installType === "mcp") {
+              const listings = await invoke<McpServerListing[]>("marketplace_search_mcp_servers", { query: name })
+              const listing = listings.find((l) => l.name === name)
+              if (listing) {
+                setMarketplaceListing({
+                  name: listing.name,
+                  description: listing.description,
+                  homepage: listing.homepage,
+                  vendor: listing.vendor,
+                  install_type: "mcp_server",
+                })
+              }
+            } else if (name && installType === "skill") {
+              const listings = await invoke<SkillListing[]>("marketplace_search_skills", { query: name })
+              const listing = listings.find((l) => l.name === name)
+              if (listing) {
+                setMarketplaceListing({
+                  name: listing.name,
+                  description: listing.description,
+                  author: listing.author,
+                  source_label: listing.source_label,
+                  source_repo: listing.source_repo,
+                  install_type: "skill",
+                })
               }
             }
           } catch (err) {
@@ -154,7 +161,7 @@ export function FirewallApproval() {
 
         // Resize window based on content type, then show
         const win = getCurrentWebviewWindow()
-        if (result.tool_name.includes("marketplace__install")) {
+        if (toolLower.includes("marketplace") && toolLower.includes("install")) {
           await win.setSize(new LogicalSize(440, 380))
           await win.center()
         } else if (result.is_free_tier_fallback) {

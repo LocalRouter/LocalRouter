@@ -14,7 +14,7 @@ export function MarketplaceInstallDemo() {
       <FirewallApprovalCard
         className="flex flex-col p-4"
         clientName="Claude Code"
-        toolName="marketplace__install"
+        toolName="MarketplaceInstall"
         serverName="Marketplace"
         marketplaceListing={{
           name: "@modelcontextprotocol/server-filesystem",
