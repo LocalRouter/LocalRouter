@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { check, Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { toast } from "sonner"
-import { RefreshCw, Download, SkipForward, Info, Settings } from "lucide-react"
+import { RefreshCw, Download, SkipForward } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
@@ -17,14 +17,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
 import ReactMarkdown from "react-markdown"
 
 
@@ -47,7 +39,6 @@ export function UpdatesTab() {
   const [skippedUpdate, setSkippedUpdate] = useState<Update | null>(null)
   const [isDownloading, setIsDownloading] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
-  const [settingsOpen, setSettingsOpen] = useState(false)
 
   useEffect(() => {
     loadCurrentVersion()
@@ -260,77 +251,11 @@ export function UpdatesTab() {
 
   return (
     <div className="space-y-6 max-w-2xl">
-      {/* Version Info & Updates */}
+      {/* Version & Check */}
       <Card>
-        <CardHeader className="pb-3">
+        <CardContent className="pt-6">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-sm">App Version</CardTitle>
-            <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-              <DialogTrigger asChild>
-                <Button variant="ghost" size="sm">
-                  <Settings className="h-3 w-3 mr-1" />
-                  Configure
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Update Settings</DialogTitle>
-                  <DialogDescription>
-                    Configure how LocalRouter checks for updates
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4 pt-4">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                      <Label>Automatically check for updates</Label>
-                      <p className="text-xs text-muted-foreground">
-                        Check for new versions in the background
-                      </p>
-                    </div>
-                    <Switch
-                      checked={updateConfig.mode === "automatic"}
-                      onCheckedChange={(checked) =>
-                        handleUpdateConfig({ mode: checked ? "automatic" : "manual" })
-                      }
-                    />
-                  </div>
-
-                  {updateConfig.mode === "automatic" && (
-                    <div className="space-y-2">
-                      <Label>Check Interval</Label>
-                      <Select
-                        value={updateConfig.check_interval_days.toString()}
-                        onValueChange={(value) =>
-                          handleUpdateConfig({ check_interval_days: parseInt(value) })
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="1">1 day</SelectItem>
-                          <SelectItem value="7">7 days (recommended)</SelectItem>
-                          <SelectItem value="14">14 days</SelectItem>
-                          <SelectItem value="30">30 days</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
-
-                  <div className="p-3 bg-muted rounded-lg flex items-center gap-2">
-                    <Info className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                    <p className="text-xs text-muted-foreground">
-                      Last checked: {formatLastCheck(updateConfig.last_check)}
-                    </p>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-6">
               <div>
                 <p className="text-xs text-muted-foreground">Current Version</p>
                 <p className="text-lg font-bold">{currentVersion || "Loading..."}</p>
@@ -344,15 +269,20 @@ export function UpdatesTab() {
                 </div>
               )}
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleCheckForUpdates}
-              disabled={isChecking || isDownloading}
-            >
-              <RefreshCw className={`h-3 w-3 mr-1 ${isChecking ? "animate-spin" : ""}`} />
-              {isChecking ? "Checking..." : "Check Now"}
-            </Button>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">
+                Last checked: {formatLastCheck(updateConfig.last_check)}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCheckForUpdates}
+                disabled={isChecking || isDownloading}
+              >
+                <RefreshCw className={`h-3 w-3 mr-1 ${isChecking ? "animate-spin" : ""}`} />
+                {isChecking ? "Checking..." : "Check Now"}
+              </Button>
+            </div>
           </div>
           {checkError && (
             <p className="text-xs text-red-500 mt-2">{checkError}</p>
@@ -443,6 +373,59 @@ export function UpdatesTab() {
           </CardContent>
         </Card>
       )}
+
+      {/* Update Settings (inline) */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Update Settings</CardTitle>
+          <CardDescription>
+            Configure how LocalRouter checks for updates
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>Automatically check for updates</Label>
+              <p className="text-xs text-muted-foreground">
+                Check for new versions in the background
+              </p>
+            </div>
+            <Switch
+              checked={updateConfig.mode === "automatic"}
+              onCheckedChange={(checked) =>
+                handleUpdateConfig({ mode: checked ? "automatic" : "manual" })
+              }
+            />
+          </div>
+
+          {updateConfig.mode === "automatic" && (
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>Check interval</Label>
+                <p className="text-xs text-muted-foreground">
+                  How often to check for new versions
+                </p>
+              </div>
+              <Select
+                value={updateConfig.check_interval_days.toString()}
+                onValueChange={(value) =>
+                  handleUpdateConfig({ check_interval_days: parseInt(value) })
+                }
+              >
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">Every day</SelectItem>
+                  <SelectItem value="7">Every 7 days</SelectItem>
+                  <SelectItem value="14">Every 14 days</SelectItem>
+                  <SelectItem value="30">Every 30 days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
     </div>
   )
