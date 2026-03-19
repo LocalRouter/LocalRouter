@@ -220,17 +220,28 @@ function SectionHeader({ title }: { title: string }) {
 
 function LlmCallDetail({ data }: { data: EventData }) {
   const body = data.request_body as Record<string, unknown> | undefined
-  const messages = body?.messages as Array<Record<string, unknown>> | undefined
-  const tools = body?.tools as Array<Record<string, unknown>> | undefined
   const transformedBody = data.transformed_body as Record<string, unknown> | undefined
   const transformations = data.transformations_applied as string[] | undefined
+  const hasTransformed = transformedBody != null
   const hasResponse = data.provider != null
   const hasError = data.error != null
 
+  // Toggle between original and transformed request view
+  const [showTransformed, setShowTransformed] = useState(hasTransformed)
+
+  // The active body to display (original or transformed)
+  const activeBody = (showTransformed && transformedBody) ? transformedBody : body
+  const messages = activeBody?.messages as Array<Record<string, unknown>> | undefined
+  const tools = activeBody?.tools as Array<Record<string, unknown>> | undefined
+
   return (
     <div className="space-y-2">
-      {/* Request section */}
-      {(hasResponse || hasError) && <SectionHeader title="Request" />}
+      {/* Request section header with original/transformed toggle */}
+      {(hasResponse || hasError) && (
+        <div className="flex items-center justify-between">
+          <SectionHeader title="Request" />
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2 text-xs">
         <Field label="Endpoint" value={data.endpoint as string} />
@@ -240,6 +251,39 @@ function LlmCallDetail({ data }: { data: EventData }) {
         {(data.has_tools as boolean) && <Field label="Tools" value={String(data.tool_count)} />}
       </div>
 
+      {/* Original / Transformed toggle */}
+      {hasTransformed && (
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-md border border-border text-[11px]">
+            <button
+              onClick={() => setShowTransformed(false)}
+              className={cn(
+                'px-2 py-0.5 rounded-l-md transition-colors',
+                !showTransformed ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Original
+            </button>
+            <button
+              onClick={() => setShowTransformed(true)}
+              className={cn(
+                'px-2 py-0.5 rounded-r-md border-l transition-colors',
+                showTransformed ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Transformed
+            </button>
+          </div>
+          {showTransformed && transformations && transformations.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              {transformations.map((t, i) => (
+                <Badge key={i} variant="secondary" className="text-[10px]">{t}</Badge>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {messages && messages.length > 0 && (
         <MessagesSection messages={messages} />
       )}
@@ -248,35 +292,19 @@ function LlmCallDetail({ data }: { data: EventData }) {
         <ToolsSection tools={tools} />
       )}
 
-      {body && (
+      {activeBody && (
         <JsonSection title="Parameters" data={{
-          temperature: body.temperature,
-          max_tokens: body.max_tokens,
-          top_p: body.top_p,
-          frequency_penalty: body.frequency_penalty,
-          presence_penalty: body.presence_penalty,
-          seed: body.seed,
+          temperature: activeBody.temperature,
+          max_tokens: activeBody.max_tokens,
+          top_p: activeBody.top_p,
+          frequency_penalty: activeBody.frequency_penalty,
+          presence_penalty: activeBody.presence_penalty,
+          seed: activeBody.seed,
         }} defaultOpen={false} />
       )}
 
-      {body && (
-        <JsonSection title="Full Request Body" data={body} defaultOpen={false} />
-      )}
-
-      {/* Transformation section */}
-      {transformations && transformations.length > 0 && (
-        <>
-          <SectionHeader title="Transformations" />
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {transformations.map((t, i) => (
-              <Badge key={i} variant="secondary" className="text-[10px]">{t}</Badge>
-            ))}
-          </div>
-        </>
-      )}
-
-      {transformedBody && (
-        <JsonSection title="Transformed Body" data={transformedBody} defaultOpen={false} />
+      {activeBody && (
+        <JsonSection title="Full Request Body" data={activeBody} defaultOpen={false} />
       )}
 
       {/* Response section (present when status=complete) */}
