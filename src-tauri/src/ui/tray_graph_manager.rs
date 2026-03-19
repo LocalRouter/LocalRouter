@@ -127,7 +127,6 @@ impl TrayGraphManager {
             debug!("TrayGraphManager background task started");
 
             const UPDATE_CHECK_INTERVAL_MS: u64 = 500;
-            const IDLE_TIMEOUT_SECS: i64 = 60;
 
             loop {
                 // Wait for activity notification
@@ -160,15 +159,22 @@ impl TrayGraphManager {
                     // Dynamic tray graph is always enabled
                     // (Previously had a toggle, now always on)
 
-                    // Check if idle (no activity for 60+ seconds)
-                    let is_idle = {
-                        let last_activity_read = last_activity_clone.read();
-                        let elapsed = Utc::now().signed_duration_since(*last_activity_read);
-                        elapsed.num_seconds() >= IDLE_TIMEOUT_SECS
+                    // Stop the update loop once no activity is happening AND
+                    // the graph has fully drained (all bars are zero).
+                    // This replaces a fixed timeout — we simply keep shifting
+                    // until there is nothing left to show.
+                    let no_recent_activity = {
+                        let last = last_activity_clone.read();
+                        Utc::now().signed_duration_since(*last).num_seconds() >= 5
                     };
-
-                    if is_idle {
-                        break;
+                    if no_recent_activity {
+                        let graph_empty = {
+                            let bucket_state = buckets_clone.read();
+                            bucket_state.iter().all(|&t| t == 0)
+                        };
+                        if graph_empty {
+                            break;
+                        }
                     }
 
                     // Visual updates happen every 1 second for responsiveness
@@ -211,6 +217,7 @@ impl TrayGraphManager {
                         *last_update_clone.write() = Some(Utc::now());
                     }
                 }
+
             }
 
             debug!("TrayGraphManager background task stopped");
@@ -324,14 +331,17 @@ impl TrayGraphManager {
             *accumulated_tokens.write() = 0;
             vec![]
         } else {
-            // Check if enough time has passed for a bucket shift
-            let should_shift_buckets = {
+            // Calculate how many bucket shifts are due since the last shift.
+            // During normal operation this is 1; after an idle gap it can be
+            // many, which lets the graph catch up instantly instead of
+            // draining one bar at a time.
+            let shifts_needed: usize = {
                 let last_shift = last_bucket_shift.read();
                 match *last_shift {
-                    None => true, // First update always shifts
+                    None => 1, // First update always shifts
                     Some(last_ts) => {
-                        let elapsed = now.signed_duration_since(last_ts);
-                        elapsed.num_seconds() >= refresh_rate_secs as i64
+                        let elapsed_secs = now.signed_duration_since(last_ts).num_seconds();
+                        (elapsed_secs / refresh_rate_secs as i64).max(0) as usize
                     }
                 }
             };
@@ -347,10 +357,17 @@ impl TrayGraphManager {
                         // Start with empty buckets (no historical data)
                         bucket_state.fill(0);
                         *last_bucket_shift.write() = Some(now);
-                    } else if should_shift_buckets {
-                        // Shift buckets left (remove first, append 0 at end)
-                        bucket_state.rotate_left(1);
-                        bucket_state[NUM_BUCKETS as usize - 1] = 0;
+                    } else if shifts_needed > 0 {
+                        // Shift buckets left, accounting for any missed shifts
+                        let shifts = shifts_needed.min(NUM_BUCKETS as usize);
+                        if shifts >= NUM_BUCKETS as usize {
+                            bucket_state.fill(0);
+                        } else {
+                            bucket_state.rotate_left(shifts);
+                            for i in (NUM_BUCKETS as usize - shifts)..NUM_BUCKETS as usize {
+                                bucket_state[i] = 0;
+                            }
+                        }
                         *last_bucket_shift.write() = Some(now);
                     }
 
@@ -426,10 +443,17 @@ impl TrayGraphManager {
                             }
                         }
                         *last_bucket_shift.write() = Some(now);
-                    } else if should_shift_buckets {
-                        // Only shift buckets every 10 seconds
-                        bucket_state.rotate_left(1);
-                        bucket_state[NUM_BUCKETS as usize - 1] = 0;
+                    } else if shifts_needed > 0 {
+                        // Shift buckets, accounting for any missed shifts
+                        let shifts = shifts_needed.min(NUM_BUCKETS as usize);
+                        if shifts >= NUM_BUCKETS as usize {
+                            bucket_state.fill(0);
+                        } else {
+                            bucket_state.rotate_left(shifts);
+                            for i in (NUM_BUCKETS as usize - shifts)..NUM_BUCKETS as usize {
+                                bucket_state[i] = 0;
+                            }
+                        }
                         *last_bucket_shift.write() = Some(now);
                     }
 
@@ -459,7 +483,10 @@ impl TrayGraphManager {
                     let start = now - Duration::seconds(window_secs + 120);
                     let metrics = metrics_collector.get_global_range(start, now);
 
-                    let mut bucket_tokens: Vec<u64> = vec![0; NUM_BUCKETS as usize];
+                    // Write directly into shared bucket state so the
+                    // background loop's "graph empty" idle check works.
+                    let mut bucket_state = buckets.write();
+                    bucket_state.fill(0);
 
                     // Direct mapping: each minute metric goes to exactly one bucket
                     for metric in metrics.iter() {
@@ -470,13 +497,13 @@ impl TrayGraphManager {
 
                         let bucket_index = (NUM_BUCKETS - 1) - (age_secs / 60);
                         let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
-                        bucket_tokens[bucket_index] += metric.total_tokens;
+                        bucket_state[bucket_index] += metric.total_tokens;
                     }
 
-                    bucket_tokens
-                        .into_iter()
+                    bucket_state
+                        .iter()
                         .enumerate()
-                        .map(|(i, tokens)| DataPoint {
+                        .map(|(i, &tokens)| DataPoint {
                             timestamp: now - Duration::seconds((NUM_BUCKETS - i as i64) * 60),
                             total_tokens: tokens,
                         })
