@@ -271,8 +271,8 @@ impl MemoryVirtualServer {
             .unwrap_or(DEFAULT_SEARCH_LIMIT);
 
         // Need at least one query
-        if query.as_ref().map_or(true, |q| q.is_empty())
-            && queries.as_ref().map_or(true, |qs| qs.is_empty())
+        if query.as_ref().is_none_or(|q| q.is_empty())
+            && queries.as_ref().is_none_or(|qs| qs.is_empty())
         {
             return VirtualToolCallResult::ToolError(
                 "At least one 'query' or 'queries' parameter is required".to_string(),
@@ -397,10 +397,10 @@ impl MemoryVirtualServer {
 /// Derive the read tool name from the search tool name.
 /// "MemorySearch" → "MemoryRead", "MemoryRecall" → "MemoryRead", etc.
 fn derive_read_tool_name(search_name: &str) -> String {
-    if search_name.ends_with("Search") {
-        format!("{}Read", &search_name[..search_name.len() - "Search".len()])
-    } else if search_name.ends_with("Recall") {
-        format!("{}Read", &search_name[..search_name.len() - "Recall".len()])
+    if let Some(prefix) = search_name.strip_suffix("Search") {
+        format!("{}Read", prefix)
+    } else if let Some(prefix) = search_name.strip_suffix("Recall") {
+        format!("{}Read", prefix)
     } else {
         format!("{}Read", search_name)
     }

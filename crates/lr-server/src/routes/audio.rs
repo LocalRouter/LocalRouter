@@ -72,7 +72,7 @@ pub async fn audio_transcriptions(
             let msg = format!("Invalid multipart data: {}", e);
             super::monitor_helpers::emit_validation_error(
                 &state,
-                client_auth.as_ref().map(|e| e),
+                client_auth.as_ref(),
                 "/v1/audio/transcriptions",
                 None,
                 &msg,
@@ -93,7 +93,7 @@ pub async fn audio_transcriptions(
                             let msg = format!("Failed to read file: {}", e);
                             super::monitor_helpers::emit_validation_error(
                                 &state,
-                                client_auth.as_ref().map(|e| e),
+                                client_auth.as_ref(),
                                 "/v1/audio/transcriptions",
                                 Some("file"),
                                 &msg,
@@ -109,7 +109,7 @@ pub async fn audio_transcriptions(
                     let msg = format!("Invalid model field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/transcriptions",
                         Some("model"),
                         &msg,
@@ -123,7 +123,7 @@ pub async fn audio_transcriptions(
                     let msg = format!("Invalid language field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/transcriptions",
                         Some("language"),
                         &msg,
@@ -137,7 +137,7 @@ pub async fn audio_transcriptions(
                     let msg = format!("Invalid prompt field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/transcriptions",
                         Some("prompt"),
                         &msg,
@@ -151,7 +151,7 @@ pub async fn audio_transcriptions(
                     let msg = format!("Invalid response_format field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/transcriptions",
                         Some("response_format"),
                         &msg,
@@ -165,7 +165,7 @@ pub async fn audio_transcriptions(
                     let msg = format!("Invalid temperature field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/transcriptions",
                         Some("temperature"),
                         &msg,
@@ -176,7 +176,7 @@ pub async fn audio_transcriptions(
                 temperature = Some(text.parse::<f32>().map_err(|_| {
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/transcriptions",
                         Some("temperature"),
                         "temperature must be a number",
@@ -191,7 +191,7 @@ pub async fn audio_transcriptions(
                     let msg = format!("Invalid timestamp_granularities field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/transcriptions",
                         Some("timestamp_granularities"),
                         &msg,
@@ -210,7 +210,7 @@ pub async fn audio_transcriptions(
     let file_data = file_data.ok_or_else(|| {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/audio/transcriptions",
             Some("file"),
             "file is required",
@@ -221,7 +221,7 @@ pub async fn audio_transcriptions(
     let model = model.ok_or_else(|| {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/audio/transcriptions",
             Some("model"),
             "model is required",
@@ -233,7 +233,7 @@ pub async fn audio_transcriptions(
     if file_data.is_empty() {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/audio/transcriptions",
             Some("file"),
             "file cannot be empty",
@@ -245,7 +245,7 @@ pub async fn audio_transcriptions(
     if model.is_empty() {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/audio/transcriptions",
             Some("model"),
             "model cannot be empty",
@@ -259,7 +259,7 @@ pub async fn audio_transcriptions(
         if !(0.0..=1.0).contains(&temp) {
             super::monitor_helpers::emit_validation_error(
                 &state,
-                client_auth.as_ref().map(|e| e),
+                client_auth.as_ref(),
                 "/v1/audio/transcriptions",
                 Some("temperature"),
                 "temperature must be between 0 and 1",
@@ -283,7 +283,7 @@ pub async fn audio_transcriptions(
             );
             super::monitor_helpers::emit_validation_error(
                 &state,
-                client_auth.as_ref().map(|e| e),
+                client_auth.as_ref(),
                 "/v1/audio/transcriptions",
                 Some("response_format"),
                 &msg,
@@ -300,7 +300,7 @@ pub async fn audio_transcriptions(
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/transcriptions"});
     let _monitor_request_id = super::monitor_helpers::emit_llm_request(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         "/v1/audio/transcriptions",
         &model,
         false,
@@ -356,7 +356,7 @@ pub async fn audio_transcriptions(
             // Emit monitor error event
             super::monitor_helpers::emit_llm_error(
                 &state,
-                client_auth.as_ref().map(|ext| ext),
+                client_auth.as_ref(),
                 Some(&request_id),
                 "unknown",
                 &model_for_log,
@@ -420,7 +420,7 @@ pub async fn audio_transcriptions(
     };
     super::monitor_helpers::emit_llm_response(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         &request_id,
         &provider,
         &model_for_log,
@@ -524,7 +524,7 @@ pub async fn audio_translations(
             let msg = format!("Invalid multipart data: {}", e);
             super::monitor_helpers::emit_validation_error(
                 &state,
-                client_auth.as_ref().map(|e| e),
+                client_auth.as_ref(),
                 "/v1/audio/translations",
                 None,
                 &msg,
@@ -545,7 +545,7 @@ pub async fn audio_translations(
                             let msg = format!("Failed to read file: {}", e);
                             super::monitor_helpers::emit_validation_error(
                                 &state,
-                                client_auth.as_ref().map(|e| e),
+                                client_auth.as_ref(),
                                 "/v1/audio/translations",
                                 Some("file"),
                                 &msg,
@@ -561,7 +561,7 @@ pub async fn audio_translations(
                     let msg = format!("Invalid model field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/translations",
                         Some("model"),
                         &msg,
@@ -575,7 +575,7 @@ pub async fn audio_translations(
                     let msg = format!("Invalid prompt field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/translations",
                         Some("prompt"),
                         &msg,
@@ -589,7 +589,7 @@ pub async fn audio_translations(
                     let msg = format!("Invalid response_format field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/translations",
                         Some("response_format"),
                         &msg,
@@ -603,7 +603,7 @@ pub async fn audio_translations(
                     let msg = format!("Invalid temperature field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/translations",
                         Some("temperature"),
                         &msg,
@@ -614,7 +614,7 @@ pub async fn audio_translations(
                 temperature = Some(text.parse::<f32>().map_err(|_| {
                     super::monitor_helpers::emit_validation_error(
                         &state,
-                        client_auth.as_ref().map(|e| e),
+                        client_auth.as_ref(),
                         "/v1/audio/translations",
                         Some("temperature"),
                         "temperature must be a number",
@@ -631,7 +631,7 @@ pub async fn audio_translations(
     let file_data = file_data.ok_or_else(|| {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/audio/translations",
             Some("file"),
             "file is required",
@@ -642,7 +642,7 @@ pub async fn audio_translations(
     let model = model.ok_or_else(|| {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/audio/translations",
             Some("model"),
             "model is required",
@@ -654,7 +654,7 @@ pub async fn audio_translations(
     if file_data.is_empty() {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/audio/translations",
             Some("file"),
             "file cannot be empty",
@@ -666,7 +666,7 @@ pub async fn audio_translations(
     if model.is_empty() {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/audio/translations",
             Some("model"),
             "model cannot be empty",
@@ -679,7 +679,7 @@ pub async fn audio_translations(
         if !(0.0..=1.0).contains(&temp) {
             super::monitor_helpers::emit_validation_error(
                 &state,
-                client_auth.as_ref().map(|e| e),
+                client_auth.as_ref(),
                 "/v1/audio/translations",
                 Some("temperature"),
                 "temperature must be between 0 and 1",
@@ -702,7 +702,7 @@ pub async fn audio_translations(
             );
             super::monitor_helpers::emit_validation_error(
                 &state,
-                client_auth.as_ref().map(|e| e),
+                client_auth.as_ref(),
                 "/v1/audio/translations",
                 Some("response_format"),
                 &msg,
@@ -719,7 +719,7 @@ pub async fn audio_translations(
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/translations"});
     let _monitor_request_id = super::monitor_helpers::emit_llm_request(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         "/v1/audio/translations",
         &model,
         false,
@@ -773,7 +773,7 @@ pub async fn audio_translations(
             // Emit monitor error event
             super::monitor_helpers::emit_llm_error(
                 &state,
-                client_auth.as_ref().map(|ext| ext),
+                client_auth.as_ref(),
                 Some(&request_id),
                 "unknown",
                 &model_for_log,
@@ -834,7 +834,7 @@ pub async fn audio_translations(
     };
     super::monitor_helpers::emit_llm_response(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         &request_id,
         &provider,
         &model_for_log,
@@ -921,7 +921,7 @@ pub async fn audio_speech(
     let monitor_body = serde_json::json!({"model": &request.model, "endpoint": "/v1/audio/speech", "voice": &request.voice});
     let _monitor_request_id = super::monitor_helpers::emit_llm_request(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         "/v1/audio/speech",
         &request.model,
         false,
@@ -939,7 +939,7 @@ pub async fn audio_speech(
     if let Err(e) = validate_speech_request(&request) {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/audio/speech",
             e.error.error.param.as_deref(),
             &e.error.error.message,
@@ -996,7 +996,7 @@ pub async fn audio_speech(
             // Emit monitor error event
             super::monitor_helpers::emit_llm_error(
                 &state,
-                client_auth.as_ref().map(|ext| ext),
+                client_auth.as_ref(),
                 Some(&request_id),
                 "unknown",
                 &request.model,
@@ -1056,7 +1056,7 @@ pub async fn audio_speech(
     // Emit monitor response event
     super::monitor_helpers::emit_llm_response(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         &request_id,
         &provider,
         &request.model,

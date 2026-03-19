@@ -30,7 +30,7 @@ interface ClientMemoryTabProps {
   onViewChange?: (view: string, subTab?: string | null) => void
 }
 
-export function ClientMemoryTab({ client, onUpdate, onViewChange }: ClientMemoryTabProps) {
+export function ClientMemoryTab({ client, onUpdate }: ClientMemoryTabProps) {
   const [memoryEnabled, setMemoryEnabled] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(true)
 

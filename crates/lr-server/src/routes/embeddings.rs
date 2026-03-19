@@ -50,7 +50,7 @@ pub async fn embeddings(
     let request_json = serde_json::to_value(&request).unwrap_or_default();
     let _monitor_request_id = super::monitor_helpers::emit_llm_request(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         "/v1/embeddings",
         &request.model,
         false,
@@ -70,7 +70,7 @@ pub async fn embeddings(
     if let Err(e) = validate_request(&request) {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/embeddings",
             e.error.error.param.as_deref(),
             &e.error.error.message,
@@ -86,7 +86,7 @@ pub async fn embeddings(
     if let Err(e) = check_rate_limits(&state, &auth, &request).await {
         super::monitor_helpers::emit_rate_limit_event(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "rate_limit_exceeded",
             "/v1/embeddings",
             &e.error.error.message,
@@ -174,7 +174,7 @@ pub async fn embeddings(
             // Emit monitor error event
             super::monitor_helpers::emit_llm_error(
                 &state,
-                client_auth.as_ref().map(|ext| ext),
+                client_auth.as_ref(),
                 Some(&request_id),
                 "unknown",
                 &request.model,
@@ -251,7 +251,7 @@ pub async fn embeddings(
     // Emit monitor response event
     super::monitor_helpers::emit_llm_response(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         &request_id,
         &provider,
         &response.model,

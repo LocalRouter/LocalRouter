@@ -176,6 +176,7 @@ impl McpGateway {
     }
 
     /// Emit a monitor event if the callback is set.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_monitor_event(
         &self,
         event_type: lr_monitor::MonitorEventType,

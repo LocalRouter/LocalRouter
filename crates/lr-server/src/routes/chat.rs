@@ -64,7 +64,7 @@ pub async fn chat_completions(
     let request_json = serde_json::to_value(&request).unwrap_or_default();
     let _monitor_request_id = super::monitor_helpers::emit_llm_request(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         "/v1/chat/completions",
         &request.model,
         request.stream,
@@ -78,7 +78,7 @@ pub async fn chat_completions(
     if let Err(e) = validate_request(&request) {
         super::monitor_helpers::emit_validation_error(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "/v1/chat/completions",
             e.error.error.param.as_deref(),
             &e.error.error.message,
@@ -320,7 +320,7 @@ pub async fn chat_completions(
     if let Err(e) = check_rate_limits(&state, &auth, &request).await {
         super::monitor_helpers::emit_rate_limit_event(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             "rate_limit_exceeded",
             "/v1/chat/completions",
             &e.error.error.message,
@@ -520,7 +520,7 @@ pub async fn chat_completions(
             let req_json = serde_json::to_value(&request).unwrap_or_default();
             super::monitor_helpers::emit_llm_request_transformed(
                 &state,
-                client_auth.as_ref().map(|e| e),
+                client_auth.as_ref(),
                 "/v1/chat/completions",
                 &request.model,
                 request.stream,
@@ -2792,7 +2792,7 @@ async fn handle_non_streaming_parallel(
             }
             super::monitor_helpers::emit_llm_error(
                 &state,
-                client_auth.as_ref().map(|ext| ext),
+                client_auth.as_ref(),
                 Some(&generation_id),
                 "unknown",
                 "unknown",
@@ -2964,7 +2964,7 @@ async fn handle_non_streaming(
             // Emit monitor error event
             super::monitor_helpers::emit_llm_error(
                 &state,
-                client_auth.as_ref().map(|ext| ext),
+                client_auth.as_ref(),
                 Some(&generation_id),
                 "unknown",
                 &request.model,
@@ -3125,7 +3125,7 @@ async fn build_non_streaming_response(
             .and_then(|c| c.finish_reason.as_deref());
         super::monitor_helpers::emit_llm_response(
             &state,
-            client_auth.as_ref().map(|e| e),
+            client_auth.as_ref(),
             &generation_id,
             &response.provider,
             &response.model,
@@ -3356,7 +3356,7 @@ async fn handle_streaming(
             // Emit monitor error event
             super::monitor_helpers::emit_llm_error(
                 &state,
-                client_auth.as_ref().map(|ext| ext),
+                client_auth.as_ref(),
                 Some(&generation_id),
                 "unknown",
                 &model,
@@ -3439,7 +3439,7 @@ async fn handle_streaming(
     // Emit pending monitor event for streaming response
     let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         &generation_id,
         &model,
     );
@@ -3801,7 +3801,7 @@ async fn handle_streaming_parallel(
             }
             super::monitor_helpers::emit_llm_error(
                 &state,
-                client_auth.as_ref().map(|ext| ext),
+                client_auth.as_ref(),
                 Some(&generation_id),
                 "unknown",
                 &model,
@@ -3818,7 +3818,7 @@ async fn handle_streaming_parallel(
     // Emit pending monitor event for streaming response
     let monitor_event_id = super::monitor_helpers::emit_llm_response_pending(
         &state,
-        client_auth.as_ref().map(|e| e),
+        client_auth.as_ref(),
         &generation_id,
         &model,
     );

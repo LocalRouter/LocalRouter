@@ -89,6 +89,7 @@ pub fn emit_llm_request_transformed(
 }
 
 /// Emit an LlmResponse monitor event for a completed non-streaming response.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_llm_response(
     state: &AppState,
     client_auth: Option<&Extension<ClientAuthContext>>,
@@ -163,6 +164,7 @@ pub fn emit_llm_response_pending(
 }
 
 /// Update a pending streaming LlmResponse with final data.
+#[allow(clippy::too_many_arguments)]
 pub fn complete_llm_response(
     state: &AppState,
     monitor_event_id: &str,
