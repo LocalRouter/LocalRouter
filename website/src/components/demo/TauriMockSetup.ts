@@ -2272,17 +2272,22 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       const provider = model.startsWith('gpt') ? 'openai-primary' :
                        model.startsWith('claude') ? 'anthropic-main' :
                        model.startsWith('gemini') ? 'gemini-google' : providers[Math.floor(Math.random() * providers.length)]
+      const input_tokens = Math.floor(Math.random() * 3000) + 500
+      const output_tokens = Math.floor(Math.random() * 2000) + 100
       return {
         id: `log-${i + 1}`,
         timestamp: new Date(now - (i * 30000 + Math.random() * 30000)).toISOString(),
-        client_id: clients[Math.floor(Math.random() * clients.length)],
+        api_key_name: clients[Math.floor(Math.random() * clients.length)],
         model,
         provider,
-        request_tokens: Math.floor(Math.random() * 3000) + 500,
-        response_tokens: Math.floor(Math.random() * 2000) + 100,
+        input_tokens,
+        output_tokens,
+        total_tokens: input_tokens + output_tokens,
         latency_ms: Math.floor(Math.random() * 3000) + 500,
         status: Math.random() > 0.05 ? 'success' : 'error',
-        cost: Math.random() * 0.1,
+        status_code: Math.random() > 0.05 ? 200 : 500,
+        cost_usd: Math.random() * 0.1,
+        request_id: `req-${generateId()}`,
       }
     })
   },
@@ -2305,9 +2310,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         timestamp: new Date(now - (i * 20000 + Math.random() * 20000)).toISOString(),
         client_id: clients[Math.floor(Math.random() * clients.length)],
         server_id: serverId,
-        tool: tools[Math.floor(Math.random() * tools.length)],
+        method: tools[Math.floor(Math.random() * tools.length)],
         latency_ms: Math.floor(Math.random() * 500) + 10,
         status: Math.random() > 0.03 ? 'success' : 'error',
+        status_code: Math.random() > 0.03 ? 200 : 500,
+        transport: 'stdio',
+        request_id: `mcp-req-${generateId()}`,
       }
     })
   },
