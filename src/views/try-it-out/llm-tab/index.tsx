@@ -872,6 +872,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
         <TabsContent value="chat" className="flex-1 min-h-0 mt-4">
           <ChatPanel
+            key={`${mode}-${selectedClientId}-${selectedProvider}`}
             openaiClient={openaiClient}
             isReady={isReady()}
             selectedModel={getEffectiveModel()}
@@ -881,6 +882,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
         <TabsContent value="images" className="flex-1 min-h-0 mt-4">
           <ImagesPanel
+            key={`${mode}-${selectedClientId}-${selectedProvider}`}
             openaiClient={openaiClient}
             isReady={isReady()}
             selectedModel={getModelWithProvider()}
@@ -889,6 +891,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
         <TabsContent value="embeddings" className="flex-1 min-h-0 mt-4">
           <EmbeddingsPanel
+            key={`${mode}-${selectedClientId}-${selectedProvider}`}
             openaiClient={openaiClient}
             isReady={isReady()}
             selectedModel={getModelWithProvider()}
@@ -897,6 +900,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
         <TabsContent value="speech" className="flex-1 min-h-0 mt-4">
           <SpeechPanel
+            key={`${mode}-${selectedClientId}-${selectedProvider}`}
             openaiClient={openaiClient}
             isReady={isReady()}
             selectedModel={getModelWithProvider()}
@@ -905,6 +909,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
         <TabsContent value="transcribe" className="flex-1 min-h-0 mt-4">
           <TranscribePanel
+            key={`${mode}-${selectedClientId}-${selectedProvider}`}
             openaiClient={openaiClient}
             isReady={isReady()}
             selectedModel={getModelWithProvider()}
