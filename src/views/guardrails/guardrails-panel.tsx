@@ -19,6 +19,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { SafetyModelPicker, type PickerSelection } from "@/components/guardrails/SafetyModelPicker"
@@ -248,17 +259,37 @@ export function GuardrailsPanel({
                               Remove this model from GuardRails. The model itself remains available on the provider and can be re-added later.
                             </p>
                           </div>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              onRemoveModel(selectedModel.id)
-                              setSelectedModelId(null)
-                            }}
-                            className="border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-                          >
-                            Remove
-                          </Button>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                              >
+                                Remove
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Remove Safety Model?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  This will remove &ldquo;{selectedModel.label}&rdquo; from GuardRails. The model itself remains available on the provider and can be re-added later.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                  onClick={() => {
+                                    onRemoveModel(selectedModel.id)
+                                    setSelectedModelId(null)
+                                  }}
+                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                >
+                                  Remove
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
                         </div>
                       </CardContent>
                     </Card>

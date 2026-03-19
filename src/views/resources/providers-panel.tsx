@@ -152,7 +152,6 @@ export function ProvidersPanel({
 
   // Dialog states
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [providerToDelete, setProviderToDelete] = useState<Provider | null>(null)
 
   // Detailed models for the Models tab
@@ -363,7 +362,6 @@ export function ProvidersPanel({
       toast.error("Failed to delete provider")
     } finally {
       setProviderToDelete(null)
-      setDeleteDialogOpen(false)
     }
   }
 
@@ -874,10 +872,7 @@ export function ProvidersPanel({
                             </div>
                             <Button
                               variant="destructive"
-                              onClick={() => {
-                                setProviderToDelete(selectedProvider)
-                                setDeleteDialogOpen(true)
-                              }}
+                              onClick={() => setProviderToDelete(selectedProvider)}
                             >
                               Delete Provider
                             </Button>
@@ -1463,7 +1458,6 @@ export function ProvidersPanel({
                           onClick={(e) => {
                             e.stopPropagation()
                             setProviderToDelete(provider)
-                            setDeleteDialogOpen(true)
                           }}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -1710,7 +1704,7 @@ export function ProvidersPanel({
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <AlertDialog open={!!providerToDelete} onOpenChange={(open) => !open && setProviderToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Provider</AlertDialogTitle>

@@ -29,6 +29,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
@@ -815,9 +816,30 @@ export function McpServersPanel({
                                     <Button size="sm" variant="secondary" onClick={() => checkOAuthStatus(selectedServer.id)}>
                                       Test
                                     </Button>
-                                    <Button size="sm" variant="destructive" onClick={() => handleRevokeOAuth(selectedServer.id)}>
-                                      Revoke
-                                    </Button>
+                                    <AlertDialog>
+                                      <AlertDialogTrigger asChild>
+                                        <Button size="sm" variant="destructive">
+                                          Revoke
+                                        </Button>
+                                      </AlertDialogTrigger>
+                                      <AlertDialogContent>
+                                        <AlertDialogHeader>
+                                          <AlertDialogTitle>Revoke OAuth Tokens?</AlertDialogTitle>
+                                          <AlertDialogDescription>
+                                            This will revoke the OAuth tokens for &ldquo;{selectedServer.name}&rdquo;. The server will lose its authenticated connection and you&apos;ll need to re-authenticate to use it again.
+                                          </AlertDialogDescription>
+                                        </AlertDialogHeader>
+                                        <AlertDialogFooter>
+                                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                          <AlertDialogAction
+                                            onClick={() => handleRevokeOAuth(selectedServer.id)}
+                                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                          >
+                                            Revoke
+                                          </AlertDialogAction>
+                                        </AlertDialogFooter>
+                                      </AlertDialogContent>
+                                    </AlertDialog>
                                   </>
                                 )}
                               </div>
