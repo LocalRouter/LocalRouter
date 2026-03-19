@@ -200,6 +200,11 @@ impl McpGateway {
         duration_ms: Option<u64>,
     ) -> String {
         if let Some(cb) = self.on_monitor_event.read().as_ref() {
+            tracing::debug!(
+                "Gateway emitting monitor event: {:?} for client {:?}",
+                event_type,
+                client_id
+            );
             cb(
                 event_type,
                 client_id,
@@ -210,6 +215,7 @@ impl McpGateway {
                 duration_ms,
             )
         } else {
+            tracing::warn!("Gateway monitor callback not set, dropping event: {:?}", event_type);
             String::new()
         }
     }

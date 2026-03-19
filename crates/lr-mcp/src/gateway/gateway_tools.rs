@@ -202,6 +202,11 @@ impl McpGateway {
                 .cloned()
         };
         if let Some(vs) = matching_vs {
+            tracing::debug!(
+                "Gateway tool call dispatched to virtual server: tool={}, vs={}",
+                tool_name,
+                vs.display_name()
+            );
             return self
                 .dispatch_virtual_tool_call(vs, session, &tool_name, request)
                 .await;
@@ -746,12 +751,45 @@ impl McpGateway {
             }
         };
 
-        // 4. Call handler
+        // 4. Prepare client name and emit pending monitor event
         let display_client_name = if client_name.is_empty() {
             client_id.clone()
         } else {
             client_name
         };
+        let mon_session_id = {
+            let s = session.read().await;
+            s.monitor_session_id.clone()
+        };
+        let mon_arguments = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("arguments"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let mon_event_id = self.emit_monitor_event(
+            lr_monitor::MonitorEventType::McpToolCall,
+            Some(client_id.clone()),
+            Some(display_client_name.clone()),
+            mon_session_id,
+            lr_monitor::MonitorEventData::McpToolCall {
+                tool_name: tool_name.to_string(),
+                server_id: vs.id().to_string(),
+                server_name: Some(vs.display_name().to_string()),
+                arguments: mon_arguments,
+                firewall_action: None,
+                latency_ms: None,
+                success: None,
+                response_preview: None,
+                error: None,
+            },
+            lr_monitor::EventStatus::Pending,
+            None,
+        );
+
+        let tool_call_start = std::time::Instant::now();
+
+        // 5. Call handler
         let result = vs
             .handle_tool_call(
                 state,
@@ -762,18 +800,50 @@ impl McpGateway {
             )
             .await;
 
-        // 5. Apply result
+        let tool_call_latency = tool_call_start.elapsed().as_millis() as u64;
+
+        // 6. Apply result and update monitor event
         match result {
-            VirtualToolCallResult::Success(response) => Ok(JsonRpcResponse::success(
-                request.id.unwrap_or(Value::Null),
-                response,
-            )),
+            VirtualToolCallResult::Success(response) => {
+                let preview = serde_json::to_string(&response).unwrap_or_default();
+                let preview = if preview.len() > 2000 { format!("{}...", &preview[..2000]) } else { preview };
+                self.update_monitor_event(
+                    &mon_event_id,
+                    Box::new(move |event| {
+                        event.status = lr_monitor::EventStatus::Complete;
+                        event.duration_ms = Some(tool_call_latency);
+                        if let lr_monitor::MonitorEventData::McpToolCall { latency_ms, success, response_preview, .. } = &mut event.data {
+                            *latency_ms = Some(tool_call_latency);
+                            *success = Some(true);
+                            *response_preview = Some(preview);
+                        }
+                    }),
+                );
+                Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    response,
+                ))
+            }
             VirtualToolCallResult::SuccessWithSideEffects {
                 response,
                 invalidate_cache,
                 send_list_changed,
                 state_update,
             } => {
+                let preview = serde_json::to_string(&response).unwrap_or_default();
+                let preview = if preview.len() > 2000 { format!("{}...", &preview[..2000]) } else { preview };
+                self.update_monitor_event(
+                    &mon_event_id,
+                    Box::new(move |event| {
+                        event.status = lr_monitor::EventStatus::Complete;
+                        event.duration_ms = Some(tool_call_latency);
+                        if let lr_monitor::MonitorEventData::McpToolCall { latency_ms, success, response_preview, .. } = &mut event.data {
+                            *latency_ms = Some(tool_call_latency);
+                            *success = Some(true);
+                            *response_preview = Some(preview);
+                        }
+                    }),
+                );
                 if state_update.is_some() || invalidate_cache {
                     let mut sw = session.write().await;
                     if let Some(updater) = state_update {
@@ -800,20 +870,49 @@ impl McpGateway {
                     response,
                 ))
             }
-            VirtualToolCallResult::NotHandled => Ok(JsonRpcResponse::error(
-                request.id.unwrap_or(Value::Null),
-                JsonRpcError::tool_not_found(tool_name),
-            )),
-            VirtualToolCallResult::ToolError(e) => Ok(JsonRpcResponse::success(
-                request.id.unwrap_or(Value::Null),
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!("Error: {}", e)
-                    }],
-                    "isError": true
-                }),
-            )),
+            VirtualToolCallResult::NotHandled => {
+                self.update_monitor_event(
+                    &mon_event_id,
+                    Box::new(move |event| {
+                        event.status = lr_monitor::EventStatus::Error;
+                        event.duration_ms = Some(tool_call_latency);
+                        if let lr_monitor::MonitorEventData::McpToolCall { latency_ms, success, error, .. } = &mut event.data {
+                            *latency_ms = Some(tool_call_latency);
+                            *success = Some(false);
+                            *error = Some("Tool not handled".to_string());
+                        }
+                    }),
+                );
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::tool_not_found(tool_name),
+                ))
+            }
+            VirtualToolCallResult::ToolError(e) => {
+                let err_msg = format!("{}", e);
+                self.update_monitor_event(
+                    &mon_event_id,
+                    Box::new(move |event| {
+                        event.status = lr_monitor::EventStatus::Error;
+                        event.duration_ms = Some(tool_call_latency);
+                        if let lr_monitor::MonitorEventData::McpToolCall { latency_ms, success, error, .. } = &mut event.data {
+                            *latency_ms = Some(tool_call_latency);
+                            *success = Some(false);
+                            *error = Some(err_msg);
+                        }
+                    }),
+                );
+                Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    json!({
+                        "content": [{
+                            "type": "text",
+                            "text": format!("Error: {}", e)
+                        }],
+                        "isError": true
+                    }),
+                ))
+            }
         }
     }
 
