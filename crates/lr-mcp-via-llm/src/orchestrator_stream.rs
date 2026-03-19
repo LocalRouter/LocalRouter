@@ -47,6 +47,7 @@ pub async fn run_agentic_loop_streaming(
     guardrail_gate: Option<crate::manager::GuardrailGate>,
     memory_service: Option<Arc<lr_memory::MemoryService>>,
     on_transformed_request: orchestrator::TransformedRequestCallback,
+    monitor_session_id: Option<String>,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
 {
     let started_at = Instant::now();
@@ -59,21 +60,33 @@ pub async fn run_agentic_loop_streaming(
     };
 
     // Set up gateway client for MCP operations
-    let gw_client = GatewayClient::new(&gateway, client, gateway_session_key, allowed_servers);
+    let mut gw_client = GatewayClient::new(&gateway, client, gateway_session_key, allowed_servers);
+    gw_client.monitor_session_id = monitor_session_id;
 
-    // Initialize gateway session if needed
+    // Initialize gateway session if needed and inject server instructions.
+    // Instructions are persisted in the session so they are re-injected on
+    // every turn of a multi-turn conversation.
     if !gateway_initialized {
         let instructions = gw_client.initialize().await?;
-        session.write().gateway_initialized = true;
-        if let Some(instructions) = instructions {
-            orchestrator::inject_server_instructions(&mut request, &instructions);
+        let mut s = session.write();
+        s.gateway_initialized = true;
+        if let Some(ref instructions) = instructions {
+            s.gateway_instructions = Some(instructions.clone());
+            orchestrator::inject_server_instructions(&mut request, instructions);
         }
     } else {
         // Gateway was already initialized (e.g. by list_tools_for_preview) —
         // pick up any pending instructions that were stored at that time.
         let pending = session.write().pending_gateway_instructions.take();
         if let Some(instructions) = pending {
+            session.write().gateway_instructions = Some(instructions.clone());
             orchestrator::inject_server_instructions(&mut request, &instructions);
+        } else {
+            // Re-inject persisted instructions for multi-turn conversations
+            let instructions = session.read().gateway_instructions.clone();
+            if let Some(ref instructions) = instructions {
+                orchestrator::inject_server_instructions(&mut request, instructions);
+            }
         }
     }
 
@@ -814,6 +827,7 @@ async fn execute_resource_read_background(
             permissions.mcp_elicitation_permission.clone(),
             permissions.memory_enabled,
             request,
+            None, // monitor_session_id
         ),
     )
     .await
@@ -874,6 +888,7 @@ async fn execute_resource_read_background(
                     permissions.mcp_elicitation_permission.clone(),
                     permissions.memory_enabled,
                     skill_request,
+                    None, // monitor_session_id
                 ),
             )
             .await
@@ -941,6 +956,7 @@ async fn execute_prompt_get_background(
             permissions.mcp_elicitation_permission.clone(),
             permissions.memory_enabled,
             request,
+            None, // monitor_session_id
         ),
     )
     .await

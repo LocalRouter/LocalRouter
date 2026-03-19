@@ -75,6 +75,9 @@ pub struct McpViaLlmSession {
     /// Stored here when `list_tools_for_preview` initializes the gateway
     /// before the orchestrator runs, so the orchestrator can still inject them.
     pub pending_gateway_instructions: Option<String>,
+    /// Persisted gateway instructions — re-injected on every request so that
+    /// multi-turn conversations always include server instructions.
+    pub gateway_instructions: Option<String>,
     /// Conversation history (including injected tool calls)
     pub history: SessionHistory,
     /// Last time this session was active
@@ -92,6 +95,7 @@ impl McpViaLlmSession {
             gateway_session_key,
             gateway_initialized: false,
             pending_gateway_instructions: None,
+            gateway_instructions: None,
             history: SessionHistory::new(),
             last_activity: Instant::now(),
             transcript_path: None,
