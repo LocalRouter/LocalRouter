@@ -136,13 +136,14 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             action_taken,
             ..
         } => {
-            format!("secret scan: {} findings ({})", findings_count, action_taken)
+            format!(
+                "secret scan: {} findings ({})",
+                findings_count, action_taken
+            )
         }
 
         // Routing
-        MonitorEventData::RouteLlmRequest {
-            original_model, ..
-        } => {
+        MonitorEventData::RouteLlmRequest { original_model, .. } => {
             format!("classify: {}", original_model)
         }
         MonitorEventData::RouteLlmResponse {
@@ -236,7 +237,12 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             status_code,
             message,
         } => {
-            format!("HTTP {} {}: {}", status_code, error_type, truncate(message, 50))
+            format!(
+                "HTTP {} {}: {}",
+                status_code,
+                error_type,
+                truncate(message, 50)
+            )
         }
 
         // Moderation
@@ -271,10 +277,7 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
         } => {
             format!("{} firewall: {} ({})", firewall_type, item_name, action)
         }
-        MonitorEventData::SseConnection {
-            action,
-            session_id,
-        } => {
+        MonitorEventData::SseConnection { action, session_id } => {
             format!("SSE {}: {}", action, truncate(session_id, 16))
         }
     }

@@ -20,9 +20,7 @@ pub async fn get_monitor_events(
         .get_state()
         .ok_or_else(|| "Server is not running".to_string())?;
 
-    Ok(app_state
-        .monitor_store
-        .list(offset, limit, filter.as_ref()))
+    Ok(app_state.monitor_store.list(offset, limit, filter.as_ref()))
 }
 
 /// Get full detail for a single monitor event.

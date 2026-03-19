@@ -175,7 +175,9 @@ impl MonitorEventType {
     /// Category for grouping/coloring in UI.
     pub fn category(&self) -> &'static str {
         match self {
-            Self::LlmRequest | Self::LlmRequestTransformed | Self::LlmResponse | Self::LlmError => "llm",
+            Self::LlmRequest | Self::LlmRequestTransformed | Self::LlmResponse | Self::LlmError => {
+                "llm"
+            }
             Self::McpToolCall
             | Self::McpToolResponse
             | Self::McpResourceRead
@@ -192,9 +194,7 @@ impl MonitorEventType {
             | Self::GuardrailResponseCheckResponse
             | Self::SecretScanRequest
             | Self::SecretScanResponse => "security",
-            Self::RouteLlmRequest
-            | Self::RouteLlmResponse
-            | Self::RoutingDecision => "routing",
+            Self::RouteLlmRequest | Self::RouteLlmResponse | Self::RoutingDecision => "routing",
             Self::AuthError | Self::AccessDenied | Self::OAuthEvent => "auth",
             Self::RateLimitEvent => "rate_limit",
             Self::ValidationError => "validation",
