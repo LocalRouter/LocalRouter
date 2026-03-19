@@ -371,7 +371,7 @@ impl<'a> GatewayClient<'a> {
         let request = self.make_request(
             "tools/call",
             Some(json!({
-                "name": "skill_read_file",
+                "name": "SkillReadFile",
                 "arguments": {
                     "skill": skill_name,
                     "path": subpath

@@ -560,13 +560,18 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     config_manager.get().context_management.clone();
 
                 // Register skills virtual server
+                let skills_config = config_manager.get().skills.clone();
                 let skills_vs = Arc::new(
                     lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
                         skill_manager.clone(),
                         context_management_config.clone(),
+                        skills_config,
                     ),
                 );
-                app_state.mcp_gateway.register_virtual_server(skills_vs);
+                app_state
+                    .mcp_gateway
+                    .register_virtual_server(skills_vs.clone());
+                app.manage(skills_vs);
                 info!("Skills virtual server registered");
 
                 // Capture vector search setting before moving config

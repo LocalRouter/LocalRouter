@@ -11,29 +11,37 @@ use super::gateway_tools::FirewallDecisionResult;
 use super::virtual_server::*;
 use crate::protocol::McpTool;
 use lr_skills::manager::SkillManager;
-use lr_skills::mcp_tools::{SKILL_META_TOOL_NAME, SKILL_READ_FILE_TOOL_NAME};
 
 /// Virtual MCP server for AgentSkills.io skills.
 pub struct SkillsVirtualServer {
     skill_manager: Arc<SkillManager>,
     /// Global context management config (read at session creation time).
     config: std::sync::RwLock<lr_config::ContextManagementConfig>,
+    /// Skills config with configurable tool names.
+    skills_config: std::sync::RwLock<lr_config::SkillsConfig>,
 }
 
 impl SkillsVirtualServer {
     pub fn new(
         skill_manager: Arc<SkillManager>,
         config: lr_config::ContextManagementConfig,
+        skills_config: lr_config::SkillsConfig,
     ) -> Self {
         Self {
             skill_manager,
             config: std::sync::RwLock::new(config),
+            skills_config: std::sync::RwLock::new(skills_config),
         }
     }
 
-    /// Update the global config (called when settings change).
+    /// Update the global context management config (called when settings change).
     pub fn update_config(&self, config: lr_config::ContextManagementConfig) {
         *self.config.write().unwrap() = config;
+    }
+
+    /// Update the skills config (called when settings change).
+    pub fn update_skills_config(&self, config: lr_config::SkillsConfig) {
+        *self.skills_config.write().unwrap() = config;
     }
 }
 
@@ -42,6 +50,10 @@ impl SkillsVirtualServer {
 pub struct SkillsSessionState {
     pub permissions: lr_config::SkillsPermissions,
     pub context_management_enabled: bool,
+    /// Configured tool name for the skill-read meta-tool.
+    pub tool_name: String,
+    /// Configured tool name for the internal skill file reader.
+    pub read_file_tool_name: String,
 }
 
 impl VirtualSessionState for SkillsSessionState {
@@ -78,7 +90,8 @@ impl VirtualMcpServer for SkillsVirtualServer {
     }
 
     fn owns_tool(&self, tool_name: &str) -> bool {
-        tool_name == SKILL_META_TOOL_NAME || tool_name == SKILL_READ_FILE_TOOL_NAME
+        let skills_config = self.skills_config.read().unwrap();
+        tool_name == skills_config.tool_name || tool_name == skills_config.read_file_tool_name
     }
 
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
@@ -92,7 +105,12 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
-        lr_skills::mcp_tools::build_skill_tools(&self.skill_manager, &state.permissions)
+        lr_skills::mcp_tools::build_skill_tools(
+            &self.skill_manager,
+            &state.permissions,
+            &state.tool_name,
+            "ResourceRead",
+        )
     }
 
     fn check_permissions(
@@ -141,8 +159,8 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
-        // Handle skill_read_file (internal tool, not listed to LLM)
-        if tool_name == SKILL_READ_FILE_TOOL_NAME {
+        // Handle skill file reading (internal tool, not listed to LLM)
+        if tool_name == state.read_file_tool_name {
             let skill_name = arguments
                 .get("skill")
                 .and_then(|v| v.as_str())
@@ -154,6 +172,8 @@ impl VirtualMcpServer for SkillsVirtualServer {
                 subpath,
                 &self.skill_manager,
                 &state.permissions,
+                &state.tool_name,
+                &state.read_file_tool_name,
             ) {
                 Ok(content) => VirtualToolCallResult::Success(serde_json::json!({
                     "content": [{ "type": "text", "text": content }]
@@ -162,12 +182,13 @@ impl VirtualMcpServer for SkillsVirtualServer {
             };
         }
 
-        // Handle skill_read
+        // Handle skill read meta-tool
         match lr_skills::mcp_tools::handle_skill_tool_call(
             tool_name,
             &arguments,
             &self.skill_manager,
             &state.permissions,
+            &state.tool_name,
         )
         .await
         {
@@ -199,6 +220,8 @@ impl VirtualMcpServer for SkillsVirtualServer {
             &self.skill_manager,
             &state.permissions,
             state.context_management_enabled,
+            &state.tool_name,
+            "ResourceRead",
         );
 
         Some(VirtualInstructions {
@@ -211,9 +234,12 @@ impl VirtualMcpServer for SkillsVirtualServer {
 
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {
         let config = self.config.read().unwrap();
+        let skills_config = self.skills_config.read().unwrap();
         Box::new(SkillsSessionState {
             permissions: client.skills_permissions.clone(),
             context_management_enabled: client.is_context_management_enabled(&config),
+            tool_name: skills_config.tool_name.clone(),
+            read_file_tool_name: skills_config.read_file_tool_name.clone(),
         })
     }
 
@@ -223,20 +249,22 @@ impl VirtualMcpServer for SkillsVirtualServer {
         client: &lr_config::Client,
     ) {
         let config = self.config.read().unwrap();
+        let skills_config = self.skills_config.read().unwrap();
         if let Some(s) = state.as_any_mut().downcast_mut::<SkillsSessionState>() {
             s.permissions = client.skills_permissions.clone();
             s.context_management_enabled = client.is_context_management_enabled(&config);
+            s.tool_name = skills_config.tool_name.clone();
+            s.read_file_tool_name = skills_config.read_file_tool_name.clone();
         }
     }
 
     fn all_tool_names(&self) -> Vec<String> {
-        vec![SKILL_META_TOOL_NAME.to_string()]
+        let skills_config = self.skills_config.read().unwrap();
+        vec![skills_config.tool_name.clone()]
     }
 
     fn is_tool_indexable(&self, tool_name: &str) -> bool {
-        match tool_name {
-            "skill_read" => true, // Skill content useful
-            _ => false,
-        }
+        let skills_config = self.skills_config.read().unwrap();
+        tool_name == skills_config.tool_name
     }
 }

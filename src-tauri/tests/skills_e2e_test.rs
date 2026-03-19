@@ -129,6 +129,7 @@ async fn test_skills_e2e_all_tool_commands() {
         lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
             skill_manager,
             lr_config::ContextManagementConfig::default(),
+            lr_config::SkillsConfig::default(),
         ),
     ));
     let gateway = Arc::new(gateway);
@@ -174,7 +175,7 @@ async fn test_skills_e2e_all_tool_commands() {
     let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
     assert!(
-        tool_names.contains(&"skill_read"),
+        tool_names.contains(&"SkillRead"),
         "Missing skill_read meta-tool. Found: {:?}",
         tool_names
     );
@@ -182,7 +183,7 @@ async fn test_skills_e2e_all_tool_commands() {
     // Verify the meta-tool exists and accepts a "name" parameter
     let skill_tool = tools
         .iter()
-        .find(|t| t["name"].as_str() == Some("skill_read"))
+        .find(|t| t["name"].as_str() == Some("SkillRead"))
         .expect("skill_read tool should exist");
     let schema = &skill_tool["inputSchema"];
     assert!(
@@ -196,7 +197,7 @@ async fn test_skills_e2e_all_tool_commands() {
         2,
         "tools/call".to_string(),
         Some(json!({
-            "name": "skill_read",
+            "name": "SkillRead",
             "arguments": { "name": "get-current-time" }
         })),
     );
@@ -280,7 +281,7 @@ async fn test_skills_e2e_all_tool_commands() {
     let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
     assert!(
-        tool_names.contains(&"skill_read"),
+        tool_names.contains(&"SkillRead"),
         "skill_read should still be present. Found: {:?}",
         tool_names
     );
@@ -308,6 +309,7 @@ async fn setup_gateway_with_skill() -> (Arc<McpGateway>, TempDir) {
         lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
             skill_manager,
             lr_config::ContextManagementConfig::default(),
+            lr_config::SkillsConfig::default(),
         ),
     ));
 
@@ -367,8 +369,8 @@ async fn test_no_skill_tools_when_no_skills_configured() {
 
     // No skill tools should be present
     assert!(
-        !tool_names.iter().any(|n| n.starts_with("skill_")),
-        "skill_ tools should not appear without skills. Found: {:?}",
+        !tool_names.iter().any(|n| n.starts_with("Skill")),
+        "Skill tools should not appear without skills. Found: {:?}",
         tool_names
     );
 }
@@ -412,7 +414,7 @@ async fn test_skill_tools_present_after_cache_hit() {
 
     let names1 = extract_tool_names(&response1);
     assert!(
-        names1.contains(&"skill_read".to_string()),
+        names1.contains(&"SkillRead".to_string()),
         "First call should include skill_read tool. Found: {:?}",
         names1
     );
@@ -442,7 +444,7 @@ async fn test_skill_tools_present_after_cache_hit() {
 
     let names2 = extract_tool_names(&response2);
     assert!(
-        names2.contains(&"skill_read".to_string()),
+        names2.contains(&"SkillRead".to_string()),
         "Cached tools/list must still include skill_read tool. Found: {:?}",
         names2
     );

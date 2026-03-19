@@ -14,13 +14,13 @@ use lr_config::SkillsPermissions;
 use lr_types::McpTool;
 use serde_json::json;
 
-/// The single meta-tool name for skill reading.
-pub const SKILL_META_TOOL_NAME: &str = "skill_read";
+/// Default meta-tool name for skill reading.
+pub const SKILL_META_TOOL_NAME: &str = "SkillRead";
 
-/// Internal tool name for reading skill files (not exposed to LLM).
+/// Default internal tool name for reading skill files (not exposed to LLM).
 /// Used by the orchestrator's `resource_read` to route skill file reads
 /// through the gateway.
-pub const SKILL_READ_FILE_TOOL_NAME: &str = "skill_read_file";
+pub const SKILL_READ_FILE_TOOL_NAME: &str = "SkillReadFile";
 
 /// Result of handling a skill tool call.
 pub enum SkillToolResult {
@@ -32,20 +32,20 @@ pub enum SkillToolResult {
 // Tool builder
 // ---------------------------------------------------------------------------
 
-/// Build the single `skill_read` meta-tool.
+/// Build the single skill-read meta-tool.
 ///
 /// The tool accepts a `name` parameter (any string). The catalog of available
 /// skills is listed in the welcome message, NOT embedded in the tool definition.
-fn build_meta_tool() -> McpTool {
+fn build_meta_tool(tool_name: &str, resource_read_name: &str) -> McpTool {
     McpTool {
-        name: SKILL_META_TOOL_NAME.to_string(),
-        description: Some(
+        name: tool_name.to_string(),
+        description: Some(format!(
             "Read a skill's full instructions, metadata, and file listing. \
              Skill names are listed in the welcome message. \
              If skills are hidden due to compression, use ctx_search to discover them. \
-             Skill files (scripts, references, assets) can be read with resource_read."
-                .to_string(),
-        ),
+             Skill files (scripts, references, assets) can be read with {}.",
+            resource_read_name,
+        )),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -66,11 +66,16 @@ fn build_meta_tool() -> McpTool {
 
 /// Generate skill MCP tools for a client's allowed skills.
 ///
-/// Returns a single `skill_read` meta-tool if there are accessible skills.
+/// Returns a single skill-read meta-tool if there are accessible skills.
 /// The skill catalog is NOT embedded in the tool — it's in the welcome message.
+///
+/// `tool_name` is the configured name for the meta-tool (e.g. "SkillRead").
+/// `resource_read_name` is the name referenced in descriptions (e.g. "ResourceRead").
 pub fn build_skill_tools(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
+    tool_name: &str,
+    resource_read_name: &str,
 ) -> Vec<McpTool> {
     let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
     if !has_any_access {
@@ -87,7 +92,7 @@ pub fn build_skill_tools(
         return Vec::new();
     }
 
-    vec![build_meta_tool()]
+    vec![build_meta_tool(tool_name, resource_read_name)]
 }
 
 /// Build the skill catalog text for inclusion in the welcome message.
@@ -95,10 +100,15 @@ pub fn build_skill_tools(
 /// Returns a formatted listing of available skills with names, descriptions,
 /// and file counts. When `compress` is true and there are many skills,
 /// the listing is truncated with a ctx_search hint.
+///
+/// `tool_name` is the configured skill-read tool name (e.g. "SkillRead").
+/// `resource_read_name` is the name referenced in descriptions (e.g. "ResourceRead").
 pub fn build_skill_catalog(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
     context_management_enabled: bool,
+    tool_name: &str,
+    resource_read_name: &str,
 ) -> Option<String> {
     let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
     if !has_any_access {
@@ -158,8 +168,14 @@ pub fn build_skill_catalog(
         }
     }
 
-    text.push_str("Call skill_read(name) to load full instructions.\n");
-    text.push_str("Read skill files with resource_read(name=\"<skill>/<path>\").\n");
+    text.push_str(&format!(
+        "Call {}(name) to load full instructions.\n",
+        tool_name
+    ));
+    text.push_str(&format!(
+        "Read skill files with {}(name=\"<skill>/<path>\").\n",
+        resource_read_name
+    ));
 
     Some(text)
 }
@@ -168,22 +184,29 @@ pub fn build_skill_catalog(
 // Tool call handler
 // ---------------------------------------------------------------------------
 
-/// Check if a tool name matches the skill meta-tool.
-pub fn is_skill_tool(tool_name: &str) -> bool {
-    tool_name == SKILL_META_TOOL_NAME
+/// Check if a tool name matches a skill tool (meta-tool or read-file tool).
+pub fn is_skill_tool(
+    tool_name: &str,
+    configured_tool_name: &str,
+    configured_rfile_name: &str,
+) -> bool {
+    tool_name == configured_tool_name || tool_name == configured_rfile_name
 }
 
 /// Handle a skill tool call.
 ///
 /// Returns `Ok(Some(result))` if the tool was the skill meta-tool,
 /// `Ok(None)` if it's not a skill tool (should be routed elsewhere).
+///
+/// `configured_tool_name` is the configured name for the meta-tool (e.g. "SkillRead").
 pub async fn handle_skill_tool_call(
     tool_name: &str,
     arguments: &serde_json::Value,
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
+    configured_tool_name: &str,
 ) -> Result<Option<SkillToolResult>, String> {
-    if tool_name != SKILL_META_TOOL_NAME {
+    if tool_name != configured_tool_name {
         return Ok(None);
     }
 
@@ -218,11 +241,16 @@ pub async fn handle_skill_tool_call(
 /// The `subpath` is relative to the skill directory, e.g. `scripts/build.sh`.
 /// Returns the file content as text, or an error if the file doesn't exist
 /// or is not part of the skill's known files.
+///
+/// `configured_tool_name` is the configured skill-read meta-tool name, used in error messages.
+/// `configured_rfile_name` is the configured read-file tool name, used in error messages.
 pub fn read_skill_file(
     skill_name: &str,
     subpath: &str,
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
+    configured_tool_name: &str,
+    configured_rfile_name: &str,
 ) -> Result<String, String> {
     // Verify access
     let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
@@ -241,11 +269,12 @@ pub fn read_skill_file(
         return Err(format!("Skill '{}' is disabled", skill_name));
     }
 
-    // Block access to SKILL.md — that's only returned by skill_read
+    // Block access to SKILL.md — that's only returned by the skill-read meta-tool
     if subpath == "SKILL.md" || subpath == "skill.md" {
-        return Err(
-            "SKILL.md is not available via resource_read. Use skill_read instead.".to_string(),
-        );
+        return Err(format!(
+            "SKILL.md is not available via {}. Use {} instead.",
+            configured_rfile_name, configured_tool_name,
+        ));
     }
 
     // Verify the file is part of the skill's known files

@@ -851,7 +851,7 @@ async fn execute_resource_read_background(
                 id: Some(json!(1)),
                 method: "tools/call".to_string(),
                 params: Some(json!({
-                    "name": "skill_read_file",
+                    "name": "SkillReadFile",
                     "arguments": { "skill": skill_name, "path": subpath }
                 })),
             };
