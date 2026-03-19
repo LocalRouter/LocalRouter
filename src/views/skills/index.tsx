@@ -66,6 +66,8 @@ interface SkillsConfig {
   paths: string[]
   disabled_skills: string[]
   async_enabled: boolean
+  tool_name: string
+  read_file_tool_name: string
 }
 
 interface SkillsViewProps {
@@ -94,6 +96,9 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   const [isMarketplaceSkill, setIsMarketplaceSkill] = useState(false)
   const [isUserCreatedSkill, setIsUserCreatedSkill] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+
+  // Global skills config (for tool names)
+  const [skillsConfig, setSkillsConfig] = useState<SkillsConfig | null>(null)
 
   // New skill form state
   const [newSkillName, setNewSkillName] = useState("")
@@ -147,8 +152,12 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
 
   const loadData = async () => {
     try {
-      const skillList = await invoke<SkillInfo[]>("list_skills")
+      const [skillList, config] = await Promise.all([
+        invoke<SkillInfo[]>("list_skills"),
+        invoke<SkillsConfig>("get_skills_config"),
+      ])
       setSkills(skillList)
+      setSkillsConfig(config)
     } catch (error) {
       console.error("Failed to load skills:", error)
     } finally {
@@ -686,6 +695,62 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
 
                   <TabsContent value="settings">
                     <div className="space-y-6">
+                      {/* Tool Names (global) */}
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="text-sm">Tool Names</CardTitle>
+                          <CardDescription>
+                            Global tool names exposed to LLM clients. Changes apply to new sessions only.
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                          <div className="flex gap-4 items-center">
+                            <label className="text-sm text-muted-foreground w-28 shrink-0">Skill read tool:</label>
+                            <Input
+                              defaultValue={skillsConfig?.tool_name ?? "SkillRead"}
+                              key={`skill-tool-name-${skillsConfig?.tool_name}`}
+                              onBlur={async (e) => {
+                                const v = e.target.value.trim()
+                                if (v && v !== skillsConfig?.tool_name) {
+                                  try {
+                                    await invoke("update_skills_tool_names", { toolName: v })
+                                    const config = await invoke<SkillsConfig>("get_skills_config")
+                                    setSkillsConfig(config)
+                                    toast.success("Skill read tool name updated")
+                                  } catch (error) {
+                                    toast.error("Failed to update skill read tool name")
+                                  }
+                                }
+                              }}
+                              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
+                              className="flex-1"
+                            />
+                          </div>
+                          <div className="flex gap-4 items-center">
+                            <label className="text-sm text-muted-foreground w-28 shrink-0">File read tool:</label>
+                            <Input
+                              defaultValue={skillsConfig?.read_file_tool_name ?? "SkillReadFile"}
+                              key={`skill-read-file-name-${skillsConfig?.read_file_tool_name}`}
+                              onBlur={async (e) => {
+                                const v = e.target.value.trim()
+                                if (v && v !== skillsConfig?.read_file_tool_name) {
+                                  try {
+                                    await invoke("update_skills_tool_names", { readFileToolName: v })
+                                    const config = await invoke<SkillsConfig>("get_skills_config")
+                                    setSkillsConfig(config)
+                                    toast.success("File read tool name updated")
+                                  } catch (error) {
+                                    toast.error("Failed to update file read tool name")
+                                  }
+                                }
+                              }}
+                              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
+                              className="flex-1"
+                            />
+                          </div>
+                        </CardContent>
+                      </Card>
+
                       {/* Danger Zone */}
                       <Card className="border-red-200 dark:border-red-900">
                         <CardHeader>

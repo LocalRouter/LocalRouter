@@ -2394,6 +2394,37 @@ pub async fn get_skills_config(
     Ok(config_manager.get().skills)
 }
 
+/// Update skills tool names
+#[tauri::command]
+pub async fn update_skills_tool_names(
+    tool_name: Option<String>,
+    read_file_tool_name: Option<String>,
+    config_manager: State<'_, ConfigManager>,
+    skills_vs: State<'_, Arc<lr_mcp::gateway::virtual_skills::SkillsVirtualServer>>,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            if let Some(ref v) = tool_name {
+                if !v.trim().is_empty() {
+                    cfg.skills.tool_name = v.trim().to_string();
+                }
+            }
+            if let Some(ref v) = read_file_tool_name {
+                if !v.trim().is_empty() {
+                    cfg.skills.read_file_tool_name = v.trim().to_string();
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Propagate to the running skills virtual server
+    let new_config = config_manager.get().skills.clone();
+    skills_vs.update_skills_config(new_config);
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Add a skill source path (directory, zip, or .skill file)
 #[tauri::command]
 pub async fn add_skill_source(
@@ -2916,6 +2947,15 @@ pub async fn debug_trigger_firewall_popup(
     let send_multiple = send_multiple.unwrap_or(false);
     let firewall_manager = state.mcp_gateway.firewall_manager.clone();
 
+    // Use a real client from config so persistent actions (AllowPermanent, DenyAlways, etc.)
+    // actually save to config. Falls back to "debug-client" if no clients exist.
+    let config = state.config_manager.get();
+    let (debug_client_id, debug_client_name) = config
+        .clients
+        .first()
+        .map(|c| (c.id.clone(), c.name.clone()))
+        .unwrap_or(("debug-client".to_string(), "Debug Test Client".to_string()));
+
     // Configure based on popup type
     let (tool_name, server_name, arguments_preview, is_model_request, is_free_tier_fallback) =
         match popup_type {
@@ -3183,8 +3223,8 @@ pub async fn debug_trigger_firewall_popup(
 
         let session = lr_mcp::gateway::firewall::FirewallApprovalSession {
             request_id: request_id.clone(),
-            client_id: "debug-client".to_string(),
-            client_name: "Debug Test Client".to_string(),
+            client_id: debug_client_id.clone(),
+            client_name: debug_client_name.clone(),
             tool_name: debug_session.tool_name,
             server_name: debug_session.server_name,
             arguments_preview: debug_session.arguments_preview,
@@ -3504,18 +3544,14 @@ pub async fn rebuild_safety_engine(
                     lr_config::ProviderType::LocalAI => "http://localhost:8080".to_string(),
                     lr_config::ProviderType::LlamaCpp => "http://localhost:8080".to_string(),
                     lr_config::ProviderType::OpenAI => "https://api.openai.com/v1".to_string(),
-                    lr_config::ProviderType::Groq => {
-                        "https://api.groq.com/openai/v1".to_string()
-                    }
+                    lr_config::ProviderType::Groq => "https://api.groq.com/openai/v1".to_string(),
                     lr_config::ProviderType::DeepInfra => {
                         "https://api.deepinfra.com/v1/openai".to_string()
                     }
                     lr_config::ProviderType::TogetherAI => {
                         "https://api.together.xyz/v1".to_string()
                     }
-                    lr_config::ProviderType::Mistral => {
-                        "https://api.mistral.ai/v1".to_string()
-                    }
+                    lr_config::ProviderType::Mistral => "https://api.mistral.ai/v1".to_string(),
                     lr_config::ProviderType::Anthropic => {
                         "https://api.anthropic.com/v1".to_string()
                     }
@@ -3526,12 +3562,8 @@ pub async fn rebuild_safety_engine(
                     lr_config::ProviderType::Gemini => {
                         "https://generativelanguage.googleapis.com/v1beta".to_string()
                     }
-                    lr_config::ProviderType::Perplexity => {
-                        "https://api.perplexity.ai".to_string()
-                    }
-                    lr_config::ProviderType::Cerebras => {
-                        "https://api.cerebras.ai/v1".to_string()
-                    }
+                    lr_config::ProviderType::Perplexity => "https://api.perplexity.ai".to_string(),
+                    lr_config::ProviderType::Cerebras => "https://api.cerebras.ai/v1".to_string(),
                     lr_config::ProviderType::XAI => "https://api.x.ai/v1".to_string(),
                     _ => "http://localhost:8080".to_string(),
                 });
@@ -4309,7 +4341,11 @@ pub async fn install_embedding_model(
         .map_err(|e| format!("Model downloaded but failed to load: {}", e))?;
 
     // Propagate to context-mode virtual server if vector search is globally enabled
-    if config_manager.get().context_management.vector_search_enabled {
+    if config_manager
+        .get()
+        .context_management
+        .vector_search_enabled
+    {
         context_mode_vs.set_embedding_service(Some(svc.clone()));
     }
 
@@ -4694,8 +4730,8 @@ pub async fn memory_test_index(content: String) -> Result<(), String> {
     let store = match guard.as_ref() {
         Some(s) => s,
         None => {
-            let new_store =
-                lr_context::ContentStore::new().map_err(|e| format!("Failed to create in-memory store: {}", e))?;
+            let new_store = lr_context::ContentStore::new()
+                .map_err(|e| format!("Failed to create in-memory store: {}", e))?;
             *guard = Some(new_store);
             guard.as_ref().unwrap()
         }
@@ -4838,13 +4874,7 @@ pub async fn search_client_memory(
         guard.clone().ok_or("Memory service not initialized")?
     };
 
-    svc.search_combined(
-        &client_id,
-        Some(&query),
-        None,
-        limit.unwrap_or(5),
-        None,
-    )
+    svc.search_combined(&client_id, Some(&query), None, limit.unwrap_or(5), None)
 }
 
 /// Read a specific source from a client's memory

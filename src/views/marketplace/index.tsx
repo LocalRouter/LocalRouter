@@ -53,11 +53,21 @@ import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import type { McpServerListing, SkillListing } from "@/components/add-resource"
 import type { ToolDefinition } from "@/types/tauri-commands"
 
+/** Returns the appropriate noun phrase for the enabled marketplace features. */
+function featureLabel(mcpEnabled: boolean, skillsEnabled: boolean): string {
+  if (mcpEnabled && skillsEnabled) return "MCP servers and skills"
+  if (mcpEnabled) return "MCP servers"
+  if (skillsEnabled) return "skills"
+  return "marketplace items"
+}
+
 interface MarketplaceConfig {
   mcp_enabled: boolean
   skills_enabled: boolean
   registry_url: string
   skill_sources: { repo_url: string; branch: string; path: string; label: string }[]
+  search_tool_name: string
+  install_tool_name: string
 }
 
 interface CacheStatus {
@@ -169,7 +179,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
     loadInstalledMcpServers()
   }, [loadConfig, loadInstalledSkills, loadInstalledMcpServers])
 
-  // Load marketplace tool definitions for Via MCP tab
+  // Load marketplace tool definitions for Via MCP tab (reload when config changes)
   useEffect(() => {
     invoke<ToolDefinition[]>("get_marketplace_tool_definitions")
       .then((defs) =>
@@ -182,7 +192,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
         )
       )
       .catch(() => setMarketplaceTools([]))
-  }, [])
+  }, [config?.mcp_enabled, config?.skills_enabled])
 
   // Search functions
   const searchMcp = useCallback(async (query: string) => {
@@ -483,7 +493,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
           Marketplace
         </h1>
         <p className="text-sm text-muted-foreground">
-          Browse and install MCP servers and skills from online registries and sources.
+          Browse and install {featureLabel(config?.mcp_enabled ?? true, config?.skills_enabled ?? true)} from online registries and sources.
         </p>
       </div>
 
@@ -557,7 +567,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
-                    placeholder={filter === "mcp" ? "Search MCP servers..." : filter === "skill" ? "Search skills..." : "Search MCP servers and skills..."}
+                    placeholder={filter === "mcp" ? "Search MCP servers..." : filter === "skill" ? "Search skills..." : `Search ${featureLabel(config?.mcp_enabled ?? true, config?.skills_enabled ?? true)}...`}
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleSearch()}
@@ -763,7 +773,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
               </CardHeader>
               <CardContent className="space-y-4 text-sm text-muted-foreground">
                 <p>
-                  MCP clients can search for and install MCP servers and skills directly through tool calls &mdash;
+                  MCP clients can search for and install {featureLabel(config?.mcp_enabled ?? true, config?.skills_enabled ?? true)} directly through tool calls &mdash;
                   no UI interaction required. This enables AI agents to discover and install capabilities on demand.
                 </p>
                 <p>
@@ -964,6 +974,62 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
                       Add Source
                     </Button>
                   </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Tool Names */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Tool Names</CardTitle>
+                <CardDescription>
+                  Configurable names for the marketplace tools exposed to LLM clients. Changes apply to new sessions only.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex gap-4 items-center">
+                  <label className="text-sm text-muted-foreground w-24 shrink-0">Search tool:</label>
+                  <Input
+                    defaultValue={config?.search_tool_name ?? "MarketplaceSearch"}
+                    key={`search-name-${config?.search_tool_name}`}
+                    onBlur={async (e) => {
+                      const v = e.target.value.trim()
+                      if (v && v !== config?.search_tool_name) {
+                        try {
+                          await invoke("update_marketplace_tool_names", { searchToolName: v })
+                          const cfg = await invoke<MarketplaceConfig>("marketplace_get_config")
+                          setConfig(cfg)
+                          toast.success("Search tool name updated")
+                        } catch (error) {
+                          toast.error("Failed to update search tool name")
+                        }
+                      }
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
+                    className="flex-1"
+                  />
+                </div>
+                <div className="flex gap-4 items-center">
+                  <label className="text-sm text-muted-foreground w-24 shrink-0">Install tool:</label>
+                  <Input
+                    defaultValue={config?.install_tool_name ?? "MarketplaceInstall"}
+                    key={`install-name-${config?.install_tool_name}`}
+                    onBlur={async (e) => {
+                      const v = e.target.value.trim()
+                      if (v && v !== config?.install_tool_name) {
+                        try {
+                          await invoke("update_marketplace_tool_names", { installToolName: v })
+                          const cfg = await invoke<MarketplaceConfig>("marketplace_get_config")
+                          setConfig(cfg)
+                          toast.success("Install tool name updated")
+                        } catch (error) {
+                          toast.error("Failed to update install tool name")
+                        }
+                      }
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
+                    className="flex-1"
+                  />
                 </div>
               </CardContent>
             </Card>

@@ -2111,6 +2111,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::preview_rag_search,
             ui::commands::preview_rag_read,
             ui::commands::get_skills_config,
+            ui::commands::update_skills_tool_names,
             ui::commands::add_skill_source,
             ui::commands::remove_skill_source,
             ui::commands::create_skill,
@@ -2120,6 +2121,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::rescan_skills,
             ui::commands::get_skill_files,
             // Marketplace commands
+            ui::commands_marketplace::update_marketplace_tool_names,
             ui::commands_marketplace::marketplace_get_config,
             ui::commands_marketplace::marketplace_set_enabled,
             ui::commands_marketplace::marketplace_set_mcp_enabled,

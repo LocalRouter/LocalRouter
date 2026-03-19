@@ -97,6 +97,9 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
   const [versionLoading, setVersionLoading] = useState(false)
   const lastLimitRef = useRef(5)
 
+  // Tool prefix state
+  const [toolPrefix, setToolPrefix] = useState("")
+
   // Tool definitions state
   const [agentTools, setAgentTools] = useState<McpToolDisplayItem[]>([])
   const [infoTools, setInfoTools] = useState<McpToolDisplayItem[]>([])
@@ -148,6 +151,15 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     }
   }, [])
 
+  const loadToolPrefix = useCallback(async () => {
+    try {
+      const prefix = await invoke<string>("get_coding_agent_tool_prefix")
+      setToolPrefix(prefix)
+    } catch (error) {
+      console.error("Failed to load tool prefix:", error)
+    }
+  }, [])
+
   const loadSessionDetail = useCallback(async (sessionId: string) => {
     setSessionDetailLoading(true)
     try {
@@ -167,6 +179,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     loadAgents()
     loadSessions()
     loadMaxSessions()
+    loadToolPrefix()
 
     const l = listenSafe("coding-agents-changed", () => {
       loadAgents()
@@ -176,7 +189,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     return () => {
       l.cleanup()
     }
-  }, [loadAgents, loadSessions, loadMaxSessions])
+  }, [loadAgents, loadSessions, loadMaxSessions, loadToolPrefix])
 
   useEffect(() => {
     if (agentId) {
@@ -1039,6 +1052,35 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                     </div>
                   )}
                 </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Tool Prefix</CardTitle>
+                <CardDescription>
+                  Prefix for coding agent tool names. When the prefix ends with a letter, suffixes use PascalCase (e.g., AgentStart). Otherwise, suffixes use snake_case (e.g., agent_start). Changes apply to new sessions only.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Input
+                  defaultValue={toolPrefix}
+                  key={`tool-prefix-${toolPrefix}`}
+                  onBlur={async (e) => {
+                    const v = e.target.value.trim()
+                    if (v && v !== toolPrefix) {
+                      try {
+                        await invoke("set_coding_agent_tool_prefix", { prefix: v })
+                        setToolPrefix(v)
+                        toast.success("Tool prefix updated")
+                      } catch (error) {
+                        toast.error("Failed to update tool prefix")
+                      }
+                    }
+                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
+                  className="w-64"
+                />
               </CardContent>
             </Card>
           </div>

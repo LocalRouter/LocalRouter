@@ -687,6 +687,8 @@ export interface SkillsConfig {
   paths: string[]
   disabled_skills: string[]
   async_enabled: boolean
+  tool_name: string
+  read_file_tool_name: string
 }
 
 /**
@@ -1284,6 +1286,8 @@ export interface MarketplaceConfig {
   skills_enabled: boolean
   registry_url: string
   skill_sources: MarketplaceSkillSource[]
+  search_tool_name: string
+  install_tool_name: string
 }
 
 /**
@@ -2833,6 +2837,23 @@ export interface SetClientCodingAgentTypeParams {
 /** Params for set_max_coding_sessions */
 export interface SetMaxCodingSessionsParams {
   maxSessions: number
+}
+
+/** Params for set_coding_agent_tool_prefix */
+export interface SetCodingAgentToolPrefixParams {
+  prefix: string
+}
+
+/** Params for update_marketplace_tool_names */
+export interface UpdateMarketplaceToolNamesParams {
+  searchToolName?: string | null
+  installToolName?: string | null
+}
+
+/** Params for update_skills_tool_names */
+export interface UpdateSkillsToolNamesParams {
+  toolName?: string | null
+  readFileToolName?: string | null
 }
 
 /** Params for set_periodic_health_enabled */

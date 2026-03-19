@@ -23,6 +23,40 @@ use lr_config::MCP_KEYRING_SERVICE;
 // Marketplace Config Commands
 // ============================================================================
 
+/// Update marketplace tool names
+#[tauri::command]
+pub async fn update_marketplace_tool_names(
+    search_tool_name: Option<String>,
+    install_tool_name: Option<String>,
+    config_manager: State<'_, ConfigManager>,
+    marketplace_service: State<'_, Option<Arc<MarketplaceService>>>,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            if let Some(ref v) = search_tool_name {
+                if !v.trim().is_empty() {
+                    cfg.marketplace.search_tool_name = v.trim().to_string();
+                }
+            }
+            if let Some(ref v) = install_tool_name {
+                if !v.trim().is_empty() {
+                    cfg.marketplace.install_tool_name = v.trim().to_string();
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Propagate to marketplace service if available
+    if let Some(ref service) = *marketplace_service.inner() {
+        let config = config_manager.get();
+        service.update_config(config.marketplace);
+    }
+
+    Ok(())
+}
+
 /// Get marketplace configuration
 #[tauri::command]
 pub async fn marketplace_get_config(
@@ -705,25 +739,34 @@ pub async fn get_client_marketplace_enabled(
 }
 
 /// Get marketplace tool definitions for display in the UI.
+///
+/// Tool descriptions adapt based on which marketplace features are enabled.
 #[tauri::command]
 pub async fn get_marketplace_tool_definitions(
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<Vec<crate::ui::commands_coding_agents::ToolDefinition>, String> {
-    Ok(lr_marketplace::tools::list_tools()
-        .into_iter()
-        .map(|v| crate::ui::commands_coding_agents::ToolDefinition {
-            name: v
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("")
-                .to_string(),
-            description: v
-                .get("description")
-                .and_then(|d| d.as_str())
-                .map(|s| s.to_string()),
-            input_schema: v
-                .get("inputSchema")
-                .cloned()
-                .unwrap_or(serde_json::json!({})),
-        })
-        .collect())
+    let cfg = config_manager.get();
+    Ok(lr_marketplace::tools::list_tools(
+        &cfg.marketplace.search_tool_name,
+        &cfg.marketplace.install_tool_name,
+        cfg.marketplace.mcp_enabled,
+        cfg.marketplace.skills_enabled,
+    )
+    .into_iter()
+    .map(|v| crate::ui::commands_coding_agents::ToolDefinition {
+        name: v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string(),
+        description: v
+            .get("description")
+            .and_then(|d| d.as_str())
+            .map(|s| s.to_string()),
+        input_schema: v
+            .get("inputSchema")
+            .cloned()
+            .unwrap_or(serde_json::json!({})),
+    })
+    .collect())
 }

@@ -2151,7 +2151,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     paths: ["~/.localrouter/skills"],
     disabled_skills: ["test-generator"],
     async_enabled: true,
+    tool_name: "SkillRead",
+    read_file_tool_name: "SkillReadFile",
   }),
+  'update_skills_tool_names': () => {
+    toast.success('Skills tool names updated (demo)')
+    return null
+  },
   'set_skill_enabled': (args) => {
     const skill = mockData.skills.find(s => s.name === args?.name || s.name === args?.skillName)
     if (skill) skill.enabled = args?.enabled ?? true
@@ -2236,6 +2242,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
+  'get_coding_agent_tool_prefix': () => 'Agent',
+  'set_coding_agent_tool_prefix': () => {
+    toast.success('Tool prefix updated (demo)')
+    return null
+  },
   'get_coding_agent_tool_definitions': () => [
     { name: 'AgentStart', description: 'Start a new Claude Code coding session with an initial prompt', input_schema: { type: 'object', properties: { prompt: { type: 'string', description: 'The initial task/prompt' }, workingDirectory: { type: 'string', description: 'Working directory for the session' }, model: { type: 'string', description: 'Model override' }, permissionMode: { type: 'string', enum: ['auto', 'supervised', 'plan'], description: 'Permission mode' } }, required: ['prompt'] } },
     { name: 'AgentSay', description: 'Send a message to a Claude Code session. Can interrupt current work and/or resume completed sessions with context preserved.', input_schema: { type: 'object', properties: { sessionId: { type: 'string', description: 'The session ID' }, message: { type: 'string', description: 'Message to send. If session is done/error, resumes with context.' }, interrupt: { type: 'boolean', description: 'If true, interrupts current work before sending message.' }, permissionMode: { type: 'string', enum: ['auto', 'supervised', 'plan'], description: 'Switch permission mode' } }, required: ['sessionId'] } },
@@ -2247,8 +2258,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     { name: 'IndexRead', description: 'Read the full content of an indexed source. Use after IndexSearch to get complete context around a search hit.', input_schema: { type: 'object', properties: { label: { type: 'string', description: 'Source label to read (from search results)' }, offset: { type: 'string', description: 'Line offset to start from (e.g. "5" or "5-2" for sub-line). Default: start of content.' }, limit: { type: 'number', description: 'Number of lines to return (default: 15)' } }, required: ['label'] } },
   ],
   'get_marketplace_tool_definitions': () => [
-    { name: 'marketplace__search', description: 'Search the marketplace for MCP servers and skills', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, type: { type: 'string', enum: ['mcp', 'skill', 'all'], description: 'Item type' } }, required: ['query'] } },
-    { name: 'marketplace__install', description: 'Install an MCP server or skill from the marketplace', input_schema: { type: 'object', properties: { name: { type: 'string', description: 'Item name' }, source: { type: 'string', description: 'Source ID' }, type: { type: 'string', enum: ['mcp', 'skill'], description: 'Item type' } }, required: ['name', 'source', 'type'] } },
+    { name: 'marketplace__search', description: 'Search the marketplace for available MCP servers and skills. Returns matching results with descriptions and installation options.', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Search query (e.g., \'filesystem\', \'database\', \'github\')' }, type: { type: 'string', enum: ['mcp', 'skill', 'all'], description: 'Type of items to search for: \'mcp\' for MCP servers, \'skill\' for skills, \'all\' for both (default: \'all\')' } }, required: ['query'] } },
+    { name: 'marketplace__install', description: 'Install an MCP server or skill from the marketplace. The user will be prompted to confirm the installation. Use the name, source, and type from search results.', input_schema: { type: 'object', properties: { name: { type: 'string', description: 'Name of the item to install (from search results)' }, source: { type: 'string', description: 'Source ID of the marketplace (e.g., \'mcp-registry\', \'anthropic\' from search results)' }, type: { type: 'string', enum: ['mcp', 'skill'], description: 'Type of item to install: \'mcp\' for MCP server, \'skill\' for skill' } }, required: ['name', 'source', 'type'] } },
   ],
 
   // ============================================================================
@@ -2404,6 +2415,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'marketplace_set_skills_enabled': (args) => {
     mockData.marketplaceConfig.skills_enabled = args?.enabled ?? true
+    return null
+  },
+  'update_marketplace_tool_names': (args) => {
+    if (args?.searchToolName) mockData.marketplaceConfig.search_tool_name = args.searchToolName
+    if (args?.installToolName) mockData.marketplaceConfig.install_tool_name = args.installToolName
+    toast.success('Marketplace tool names updated (demo)')
     return null
   },
   'marketplace_set_registry_url': () => null,

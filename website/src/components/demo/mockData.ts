@@ -777,6 +777,8 @@ export const mockData = {
         skills_path: null,
       },
     ],
+    search_tool_name: "MarketplaceSearch",
+    install_tool_name: "MarketplaceInstall",
   },
 
   // TrayGraphSettings - matches src/types/tauri-commands.ts
