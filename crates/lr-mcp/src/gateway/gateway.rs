@@ -434,6 +434,7 @@ impl McpGateway {
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                            // memory_enabled
             request,
+            None,                            // monitor_session_id
         )
         .await
     }
@@ -461,6 +462,7 @@ impl McpGateway {
         mcp_elicitation_permission: lr_config::PermissionState,
         memory_enabled: Option<bool>,
         request: JsonRpcRequest,
+        monitor_session_id: Option<String>,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
         let _request_id = request.id.clone();
@@ -542,10 +544,13 @@ impl McpGateway {
             }
         }
 
-        // Update last activity
+        // Update last activity and set monitor session_id
         {
             let mut session_write = session.write().await;
             session_write.touch();
+            if monitor_session_id.is_some() {
+                session_write.monitor_session_id = monitor_session_id;
+            }
         }
 
         // Route based on method

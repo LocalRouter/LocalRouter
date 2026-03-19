@@ -269,10 +269,19 @@ impl McpViaLlmManager {
         allowed_servers: Vec<String>,
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
+        monitor_session_id: Option<String>,
     ) -> Result<lr_providers::CompletionResponse, McpViaLlmError> {
         let config = self.config();
         let session = self.get_or_create_session(&client.id);
         let memory_svc = self.memory_service();
+
+        // Store monitor session_id so gateway tool calls get grouped
+        if let Some(ref sid) = monitor_session_id {
+            let gw_key = session.read().gateway_session_key.clone();
+            if let Some(gw_session) = gateway.get_session(&gw_key) {
+                gw_session.write().await.monitor_session_id = Some(sid.clone());
+            }
+        }
 
         // Initialize memory transcript if enabled for this client
         if let Some(ref svc) = memory_svc {
@@ -379,6 +388,7 @@ impl McpViaLlmManager {
             None,
             memory_svc,
             on_transformed,
+            monitor_session_id,
         )
         .await?;
 
@@ -434,6 +444,7 @@ impl McpViaLlmManager {
         allowed_servers: Vec<String>,
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
+        monitor_session_id: Option<String>,
     ) -> Result<
         std::pin::Pin<
             Box<
@@ -566,6 +577,7 @@ impl McpViaLlmManager {
             guardrail_gate,
             memory_svc,
             on_transformed_stream,
+            monitor_session_id,
         )
         .await
     }

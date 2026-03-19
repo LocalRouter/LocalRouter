@@ -2256,18 +2256,6 @@ async fn handle_mcp_via_llm(
         }
     }
 
-    // Set monitor session_id on the gateway session so tool call events are grouped
-    {
-        let gw_session_key = state
-            .mcp_via_llm_manager
-            .get_gateway_session_key(&client.id);
-        if let Some(key) = gw_session_key {
-            if let Some(gw_session) = state.mcp_gateway.get_session(&key) {
-                gw_session.write().await.monitor_session_id = Some(session_id.clone());
-            }
-        }
-    }
-
     // Streaming: use multi-segment streaming orchestrator
     if request.stream {
         let model = provider_request.model.clone();
@@ -2282,6 +2270,7 @@ async fn handle_mcp_via_llm(
                 allowed_servers,
                 guardrail_gate,
                 Some(llm_event_id.clone()),
+                Some(session_id.clone()),
             )
             .await
             .map_err(|e| {
@@ -2618,6 +2607,7 @@ async fn handle_mcp_via_llm(
             allowed_servers,
             guardrail_gate,
             Some(llm_event_id.clone()),
+            Some(session_id.clone()),
         )
         .await
         .map_err(|e| ApiErrorResponse::bad_gateway(format!("MCP via LLM error: {}", e)))?;

@@ -76,6 +76,7 @@ async fn gateway_request(
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
             request,
+            None,                                  // monitor_session_id
         )
         .await
         .expect("Gateway request should succeed");

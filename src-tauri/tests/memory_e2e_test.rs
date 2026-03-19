@@ -95,6 +95,7 @@ async fn tools_list(
             lr_config::PermissionState::default(),
             memory_enabled,
             req,
+            None, // monitor_session_id
         )
         .await
         .expect("tools/list should succeed")
