@@ -389,6 +389,9 @@ impl McpViaLlmManager {
             memory_svc,
             on_transformed,
             monitor_session_id,
+            self.monitor_emit.read().clone(),
+            self.monitor_update.read().clone(),
+            llm_call_event_id,
         )
         .await?;
 
@@ -578,6 +581,9 @@ impl McpViaLlmManager {
             memory_svc,
             on_transformed_stream,
             monitor_session_id,
+            self.monitor_emit.read().clone(),
+            self.monitor_update.read().clone(),
+            llm_call_event_id,
         )
         .await
     }

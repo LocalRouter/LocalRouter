@@ -102,6 +102,9 @@ pub async fn run_agentic_loop(
     memory_service: Option<Arc<lr_memory::MemoryService>>,
     on_transformed_request: TransformedRequestCallback,
     monitor_session_id: Option<String>,
+    monitor_emit: Option<crate::manager::MonitorEmitFn>,
+    monitor_update: Option<crate::manager::MonitorUpdateFn>,
+    llm_call_event_id: Option<String>,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
     let started_at = Instant::now();
     let timeout = std::time::Duration::from_secs(config.max_loop_timeout_seconds);
@@ -271,11 +274,117 @@ pub async fn run_agentic_loop(
         let mut completion_request = request.clone();
         completion_request.stream = false;
 
+        // Emit per-iteration LlmCall event (iteration 0 reuses chat.rs event)
+        let iter_event_id = if iteration == 0 {
+            llm_call_event_id.clone().unwrap_or_default()
+        } else if let Some(ref emit_fn) = monitor_emit {
+            let msg_count = request.messages.len();
+            let req_json = serde_json::to_value(&completion_request).unwrap_or_default();
+            emit_fn(
+                lr_monitor::MonitorEventType::LlmCall,
+                Some(client.id.clone()),
+                Some(client.name.clone()),
+                gw_client.monitor_session_id.clone(),
+                lr_monitor::MonitorEventData::LlmCall {
+                    endpoint: "/v1/chat/completions".to_string(),
+                    model: request.model.clone(),
+                    stream: false,
+                    message_count: msg_count,
+                    has_tools: !mcp_tool_names.is_empty(),
+                    tool_count: mcp_tool_names.len(),
+                    request_body: req_json,
+                    transformed_body: None,
+                    transformations_applied: None,
+                    provider: None,
+                    status_code: None,
+                    input_tokens: None,
+                    output_tokens: None,
+                    total_tokens: None,
+                    cost_usd: None,
+                    latency_ms: None,
+                    finish_reason: None,
+                    content_preview: None,
+                    streamed: None,
+                    error: None,
+                },
+                lr_monitor::EventStatus::Pending,
+                None,
+            )
+        } else {
+            String::new()
+        };
+        let iter_start = std::time::Instant::now();
+
         // Call the LLM
         let response = router
             .complete(&client.id, completion_request)
             .await
             .map_err(McpViaLlmError::from)?;
+
+        // Complete the per-iteration LlmCall event with response data
+        if !iter_event_id.is_empty() {
+            if let Some(ref update_fn) = monitor_update {
+                let latency = iter_start.elapsed().as_millis() as u64;
+                let content = response
+                    .choices
+                    .first()
+                    .map(|c| {
+                        let mut s = match &c.message.content {
+                            lr_providers::ChatMessageContent::Text(t) => t.clone(),
+                            _ => String::new(),
+                        };
+                        if let Some(ref tcs) = c.message.tool_calls {
+                            if !tcs.is_empty() {
+                                let names: Vec<&str> =
+                                    tcs.iter().map(|t| t.function.name.as_str()).collect();
+                                s = format!("[tool_calls: {}] {}", names.join(", "), s);
+                            }
+                        }
+                        s
+                    })
+                    .unwrap_or_default();
+                let finish = response
+                    .choices
+                    .first()
+                    .and_then(|c| c.finish_reason.clone());
+                let input_t = response.usage.prompt_tokens as u64;
+                let output_t = response.usage.completion_tokens as u64;
+                let model = response.model.clone();
+                let provider = response.provider.clone();
+                update_fn(
+                    &iter_event_id,
+                    Box::new(move |event| {
+                        event.status = lr_monitor::EventStatus::Complete;
+                        event.duration_ms = Some(latency);
+                        if let lr_monitor::MonitorEventData::LlmCall {
+                            model: ref mut m,
+                            provider: ref mut p,
+                            status_code: ref mut sc,
+                            input_tokens: ref mut it,
+                            output_tokens: ref mut ot,
+                            total_tokens: ref mut tt,
+                            latency_ms: ref mut lm,
+                            finish_reason: ref mut fr,
+                            content_preview: ref mut cp,
+                            streamed: ref mut st,
+                            ..
+                        } = &mut event.data
+                        {
+                            *m = model;
+                            *p = Some(provider);
+                            *sc = Some(200);
+                            *it = Some(input_t);
+                            *ot = Some(output_t);
+                            *tt = Some(input_t + output_t);
+                            *lm = Some(latency);
+                            *fr = finish;
+                            *cp = Some(content);
+                            *st = Some(false);
+                        }
+                    }),
+                );
+            }
+        }
 
         // Await guardrail gate before processing the response (first iteration only).
         // This allows guardrails to run in parallel with the LLM call.
@@ -807,6 +916,9 @@ pub async fn resume_after_mixed(
         None, // memory_service not passed through resume path
         None, // no transformed request callback on resume
         None, // monitor_session_id not available on resume
+        None, // monitor_emit
+        None, // monitor_update
+        None, // llm_call_event_id
     )
     .await
 }
