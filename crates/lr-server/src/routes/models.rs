@@ -282,7 +282,10 @@ pub async fn get_model_pricing<B>(
             &auth_context.api_key_id,
             "model_not_allowed",
             "/v1/models/{provider}/{model}/pricing",
-            &format!("API key does not have access to model '{}/{}'", provider, model),
+            &format!(
+                "API key does not have access to model '{}/{}'",
+                provider, model
+            ),
             403,
         );
         return Err(ApiErrorResponse::forbidden(format!(

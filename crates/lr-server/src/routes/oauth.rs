@@ -189,10 +189,7 @@ pub async fn token_endpoint(
             lr_monitor::MonitorEventData::OAuthEvent {
                 action: "unsupported_grant_type".to_string(),
                 client_id_hint: None,
-                message: format!(
-                    "Unsupported grant type: {}",
-                    request.grant_type
-                ),
+                message: format!("Unsupported grant type: {}", request.grant_type),
                 status_code: 400,
             },
             lr_monitor::EventStatus::Error,

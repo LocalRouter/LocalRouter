@@ -15,7 +15,9 @@ use chrono::Utc;
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager};
+use super::helpers::{
+    check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager,
+};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -65,22 +67,18 @@ pub async fn audio_transcriptions(
     let mut temperature: Option<f32> = None;
     let mut timestamp_granularities: Option<Vec<String>> = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| {
-            let msg = format!("Invalid multipart data: {}", e);
-            super::monitor_helpers::emit_validation_error(
-                &state,
-                client_auth.as_ref(),
-                "/v1/audio/transcriptions",
-                None,
-                &msg,
-                400,
-            );
-            ApiErrorResponse::bad_request(msg)
-        })?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        let msg = format!("Invalid multipart data: {}", e);
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref(),
+            "/v1/audio/transcriptions",
+            None,
+            &msg,
+            400,
+        );
+        ApiErrorResponse::bad_request(msg)
+    })? {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "file" => {
@@ -517,22 +515,18 @@ pub async fn audio_translations(
     let mut response_format: Option<String> = None;
     let mut temperature: Option<f32> = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| {
-            let msg = format!("Invalid multipart data: {}", e);
-            super::monitor_helpers::emit_validation_error(
-                &state,
-                client_auth.as_ref(),
-                "/v1/audio/translations",
-                None,
-                &msg,
-                400,
-            );
-            ApiErrorResponse::bad_request(msg)
-        })?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        let msg = format!("Invalid multipart data: {}", e);
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            client_auth.as_ref(),
+            "/v1/audio/translations",
+            None,
+            &msg,
+            400,
+        );
+        ApiErrorResponse::bad_request(msg)
+    })? {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "file" => {
@@ -1173,7 +1167,10 @@ async fn validate_client_provider_access(
             &client.id,
             "model_not_allowed",
             "/v1/audio",
-            &format!("Access denied: Client is not authorized to use model '{}/{}'", provider, model_id),
+            &format!(
+                "Access denied: Client is not authorized to use model '{}/{}'",
+                provider, model_id
+            ),
             403,
         );
 

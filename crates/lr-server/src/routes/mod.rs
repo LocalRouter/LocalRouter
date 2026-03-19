@@ -7,11 +7,11 @@ pub mod embeddings;
 pub mod generation;
 pub mod helpers;
 pub mod images;
-pub mod monitor_helpers;
 pub mod mcp;
 pub mod mcp_ws;
 pub mod models;
 pub mod moderations;
+pub mod monitor_helpers;
 pub mod oauth;
 
 pub use audio::{audio_speech, audio_transcriptions, audio_translations};

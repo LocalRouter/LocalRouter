@@ -7,7 +7,13 @@ use crate::state::AppState;
 use lr_config::{Client, Strategy};
 
 /// Emit an AccessDenied monitor event from helpers.
-fn emit_access_denied(state: &AppState, client_id: &str, reason: &str, message: &str, status_code: u16) {
+fn emit_access_denied(
+    state: &AppState,
+    client_id: &str,
+    reason: &str,
+    message: &str,
+    status_code: u16,
+) {
     let client_name = state
         .client_manager
         .get_client(client_id)
@@ -68,13 +74,25 @@ pub fn get_enabled_client(state: &AppState, client_id: &str) -> HelperResult<Cli
         .iter()
         .find(|c| c.id == client_id)
         .ok_or_else(|| {
-            emit_access_denied(state, client_id, "client_not_found", "Client not found", 401);
+            emit_access_denied(
+                state,
+                client_id,
+                "client_not_found",
+                "Client not found",
+                401,
+            );
             ApiErrorResponse::unauthorized("Client not found")
         })?
         .clone();
 
     if !client.enabled {
-        emit_access_denied(state, client_id, "client_disabled", "Client is disabled", 403);
+        emit_access_denied(
+            state,
+            client_id,
+            "client_disabled",
+            "Client is disabled",
+            403,
+        );
         return Err(ApiErrorResponse::forbidden("Client is disabled"));
     }
 
@@ -116,13 +134,25 @@ pub fn get_client_with_strategy(
         .iter()
         .find(|c| c.id == client_id)
         .ok_or_else(|| {
-            emit_access_denied(state, client_id, "client_not_found", "Client not found", 401);
+            emit_access_denied(
+                state,
+                client_id,
+                "client_not_found",
+                "Client not found",
+                401,
+            );
             ApiErrorResponse::unauthorized("Client not found")
         })?
         .clone();
 
     if !client.enabled {
-        emit_access_denied(state, client_id, "client_disabled", "Client is disabled", 403);
+        emit_access_denied(
+            state,
+            client_id,
+            "client_disabled",
+            "Client is disabled",
+            403,
+        );
         return Err(ApiErrorResponse::forbidden("Client is disabled"));
     }
 
@@ -166,16 +196,25 @@ pub fn get_enabled_client_from_manager(state: &AppState, client_id: &str) -> Hel
         return Ok(synthetic_internal_client(client_id));
     }
 
-    let client = state
-        .client_manager
-        .get_client(client_id)
-        .ok_or_else(|| {
-            emit_access_denied(state, client_id, "client_not_found", "Client not found", 401);
-            ApiErrorResponse::unauthorized("Client not found")
-        })?;
+    let client = state.client_manager.get_client(client_id).ok_or_else(|| {
+        emit_access_denied(
+            state,
+            client_id,
+            "client_not_found",
+            "Client not found",
+            401,
+        );
+        ApiErrorResponse::unauthorized("Client not found")
+    })?;
 
     if !client.enabled {
-        emit_access_denied(state, client_id, "client_disabled", "Client is disabled", 403);
+        emit_access_denied(
+            state,
+            client_id,
+            "client_disabled",
+            "Client is disabled",
+            403,
+        );
         return Err(ApiErrorResponse::forbidden("Client is disabled"));
     }
 

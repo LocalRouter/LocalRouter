@@ -406,7 +406,11 @@ impl ContentStore {
             kept.push(hit);
         }
         // Re-sort by rank (best first) since we disturbed the original ordering
-        kept.sort_by(|a, b| b.rank.partial_cmp(&a.rank).unwrap_or(std::cmp::Ordering::Equal));
+        kept.sort_by(|a, b| {
+            b.rank
+                .partial_cmp(&a.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         kept
     }
 

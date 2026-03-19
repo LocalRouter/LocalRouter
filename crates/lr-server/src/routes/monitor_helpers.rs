@@ -387,12 +387,7 @@ pub fn emit_validation_error(
 // ---- Moderation events ----
 
 /// Emit a ModerationEvent monitor event.
-pub fn emit_moderation_event(
-    state: &AppState,
-    reason: &str,
-    message: &str,
-    status_code: u16,
-) {
+pub fn emit_moderation_event(state: &AppState, reason: &str, message: &str, status_code: u16) {
     state.monitor_store.push(
         MonitorEventType::ModerationEvent,
         None,
@@ -437,12 +432,7 @@ pub fn emit_oauth_event(
 // ---- Internal error events ----
 
 /// Emit an InternalError monitor event.
-pub fn emit_internal_error(
-    state: &AppState,
-    error_type: &str,
-    message: &str,
-    status_code: u16,
-) {
+pub fn emit_internal_error(state: &AppState, error_type: &str, message: &str, status_code: u16) {
     state.monitor_store.push(
         MonitorEventType::InternalError,
         None,

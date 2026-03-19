@@ -505,12 +505,17 @@ pub async fn chat_completions(
     {
         let mut transformations = Vec::new();
         if compression_tokens_saved > 0 {
-            transformations.push(format!("compression (-{} tokens)", compression_tokens_saved));
+            transformations.push(format!(
+                "compression (-{} tokens)",
+                compression_tokens_saved
+            ));
         }
         if provider_request.pre_computed_routing.is_some() {
-            let tier = provider_request.pre_computed_routing.as_ref().map(|r| {
-                if r.is_strong { "strong" } else { "weak" }
-            }).unwrap_or("unknown");
+            let tier = provider_request
+                .pre_computed_routing
+                .as_ref()
+                .map(|r| if r.is_strong { "strong" } else { "weak" })
+                .unwrap_or("unknown");
             transformations.push(format!("routellm ({})", tier));
         }
         if guardrail_handle.is_some() {
@@ -1758,7 +1763,11 @@ async fn run_secret_scan_check(
 
     // Emit secret scan request event
     let scan_text_preview = texts.first().map(|t| t.text.as_str()).unwrap_or("");
-    let rules_count = if scanner.has_rules() { scanner.rule_metadata().len() } else { 0 };
+    let rules_count = if scanner.has_rules() {
+        scanner.rule_metadata().len()
+    } else {
+        0
+    };
     super::monitor_helpers::emit_secret_scan_request(
         state,
         Some(client_ctx),
@@ -1788,8 +1797,7 @@ async fn run_secret_scan_check(
         client_ctx.client_id
     );
 
-    let findings_json =
-        serde_json::to_value(&result.findings).unwrap_or(serde_json::json!([]));
+    let findings_json = serde_json::to_value(&result.findings).unwrap_or(serde_json::json!([]));
     let action_name = format!("{:?}", effective_action).to_lowercase();
     super::monitor_helpers::emit_secret_scan_response(
         state,

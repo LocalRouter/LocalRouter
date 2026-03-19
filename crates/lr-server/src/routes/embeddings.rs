@@ -10,7 +10,9 @@ use axum::{
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager};
+use super::helpers::{
+    check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager,
+};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
@@ -477,7 +479,10 @@ async fn validate_client_provider_access(
             &client.id,
             "model_not_allowed",
             "/v1/embeddings",
-            &format!("Access denied: Client is not authorized to use model '{}/{}'", provider, model_id),
+            &format!(
+                "Access denied: Client is not authorized to use model '{}/{}'",
+                provider, model_id
+            ),
             403,
         );
 

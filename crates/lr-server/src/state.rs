@@ -934,7 +934,15 @@ impl AppState {
         let monitor = result.monitor_store.clone();
         result.mcp_via_llm_manager.set_monitor_emit(Arc::new(
             move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
-                monitor.push(event_type, client_id, client_name, request_id, data, status, duration_ms);
+                monitor.push(
+                    event_type,
+                    client_id,
+                    client_name,
+                    request_id,
+                    data,
+                    status,
+                    duration_ms,
+                );
             },
         ));
 
@@ -972,15 +980,33 @@ impl AppState {
 
         // Wire MCP monitor events to the monitor store
         let monitor = self.monitor_store.clone();
-        mcp_gateway.set_on_monitor_event(move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
-            monitor.push(event_type, client_id, client_name, request_id, data, status, duration_ms);
-        });
+        mcp_gateway.set_on_monitor_event(
+            move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
+                monitor.push(
+                    event_type,
+                    client_id,
+                    client_name,
+                    request_id,
+                    data,
+                    status,
+                    duration_ms,
+                );
+            },
+        );
 
         // Wire MCP server manager monitor events to the monitor store
         let monitor = self.monitor_store.clone();
         mcp_server_manager.set_monitor_emit(Arc::new(
             move |event_type, client_id, client_name, request_id, data, status, duration_ms| {
-                monitor.push(event_type, client_id, client_name, request_id, data, status, duration_ms);
+                monitor.push(
+                    event_type,
+                    client_id,
+                    client_name,
+                    request_id,
+                    data,
+                    status,
+                    duration_ms,
+                );
             },
         ));
 

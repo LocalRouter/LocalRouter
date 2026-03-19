@@ -102,7 +102,9 @@ where
                     Err(_) => {
                         state.monitor_store.push(
                             lr_monitor::MonitorEventType::AuthError,
-                            None, None, None,
+                            None,
+                            None,
+                            None,
                             lr_monitor::MonitorEventData::AuthError {
                                 error_type: "invalid_encoding".to_string(),
                                 endpoint: path.to_string(),
@@ -122,7 +124,9 @@ where
                 None => {
                     state.monitor_store.push(
                         lr_monitor::MonitorEventType::AuthError,
-                        None, None, None,
+                        None,
+                        None,
+                        None,
                         lr_monitor::MonitorEventData::AuthError {
                             error_type: "missing_header".to_string(),
                             endpoint: path.to_string(),
@@ -144,7 +148,9 @@ where
             if !auth_header.starts_with("Bearer ") {
                 state.monitor_store.push(
                     lr_monitor::MonitorEventType::AuthError,
-                    None, None, None,
+                    None,
+                    None,
+                    None,
                     lr_monitor::MonitorEventData::AuthError {
                         error_type: "invalid_format".to_string(),
                         endpoint: path.to_string(),
@@ -212,7 +218,9 @@ where
                         );
                         state.monitor_store.push(
                             lr_monitor::MonitorEventType::AuthError,
-                            None, None, None,
+                            None,
+                            None,
+                            None,
                             lr_monitor::MonitorEventData::AuthError {
                                 error_type: "invalid_key".to_string(),
                                 endpoint: path.to_string(),
@@ -232,7 +240,9 @@ where
                         tracing::error!("Error verifying client secret: {}", e);
                         state.monitor_store.push(
                             lr_monitor::MonitorEventType::AuthError,
-                            None, None, None,
+                            None,
+                            None,
+                            None,
                             lr_monitor::MonitorEventData::AuthError {
                                 error_type: "verification_error".to_string(),
                                 endpoint: path.to_string(),
