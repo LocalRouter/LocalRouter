@@ -299,7 +299,9 @@ export function ChatPanel({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
-      handleSend()
+      if (!isLoading) {
+        handleSend()
+      }
     }
   }
 
@@ -471,7 +473,7 @@ export function ChatPanel({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isLoading || !isReady}
+            disabled={!isReady}
           />
           {isLoading ? (
             <Button
