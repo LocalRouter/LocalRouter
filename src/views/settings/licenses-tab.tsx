@@ -33,6 +33,11 @@ const credits: Credit[] = [
   { name: "UUID", license: "MIT/Apache-2.0", url: "https://github.com/uuid-rs/uuid" },
   { name: "OAuth2", license: "MIT/Apache-2.0", url: "https://github.com/ramosbugs/oauth2-rs" },
   { name: "Keyring", license: "MIT/Apache-2.0", url: "https://github.com/hwchen/keyring-rs" },
+  { name: "safetensors", license: "Apache-2.0", url: "https://github.com/huggingface/safetensors" },
+  { name: "hf-hub", license: "Apache-2.0", url: "https://github.com/huggingface/hf-hub" },
+  { name: "ollama-rs", license: "MIT", url: "https://github.com/pepperoni21/ollama-rs" },
+  { name: "Clap", license: "MIT/Apache-2.0", url: "https://github.com/clap-rs/clap" },
+  { name: "Notify", license: "MIT", url: "https://github.com/notify-rs/notify" },
   // Frontend (TypeScript/React)
   { name: "React", license: "MIT", url: "https://react.dev" },
   { name: "Radix UI", license: "MIT", url: "https://radix-ui.com" },
@@ -50,6 +55,8 @@ const credits: Credit[] = [
   { name: "Heroicons", license: "MIT", url: "https://heroicons.com" },
   { name: "cmdk", license: "MIT", url: "https://cmdk.paco.me" },
   { name: "Sonner", license: "MIT", url: "https://sonner.emilkowal.ski" },
+  { name: "dagre", license: "MIT", url: "https://github.com/dagrejs/dagre" },
+  { name: "html-to-image", license: "MIT", url: "https://github.com/nicedoc/html-to-image" },
   { name: "WinXP", license: "MIT", url: "https://github.com/nicholasyang/winXP" },
 ]
 
