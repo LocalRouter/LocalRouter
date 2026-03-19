@@ -270,7 +270,7 @@ export function StepExtensions({
             <div>
               <p className="text-sm font-medium">Access</p>
               <p className="text-xs text-muted-foreground">
-                Search and install MCP servers and skills
+                Search and install from the marketplace
               </p>
             </div>
             <PermissionStateButton

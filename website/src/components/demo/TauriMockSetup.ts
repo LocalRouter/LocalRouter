@@ -1853,15 +1853,15 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       id: '_skills',
       display_name: 'Skills',
       tools: [
-        { name: 'skill_read', indexable: true },
+        { name: 'SkillRead', indexable: true },
       ],
     },
     {
       id: '_marketplace',
       display_name: 'Marketplace',
       tools: [
-        { name: 'marketplace__search', indexable: true },
-        { name: 'marketplace__install', indexable: false },
+        { name: 'MarketplaceSearch', indexable: true },
+        { name: 'MarketplaceInstall', indexable: false },
       ],
     },
     {
@@ -2258,8 +2258,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     { name: 'IndexRead', description: 'Read the full content of an indexed source. Use after IndexSearch to get complete context around a search hit.', input_schema: { type: 'object', properties: { label: { type: 'string', description: 'Source label to read (from search results)' }, offset: { type: 'string', description: 'Line offset to start from (e.g. "5" or "5-2" for sub-line). Default: start of content.' }, limit: { type: 'number', description: 'Number of lines to return (default: 15)' } }, required: ['label'] } },
   ],
   'get_marketplace_tool_definitions': () => [
-    { name: 'marketplace__search', description: 'Search the marketplace for available MCP servers and skills. Returns matching results with descriptions and installation options.', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Search query (e.g., \'filesystem\', \'database\', \'github\')' }, type: { type: 'string', enum: ['mcp', 'skill', 'all'], description: 'Type of items to search for: \'mcp\' for MCP servers, \'skill\' for skills, \'all\' for both (default: \'all\')' } }, required: ['query'] } },
-    { name: 'marketplace__install', description: 'Install an MCP server or skill from the marketplace. The user will be prompted to confirm the installation. Use the name, source, and type from search results.', input_schema: { type: 'object', properties: { name: { type: 'string', description: 'Name of the item to install (from search results)' }, source: { type: 'string', description: 'Source ID of the marketplace (e.g., \'mcp-registry\', \'anthropic\' from search results)' }, type: { type: 'string', enum: ['mcp', 'skill'], description: 'Type of item to install: \'mcp\' for MCP server, \'skill\' for skill' } }, required: ['name', 'source', 'type'] } },
+    { name: 'MarketplaceSearch', description: 'Search the marketplace for available MCP servers and skills. Returns matching results with descriptions and installation options.', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Search query (e.g., \'filesystem\', \'database\', \'github\')' }, type: { type: 'string', enum: ['mcp', 'skill', 'all'], description: 'Type of items to search for: \'mcp\' for MCP servers, \'skill\' for skills, \'all\' for both (default: \'all\')' } }, required: ['query'] } },
+    { name: 'MarketplaceInstall', description: 'Install an MCP server or skill from the marketplace. The user will be prompted to confirm the installation. Use the name, source, and type from search results.', input_schema: { type: 'object', properties: { name: { type: 'string', description: 'Name of the item to install (from search results)' }, source: { type: 'string', description: 'Source ID of the marketplace (e.g., \'mcp-registry\', \'anthropic\' from search results)' }, type: { type: 'string', enum: ['mcp', 'skill'], description: 'Type of item to install: \'mcp\' for MCP server, \'skill\' for skill' } }, required: ['name', 'source', 'type'] } },
   ],
 
   // ============================================================================

@@ -2,20 +2,105 @@
 //!
 //! Defines the 2 marketplace tools (search + install) and handles tool calls.
 
-use crate::{MarketplaceError, MarketplaceService, TOOL_PREFIX};
+use crate::{MarketplaceError, MarketplaceService};
 use serde_json::{json, Value};
 use tracing::{debug, info};
 
-/// Tool names (without prefix)
-pub const SEARCH: &str = "search";
-pub const INSTALL: &str = "install";
+/// Returns the appropriate noun phrase for the enabled marketplace features.
+fn feature_label(mcp: bool, skills: bool) -> &'static str {
+    match (mcp, skills) {
+        (true, true) => "MCP servers and skills",
+        (true, false) => "MCP servers",
+        (false, true) => "skills",
+        (false, false) => "marketplace items",
+    }
+}
 
-/// List all marketplace tools as JSON tool definitions
-pub fn list_tools() -> Vec<Value> {
+/// Returns the appropriate article + noun for install descriptions.
+fn install_label(mcp: bool, skills: bool) -> &'static str {
+    match (mcp, skills) {
+        (true, true) => "an MCP server or skill",
+        (true, false) => "an MCP server",
+        (false, true) => "a skill",
+        (false, false) => "an item",
+    }
+}
+
+/// Build the search tool `type` enum and description based on enabled features.
+fn search_type_schema(mcp: bool, skills: bool) -> Value {
+    match (mcp, skills) {
+        (true, true) => json!({
+            "type": "string",
+            "enum": ["mcp", "skill", "all"],
+            "description": "Type of items to search for: 'mcp' for MCP servers, 'skill' for skills, 'all' for both (default: 'all')"
+        }),
+        (true, false) => json!({
+            "type": "string",
+            "enum": ["mcp"],
+            "description": "Type of items to search for (only 'mcp' is available)"
+        }),
+        (false, true) => json!({
+            "type": "string",
+            "enum": ["skill"],
+            "description": "Type of items to search for (only 'skill' is available)"
+        }),
+        (false, false) => json!({
+            "type": "string",
+            "enum": ["mcp", "skill", "all"],
+            "description": "Type of items to search for"
+        }),
+    }
+}
+
+/// Build the install tool `type` enum and description based on enabled features.
+fn install_type_schema(mcp: bool, skills: bool) -> Value {
+    match (mcp, skills) {
+        (true, true) => json!({
+            "type": "string",
+            "enum": ["mcp", "skill"],
+            "description": "Type of item to install: 'mcp' for MCP server, 'skill' for skill"
+        }),
+        (true, false) => json!({
+            "type": "string",
+            "enum": ["mcp"],
+            "description": "Type of item to install (only 'mcp' is available)"
+        }),
+        (false, true) => json!({
+            "type": "string",
+            "enum": ["skill"],
+            "description": "Type of item to install (only 'skill' is available)"
+        }),
+        (false, false) => json!({
+            "type": "string",
+            "enum": ["mcp", "skill"],
+            "description": "Type of item to install"
+        }),
+    }
+}
+
+/// List all marketplace tools as JSON tool definitions.
+///
+/// Tool descriptions and type enums adapt based on which features are enabled.
+/// Tool names are provided by the caller (from `MarketplaceConfig`).
+pub fn list_tools(
+    search_tool_name: &str,
+    install_tool_name: &str,
+    mcp_enabled: bool,
+    skills_enabled: bool,
+) -> Vec<Value> {
+    let search_desc = format!(
+        "Search the marketplace for available {}. Returns matching results with descriptions and installation options.",
+        feature_label(mcp_enabled, skills_enabled)
+    );
+    let install_desc = format!(
+        "Install {} from the marketplace. The user will be prompted to confirm the installation. Use the name, source, and type from search results.",
+        install_label(mcp_enabled, skills_enabled)
+    );
+
     vec![
         json!({
-            "name": format!("{}{}", TOOL_PREFIX, SEARCH),
-            "description": "Search the marketplace for available MCP servers and/or skills. Returns matching results with descriptions and installation options.",
+            "name": search_tool_name,
+            "description": search_desc,
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -23,11 +108,7 @@ pub fn list_tools() -> Vec<Value> {
                         "type": "string",
                         "description": "Search query (e.g., 'filesystem', 'database', 'github')"
                     },
-                    "type": {
-                        "type": "string",
-                        "enum": ["mcp", "skill", "all"],
-                        "description": "Type of items to search for: 'mcp' for MCP servers, 'skill' for skills, 'all' for both (default: 'all')"
-                    },
+                    "type": search_type_schema(mcp_enabled, skills_enabled),
                     "source": {
                         "type": "string",
                         "description": "Optional source label to filter results (e.g., 'Anthropic', 'Community')"
@@ -43,8 +124,8 @@ pub fn list_tools() -> Vec<Value> {
             }
         }),
         json!({
-            "name": format!("{}{}", TOOL_PREFIX, INSTALL),
-            "description": "Install an MCP server or skill from the marketplace. The user will be prompted to confirm the installation. Use the name, source, and type from search results.",
+            "name": install_tool_name,
+            "description": install_desc,
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -56,11 +137,7 @@ pub fn list_tools() -> Vec<Value> {
                         "type": "string",
                         "description": "Source ID of the marketplace (e.g., 'mcp-registry', 'anthropic' from search results)"
                     },
-                    "type": {
-                        "type": "string",
-                        "enum": ["mcp", "skill"],
-                        "description": "Type of item to install: 'mcp' for MCP server, 'skill' for skill"
-                    }
+                    "type": install_type_schema(mcp_enabled, skills_enabled)
                 },
                 "required": ["name", "source", "type"]
             }
@@ -68,26 +145,54 @@ pub fn list_tools() -> Vec<Value> {
     ]
 }
 
-/// Handle a marketplace tool call
+/// Build the search result hint text based on enabled features.
+pub fn search_hint(install_tool_name: &str, mcp_enabled: bool, skills_enabled: bool) -> String {
+    match (mcp_enabled, skills_enabled) {
+        (true, true) => {
+            format!(
+                "Use {} with type 'mcp' or 'skill' to install an item",
+                install_tool_name
+            )
+        }
+        (true, false) => {
+            format!(
+                "Use {} with type 'mcp' to install a server",
+                install_tool_name
+            )
+        }
+        (false, true) => {
+            format!(
+                "Use {} with type 'skill' to install a skill",
+                install_tool_name
+            )
+        }
+        (false, false) => format!("Use {} to install an item", install_tool_name),
+    }
+}
+
+/// Handle a marketplace tool call.
+///
+/// Matches `tool_name` against the configured search and install tool names.
 pub async fn handle_tool_call(
     service: &MarketplaceService,
     tool_name: &str,
+    search_tool_name: &str,
+    install_tool_name: &str,
     arguments: Value,
     client_id: &str,
     client_name: &str,
 ) -> Result<Value, MarketplaceError> {
-    // Strip prefix if present
-    let tool = tool_name.strip_prefix(TOOL_PREFIX).unwrap_or(tool_name);
-
     debug!(
         "Handling marketplace tool call: {} for client {}",
-        tool, client_id
+        tool_name, client_id
     );
 
-    match tool {
-        SEARCH => handle_search(service, arguments).await,
-        INSTALL => handle_install(service, arguments, client_id, client_name).await,
-        _ => Err(MarketplaceError::InvalidToolName(tool_name.to_string())),
+    if tool_name == search_tool_name {
+        handle_search(service, install_tool_name, arguments).await
+    } else if tool_name == install_tool_name {
+        handle_install(service, search_tool_name, arguments, client_id, client_name).await
+    } else {
+        Err(MarketplaceError::InvalidToolName(tool_name.to_string()))
     }
 }
 
@@ -101,6 +206,7 @@ fn resolve_search_type(arguments: &Value) -> &str {
 
 async fn handle_search(
     service: &MarketplaceService,
+    install_tool_name: &str,
     arguments: Value,
 ) -> Result<Value, MarketplaceError> {
     let query = arguments
@@ -133,14 +239,18 @@ async fn handle_search(
         result["skill_count"] = json!(skills.len());
     }
 
-    result["hint"] =
-        json!("Use marketplace__install with type 'mcp' or 'skill' to install an item");
+    result["hint"] = json!(search_hint(
+        install_tool_name,
+        service.is_mcp_enabled(),
+        service.is_skills_enabled()
+    ));
 
     Ok(result)
 }
 
 async fn handle_install(
     service: &MarketplaceService,
+    search_tool_name: &str,
     arguments: Value,
     client_id: &str,
     client_name: &str,
@@ -167,7 +277,15 @@ async fn handle_install(
                     "MCP marketplace is not enabled".to_string(),
                 ));
             }
-            handle_install_mcp_server(service, name, source, client_id, client_name).await
+            handle_install_mcp_server(
+                service,
+                search_tool_name,
+                name,
+                source,
+                client_id,
+                client_name,
+            )
+            .await
         }
         "skill" => {
             if !service.is_skills_enabled() {
@@ -175,7 +293,15 @@ async fn handle_install(
                     "Skills marketplace is not enabled".to_string(),
                 ));
             }
-            handle_install_skill(service, name, source, client_id, client_name).await
+            handle_install_skill(
+                service,
+                search_tool_name,
+                name,
+                source,
+                client_id,
+                client_name,
+            )
+            .await
         }
         _ => Err(MarketplaceError::InvalidArguments(format!(
             "Invalid type '{}'. Must be 'mcp' or 'skill'",
@@ -186,6 +312,7 @@ async fn handle_install(
 
 async fn handle_install_mcp_server(
     service: &MarketplaceService,
+    search_tool_name: &str,
     name: &str,
     source: &str,
     client_id: &str,
@@ -204,8 +331,8 @@ async fn handle_install_mcp_server(
         .find(|s| s.name == name && s.source_id == source)
         .ok_or_else(|| {
             MarketplaceError::InstallError(format!(
-                "Server '{}' from source '{}' not found. Use marketplace__search first.",
-                name, source
+                "Server '{}' from source '{}' not found. Use {} first.",
+                name, source, search_tool_name
             ))
         })?;
 
@@ -238,6 +365,7 @@ async fn handle_install_mcp_server(
 
 async fn handle_install_skill(
     service: &MarketplaceService,
+    search_tool_name: &str,
     name: &str,
     source: &str,
     client_id: &str,
@@ -256,8 +384,8 @@ async fn handle_install_skill(
         .find(|s| s.name == name && s.source_id == source)
         .ok_or_else(|| {
             MarketplaceError::InstallError(format!(
-                "Skill '{}' from source '{}' not found. Use marketplace__search first.",
-                name, source
+                "Skill '{}' from source '{}' not found. Use {} first.",
+                name, source, search_tool_name
             ))
         })?;
 
@@ -287,26 +415,109 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_list_tools() {
-        let tools = list_tools();
+    fn test_list_tools_both_enabled() {
+        let tools = list_tools("MarketplaceSearch", "MarketplaceInstall", true, true);
         assert_eq!(tools.len(), 2);
 
-        // Check tool names
         let names: Vec<&str> = tools
             .iter()
             .map(|t| t.get("name").unwrap().as_str().unwrap())
             .collect();
+        assert!(names.contains(&"MarketplaceSearch"));
+        assert!(names.contains(&"MarketplaceInstall"));
 
-        assert!(names.contains(&"marketplace__search"));
-        assert!(names.contains(&"marketplace__install"));
+        // Search tool should reference both
+        let search = &tools[0];
+        let desc = search.get("description").unwrap().as_str().unwrap();
+        assert!(desc.contains("MCP servers and skills"));
+
+        // Type enum should include all three options
+        let type_enum = search["inputSchema"]["properties"]["type"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(type_enum.len(), 3);
+
+        // Install tool should reference both
+        let install = &tools[1];
+        let desc = install.get("description").unwrap().as_str().unwrap();
+        assert!(desc.contains("MCP server or skill"));
+
+        let type_enum = install["inputSchema"]["properties"]["type"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(type_enum.len(), 2);
+    }
+
+    #[test]
+    fn test_list_tools_mcp_only() {
+        let tools = list_tools("MarketplaceSearch", "MarketplaceInstall", true, false);
+        assert_eq!(tools.len(), 2);
+
+        let search = &tools[0];
+        let desc = search.get("description").unwrap().as_str().unwrap();
+        assert!(desc.contains("MCP servers"));
+        assert!(!desc.contains("skills"));
+
+        let type_enum = search["inputSchema"]["properties"]["type"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(type_enum, &[json!("mcp")]);
+
+        let install = &tools[1];
+        let desc = install.get("description").unwrap().as_str().unwrap();
+        assert!(desc.contains("MCP server"));
+        assert!(!desc.contains("skill"));
+
+        let type_enum = install["inputSchema"]["properties"]["type"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(type_enum, &[json!("mcp")]);
+    }
+
+    #[test]
+    fn test_list_tools_skills_only() {
+        let tools = list_tools("MarketplaceSearch", "MarketplaceInstall", false, true);
+        assert_eq!(tools.len(), 2);
+
+        let search = &tools[0];
+        let desc = search.get("description").unwrap().as_str().unwrap();
+        assert!(desc.contains("skills"));
+        assert!(!desc.contains("MCP"));
+
+        let type_enum = search["inputSchema"]["properties"]["type"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(type_enum, &[json!("skill")]);
+
+        let install = &tools[1];
+        let desc = install.get("description").unwrap().as_str().unwrap();
+        assert!(desc.contains("skill"));
+        assert!(!desc.contains("MCP"));
+
+        let type_enum = install["inputSchema"]["properties"]["type"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(type_enum, &[json!("skill")]);
+    }
+
+    #[test]
+    fn test_list_tools_custom_names() {
+        let tools = list_tools("MySearch", "MyInstall", true, true);
+        assert_eq!(tools.len(), 2);
+
+        let names: Vec<&str> = tools
+            .iter()
+            .map(|t| t.get("name").unwrap().as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"MySearch"));
+        assert!(names.contains(&"MyInstall"));
     }
 
     #[test]
     fn test_tool_schemas() {
-        let tools = list_tools();
+        let tools = list_tools("MarketplaceSearch", "MarketplaceInstall", true, true);
 
         for tool in &tools {
-            // Each tool should have name, description, inputSchema
             assert!(tool.get("name").is_some());
             assert!(tool.get("description").is_some());
             assert!(tool.get("inputSchema").is_some());
@@ -314,5 +525,20 @@ mod tests {
             let schema = tool.get("inputSchema").unwrap();
             assert_eq!(schema.get("type").unwrap(), "object");
         }
+    }
+
+    #[test]
+    fn test_search_hint() {
+        let hint = search_hint("MarketplaceInstall", true, true);
+        assert!(hint.contains("'mcp' or 'skill'"));
+        assert!(hint.contains("MarketplaceInstall"));
+
+        let hint = search_hint("MarketplaceInstall", true, false);
+        assert!(hint.contains("'mcp'"));
+        assert!(!hint.contains("skill"));
+
+        let hint = search_hint("MarketplaceInstall", false, true);
+        assert!(hint.contains("'skill'"));
+        assert!(!hint.contains("mcp"));
     }
 }

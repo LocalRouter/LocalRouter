@@ -51,7 +51,7 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
     }
 
     fn owns_tool(&self, tool_name: &str) -> bool {
-        lr_marketplace::is_marketplace_tool(tool_name)
+        self.service.is_marketplace_tool(tool_name)
     }
 
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
@@ -98,7 +98,7 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
         let decision = access_control::check_marketplace_access(&state.permission);
 
         // Search tools are read-only and never need approval
-        if lr_marketplace::is_marketplace_search_tool(tool_name) {
+        if self.service.is_marketplace_search_tool(tool_name) {
             let result = match decision {
                 AccessDecision::Deny => FirewallCheckResult::Deny,
                 _ => FirewallCheckResult::Allow,
@@ -161,10 +161,17 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
             return None;
         }
 
+        let content = if self.service.is_mcp_enabled() && self.service.is_skills_enabled() {
+            "Use marketplace tools to discover and install new MCP servers and skills.\n"
+        } else if self.service.is_mcp_enabled() {
+            "Use marketplace tools to discover and install new MCP servers.\n"
+        } else {
+            "Use marketplace tools to discover and install new skills.\n"
+        };
+
         Some(VirtualInstructions {
             section_title: "Marketplace".to_string(),
-            content: "Use marketplace tools to discover and install new MCP servers and skills.\n"
-                .to_string(),
+            content: content.to_string(),
             tool_names: Vec::new(), // populated by gateway
             priority: 20,
         })
@@ -188,16 +195,13 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
 
     fn all_tool_names(&self) -> Vec<String> {
         vec![
-            "marketplace__search".to_string(),
-            "marketplace__install".to_string(),
+            self.service.search_tool_name(),
+            self.service.install_tool_name(),
         ]
     }
 
     fn is_tool_indexable(&self, tool_name: &str) -> bool {
-        match tool_name {
-            "marketplace__search" => true,   // Search results are valuable
-            "marketplace__install" => false, // Action tool
-            _ => false,
-        }
+        // Only the search tool produces indexable results; install is an action tool
+        tool_name == self.service.search_tool_name()
     }
 }

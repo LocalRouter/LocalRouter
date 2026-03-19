@@ -23,22 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-/// Tool name prefix for marketplace tools
-pub const TOOL_PREFIX: &str = "marketplace__";
-
 /// Virtual server ID for marketplace (used in connection graph, not MCP panel)
 pub const MARKETPLACE_ID: &str = "marketplace";
-
-/// Check if a tool name is a marketplace tool
-pub fn is_marketplace_tool(name: &str) -> bool {
-    name.starts_with(TOOL_PREFIX)
-}
-
-/// Check if a marketplace tool is a read-only search tool (no approval needed).
-pub fn is_marketplace_search_tool(name: &str) -> bool {
-    let stripped = name.strip_prefix(TOOL_PREFIX).unwrap_or(name);
-    matches!(stripped, tools::SEARCH)
-}
 
 /// Central marketplace service
 pub struct MarketplaceService {
@@ -191,9 +177,39 @@ impl MarketplaceService {
         self.data_dir.join("marketplace-skills")
     }
 
-    /// List the marketplace tools as JSON tool definitions
+    /// Get the configured search tool name
+    pub fn search_tool_name(&self) -> String {
+        self.config.read().search_tool_name.clone()
+    }
+
+    /// Get the configured install tool name
+    pub fn install_tool_name(&self) -> String {
+        self.config.read().install_tool_name.clone()
+    }
+
+    /// Check if a tool name is a marketplace tool (exact match against configured names)
+    pub fn is_marketplace_tool(&self, name: &str) -> bool {
+        let cfg = self.config.read();
+        name == cfg.search_tool_name || name == cfg.install_tool_name
+    }
+
+    /// Check if a tool name is the marketplace search tool (read-only, no approval needed)
+    pub fn is_marketplace_search_tool(&self, name: &str) -> bool {
+        let cfg = self.config.read();
+        name == cfg.search_tool_name
+    }
+
+    /// List the marketplace tools as JSON tool definitions.
+    ///
+    /// Tool descriptions and type enums adapt based on which features are enabled.
     pub fn list_tools(&self) -> Vec<Value> {
-        tools::list_tools()
+        let cfg = self.config.read();
+        tools::list_tools(
+            &cfg.search_tool_name,
+            &cfg.install_tool_name,
+            cfg.mcp_enabled,
+            cfg.skills_enabled,
+        )
     }
 
     /// Handle a marketplace tool call
@@ -204,7 +220,20 @@ impl MarketplaceService {
         client_id: &str,
         client_name: &str,
     ) -> Result<Value, MarketplaceError> {
-        tools::handle_tool_call(self, tool_name, arguments, client_id, client_name).await
+        let (search_name, install_name) = {
+            let cfg = self.config.read();
+            (cfg.search_tool_name.clone(), cfg.install_tool_name.clone())
+        };
+        tools::handle_tool_call(
+            self,
+            tool_name,
+            &search_name,
+            &install_name,
+            arguments,
+            client_id,
+            client_name,
+        )
+        .await
     }
 
     /// Search MCP servers from the registry (uses cache if available)

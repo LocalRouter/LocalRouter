@@ -61,7 +61,7 @@ export function ClientMarketplaceTab({ client, onUpdate }: MarketplaceTabProps) 
             />
           </div>
           <CardDescription>
-            Allow this client to search and install MCP servers and skills from the marketplace.
+            Allow this client to search and install from the marketplace.
             Approval is only required for installation &mdash; searching is always allowed.
           </CardDescription>
         </CardHeader>
