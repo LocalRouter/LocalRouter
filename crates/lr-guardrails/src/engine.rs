@@ -442,10 +442,7 @@ impl SafetyEngine {
                         .map(|m| m.id().to_string())
                         .unwrap_or_else(|| "unknown".to_string());
                     warn!("Safety model '{}' check failed: {}", model_id, e);
-                    errors.push(SafetyModelError {
-                        model_id,
-                        error: e,
-                    });
+                    errors.push(SafetyModelError { model_id, error: e });
                 }
             }
         }

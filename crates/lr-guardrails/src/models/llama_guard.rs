@@ -129,8 +129,7 @@ impl LlamaGuardModel {
 
         system_content.push_str("<END UNSAFE CONTENT CATEGORIES>\n\n");
         system_content.push_str("Provide your safety assessment for the above conversation.\n");
-        system_content
-            .push_str("- First line must read 'safe' or 'unsafe'.\n");
+        system_content.push_str("- First line must read 'safe' or 'unsafe'.\n");
         system_content.push_str(
             "- If unsafe, a second line must include a comma-separated list of violated categories.",
         );

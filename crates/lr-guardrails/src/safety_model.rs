@@ -327,9 +327,18 @@ mod tests {
 
     #[test]
     fn test_category_to_serde_name() {
-        assert_eq!(category_to_serde_name(&SafetyCategory::Jailbreak), "jailbreak");
-        assert_eq!(category_to_serde_name(&SafetyCategory::ViolentCrimes), "violent_crimes");
-        assert_eq!(category_to_serde_name(&SafetyCategory::SexualContent), "sexual_content");
+        assert_eq!(
+            category_to_serde_name(&SafetyCategory::Jailbreak),
+            "jailbreak"
+        );
+        assert_eq!(
+            category_to_serde_name(&SafetyCategory::ViolentCrimes),
+            "violent_crimes"
+        );
+        assert_eq!(
+            category_to_serde_name(&SafetyCategory::SexualContent),
+            "sexual_content"
+        );
         assert_eq!(category_to_serde_name(&SafetyCategory::Hate), "hate");
     }
 
@@ -357,14 +366,15 @@ mod tests {
         };
 
         // Override using serde names (as config stores them)
-        let overrides = vec![
-            ("jailbreak".to_string(), CategoryAction::Allow),
-        ];
+        let overrides = vec![("jailbreak".to_string(), CategoryAction::Allow)];
         let result = result.apply_client_category_overrides(&overrides);
 
         // Jailbreak should be removed, ViolentCrimes remains
         assert_eq!(result.actions_required.len(), 1);
-        assert_eq!(result.actions_required[0].category, SafetyCategory::ViolentCrimes);
+        assert_eq!(
+            result.actions_required[0].category,
+            SafetyCategory::ViolentCrimes
+        );
     }
 }
 

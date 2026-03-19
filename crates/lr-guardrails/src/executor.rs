@@ -94,8 +94,13 @@ impl ModelExecutor {
     ) -> Result<CompletionResponse, String> {
         match self {
             Self::ChatProvider(executor) => executor.chat_complete(request).await,
-            Self::Provider(_) => Err("Provider executor does not support chat completions — use complete() instead".to_string()),
-            Self::Moderation => Err("Moderation executor does not support chat completions".to_string()),
+            Self::Provider(_) => Err(
+                "Provider executor does not support chat completions — use complete() instead"
+                    .to_string(),
+            ),
+            Self::Moderation => {
+                Err("Moderation executor does not support chat completions".to_string())
+            }
         }
     }
 

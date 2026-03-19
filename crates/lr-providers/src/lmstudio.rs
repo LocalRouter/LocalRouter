@@ -622,7 +622,9 @@ impl ModelProvider for LMStudioProvider {
                         chunks
                     }
                     Err(e) => {
-                        vec![Err(AppError::Provider(crate::http_client::format_stream_error(&e)))]
+                        vec![Err(AppError::Provider(
+                            crate::http_client::format_stream_error(&e),
+                        ))]
                     }
                 }
             })

@@ -381,7 +381,9 @@ impl ModelProvider for PerplexityProvider {
 
                     chunks
                 }
-                Err(e) => vec![Err(AppError::Provider(crate::http_client::format_stream_error(&e)))],
+                Err(e) => vec![Err(AppError::Provider(
+                    crate::http_client::format_stream_error(&e),
+                ))],
             };
 
             futures::stream::iter(chunks)

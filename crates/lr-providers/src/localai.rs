@@ -595,7 +595,9 @@ impl ModelProvider for LocalAIProvider {
                         chunks
                     }
                     Err(e) => {
-                        vec![Err(AppError::Provider(crate::http_client::format_stream_error(&e)))]
+                        vec![Err(AppError::Provider(
+                            crate::http_client::format_stream_error(&e),
+                        ))]
                     }
                 }
             })
