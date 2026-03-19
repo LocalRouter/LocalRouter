@@ -280,9 +280,9 @@ impl McpGateway {
         // If routed by URI, leave parameters unchanged - backend will handle its own URIs
 
         // Emit pending monitor event for resource read
-        let (mon_client_id, mon_client_name) = {
+        let (mon_client_id, mon_client_name, mon_session_id) = {
             let s = session.read().await;
-            (Some(s.client_id.clone()), Some(s.client_name.clone()))
+            (Some(s.client_id.clone()), Some(s.client_name.clone()), s.monitor_session_id.clone())
         };
         let mon_uri = resource_name
             .map(|n| n.to_string())
@@ -291,7 +291,7 @@ impl McpGateway {
             lr_monitor::MonitorEventType::McpResourceRead,
             mon_client_id,
             mon_client_name,
-            None,
+            mon_session_id,
             lr_monitor::MonitorEventData::McpResourceRead {
                 uri: mon_uri.clone(),
                 server_id: server_id.clone(),

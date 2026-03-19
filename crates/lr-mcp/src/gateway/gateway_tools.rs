@@ -270,9 +270,9 @@ impl McpGateway {
         );
 
         // Emit pending monitor event for MCP tool call
-        let (mon_client_id, mon_client_name) = {
+        let (mon_client_id, mon_client_name, mon_session_id) = {
             let s = session.read().await;
-            (Some(s.client_id.clone()), Some(s.client_name.clone()))
+            (Some(s.client_id.clone()), Some(s.client_name.clone()), s.monitor_session_id.clone())
         };
         let arguments = transformed_request
             .params
@@ -284,7 +284,7 @@ impl McpGateway {
             lr_monitor::MonitorEventType::McpToolCall,
             mon_client_id,
             mon_client_name,
-            None,
+            mon_session_id,
             lr_monitor::MonitorEventData::McpToolCall {
                 tool_name: tool_name.clone(),
                 server_id: server_id.clone(),

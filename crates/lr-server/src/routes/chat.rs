@@ -505,6 +505,7 @@ pub async fn chat_completions(
                 guardrail_handle,
                 compression_tokens_saved,
                 llm_event_id,
+                session_id,
             )
             .await;
         }
@@ -2139,6 +2140,7 @@ async fn handle_mcp_via_llm(
     guardrail_handle: GuardrailHandle,
     _compression_tokens_saved: u64,
     llm_event_id: String,
+    session_id: String,
 ) -> ApiResult<Response> {
     // Determine if we can run guardrails in parallel with the LLM call.
     // The LLM call itself is safe, but the orchestrator must await guardrails
@@ -2251,6 +2253,18 @@ async fn handle_mcp_via_llm(
 
         if let Some(edits) = firewall_edits {
             apply_firewall_request_edits(&mut request, &edits);
+        }
+    }
+
+    // Set monitor session_id on the gateway session so tool call events are grouped
+    {
+        let gw_session_key = state
+            .mcp_via_llm_manager
+            .get_gateway_session_key(&client.id);
+        if let Some(key) = gw_session_key {
+            if let Some(gw_session) = state.mcp_gateway.get_session(&key) {
+                gw_session.write().await.monitor_session_id = Some(session_id.clone());
+            }
         }
     }
 

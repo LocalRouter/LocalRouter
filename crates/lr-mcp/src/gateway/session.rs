@@ -107,6 +107,10 @@ pub struct GatewaySession {
 
     /// Elicitation permission for this client session (Allow/Ask/Off)
     pub mcp_elicitation_permission: lr_config::PermissionState,
+
+    /// Monitor session ID for grouping events from one API request.
+    /// Set by MCP-via-LLM to link tool call events to the parent LLM call.
+    pub monitor_session_id: Option<String>,
 }
 
 impl GatewaySession {
@@ -158,6 +162,7 @@ impl GatewaySession {
             instructions_context: None,
             mcp_sampling_permission: lr_config::PermissionState::default(),
             mcp_elicitation_permission: lr_config::PermissionState::default(),
+            monitor_session_id: None,
         }
     }
 

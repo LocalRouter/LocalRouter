@@ -125,6 +125,19 @@ impl McpViaLlmManager {
             .unwrap_or_default()
     }
 
+    /// Get the gateway session key for a client (if a session exists).
+    pub fn get_gateway_session_key(&self, client_id: &str) -> Option<String> {
+        let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
+        self.sessions_by_client
+            .get(client_id)
+            .and_then(|sessions| {
+                sessions
+                    .iter()
+                    .find(|s| !s.read().is_expired(ttl))
+                    .map(|s| s.read().gateway_session_key.clone())
+            })
+    }
+
     /// Get an existing session or create a new one for this client.
     /// Phase 1: one session per client (simplest matching strategy).
     pub(crate) fn get_or_create_session(&self, client_id: &str) -> Arc<RwLock<McpViaLlmSession>> {
