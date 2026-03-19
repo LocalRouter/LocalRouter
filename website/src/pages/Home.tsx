@@ -243,7 +243,7 @@ export default function Home() {
       <section className="border-b">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 text-center">
           <h2 className="text-2xl font-bold sm:text-3xl">App Demo</h2>
-          <p className="mt-2 text-sm text-muted-foreground">UI preview only — no live functionality — XP is now end-of-life</p>
+          <p className="mt-2 text-sm text-muted-foreground">UI preview only, no live functionality</p>
         </div>
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pb-8">
           <iframe
@@ -1195,11 +1195,13 @@ export default function Home() {
           <div className="mt-16 pt-16 border-t border-border/50">
             <div className="grid gap-8 md:grid-cols-2">
               {/* Content Safety (GuardRails) */}
-              <div className="relative">
-                <div className="hidden lg:block absolute -top-12 right-[80%] transform scale-[0.65] origin-top-right pointer-events-none">
-                  <GuardrailApprovalDemo />
-                </div>
-                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-red-500/50 transition-colors">
+              <div className="relative overflow-visible mt-0 lg:mt-28">
+                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-red-500/50 transition-colors overflow-visible">
+                  <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
+                    <div className="scale-[0.5] origin-top-right">
+                      <GuardrailApprovalDemo />
+                    </div>
+                  </div>
                   <div className="flex items-center gap-2 mb-3">
                     <div className="h-8 w-8 rounded-lg bg-red-500/10 flex items-center justify-center">
                       <Shield className="h-4 w-4 text-red-500" />
@@ -1231,11 +1233,13 @@ export default function Home() {
               </div>
 
               {/* Secret Scanning */}
-              <div className="relative">
-                <div className="hidden lg:block absolute -top-12 left-[80%] transform scale-[0.65] origin-top-left pointer-events-none">
-                  <SecretScanApprovalDemo />
-                </div>
-                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-orange-500/50 transition-colors">
+              <div className="relative overflow-visible mt-0 lg:mt-28">
+                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-orange-500/50 transition-colors overflow-visible">
+                  <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
+                    <div className="scale-[0.5] origin-top-right">
+                      <SecretScanApprovalDemo />
+                    </div>
+                  </div>
                   <div className="flex items-center gap-2 mb-3">
                     <div className="h-8 w-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
                       <KeyRound className="h-4 w-4 text-orange-500" />
@@ -1267,11 +1271,13 @@ export default function Home() {
               </div>
 
               {/* Runtime Approvals */}
-              <div className="relative">
-                <div className="hidden lg:block absolute -top-12 right-[80%] transform scale-[0.65] origin-top-right pointer-events-none">
-                  <FirewallApprovalDemo />
-                </div>
-                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-amber-500/50 transition-colors">
+              <div className="relative overflow-visible mt-0 lg:mt-28">
+                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-amber-500/50 transition-colors overflow-visible">
+                  <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
+                    <div className="scale-[0.5] origin-top-right">
+                      <FirewallApprovalDemo />
+                    </div>
+                  </div>
                   <div className="flex items-center gap-2 mb-3">
                     <div className="h-8 w-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
                       <ShieldCheck className="h-4 w-4 text-amber-500" />
@@ -1303,11 +1309,13 @@ export default function Home() {
               </div>
 
               {/* Elicitation & Sampling */}
-              <div className="relative">
-                <div className="hidden lg:block absolute -top-12 left-[80%] transform scale-[0.65] origin-top-left pointer-events-none">
-                  <ElicitationDemo />
-                </div>
-                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-indigo-500/50 transition-colors">
+              <div className="relative overflow-visible mt-0 lg:mt-28">
+                <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-indigo-500/50 transition-colors overflow-visible">
+                  <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
+                    <div className="scale-[0.5] origin-top-right">
+                      <ElicitationDemo />
+                    </div>
+                  </div>
                   <div className="flex items-center gap-2 mb-3">
                     <div className="h-8 w-8 rounded-lg bg-indigo-500/10 flex items-center justify-center">
                       <MessagesSquare className="h-4 w-4 text-indigo-500" />

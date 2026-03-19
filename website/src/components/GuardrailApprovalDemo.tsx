@@ -14,25 +14,15 @@ const DEMO_VERDICTS: SafetyVerdict[] = [
     is_safe: false,
     flagged_categories: [
       { category: "prompt_injection", confidence: 0.95, native_label: "S14" },
-      { category: "jailbreak", confidence: 0.88, native_label: "S15" },
     ],
     confidence: 0.92,
-    raw_output: "unsafe\nS14,S15",
+    raw_output: "unsafe\nS14",
     check_duration_ms: 340,
-  },
-  {
-    model_id: "shield-gemma-2b",
-    is_safe: true,
-    flagged_categories: [],
-    confidence: 0.97,
-    raw_output: "No, this is safe.",
-    check_duration_ms: 180,
   },
 ]
 
 const DEMO_ACTIONS: CategoryActionRequired[] = [
   { category: "prompt_injection", action: "ask", model_id: "llama-guard-3-8b", confidence: 0.95 },
-  { category: "jailbreak", action: "ask", model_id: "llama-guard-3-8b", confidence: 0.88 },
 ]
 
 export function GuardrailApprovalDemo() {
