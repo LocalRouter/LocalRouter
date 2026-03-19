@@ -218,6 +218,44 @@ function SectionHeader({ title }: { title: string }) {
   )
 }
 
+function ParametersTable({ body }: { body: Record<string, unknown> }) {
+  const params = [
+    ['temperature', body.temperature],
+    ['max_tokens', body.max_tokens],
+    ['top_p', body.top_p],
+    ['frequency_penalty', body.frequency_penalty],
+    ['presence_penalty', body.presence_penalty],
+    ['seed', body.seed],
+    ['top_k', body.top_k],
+    ['repetition_penalty', body.repetition_penalty],
+  ].filter(([, v]) => v != null) as [string, unknown][]
+
+  if (params.length === 0) return null
+
+  const [isOpen, setIsOpen] = useState(false)
+
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+        <ChevronRight className={cn('h-3 w-3 transition-transform', isOpen && 'rotate-90')} />
+        <span className="font-medium">Parameters</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <table className="mt-1 text-xs w-full">
+          <tbody>
+            {params.map(([key, value]) => (
+              <tr key={key} className="border-b border-border/20">
+                <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap">{key}</td>
+                <td className="py-0.5 font-mono">{String(value)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
 function LlmCallDetail({ data }: { data: EventData }) {
   const body = data.request_body as Record<string, unknown> | undefined
   const transformedBody = data.transformed_body as Record<string, unknown> | undefined
@@ -247,8 +285,6 @@ function LlmCallDetail({ data }: { data: EventData }) {
         <Field label="Endpoint" value={data.endpoint as string} />
         <Field label="Model" value={data.model as string} />
         <Field label="Stream" value={data.stream != null ? String(data.stream) : undefined} />
-        <Field label="Messages" value={data.message_count != null ? String(data.message_count) : undefined} />
-        {(data.has_tools as boolean) && <Field label="Tools" value={String(data.tool_count)} />}
       </div>
 
       {/* Original / Transformed toggle */}
@@ -292,16 +328,7 @@ function LlmCallDetail({ data }: { data: EventData }) {
         <ToolsSection tools={tools} />
       )}
 
-      {activeBody && (
-        <JsonSection title="Parameters" data={{
-          temperature: activeBody.temperature,
-          max_tokens: activeBody.max_tokens,
-          top_p: activeBody.top_p,
-          frequency_penalty: activeBody.frequency_penalty,
-          presence_penalty: activeBody.presence_penalty,
-          seed: activeBody.seed,
-        }} defaultOpen={false} />
-      )}
+      {activeBody && <ParametersTable body={activeBody} />}
 
       {activeBody && (
         <JsonSection title="Full Request Body" data={activeBody} defaultOpen={false} />
@@ -312,28 +339,60 @@ function LlmCallDetail({ data }: { data: EventData }) {
         <>
           <SectionHeader title="Response" />
 
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <Field label="Provider" value={data.provider as string} />
-            <Field label="Status" value={data.status_code != null ? String(data.status_code) : undefined} />
-            <Field label="Streamed" value={data.streamed != null ? String(data.streamed) : undefined} />
-          </div>
-
-          {data.total_tokens != null && (
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              <Field label="Input Tokens" value={String(data.input_tokens)} />
-              <Field label="Output Tokens" value={String(data.output_tokens)} />
-              <Field label="Total Tokens" value={String(data.total_tokens)} />
-            </div>
-          )}
-
-          {(data.cost_usd != null || data.latency_ms != null) && (
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              {data.cost_usd != null && <Field label="Cost" value={`$${(data.cost_usd as number).toFixed(6)}`} />}
-              {data.latency_ms != null && <Field label="Latency" value={`${String(data.latency_ms)}ms`} />}
-            </div>
-          )}
-
-          {data.finish_reason && <Field label="Finish Reason" value={data.finish_reason as string} />}
+          <table className="w-full text-xs">
+            <tbody>
+              <tr className="border-b border-border/30">
+                <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Provider</td>
+                <td className="py-0.5 font-medium">{data.provider as string}</td>
+                <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Status</td>
+                <td className="py-0.5 font-medium">{data.status_code != null ? String(data.status_code) : '—'}</td>
+                {data.streamed != null && (
+                  <>
+                    <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Streamed</td>
+                    <td className="py-0.5 font-medium">{String(data.streamed)}</td>
+                  </>
+                )}
+              </tr>
+              {data.total_tokens != null && (
+                <tr className="border-b border-border/30">
+                  <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Input</td>
+                  <td className="py-0.5 font-medium">{String(data.input_tokens)}</td>
+                  <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Output</td>
+                  <td className="py-0.5 font-medium">{String(data.output_tokens)}</td>
+                  <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Total</td>
+                  <td className="py-0.5 font-medium">{String(data.total_tokens)}</td>
+                </tr>
+              )}
+              {(data.reasoning_tokens != null && (data.reasoning_tokens as number) > 0) && (
+                <tr className="border-b border-border/30">
+                  <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Reasoning</td>
+                  <td className="py-0.5 font-medium" colSpan={5}>{String(data.reasoning_tokens)}</td>
+                </tr>
+              )}
+              {(data.cost_usd != null || data.latency_ms != null || data.finish_reason) && (
+                <tr>
+                  {data.latency_ms != null && (
+                    <>
+                      <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Latency</td>
+                      <td className="py-0.5 font-medium">{String(data.latency_ms)}ms</td>
+                    </>
+                  )}
+                  {data.cost_usd != null && (
+                    <>
+                      <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Cost</td>
+                      <td className="py-0.5 font-medium">${(data.cost_usd as number).toFixed(6)}</td>
+                    </>
+                  )}
+                  {data.finish_reason && (
+                    <>
+                      <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Finish</td>
+                      <td className="py-0.5 font-medium">{data.finish_reason as string}</td>
+                    </>
+                  )}
+                </tr>
+              )}
+            </tbody>
+          </table>
 
           {data.content_preview && (
             <div className="text-xs">
