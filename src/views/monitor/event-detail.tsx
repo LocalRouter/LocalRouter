@@ -210,16 +210,28 @@ function ToolsSection({ tools }: { tools: Array<Record<string, unknown>> }) {
 
 // ---- Type-specific detail components ----
 
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold border-b border-border/50 pb-0.5 pt-1">
+      {title}
+    </div>
+  )
+}
+
 function LlmCallDetail({ data }: { data: EventData }) {
   const body = data.request_body as Record<string, unknown> | undefined
   const messages = body?.messages as Array<Record<string, unknown>> | undefined
   const tools = body?.tools as Array<Record<string, unknown>> | undefined
   const transformedBody = data.transformed_body as Record<string, unknown> | undefined
   const transformations = data.transformations_applied as string[] | undefined
+  const hasResponse = data.provider != null
+  const hasError = data.error != null
 
   return (
     <div className="space-y-2">
       {/* Request section */}
+      {(hasResponse || hasError) && <SectionHeader title="Request" />}
+
       <div className="grid grid-cols-2 gap-2 text-xs">
         <Field label="Endpoint" value={data.endpoint as string} />
         <Field label="Model" value={data.model as string} />
@@ -253,12 +265,14 @@ function LlmCallDetail({ data }: { data: EventData }) {
 
       {/* Transformation section */}
       {transformations && transformations.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-xs text-muted-foreground font-medium">Transformations:</span>
-          {transformations.map((t, i) => (
-            <Badge key={i} variant="secondary" className="text-[10px]">{t}</Badge>
-          ))}
-        </div>
+        <>
+          <SectionHeader title="Transformations" />
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {transformations.map((t, i) => (
+              <Badge key={i} variant="secondary" className="text-[10px]">{t}</Badge>
+            ))}
+          </div>
+        </>
       )}
 
       {transformedBody && (
@@ -266,8 +280,10 @@ function LlmCallDetail({ data }: { data: EventData }) {
       )}
 
       {/* Response section (present when status=complete) */}
-      {data.provider && (
+      {hasResponse && (
         <>
+          <SectionHeader title="Response" />
+
           <div className="grid grid-cols-2 gap-2 text-xs">
             <Field label="Provider" value={data.provider as string} />
             <Field label="Status" value={data.status_code != null ? String(data.status_code) : undefined} />
@@ -282,10 +298,10 @@ function LlmCallDetail({ data }: { data: EventData }) {
             </div>
           )}
 
-          {data.cost_usd != null && (
+          {(data.cost_usd != null || data.latency_ms != null) && (
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <Field label="Cost" value={`$${(data.cost_usd as number).toFixed(6)}`} />
-              <Field label="Latency" value={data.latency_ms != null ? `${String(data.latency_ms)}ms` : undefined} />
+              {data.cost_usd != null && <Field label="Cost" value={`$${(data.cost_usd as number).toFixed(6)}`} />}
+              {data.latency_ms != null && <Field label="Latency" value={`${String(data.latency_ms)}ms`} />}
             </div>
           )}
 
@@ -303,35 +319,37 @@ function LlmCallDetail({ data }: { data: EventData }) {
       )}
 
       {/* Error section (present when status=error) */}
-      {data.error && (
-        <div className="text-xs">
-          <span className="text-muted-foreground font-medium">Error:</span>
-          <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+      {hasError && (
+        <>
+          <SectionHeader title="Error" />
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            {data.provider && <Field label="Provider" value={data.provider as string} />}
+            {data.status_code != null && <Field label="Status Code" value={String(data.status_code)} />}
+          </div>
+          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
             {data.error as string}
           </pre>
-        </div>
+        </>
       )}
     </div>
   )
 }
 
-function McpToolCallDetail({ data }: { data: EventData }) {
+function ServerField({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Tool" value={data.tool_name as string} />
-        <div className="flex items-center gap-1 text-xs">
-          <Server className="h-3 w-3 text-muted-foreground" />
-          <span className="text-muted-foreground">Server:</span>
-          <span>{(data.server_name || data.server_id) as string}</span>
-        </div>
-      </div>
-      {data.firewall_action && (
-        <Field label="Firewall" value={data.firewall_action as string} />
-      )}
-      <JsonSection title="Arguments" data={data.arguments as unknown} defaultOpen={true} />
+    <div className="flex items-center gap-1 text-xs">
+      <Server className="h-3 w-3 text-muted-foreground" />
+      <span className="text-muted-foreground">Server:</span>
+      <span className="font-medium">{(data.server_name || data.server_id) as string}</span>
+    </div>
+  )
+}
 
-      {/* Response section (present when complete) */}
+function McpResponseSection({ data }: { data: EventData }) {
+  if (data.success == null && !data.error && !data.response_preview && !data.content_preview) return null
+  return (
+    <>
+      <SectionHeader title="Response" />
       {data.success != null && (
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Field label="Success" value={String(data.success)} />
@@ -343,14 +361,30 @@ function McpToolCallDetail({ data }: { data: EventData }) {
           {data.error as string}
         </pre>
       )}
-      {data.response_preview && (
+      {(data.response_preview || data.content_preview) && (
         <div className="text-xs">
-          <span className="text-muted-foreground font-medium">Response:</span>
+          <span className="text-muted-foreground font-medium">Content:</span>
           <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-            {data.response_preview as string}
+            {(data.response_preview || data.content_preview) as string}
           </pre>
         </div>
       )}
+    </>
+  )
+}
+
+function McpToolCallDetail({ data }: { data: EventData }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Tool" value={data.tool_name as string} />
+        <ServerField data={data} />
+      </div>
+      {data.firewall_action && (
+        <Field label="Firewall" value={data.firewall_action as string} />
+      )}
+      <JsonSection title="Arguments" data={data.arguments as unknown} defaultOpen={true} />
+      <McpResponseSection data={data} />
     </div>
   )
 }
@@ -360,27 +394,9 @@ function McpResourceReadDetail({ data }: { data: EventData }) {
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-2 text-xs">
         <Field label="URI" value={data.uri as string} />
-        <Field label="Server" value={(data.server_name || data.server_id) as string} />
+        <ServerField data={data} />
       </div>
-      {data.arguments && <JsonSection title="Arguments" data={data.arguments as unknown} defaultOpen={true} />}
-
-      {/* Response section (present when complete) */}
-      {data.success != null && (
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <Field label="Success" value={String(data.success)} />
-          {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
-        </div>
-      )}
-      {data.error && (
-        <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-          {data.error as string}
-        </pre>
-      )}
-      {data.content_preview && (
-        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-          {data.content_preview as string}
-        </pre>
-      )}
+      <McpResponseSection data={data} />
     </div>
   )
 }
@@ -390,98 +406,120 @@ function McpPromptGetDetail({ data }: { data: EventData }) {
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-2 text-xs">
         <Field label="Prompt" value={data.prompt_name as string} />
-        <Field label="Server" value={(data.server_name || data.server_id) as string} />
+        <ServerField data={data} />
       </div>
       {data.arguments && <JsonSection title="Arguments" data={data.arguments as unknown} defaultOpen={true} />}
-
-      {/* Response section (present when complete) */}
-      {data.success != null && (
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <Field label="Success" value={String(data.success)} />
-          {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
-        </div>
-      )}
-      {data.error && (
-        <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-          {data.error as string}
-        </pre>
-      )}
-      {data.content_preview && (
-        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-          {data.content_preview as string}
-        </pre>
-      )}
+      <McpResponseSection data={data} />
     </div>
   )
 }
 
 function GuardrailDetail({ data }: { data: EventData }) {
   const categories = data.flagged_categories as Array<Record<string, unknown>> | undefined
+  const hasResponse = data.result != null
   return (
     <div className="space-y-2">
+      {hasResponse && <SectionHeader title="Scan" />}
       <div className="grid grid-cols-2 gap-2 text-xs">
         {data.direction && <Field label="Direction" value={data.direction as string} />}
-        {data.result && <Field label="Result" value={data.result as string} />}
-        {data.action_taken && <Field label="Action" value={data.action_taken as string} />}
-        {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+        {data.models_used && (
+          <Field label="Models" value={(data.models_used as string[]).join(', ')} />
+        )}
       </div>
       {data.text_preview && (
-        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[100px] overflow-auto">
-          {data.text_preview as string}
-        </pre>
-      )}
-      {categories && categories.length > 0 && (
-        <div className="text-xs space-y-1">
-          <span className="text-muted-foreground font-medium">Flagged Categories:</span>
-          {categories.map((cat, i) => (
-            <div key={i} className="flex items-center gap-2 pl-2">
-              <Badge variant="outline" className="text-[10px]">{cat.category as string}</Badge>
-              <span className="text-muted-foreground">confidence: {((cat.confidence as number) * 100).toFixed(1)}%</span>
-              <span className="text-muted-foreground">action: {cat.action as string}</span>
-            </div>
-          ))}
+        <div className="text-xs">
+          <span className="text-muted-foreground font-medium">Input:</span>
+          <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[100px] overflow-auto">
+            {data.text_preview as string}
+          </pre>
         </div>
       )}
-      {data.models_used && (
-        <Field label="Models" value={(data.models_used as string[]).join(', ')} />
+
+      {hasResponse && (
+        <>
+          <SectionHeader title="Result" />
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Field label="Result" value={data.result as string} />
+            {data.action_taken && <Field label="Action" value={data.action_taken as string} />}
+            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+          </div>
+          {categories && categories.length > 0 && (
+            <div className="text-xs space-y-1">
+              <span className="text-muted-foreground font-medium">Flagged Categories:</span>
+              {categories.map((cat, i) => (
+                <div key={i} className="flex items-center gap-2 pl-2">
+                  <Badge variant="outline" className="text-[10px]">{cat.category as string}</Badge>
+                  <span className="text-muted-foreground">confidence: {((cat.confidence as number) * 100).toFixed(1)}%</span>
+                  <span className="text-muted-foreground">action: {cat.action as string}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   )
 }
 
 function SecretScanDetail({ data }: { data: EventData }) {
+  const hasResponse = data.findings_count != null
   return (
     <div className="space-y-2">
+      {hasResponse && <SectionHeader title="Scan" />}
       <div className="grid grid-cols-2 gap-2 text-xs">
-        {data.findings_count != null && <Field label="Findings" value={String(data.findings_count)} />}
-        {data.action_taken && <Field label="Action" value={data.action_taken as string} />}
         {data.rules_count != null && <Field label="Rules" value={String(data.rules_count)} />}
-        {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
       </div>
       {data.text_preview && (
-        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[100px] overflow-auto">
-          {data.text_preview as string}
-        </pre>
+        <div className="text-xs">
+          <span className="text-muted-foreground font-medium">Input:</span>
+          <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[100px] overflow-auto">
+            {data.text_preview as string}
+          </pre>
+        </div>
       )}
-      {data.findings && <JsonSection title="Findings" data={data.findings as unknown} defaultOpen={true} />}
+
+      {hasResponse && (
+        <>
+          <SectionHeader title="Result" />
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Field label="Findings" value={String(data.findings_count)} />
+            {data.action_taken && <Field label="Action" value={data.action_taken as string} />}
+            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+          </div>
+          {data.findings && <JsonSection title="Findings" data={data.findings as unknown} defaultOpen={true} />}
+        </>
+      )}
     </div>
   )
 }
 
 function RoutingDetail({ data }: { data: EventData }) {
+  // RouteLlmClassify has request+response; RoutingDecision is standalone
+  const hasClassifyResponse = data.selected_tier != null || data.win_rate != null
   return (
     <div className="space-y-2">
+      {hasClassifyResponse && <SectionHeader title="Classification Request" />}
       <div className="grid grid-cols-2 gap-2 text-xs">
         {data.routing_type && <Field label="Type" value={data.routing_type as string} />}
         {data.original_model && <Field label="Original Model" value={data.original_model as string} />}
-        {data.final_model && <Field label="Final Model" value={data.final_model as string} />}
-        {data.routed_model && <Field label="Routed Model" value={data.routed_model as string} />}
-        {data.win_rate != null && <Field label="Win Rate" value={((data.win_rate as number) * 100).toFixed(1) + '%'} />}
         {data.threshold != null && <Field label="Threshold" value={String(data.threshold)} />}
-        {data.selected_tier && <Field label="Tier" value={data.selected_tier as string} />}
-        {data.firewall_action && <Field label="Firewall" value={data.firewall_action as string} />}
-        {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
       </div>
+
+      {hasClassifyResponse && (
+        <>
+          <SectionHeader title="Classification Result" />
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            {data.selected_tier && <Field label="Tier" value={data.selected_tier as string} />}
+            {data.win_rate != null && <Field label="Win Rate" value={((data.win_rate as number) * 100).toFixed(1) + '%'} />}
+            {data.routed_model && <Field label="Routed Model" value={data.routed_model as string} />}
+            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+          </div>
+        </>
+      )}
+
+      {/* RoutingDecision standalone fields */}
+      {data.final_model && <Field label="Final Model" value={data.final_model as string} />}
+      {data.firewall_action && <Field label="Firewall" value={data.firewall_action as string} />}
       {data.candidate_models && (
         <Field label="Candidates" value={(data.candidate_models as string[]).join(', ')} />
       )}
@@ -638,48 +676,66 @@ function ConnectionErrorDetail({ data }: { data: EventData }) {
 }
 
 function McpElicitationDetail({ data }: { data: EventData }) {
+  const hasResponse = data.action != null
   return (
     <div className="space-y-2">
+      {hasResponse && <SectionHeader title="Request" />}
       <div className="grid grid-cols-2 gap-2 text-xs">
-        <div className="flex items-center gap-1 text-xs">
-          <Server className="h-3 w-3 text-muted-foreground" />
-          <span className="text-muted-foreground">Server:</span>
-          <span>{(data.server_name || data.server_id) as string}</span>
-        </div>
-        {data.action && <Field label="Action" value={data.action as string} />}
-        {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+        <ServerField data={data} />
       </div>
       {data.message && (
-        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
-          {data.message as string}
-        </pre>
+        <div className="text-xs">
+          <span className="text-muted-foreground font-medium">Message:</span>
+          <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
+            {data.message as string}
+          </pre>
+        </div>
       )}
       {data.schema && <JsonSection title="Schema" data={data.schema as unknown} defaultOpen={false} />}
-      {data.content && <JsonSection title="Content" data={data.content as unknown} defaultOpen={true} />}
+
+      {hasResponse && (
+        <>
+          <SectionHeader title="Response" />
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Field label="Action" value={data.action as string} />
+            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+          </div>
+          {data.content && <JsonSection title="Content" data={data.content as unknown} defaultOpen={true} />}
+        </>
+      )}
     </div>
   )
 }
 
 function McpSamplingDetail({ data }: { data: EventData }) {
+  const hasResponse = data.action != null
   return (
     <div className="space-y-2">
+      {hasResponse && <SectionHeader title="Request" />}
       <div className="grid grid-cols-2 gap-2 text-xs">
-        <div className="flex items-center gap-1 text-xs">
-          <Server className="h-3 w-3 text-muted-foreground" />
-          <span className="text-muted-foreground">Server:</span>
-          <span>{(data.server_name || data.server_id) as string}</span>
-        </div>
-        {data.action && <Field label="Action" value={data.action as string} />}
+        <ServerField data={data} />
         {data.message_count != null && <Field label="Messages" value={String(data.message_count)} />}
         {data.model_hint && <Field label="Model Hint" value={data.model_hint as string} />}
-        {data.model_used && <Field label="Model Used" value={data.model_used as string} />}
         {data.max_tokens != null && <Field label="Max Tokens" value={String(data.max_tokens)} />}
-        {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
       </div>
-      {data.content_preview && (
-        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
-          {data.content_preview as string}
-        </pre>
+
+      {hasResponse && (
+        <>
+          <SectionHeader title="Response" />
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Field label="Action" value={data.action as string} />
+            {data.model_used && <Field label="Model Used" value={data.model_used as string} />}
+            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+          </div>
+          {data.content_preview && (
+            <div className="text-xs">
+              <span className="text-muted-foreground font-medium">Content:</span>
+              <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
+                {data.content_preview as string}
+              </pre>
+            </div>
+          )}
+        </>
       )}
     </div>
   )
