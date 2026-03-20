@@ -288,14 +288,30 @@ pub async fn mcp_gateway_get_handler(
                         Ok((server_id, notification)) => {
                             // Only forward notifications for allowed servers
                             if allowed_servers.contains(&server_id) {
-                                // Namespace the notification for the unified gateway
-                                let namespaced_notification = lr_mcp::protocol::JsonRpcNotification {
-                                    jsonrpc: notification.jsonrpc.clone(),
-                                    method: format!("{}::{}", server_id, notification.method),
-                                    params: notification.params.clone(),
+                                // Forward with standard MCP method names so SDK clients
+                                // can match them (e.g. ToolListChangedNotificationSchema).
+                                // For resource update notifications, namespace the URI in params.
+                                let forwarded = if notification.method == "notifications/resources/updated" {
+                                    // Namespace the resource URI so clients can match it
+                                    let params = notification.params.as_ref().map(|p| {
+                                        let mut p = p.clone();
+                                        if let Some(uri) = p.get("uri").and_then(|v| v.as_str()) {
+                                            p["uri"] = serde_json::Value::String(
+                                                format!("{}::{}", server_id, uri)
+                                            );
+                                        }
+                                        p
+                                    });
+                                    lr_mcp::protocol::JsonRpcNotification {
+                                        jsonrpc: notification.jsonrpc.clone(),
+                                        method: notification.method.clone(),
+                                        params,
+                                    }
+                                } else {
+                                    notification
                                 };
                                 // Send raw JSON-RPC notification (MCP SSE transport spec)
-                                if let Ok(json) = serde_json::to_string(&namespaced_notification) {
+                                if let Ok(json) = serde_json::to_string(&forwarded) {
                                     yield Ok::<_, Infallible>(Event::default().event("message").data(json));
                                 }
                             }
@@ -503,6 +519,15 @@ pub async fn mcp_gateway_handler(
                 test_client.coding_agent_permission = lr_config::PermissionState::Off;
                 test_client.coding_agent_type = None;
             }
+        }
+
+        // Context management (indexing):
+        // - "All" mode: inherit global setting (None)
+        // - Direct mode (specific server/skill): disabled — individual MCP testing
+        //   shouldn't use indexing since it adds IndexSearch/IndexRead tools that
+        //   aren't relevant when testing a single server
+        if !is_all_mode {
+            test_client.context_management_enabled = Some(false);
         }
 
         tracing::info!(
