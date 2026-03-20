@@ -905,10 +905,26 @@ impl McpGateway {
                                 match router.complete(&client_id, completion_req).await {
                                     Ok(resp) => {
                                         match super::sampling::convert_chat_to_sampling_response(resp) {
-                                            Ok(sampling_resp) => JsonRpcResponse::success(
-                                                request_id,
-                                                serde_json::to_value(sampling_resp).unwrap_or(json!({})),
-                                            ),
+                                            Ok(sampling_resp) => {
+                                                // Build MCP-spec-compliant response.
+                                                // SamplingContent::Text serializes as a plain string
+                                                // but MCP expects { type: "text", text: "..." }
+                                                let content = match &sampling_resp.content {
+                                                    crate::protocol::SamplingContent::Text(text) => {
+                                                        json!({ "type": "text", "text": text })
+                                                    }
+                                                    crate::protocol::SamplingContent::Structured(v) => v.clone(),
+                                                };
+                                                JsonRpcResponse::success(
+                                                    request_id,
+                                                    json!({
+                                                        "model": sampling_resp.model,
+                                                        "stopReason": sampling_resp.stop_reason,
+                                                        "role": sampling_resp.role,
+                                                        "content": content,
+                                                    }),
+                                                )
+                                            }
                                             Err(e) => JsonRpcResponse::error(
                                                 request_id,
                                                 JsonRpcError::custom(-32603, format!("Failed to convert sampling response: {}", e), None),
