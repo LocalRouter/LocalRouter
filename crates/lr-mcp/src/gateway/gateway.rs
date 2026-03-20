@@ -663,9 +663,10 @@ impl McpGateway {
 
         let session = Arc::new(RwLock::new(session_data));
 
-        // Register GLOBAL notification and request handlers for each server (if not already registered)
+        // Register GLOBAL notification handlers for each server (if not already registered)
+        // Note: request handlers are registered in handle_initialize AFTER servers are started,
+        // since they need the transport to be available.
         self.register_notification_handlers(&allowed_servers).await;
-        self.register_request_handlers(&allowed_servers);
 
         self.sessions
             .insert(session_key.to_string(), session.clone());
@@ -1408,6 +1409,13 @@ impl McpGateway {
                     .map(|result| (server_id, result))
             })
             .collect();
+
+        // Register request callbacks on (now-running) transports before completing
+        // the handshake. Servers may send requests (elicitation, sampling, roots/list)
+        // from their oninitialized callback which fires when they receive the notification.
+        let initialized_server_ids: Vec<String> =
+            init_results.iter().map(|(id, _)| id.clone()).collect();
+        self.register_request_handlers(&initialized_server_ids);
 
         // Send notifications/initialized to all successfully initialized servers.
         // This completes the MCP handshake — servers fire oninitialized callbacks
