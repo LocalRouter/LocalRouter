@@ -184,7 +184,7 @@ async fn handle_websocket(
                             };
 
                             // Send to channel
-                            if tx_clone.send(Message::Text(text)).is_err() {
+                            if tx_clone.send(Message::Text(text.into())).is_err() {
                                 tracing::debug!("Send channel closed for client {}", client_id_forward);
                                 break;
                             }
@@ -214,7 +214,7 @@ async fn handle_websocket(
                                     notification.method
                                 );
 
-                                if tx_clone.send(Message::Text(text)).is_err() {
+                                if tx_clone.send(Message::Text(text.into())).is_err() {
                                     tracing::debug!("Send channel closed for client {}", client_id_forward);
                                     break;
                                 }
@@ -245,8 +245,8 @@ async fn handle_websocket(
                     match msg_opt {
                         Some(Ok(Message::Text(text))) => {
                             // Handle ping/pong for keepalive
-                            if text.trim() == "ping" {
-                                let _ = tx_clone.send(Message::Text("pong".to_string()));
+                            if text.as_str().trim() == "ping" {
+                                let _ = tx_clone.send(Message::Text("pong".into()));
                             }
                         }
                         Some(Ok(Message::Close(_))) => {

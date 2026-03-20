@@ -193,11 +193,11 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/ws", get(routes::mcp_websocket_handler)) // WebSocket notifications
         .route("/mcp/ws", get(routes::mcp_websocket_handler)) // Alias: /mcp/ws
         .route(
-            "/mcp/elicitation/respond/:request_id",
+            "/mcp/elicitation/respond/{request_id}",
             post(routes::elicitation_response_handler), // Submit elicitation responses
         )
         .route(
-            "/mcp/sampling/respond/:request_id",
+            "/mcp/sampling/respond/{request_id}",
             post(routes::sampling_passthrough_response_handler), // Submit sampling passthrough responses
         )
         .layer(axum::middleware::from_fn(
@@ -234,9 +234,9 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/v1/images/generations", post(routes::image_generations))
         .route("/v1/audio/speech", post(routes::audio_speech))
         .route("/v1/models", get(routes::list_models))
-        .route("/v1/models/:id", get(routes::get_model))
+        .route("/v1/models/{id}", get(routes::get_model))
         .route(
-            "/v1/models/:provider/:model/pricing",
+            "/v1/models/{provider}/{model}/pricing",
             get(routes::get_model_pricing),
         )
         .route("/v1/generation", get(routes::get_generation))
@@ -252,9 +252,9 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/images/generations", post(routes::image_generations))
         .route("/audio/speech", post(routes::audio_speech))
         .route("/models", get(routes::list_models))
-        .route("/models/:id", get(routes::get_model))
+        .route("/models/{id}", get(routes::get_model))
         .route(
-            "/models/:provider/:model/pricing",
+            "/models/{provider}/{model}/pricing",
             get(routes::get_model_pricing),
         )
         .route("/generation", get(routes::get_generation))
@@ -440,16 +440,15 @@ async fn security_headers_middleware(req: Request, next: Next) -> Response {
 }
 
 /// Logging middleware to log all requests
-async fn logging_middleware(
-    connect_info: Option<ConnectInfo<SocketAddr>>,
-    req: Request,
-    next: Next,
-) -> Response {
+async fn logging_middleware(req: Request, next: Next) -> Response {
     use crate::middleware::client_auth::LoggedClientId;
 
     let method = req.method().clone();
     let uri = req.uri().clone();
-    let peer = connect_info.map(|ci| ci.0);
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0);
     let start = std::time::Instant::now();
 
     let response = next.run(req).await;

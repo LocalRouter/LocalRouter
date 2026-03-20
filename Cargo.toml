@@ -70,7 +70,7 @@ tokio-stream = "0.1"
 tokio-util = "0.7"
 
 # Web framework
-axum = { version = "0.7", features = ["macros", "ws", "multipart"] }
+axum = { version = "0.8", features = ["macros", "ws", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
 

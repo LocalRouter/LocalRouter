@@ -550,6 +550,9 @@ mod agentic_loop_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -611,6 +614,9 @@ mod agentic_loop_tests {
             request,
             &config,
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -682,6 +688,9 @@ mod agentic_loop_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -742,6 +751,9 @@ mod agentic_loop_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -785,6 +797,9 @@ mod agentic_loop_tests {
             request,
             &config,
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -858,6 +873,9 @@ mod mcp_server_verification_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -919,6 +937,9 @@ mod mcp_server_verification_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -975,6 +996,9 @@ mod mcp_server_verification_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -1018,6 +1042,9 @@ mod mcp_server_verification_tests {
             request,
             &config,
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1082,6 +1109,9 @@ mod mixed_tool_tests {
             request,
             &config,
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1155,6 +1185,9 @@ mod mixed_tool_tests {
             request.clone(),
             &config,
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1251,6 +1284,9 @@ mod guardrail_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -1297,6 +1333,9 @@ mod guardrail_tests {
             &config,
             vec![],
             Some(gate),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1350,6 +1389,9 @@ mod guardrail_tests {
             &config,
             vec![],
             Some(gate),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1416,6 +1458,9 @@ mod error_handling_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -1466,6 +1511,9 @@ mod error_handling_tests {
             request,
             &config,
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1537,6 +1585,9 @@ mod error_handling_tests {
             request,
             &config,
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1614,6 +1665,9 @@ mod metadata_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -1656,6 +1710,9 @@ mod metadata_tests {
             request,
             &config,
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1723,6 +1780,9 @@ mod session_tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("should succeed");
@@ -1766,6 +1826,9 @@ mod session_tests {
             request,
             &config,
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,

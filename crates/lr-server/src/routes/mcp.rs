@@ -376,7 +376,7 @@ pub async fn mcp_gateway_handler(
     State(state): State<AppState>,
     client_auth: Option<axum::Extension<ClientAuthContext>>,
     headers: axum::http::HeaderMap,
-    query: Option<Query<McpQueryParams>>,
+    query: Query<McpQueryParams>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Response {
     // Extract client_id from auth context (no URL parameter)
@@ -389,7 +389,7 @@ pub async fn mcp_gateway_handler(
     };
 
     // Extract per-connection session ID from query params (set by SSE endpoint event)
-    let session_id = query.and_then(|q| q.0.session_id);
+    let session_id = query.0.session_id;
     // Connection key for SSE routing: session_id if available, otherwise client_id
     let connection_key = session_id.as_deref().unwrap_or(&client_id).to_string();
 

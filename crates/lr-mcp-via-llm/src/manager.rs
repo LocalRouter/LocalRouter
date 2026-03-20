@@ -376,6 +376,8 @@ impl McpViaLlmManager {
         };
 
         // Normal flow: run the agentic loop
+        let monitor_emit = self.monitor_emit.read().clone();
+        let monitor_update = self.monitor_update.read().clone();
         let result = orchestrator::run_agentic_loop(
             gateway,
             router,
@@ -389,8 +391,8 @@ impl McpViaLlmManager {
             memory_svc,
             on_transformed,
             monitor_session_id,
-            self.monitor_emit.read().clone(),
-            self.monitor_update.read().clone(),
+            monitor_emit,
+            monitor_update,
             llm_call_event_id,
         )
         .await?;
@@ -568,6 +570,8 @@ impl McpViaLlmManager {
             }
         };
 
+        let monitor_emit = self.monitor_emit.read().clone();
+        let monitor_update = self.monitor_update.read().clone();
         orchestrator_stream::run_agentic_loop_streaming(
             gateway,
             router,
@@ -581,8 +585,8 @@ impl McpViaLlmManager {
             memory_svc,
             on_transformed_stream,
             monitor_session_id,
-            self.monitor_emit.read().clone(),
-            self.monitor_update.read().clone(),
+            monitor_emit,
+            monitor_update,
             llm_call_event_id,
         )
         .await
