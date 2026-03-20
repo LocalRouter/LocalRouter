@@ -95,6 +95,7 @@ function sharedIcons(): Plugin {
       })
     },
     writeBundle(options) {
+      if (!fs.existsSync(iconsDir)) return
       const outDir = options.dir || path.resolve(__dirname, 'dist')
       const outIcons = path.join(outDir, 'icons')
       fs.mkdirSync(outIcons, { recursive: true })
