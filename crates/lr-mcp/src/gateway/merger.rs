@@ -116,6 +116,10 @@ pub fn merge_initialize_results(
         if result.capabilities.logging.is_some() {
             merged_capabilities.logging = Some(LoggingCapability {});
         }
+
+        if result.capabilities.completions.is_some() {
+            merged_capabilities.completions = Some(CompletionsCapability {});
+        }
     }
 
     // Build server description with catalog listing

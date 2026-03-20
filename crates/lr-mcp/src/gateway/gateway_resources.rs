@@ -530,4 +530,66 @@ impl McpGateway {
             }
         }
     }
+
+    /// Handle resources/templates/list request
+    ///
+    /// Broadcasts to all servers and merges resource template results,
+    /// namespacing template names with server_id prefix.
+    pub(crate) async fn handle_resource_templates_list(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        let request_id = request.id.clone();
+        let session_read = session.read().await;
+        let allowed_servers = session_read.allowed_servers.clone();
+        drop(session_read);
+
+        let timeout = Duration::from_secs(self.config.server_timeout_seconds);
+        let max_retries = self.config.max_retry_attempts;
+
+        let results = broadcast_request(
+            &allowed_servers,
+            request,
+            &self.server_manager,
+            timeout,
+            max_retries,
+        )
+        .await;
+
+        let (successes, failures) = separate_results(results);
+
+        // Merge resource templates from all servers, namespacing names
+        let mut all_templates: Vec<serde_json::Value> = Vec::new();
+
+        for (server_id, value) in successes {
+            if let Some(templates) = value.get("resourceTemplates").and_then(|t| t.as_array()) {
+                for template in templates {
+                    let mut namespaced = template.clone();
+                    if let Some(obj) = namespaced.as_object_mut() {
+                        if let Some(name) = obj
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|n| n.to_string())
+                        {
+                            let ns_name = apply_namespace(&server_id, &name);
+                            obj.insert("name".to_string(), serde_json::json!(ns_name));
+                        }
+                    }
+                    all_templates.push(namespaced);
+                }
+            }
+        }
+
+        // Store failures for diagnostics
+        if !failures.is_empty() {
+            let mut session_write = session.write().await;
+            session_write.last_broadcast_failures = failures;
+        }
+
+        Ok(JsonRpcResponse::success(
+            request_id.unwrap_or(Value::Null),
+            json!({ "resourceTemplates": all_templates }),
+        ))
+    }
 }

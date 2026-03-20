@@ -53,6 +53,14 @@ impl ServerManager {
         *self.actual_port.read()
     }
 
+    /// Get a reference to the MCP gateway (if server is running)
+    pub fn get_mcp_gateway(&self) -> Option<std::sync::Arc<lr_mcp::gateway::McpGateway>> {
+        self.app_state
+            .read()
+            .as_ref()
+            .map(|state| state.mcp_gateway.clone())
+    }
+
     /// Start the web server
     pub async fn start(
         &self,

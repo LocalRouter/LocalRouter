@@ -1975,6 +1975,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::clear_client_skills_child_permissions,
             ui::commands::clear_client_model_child_permissions,
             ui::commands::get_mcp_server_capabilities,
+            ui::commands::get_mcp_gateway_settings,
+            ui::commands::set_mcp_gateway_settings,
             ui::commands::get_skill_tools,
             // OpenAPI documentation commands
             ui::commands::get_openapi_spec,

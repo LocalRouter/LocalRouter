@@ -42,6 +42,7 @@ pub(crate) struct GatewayPermissions {
     pub mcp_sampling_permission: lr_config::PermissionState,
     pub mcp_elicitation_permission: lr_config::PermissionState,
     pub memory_enabled: Option<bool>,
+    pub client_mode: lr_config::ClientMode,
 }
 
 impl GatewayPermissions {
@@ -61,6 +62,7 @@ impl GatewayPermissions {
             mcp_sampling_permission: client.mcp_sampling_permission.clone(),
             mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
             memory_enabled: client.memory_enabled,
+            client_mode: client.client_mode.clone(),
         }
     }
 }
@@ -969,6 +971,7 @@ pub async fn execute_mcp_tool_background(
             permissions.mcp_sampling_permission.clone(),
             permissions.mcp_elicitation_permission.clone(),
             permissions.memory_enabled,
+            permissions.client_mode.clone(),
             request,
             None, // monitor_session_id
         ),

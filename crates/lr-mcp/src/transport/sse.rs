@@ -81,6 +81,9 @@ pub struct SseTransport {
     /// Notification callback
     notification_callback: Arc<RwLock<Option<SseNotificationCallback>>>,
 
+    /// Request callback for server-initiated requests (sampling, elicitation, etc.)
+    request_callback: Arc<RwLock<Option<crate::transport::RequestCallback>>>,
+
     /// Background task handle for SSE stream reader
     #[allow(dead_code)]
     stream_task: Arc<RwLock<Option<JoinHandle<()>>>>,
@@ -176,6 +179,8 @@ impl SseTransport {
         let closed = Arc::new(RwLock::new(false));
         let stream_ready = Arc::new(RwLock::new(false));
         let notification_callback = Arc::new(RwLock::new(None));
+        let request_callback: Arc<RwLock<Option<crate::transport::RequestCallback>>> =
+            Arc::new(RwLock::new(None));
         let message_endpoint = Arc::new(RwLock::new(None));
 
         // Start persistent SSE stream in background
@@ -185,6 +190,7 @@ impl SseTransport {
         let stream_closed = closed.clone();
         let stream_ready_clone = stream_ready.clone();
         let stream_callback = notification_callback.clone();
+        let stream_request_callback = request_callback.clone();
         let stream_client = client.clone();
         let stream_message_endpoint = message_endpoint.clone();
 
@@ -197,6 +203,7 @@ impl SseTransport {
                 stream_closed,
                 stream_ready_clone,
                 stream_callback,
+                stream_request_callback,
                 stream_message_endpoint,
             )
             .await;
@@ -248,6 +255,7 @@ impl SseTransport {
             closed,
             stream_ready,
             notification_callback,
+            request_callback,
             stream_task: Arc::new(RwLock::new(Some(stream_task))),
         };
 
@@ -273,6 +281,7 @@ impl SseTransport {
         closed: Arc<RwLock<bool>>,
         stream_ready: Arc<RwLock<bool>>,
         notification_callback: Arc<RwLock<Option<SseNotificationCallback>>>,
+        request_callback: Arc<RwLock<Option<crate::transport::RequestCallback>>>,
         message_endpoint: Arc<RwLock<Option<String>>>,
     ) {
         tracing::info!("Starting persistent SSE stream task for: {}", url);
@@ -491,9 +500,71 @@ impl SseTransport {
                                                 callback(notification);
                                             }
                                         }
-                                        JsonRpcMessage::Request(_) => {
-                                            // Server→client requests not yet supported
-                                            tracing::debug!("Received server→client request (not yet supported)");
+                                        JsonRpcMessage::Request(request) => {
+                                            // Handle server→client request (sampling, elicitation, etc.)
+                                            tracing::info!(
+                                                "Received server→client request: method={}, id={:?}",
+                                                request.method,
+                                                request.id
+                                            );
+
+                                            let callback = request_callback.read().clone();
+                                            if let Some(callback) = callback {
+                                                // Determine POST URL for sending response back
+                                                let post_url = message_endpoint
+                                                    .read()
+                                                    .clone()
+                                                    .unwrap_or_else(|| url.clone());
+                                                let response_client = client.clone();
+                                                let response_headers = headers.clone();
+
+                                                tokio::spawn(async move {
+                                                    let request_id = request.id.clone();
+                                                    let response = callback(request).await;
+
+                                                    // POST response back to the server
+                                                    let mut req_builder = response_client
+                                                        .post(&post_url)
+                                                        .json(&response)
+                                                        .header(
+                                                            "Accept",
+                                                            "application/json, text/event-stream",
+                                                        );
+                                                    for (key, value) in &response_headers {
+                                                        req_builder =
+                                                            req_builder.header(key, value);
+                                                    }
+
+                                                    match req_builder.send().await {
+                                                        Ok(resp) => {
+                                                            if !resp.status().is_success() {
+                                                                tracing::warn!(
+                                                                    "Failed to POST server→client response (status={}): request_id={:?}",
+                                                                    resp.status(),
+                                                                    request_id
+                                                                );
+                                                            } else {
+                                                                tracing::debug!(
+                                                                    "Sent server→client response: request_id={:?}",
+                                                                    request_id
+                                                                );
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            tracing::error!(
+                                                                "Failed to POST server→client response: request_id={:?}, error={}",
+                                                                request_id,
+                                                                e
+                                                            );
+                                                        }
+                                                    }
+                                                });
+                                            } else {
+                                                tracing::debug!(
+                                                    "Received server→client request but no callback set: method={}",
+                                                    request.method
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -548,6 +619,14 @@ impl SseTransport {
     /// Note: SSE notifications require persistent streaming (not yet implemented)
     pub fn set_notification_callback(&self, callback: SseNotificationCallback) {
         *self.notification_callback.write() = Some(callback);
+    }
+
+    /// Set a request callback for server-initiated requests (sampling, elicitation, etc.)
+    ///
+    /// # Arguments
+    /// * `callback` - The callback to invoke when requests are received from the server
+    pub fn set_request_callback(&self, callback: crate::transport::RequestCallback) {
+        *self.request_callback.write() = Some(callback);
     }
 
     /// Generate the next request ID
@@ -951,6 +1030,7 @@ mod tests {
             closed: Arc::new(RwLock::new(false)),
             stream_ready: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
+            request_callback: Arc::new(RwLock::new(None)),
             stream_task: Arc::new(RwLock::new(None)),
         };
 

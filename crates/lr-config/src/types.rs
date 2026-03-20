@@ -450,6 +450,10 @@ pub struct AppConfig {
     /// Configured globally, enabled per-client
     #[serde(default)]
     pub memory: MemoryConfig,
+
+    /// Global MCP gateway settings (sampling, elicitation behavior)
+    #[serde(default)]
+    pub mcp_gateway: McpGatewaySettings,
 }
 
 /// Pricing override for a specific model
@@ -851,6 +855,90 @@ impl PermissionState {
     /// Check if the resource requires approval
     pub fn requires_approval(&self) -> bool {
         matches!(self, PermissionState::Ask)
+    }
+}
+
+/// How sampling requests from upstream MCP servers are handled.
+/// Single property combining mode and permission.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SamplingBehavior {
+    /// Forward sampling request to the connected external client without popup.
+    /// Supported in: McpOnly, Both.
+    /// Falls back to DirectAllow when client mode is McpViaLlm.
+    #[default]
+    Passthrough,
+    /// Route through the LLM provider automatically (no approval popup).
+    /// Supported in: McpViaLlm, Both.
+    /// Falls back to Passthrough when client mode is McpOnly.
+    /// Requires auto routing to be available (localrouter/auto).
+    DirectAllow,
+    /// Route through the LLM provider after user approves via popup.
+    /// Supported in: McpViaLlm, Both.
+    /// Falls back to Passthrough when client mode is McpOnly.
+    DirectAsk,
+    /// Disabled — reject all sampling requests + suppress capability.
+    Off,
+}
+
+/// Keep old SamplingMode as a migration alias (deserialize only)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SamplingMode {
+    #[default]
+    Passthrough,
+    Direct,
+}
+
+/// How elicitation requests from upstream MCP servers are handled
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ElicitationMode {
+    /// Forward to external client (if client supports it).
+    /// Supported in: McpOnly, Both.
+    /// Falls back to Direct when client mode is McpViaLlm.
+    #[default]
+    Passthrough,
+    /// Gateway shows its own popup to the user.
+    /// Always advertises capability even if client doesn't support it.
+    /// Supported in: McpOnly, Both, McpViaLlm.
+    Direct,
+    /// Disabled — suppress capability entirely.
+    Off,
+}
+
+/// Global MCP gateway settings (not per-client)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpGatewaySettings {
+    /// How sampling requests are handled (single property combining mode + permission)
+    #[serde(default)]
+    pub sampling: SamplingBehavior,
+
+    /// Migration shim: old sampling_mode (deserialize only, maps to sampling)
+    #[serde(default, skip_serializing)]
+    pub sampling_mode: SamplingMode,
+
+    /// Migration shim: old sampling_permission (deserialize only, maps to sampling)
+    #[serde(default = "default_sampling_permission", skip_serializing)]
+    pub sampling_permission: PermissionState,
+
+    /// How elicitation requests are handled
+    #[serde(default)]
+    pub elicitation_mode: ElicitationMode,
+}
+
+fn default_sampling_permission() -> PermissionState {
+    PermissionState::Allow
+}
+
+impl Default for McpGatewaySettings {
+    fn default() -> Self {
+        Self {
+            sampling: SamplingBehavior::default(),
+            sampling_mode: SamplingMode::default(),
+            sampling_permission: default_sampling_permission(),
+            elicitation_mode: ElicitationMode::default(),
+        }
     }
 }
 
@@ -2522,12 +2610,14 @@ pub struct Client {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roots: Option<Vec<RootConfig>>,
 
-    /// Sampling permission (Allow/Ask/Off, default: Ask)
-    #[serde(default = "default_ask")]
+    /// Migration shim: old per-client sampling permission (deserialize only)
+    /// Use mcp_gateway.sampling_permission instead
+    #[serde(default = "default_ask", skip_serializing)]
     pub mcp_sampling_permission: PermissionState,
 
-    /// Elicitation permission (Allow/Ask/Off, default: Ask)
-    #[serde(default = "default_ask")]
+    /// Migration shim: old per-client elicitation permission (deserialize only)
+    /// Use mcp_gateway.elicitation_mode instead
+    #[serde(default = "default_ask", skip_serializing)]
     pub mcp_elicitation_permission: PermissionState,
 
     /// Maximum tokens per sampling request (None = unlimited)
@@ -3303,6 +3393,7 @@ impl Default for AppConfig {
             mcp_via_llm: McpViaLlmConfig::default(),
             secret_scanning: SecretScanningConfig::default(),
             memory: MemoryConfig::default(),
+            mcp_gateway: McpGatewaySettings::default(),
         }
     }
 }
@@ -3707,19 +3798,19 @@ mod tests {
     fn test_client_with_sampling_permission() {
         let mut client =
             Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
-        client.mcp_sampling_permission = PermissionState::Allow;
-        client.mcp_elicitation_permission = PermissionState::Off;
         client.mcp_sampling_max_tokens = Some(2000);
         client.mcp_sampling_rate_limit = Some(100);
 
-        // Verify serialization
+        // Verify serialization — sampling/elicitation permissions are now migration shims
+        // (skip_serializing), so they won't roundtrip via serde. Only max_tokens and rate_limit persist.
         let yaml = serde_yaml::to_string(&client).unwrap();
         let deserialized: Client = serde_yaml::from_str(&yaml).unwrap();
 
-        assert_eq!(deserialized.mcp_sampling_permission, PermissionState::Allow);
+        // Migration shims default to Ask on deserialization (since field is absent)
+        assert_eq!(deserialized.mcp_sampling_permission, PermissionState::Ask);
         assert_eq!(
             deserialized.mcp_elicitation_permission,
-            PermissionState::Off
+            PermissionState::Ask
         );
         assert_eq!(deserialized.mcp_sampling_max_tokens, Some(2000));
         assert_eq!(deserialized.mcp_sampling_rate_limit, Some(100));
@@ -4090,5 +4181,111 @@ read_tool_name: "ctx_read"
         let config: ContextManagementConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.search_tool_name, "ctx_search");
         assert_eq!(config.read_tool_name, "ctx_read");
+    }
+
+    // ── MCP Gateway Settings tests ──────────────────
+
+    #[test]
+    fn test_mcp_gateway_settings_default() {
+        let settings = McpGatewaySettings::default();
+        assert_eq!(settings.sampling, SamplingBehavior::Passthrough);
+        assert_eq!(settings.elicitation_mode, ElicitationMode::Passthrough);
+    }
+
+    #[test]
+    fn test_mcp_gateway_settings_serde() {
+        let settings = McpGatewaySettings {
+            sampling: SamplingBehavior::DirectAsk,
+            elicitation_mode: ElicitationMode::Off,
+            ..Default::default()
+        };
+        let yaml = serde_yaml::to_string(&settings).unwrap();
+        let deserialized: McpGatewaySettings = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(settings.sampling, deserialized.sampling);
+        assert_eq!(settings.elicitation_mode, deserialized.elicitation_mode);
+    }
+
+    #[test]
+    fn test_sampling_behavior_serde() {
+        let json = serde_json::to_string(&SamplingBehavior::Passthrough).unwrap();
+        assert_eq!(json, "\"passthrough\"");
+        let json = serde_json::to_string(&SamplingBehavior::DirectAllow).unwrap();
+        assert_eq!(json, "\"direct_allow\"");
+        let json = serde_json::to_string(&SamplingBehavior::DirectAsk).unwrap();
+        assert_eq!(json, "\"direct_ask\"");
+        let json = serde_json::to_string(&SamplingBehavior::Off).unwrap();
+        assert_eq!(json, "\"off\"");
+    }
+
+    #[test]
+    fn test_sampling_mode_serde() {
+        // Passthrough
+        let json = serde_json::to_string(&SamplingMode::Passthrough).unwrap();
+        assert_eq!(json, "\"passthrough\"");
+        let deserialized: SamplingMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, SamplingMode::Passthrough);
+
+        // Direct
+        let json = serde_json::to_string(&SamplingMode::Direct).unwrap();
+        assert_eq!(json, "\"direct\"");
+        let deserialized: SamplingMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, SamplingMode::Direct);
+    }
+
+    #[test]
+    fn test_elicitation_mode_serde() {
+        // Passthrough
+        let json = serde_json::to_string(&ElicitationMode::Passthrough).unwrap();
+        assert_eq!(json, "\"passthrough\"");
+        let deserialized: ElicitationMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, ElicitationMode::Passthrough);
+
+        // Direct
+        let json = serde_json::to_string(&ElicitationMode::Direct).unwrap();
+        assert_eq!(json, "\"direct\"");
+        let deserialized: ElicitationMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, ElicitationMode::Direct);
+
+        // Off
+        let json = serde_json::to_string(&ElicitationMode::Off).unwrap();
+        assert_eq!(json, "\"off\"");
+        let deserialized: ElicitationMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, ElicitationMode::Off);
+    }
+
+    #[test]
+    fn test_app_config_with_mcp_gateway() {
+        // With mcp_gateway field present
+        let yaml = r#"
+version: 1
+mcp_gateway:
+  sampling_mode: direct
+  sampling_permission: ask
+  elicitation_mode: "off"
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.mcp_gateway.sampling_mode, SamplingMode::Direct);
+        assert_eq!(config.mcp_gateway.sampling_permission, PermissionState::Ask);
+        assert_eq!(config.mcp_gateway.elicitation_mode, ElicitationMode::Off);
+
+        // With mcp_gateway field missing (should use defaults)
+        let yaml = r#"
+version: 1
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.mcp_gateway.sampling_mode, SamplingMode::Passthrough);
+        assert_eq!(
+            config.mcp_gateway.sampling_permission,
+            PermissionState::Allow
+        );
+        assert_eq!(
+            config.mcp_gateway.elicitation_mode,
+            ElicitationMode::Passthrough
+        );
+    }
+
+    #[test]
+    fn test_client_mode_defaults() {
+        assert_eq!(ClientMode::default(), ClientMode::Both);
     }
 }

@@ -162,6 +162,7 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            lr_config::ClientMode::default(),
             tools_list_req,
             None, // monitor_session_id
         )
@@ -218,6 +219,7 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            lr_config::ClientMode::default(),
             show_req,
             None, // monitor_session_id
         )
@@ -271,6 +273,7 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            lr_config::ClientMode::default(),
             tools_list_req2,
             None, // monitor_session_id
         )
@@ -363,6 +366,7 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            lr_config::ClientMode::default(),
             req,
             None, // monitor_session_id
         )
@@ -411,6 +415,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            lr_config::ClientMode::default(),
             req,
             None, // monitor_session_id
         )

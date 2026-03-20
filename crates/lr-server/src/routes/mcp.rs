@@ -867,6 +867,7 @@ pub async fn mcp_gateway_handler(
                     client.mcp_sampling_permission.clone(),
                     client.mcp_elicitation_permission.clone(),
                     client.memory_enabled,
+                    client.client_mode.clone(),
                     request,
                     None, // monitor_session_id
                 ),
@@ -947,6 +948,7 @@ pub async fn mcp_gateway_handler(
                 client.mcp_sampling_permission.clone(),
                 client.mcp_elicitation_permission.clone(),
                 client.memory_enabled,
+                client.client_mode.clone(),
                 request,
                 None, // monitor_session_id
             )

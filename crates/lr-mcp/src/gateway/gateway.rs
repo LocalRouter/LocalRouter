@@ -59,6 +59,39 @@ pub struct McpGateway {
     pub coding_agent_approval_manager:
         Arc<super::coding_agent_approval::CodingAgentApprovalManager>,
 
+    /// Sampling approval manager for user approval flow (permission=Ask).
+    /// Wrapped in RwLock so it can be replaced with a shared instance from AppState.
+    pub(crate) sampling_approval_manager:
+        parking_lot::RwLock<Arc<super::sampling_approval::SamplingApprovalManager>>,
+
+    /// Sampling passthrough manager for forwarding to external clients.
+    /// Wrapped in RwLock so it can be replaced with a shared instance from AppState.
+    pub(crate) sampling_passthrough_manager:
+        parking_lot::RwLock<Arc<super::sampling_approval::SamplingPassthroughManager>>,
+
+    /// Callback to send a server-initiated request to a connected external client.
+    /// Returns a oneshot receiver for the response. Used for passthrough mode.
+    #[allow(clippy::type_complexity)]
+    pub(crate) client_request_sender: parking_lot::RwLock<
+        Option<
+            Arc<
+                dyn Fn(
+                        &str,           // client_id
+                        JsonRpcRequest, // request to forward
+                    )
+                        -> Option<tokio::sync::oneshot::Receiver<JsonRpcResponse>>
+                    + Send
+                    + Sync,
+            >,
+        >,
+    >,
+
+    /// Live-updateable sampling behavior (reads config changes without restart)
+    pub(crate) live_sampling: Arc<parking_lot::RwLock<lr_config::SamplingBehavior>>,
+
+    /// Live-updateable elicitation mode
+    pub(crate) live_elicitation_mode: Arc<parking_lot::RwLock<lr_config::ElicitationMode>>,
+
     /// Virtual MCP servers (skills, marketplace, coding agents)
     pub(crate) virtual_servers: parking_lot::RwLock<Vec<Arc<dyn VirtualMcpServer>>>,
 
@@ -138,9 +171,30 @@ impl McpGateway {
             None => Arc::new(super::coding_agent_approval::CodingAgentApprovalManager::new(120)),
         };
 
+        // Create sampling approval manager with broadcast support if available
+        let sampling_approval_manager = match &notification_broadcast {
+            Some(broadcast) => Arc::new(
+                super::sampling_approval::SamplingApprovalManager::new_with_broadcast(
+                    120,
+                    broadcast.clone(),
+                ),
+            ),
+            None => Arc::new(super::sampling_approval::SamplingApprovalManager::new(120)),
+        };
+
+        // Create sampling passthrough manager
+        let sampling_passthrough_manager = Arc::new(
+            super::sampling_approval::SamplingPassthroughManager::new(120),
+        );
+
         Self {
             sessions: Arc::new(DashMap::new()),
             server_manager,
+            client_request_sender: parking_lot::RwLock::new(None),
+            live_sampling: Arc::new(parking_lot::RwLock::new(config.sampling.clone())),
+            live_elicitation_mode: Arc::new(parking_lot::RwLock::new(
+                config.elicitation_mode.clone(),
+            )),
             config,
             notification_handlers_registered: Arc::new(DashMap::new()),
             notification_broadcast,
@@ -148,6 +202,8 @@ impl McpGateway {
             elicitation_manager,
             firewall_manager,
             coding_agent_approval_manager,
+            sampling_approval_manager: parking_lot::RwLock::new(sampling_approval_manager),
+            sampling_passthrough_manager: parking_lot::RwLock::new(sampling_passthrough_manager),
             virtual_servers: parking_lot::RwLock::new(Vec::new()),
             on_context_saved: parking_lot::RwLock::new(None),
             on_monitor_event: parking_lot::RwLock::new(None),
@@ -232,6 +288,46 @@ impl McpGateway {
         if let Some(cb) = self.on_monitor_update.read().as_ref() {
             cb(event_id, updater);
         }
+    }
+
+    /// Set the callback for sending server-initiated requests to connected external clients.
+    /// Used for passthrough sampling/elicitation.
+    #[allow(clippy::type_complexity)]
+    pub fn set_client_request_sender<
+        F: Fn(&str, JsonRpcRequest) -> Option<tokio::sync::oneshot::Receiver<JsonRpcResponse>>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        &self,
+        sender: F,
+    ) {
+        *self.client_request_sender.write() = Some(Arc::new(sender));
+    }
+
+    /// Replace the sampling approval manager with a shared instance.
+    /// Call this to share the same manager between gateway and server response endpoints.
+    pub fn set_sampling_approval_manager(
+        &self,
+        manager: Arc<super::sampling_approval::SamplingApprovalManager>,
+    ) {
+        *self.sampling_approval_manager.write() = manager;
+    }
+
+    /// Update the live gateway settings (sampling/elicitation modes and permissions).
+    /// Called when the user changes global MCP gateway settings in the UI.
+    pub fn update_gateway_settings(&self, settings: &lr_config::McpGatewaySettings) {
+        *self.live_sampling.write() = settings.sampling.clone();
+        *self.live_elicitation_mode.write() = settings.elicitation_mode.clone();
+    }
+
+    /// Replace the sampling passthrough manager with a shared instance.
+    /// Call this to share the same manager between gateway and server response endpoints.
+    pub fn set_sampling_passthrough_manager(
+        &self,
+        manager: Arc<super::sampling_approval::SamplingPassthroughManager>,
+    ) {
+        *self.sampling_passthrough_manager.write() = manager;
     }
 
     /// Register a virtual MCP server (skills, marketplace, coding agents, etc.)
@@ -442,6 +538,7 @@ impl McpGateway {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                            // memory_enabled
+            lr_config::ClientMode::default(), // client_mode
             request,
             None, // monitor_session_id
         )
@@ -470,6 +567,7 @@ impl McpGateway {
         mcp_sampling_permission: lr_config::PermissionState,
         mcp_elicitation_permission: lr_config::PermissionState,
         memory_enabled: Option<bool>,
+        client_mode: lr_config::ClientMode,
         request: JsonRpcRequest,
         monitor_session_id: Option<String>,
     ) -> AppResult<JsonRpcResponse> {
@@ -527,6 +625,7 @@ impl McpGateway {
             session_write.client_name = client_name;
             session_write.mcp_sampling_permission = mcp_sampling_permission;
             session_write.mcp_elicitation_permission = mcp_elicitation_permission;
+            session_write.client_mode = client_mode;
 
             // Invalidate tools cache if context management overrides changed
             if session_write.context_management_overrides != context_management_overrides {
@@ -565,6 +664,49 @@ impl McpGateway {
         // Handle client notifications (fire-and-forget, no meaningful response)
         if method.starts_with("notifications/") {
             tracing::debug!("Gateway received client notification: {}", method);
+
+            // Forward notifications/cancelled to the correct upstream server
+            if method == "notifications/cancelled" {
+                if let Some(params) = &request.params {
+                    if let Some(request_id) = params.get("requestId") {
+                        let request_id_str = request_id
+                            .as_str()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| request_id.to_string());
+
+                        let server_id = {
+                            let session_read = session.read().await;
+                            session_read.pending_requests.get(&request_id_str).cloned()
+                        };
+
+                        if let Some(server_id) = server_id {
+                            let notification = JsonRpcRequest::new(
+                                None,
+                                "notifications/cancelled".to_string(),
+                                Some(params.clone()),
+                            );
+                            if let Err(e) = self
+                                .server_manager
+                                .send_request(&server_id, notification)
+                                .await
+                            {
+                                tracing::warn!(
+                                    "Failed to forward cancellation to server {}: {}",
+                                    server_id,
+                                    e
+                                );
+                            } else {
+                                tracing::info!(
+                                    "Forwarded cancellation for request {} to server {}",
+                                    request_id_str,
+                                    server_id
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             // notifications/initialized is already sent to servers during handle_initialize.
             // Other notifications are silently consumed.
             return Ok(JsonRpcResponse {
@@ -653,13 +795,14 @@ impl McpGateway {
 
         // Create new session
         let ttl = Duration::from_secs(self.config.session_ttl_seconds);
-        let session_data = GatewaySession::new(
+        let mut session_data = GatewaySession::new(
             client_id.to_string(),
             allowed_servers.clone(),
             ttl,
             self.config.cache_ttl_seconds,
             roots,
         );
+        session_data.session_key = session_key.to_string();
 
         let session = Arc::new(RwLock::new(session_data));
 
@@ -778,8 +921,35 @@ impl McpGateway {
                         }
 
                         // Forward notification to external clients (if broadcast channel exists)
+                        // Namespace progress tokens to avoid collisions between servers
+                        let forwarded_notification =
+                            if notification.method == "notifications/progress" {
+                                let mut n = notification.clone();
+                                if let Some(ref mut params) = n.params {
+                                    if let Some(token) = params.get("progressToken").cloned() {
+                                        let namespaced = format!(
+                                            "{}__{}",
+                                            server_id_inner,
+                                            token
+                                                .as_str()
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_else(|| token.to_string())
+                                        );
+                                        if let Some(obj) = params.as_object_mut() {
+                                            obj.insert(
+                                                "progressToken".to_string(),
+                                                serde_json::json!(namespaced),
+                                            );
+                                        }
+                                    }
+                                }
+                                n
+                            } else {
+                                notification.clone()
+                            };
+
                         if let Some(broadcast) = broadcast_inner.as_ref() {
-                            let payload = (server_id_inner.clone(), notification.clone());
+                            let payload = (server_id_inner.clone(), forwarded_notification);
                             match broadcast.send(payload) {
                                 Ok(receiver_count) => {
                                     tracing::debug!(
@@ -807,20 +977,45 @@ impl McpGateway {
     ///
     /// Without these callbacks, server-initiated requests (e.g. during tool execution or init)
     /// would be dropped, potentially causing the server to block indefinitely.
-    fn register_request_handlers(&self, allowed_servers: &[String], client_id: &str) {
+    ///
+    /// Uses global gateway config for sampling/elicitation mode and permissions,
+    /// combined with the session's client_mode for compatibility checks.
+    fn register_request_handlers(
+        &self,
+        allowed_servers: &[String],
+        client_id: &str,
+        session_key: &str,
+        client_mode: lr_config::ClientMode,
+    ) {
         for server_id in allowed_servers {
             let server_id_clone = server_id.clone();
             let elicitation_manager = self.elicitation_manager.clone();
+            let sampling_approval_manager = self.sampling_approval_manager.read().clone();
+            let notification_broadcast = self.notification_broadcast.clone();
+            let client_request_sender = self.client_request_sender.read().clone();
             let router = self.router.clone();
             let client_id = client_id.to_string();
+            let session_key = session_key.to_string();
+            let client_mode = client_mode.clone();
+            // Share Arc references so callbacks always read current settings
+            let live_sampling = self.live_sampling.clone();
+            let live_elicitation_mode = self.live_elicitation_mode.clone();
 
             self.server_manager.set_request_callback(
                 server_id,
                 std::sync::Arc::new(move |request| {
                     let server_id = server_id_clone.clone();
                     let elicitation_mgr = elicitation_manager.clone();
+                    let sampling_approval_mgr = sampling_approval_manager.clone();
+                    let _notification_broadcast = notification_broadcast.clone();
+                    let client_request_sender = client_request_sender.clone();
                     let router = router.clone();
                     let client_id = client_id.clone();
+                    let session_key = session_key.clone();
+                    let client_mode = client_mode.clone();
+                    // Read live settings inside callback for instant effect
+                    let sampling_behavior = live_sampling.read().clone();
+                    let elicitation_mode = live_elicitation_mode.read().clone();
 
                     Box::pin(async move {
                         tracing::info!(
@@ -840,32 +1035,92 @@ impl McpGateway {
                             }
 
                             "elicitation/create" | "elicitation/requestInput" => {
-                                // Extract message and schema from raw params
-                                // MCP spec uses "requestedSchema" for the schema field
-                                let params = request.params.unwrap_or(json!({}));
-                                let message = params.get("message")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("Server requests input")
-                                    .to_string();
-                                let schema = params.get("requestedSchema")
-                                    .or_else(|| params.get("schema"))
-                                    .cloned()
-                                    .unwrap_or(json!({}));
+                                // Check elicitation mode
+                                if matches!(elicitation_mode, lr_config::ElicitationMode::Off) {
+                                    return JsonRpcResponse::success(
+                                        request_id,
+                                        json!({ "action": "decline" }),
+                                    );
+                                }
 
-                                let elicitation_req = crate::protocol::ElicitationRequest {
-                                    message,
-                                    schema,
+                                // LlmOnly clients don't support elicitation
+                                if matches!(client_mode, lr_config::ClientMode::LlmOnly) {
+                                    return JsonRpcResponse::success(
+                                        request_id,
+                                        json!({ "action": "decline" }),
+                                    );
+                                }
+
+                                // Determine effective elicitation mode based on client_mode
+                                let effective_mode = match (&elicitation_mode, &client_mode) {
+                                    (lr_config::ElicitationMode::Passthrough, lr_config::ClientMode::McpViaLlm) => {
+                                        // Can't passthrough when no external client — fall back to Direct
+                                        lr_config::ElicitationMode::Direct
+                                    }
+                                    (mode, _) => mode.clone(),
                                 };
 
-                                match elicitation_mgr.request_input(server_id, elicitation_req, None).await {
-                                    Ok(response) => {
-                                        JsonRpcResponse::success(
-                                            request_id,
-                                            serde_json::to_value(response).unwrap_or(json!({})),
-                                        )
+                                tracing::info!(
+                                    "Elicitation handler: mode={:?}, effective={:?}, client_mode={:?}",
+                                    elicitation_mode, effective_mode, client_mode
+                                );
+
+                                match effective_mode {
+                                    lr_config::ElicitationMode::Passthrough => {
+                                        // Forward as a proper JSON-RPC request to the external client
+                                        if let Some(sender) = &client_request_sender {
+                                            let forward_req = crate::protocol::JsonRpcRequest {
+                                                jsonrpc: "2.0".to_string(),
+                                                id: Some(json!(uuid::Uuid::new_v4().to_string())),
+                                                method: "elicitation/create".to_string(),
+                                                params: request.params.clone(),
+                                            };
+
+                                            tracing::info!(
+                                                "Passthrough: forwarding elicitation request to external client for server {}",
+                                                server_id
+                                            );
+
+                                            if let Some(response_rx) = sender(&session_key, forward_req) {
+                                                match tokio::time::timeout(
+                                                    std::time::Duration::from_secs(120),
+                                                    response_rx,
+                                                ).await {
+                                                    Ok(Ok(response)) => {
+                                                        // Return the client's response directly
+                                                        JsonRpcResponse::success(
+                                                            request_id,
+                                                            response.result.unwrap_or(json!({ "action": "decline" })),
+                                                        )
+                                                    }
+                                                    Ok(Err(_)) | Err(_) => {
+                                                        tracing::warn!("Elicitation passthrough timed out");
+                                                        JsonRpcResponse::success(
+                                                            request_id,
+                                                            json!({ "action": "decline" }),
+                                                        )
+                                                    }
+                                                }
+                                            } else {
+                                                tracing::warn!("No SSE connection for client - falling back to Direct elicitation");
+                                                Self::handle_elicitation_direct(
+                                                    &elicitation_mgr, server_id, request.params, request_id
+                                                ).await
+                                            }
+                                        } else {
+                                            // No client request sender — fall back to Direct
+                                            Self::handle_elicitation_direct(
+                                                &elicitation_mgr, server_id, request.params, request_id
+                                            ).await
+                                        }
                                     }
-                                    Err(e) => {
-                                        tracing::warn!("Elicitation failed: {}", e);
+                                    lr_config::ElicitationMode::Direct => {
+                                        Self::handle_elicitation_direct(
+                                            &elicitation_mgr, server_id, request.params, request_id
+                                        ).await
+                                    }
+                                    lr_config::ElicitationMode::Off => {
+                                        // Already handled above, but for completeness
                                         JsonRpcResponse::success(
                                             request_id,
                                             json!({ "action": "decline" }),
@@ -875,66 +1130,161 @@ impl McpGateway {
                             }
 
                             "sampling/createMessage" => {
-                                // Route through LLM provider
-                                let sampling_req = match request.params.as_ref()
-                                    .and_then(|p| serde_json::from_value::<crate::protocol::SamplingRequest>(p.clone()).ok())
-                                {
-                                    Some(req) => req,
-                                    None => {
-                                        return JsonRpcResponse::error(
-                                            request_id,
-                                            JsonRpcError::invalid_params("Invalid sampling request".to_string()),
-                                        );
-                                    }
-                                };
-
-                                let mut completion_req = match super::sampling::convert_sampling_to_chat_request(sampling_req) {
-                                    Ok(req) => req,
-                                    Err(e) => {
-                                        return JsonRpcResponse::error(
-                                            request_id,
-                                            JsonRpcError::custom(-32603, format!("Failed to convert sampling request: {}", e), None),
-                                        );
-                                    }
-                                };
-
-                                if completion_req.model.is_empty() {
-                                    completion_req.model = "localrouter/auto".to_string();
+                                // Check if sampling is disabled
+                                if matches!(sampling_behavior, lr_config::SamplingBehavior::Off) {
+                                    return JsonRpcResponse::error(
+                                        request_id,
+                                        JsonRpcError::custom(
+                                            -32601,
+                                            "Sampling is disabled".to_string(),
+                                            None,
+                                        ),
+                                    );
                                 }
 
-                                match router.complete(&client_id, completion_req).await {
-                                    Ok(resp) => {
-                                        match super::sampling::convert_chat_to_sampling_response(resp) {
-                                            Ok(sampling_resp) => {
-                                                // Build MCP-spec-compliant response.
-                                                // SamplingContent::Text serializes as a plain string
-                                                // but MCP expects { type: "text", text: "..." }
-                                                let content = match &sampling_resp.content {
-                                                    crate::protocol::SamplingContent::Text(text) => {
-                                                        json!({ "type": "text", "text": text })
-                                                    }
-                                                    crate::protocol::SamplingContent::Structured(v) => v.clone(),
-                                                };
-                                                JsonRpcResponse::success(
-                                                    request_id,
-                                                    json!({
-                                                        "model": sampling_resp.model,
-                                                        "stopReason": sampling_resp.stop_reason,
-                                                        "role": sampling_resp.role,
-                                                        "content": content,
-                                                    }),
-                                                )
-                                            }
-                                            Err(e) => JsonRpcResponse::error(
+                                // LlmOnly clients don't support sampling
+                                if matches!(client_mode, lr_config::ClientMode::LlmOnly) {
+                                    return JsonRpcResponse::error(
+                                        request_id,
+                                        JsonRpcError::custom(
+                                            -32601,
+                                            "Sampling is unavailable for LLM-only clients".to_string(),
+                                            None,
+                                        ),
+                                    );
+                                }
+
+                                // Determine effective behavior based on client_mode
+                                let effective = match (&sampling_behavior, &client_mode) {
+                                    // Passthrough on McpViaLlm → fall back to DirectAllow
+                                    (lr_config::SamplingBehavior::Passthrough, lr_config::ClientMode::McpViaLlm) => {
+                                        lr_config::SamplingBehavior::DirectAllow
+                                    }
+                                    // Direct modes on McpOnly → fall back to Passthrough
+                                    (lr_config::SamplingBehavior::DirectAllow | lr_config::SamplingBehavior::DirectAsk, lr_config::ClientMode::McpOnly) => {
+                                        lr_config::SamplingBehavior::Passthrough
+                                    }
+                                    (b, _) => b.clone(),
+                                };
+
+                                // If DirectAsk, request user approval first
+                                if matches!(effective, lr_config::SamplingBehavior::DirectAsk) {
+                                    let sampling_req_for_approval = request.params.as_ref()
+                                        .and_then(|p| serde_json::from_value::<crate::protocol::SamplingRequest>(p.clone()).ok());
+
+                                    let approval_req = sampling_req_for_approval.unwrap_or_else(|| {
+                                        crate::protocol::SamplingRequest {
+                                            messages: Vec::new(),
+                                            system_prompt: None,
+                                            temperature: None,
+                                            max_tokens: None,
+                                            stop_sequences: None,
+                                            metadata: None,
+                                            model_preferences: None,
+                                            tools: None,
+                                            tool_choice: None,
+                                        }
+                                    });
+
+                                    let approval_id = uuid::Uuid::new_v4().to_string();
+                                    match sampling_approval_mgr.request_approval(
+                                        approval_id,
+                                        server_id.clone(),
+                                        approval_req,
+                                        None,
+                                    ).await {
+                                        Ok(super::sampling_approval::SamplingApprovalAction::Allow) => {
+                                            // User approved, continue to direct
+                                        }
+                                        Ok(super::sampling_approval::SamplingApprovalAction::Deny) | Err(_) => {
+                                            return JsonRpcResponse::error(
                                                 request_id,
-                                                JsonRpcError::custom(-32603, format!("Failed to convert sampling response: {}", e), None),
-                                            ),
+                                                JsonRpcError::custom(
+                                                    -32601,
+                                                    "Sampling request was denied by user".to_string(),
+                                                    None,
+                                                ),
+                                            );
                                         }
                                     }
-                                    Err(e) => {
+                                }
+
+                                match effective {
+                                    lr_config::SamplingBehavior::Passthrough => {
+                                        // Forward as a proper JSON-RPC request to the external client
+                                        if let Some(sender) = &client_request_sender {
+                                            let forward_req = crate::protocol::JsonRpcRequest {
+                                                jsonrpc: "2.0".to_string(),
+                                                id: Some(json!(uuid::Uuid::new_v4().to_string())),
+                                                method: "sampling/createMessage".to_string(),
+                                                params: request.params.clone(),
+                                            };
+
+                                            tracing::info!(
+                                                "Passthrough: forwarding sampling request to external client"
+                                            );
+
+                                            if let Some(response_rx) = sender(&session_key, forward_req) {
+                                                match tokio::time::timeout(
+                                                    std::time::Duration::from_secs(120),
+                                                    response_rx,
+                                                ).await {
+                                                    Ok(Ok(response)) => {
+                                                        if let Some(err) = response.error {
+                                                            JsonRpcResponse::error(
+                                                                request_id,
+                                                                err,
+                                                            )
+                                                        } else {
+                                                            JsonRpcResponse::success(
+                                                                request_id,
+                                                                response.result.unwrap_or(json!({})),
+                                                            )
+                                                        }
+                                                    }
+                                                    Ok(Err(_)) | Err(_) => {
+                                                        JsonRpcResponse::error(
+                                                            request_id,
+                                                            JsonRpcError::custom(
+                                                                -32603,
+                                                                "Sampling passthrough timed out waiting for client response".to_string(),
+                                                                None,
+                                                            ),
+                                                        )
+                                                    }
+                                                }
+                                            } else {
+                                                JsonRpcResponse::error(
+                                                    request_id,
+                                                    JsonRpcError::custom(
+                                                        -32603,
+                                                        "No SSE connection for client - cannot passthrough sampling request".to_string(),
+                                                        None,
+                                                    ),
+                                                )
+                                            }
+                                        } else {
+                                            JsonRpcResponse::error(
+                                                request_id,
+                                                JsonRpcError::custom(
+                                                    -32603,
+                                                    "Sampling passthrough unavailable: no client request sender configured".to_string(),
+                                                    None,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                    lr_config::SamplingBehavior::DirectAllow | lr_config::SamplingBehavior::DirectAsk => {
+                                        // DirectAsk approval already handled above
+                                        Self::handle_sampling_direct(
+                                            &router, &client_id, request.params, request_id
+                                        ).await
+                                    }
+                                    lr_config::SamplingBehavior::Off => {
+                                        // Already handled above
                                         JsonRpcResponse::error(
                                             request_id,
-                                            JsonRpcError::custom(-32603, format!("LLM completion failed: {}", e), None),
+                                            JsonRpcError::custom(-32601, "Sampling is disabled".to_string(), None),
                                         )
                                     }
                                 }
@@ -953,6 +1303,124 @@ impl McpGateway {
         }
     }
 
+    /// Handle elicitation via Direct mode (gateway popup)
+    async fn handle_elicitation_direct(
+        elicitation_mgr: &super::elicitation::ElicitationManager,
+        server_id: String,
+        params: Option<Value>,
+        request_id: Value,
+    ) -> JsonRpcResponse {
+        let params = params.unwrap_or(json!({}));
+        let message = params
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Server requests input")
+            .to_string();
+        let schema = params
+            .get("requestedSchema")
+            .or_else(|| params.get("schema"))
+            .cloned()
+            .unwrap_or(json!({}));
+
+        let elicitation_req = crate::protocol::ElicitationRequest { message, schema };
+
+        match elicitation_mgr
+            .request_input(server_id, elicitation_req, None)
+            .await
+        {
+            Ok(response) => {
+                // Build MCP-spec-compliant response: { action, content }
+                JsonRpcResponse::success(
+                    request_id,
+                    json!({
+                        "action": "accept",
+                        "content": response.data,
+                    }),
+                )
+            }
+            Err(e) => {
+                tracing::warn!("Elicitation failed: {}", e);
+                JsonRpcResponse::success(request_id, json!({ "action": "decline" }))
+            }
+        }
+    }
+
+    /// Handle sampling via Direct mode (route through LLM provider)
+    async fn handle_sampling_direct(
+        router: &Router,
+        client_id: &str,
+        params: Option<Value>,
+        request_id: Value,
+    ) -> JsonRpcResponse {
+        let sampling_req = match params.as_ref().and_then(|p| {
+            serde_json::from_value::<crate::protocol::SamplingRequest>(p.clone()).ok()
+        }) {
+            Some(req) => req,
+            None => {
+                return JsonRpcResponse::error(
+                    request_id,
+                    JsonRpcError::invalid_params("Invalid sampling request".to_string()),
+                );
+            }
+        };
+
+        let mut completion_req =
+            match super::sampling::convert_sampling_to_chat_request(sampling_req) {
+                Ok(req) => req,
+                Err(e) => {
+                    return JsonRpcResponse::error(
+                        request_id,
+                        JsonRpcError::custom(
+                            -32603,
+                            format!("Failed to convert sampling request: {}", e),
+                            None,
+                        ),
+                    );
+                }
+            };
+
+        if completion_req.model.is_empty() {
+            completion_req.model = "localrouter/auto".to_string();
+        }
+
+        match router.complete(client_id, completion_req).await {
+            Ok(resp) => {
+                match super::sampling::convert_chat_to_sampling_response(resp) {
+                    Ok(sampling_resp) => {
+                        // Build MCP-spec-compliant response
+                        let content = match &sampling_resp.content {
+                            crate::protocol::SamplingContent::Text(text) => {
+                                json!({ "type": "text", "text": text })
+                            }
+                            crate::protocol::SamplingContent::Structured(v) => v.clone(),
+                        };
+                        JsonRpcResponse::success(
+                            request_id,
+                            json!({
+                                "model": sampling_resp.model,
+                                "stopReason": sampling_resp.stop_reason,
+                                "role": sampling_resp.role,
+                                "content": content,
+                            }),
+                        )
+                    }
+                    Err(e) => JsonRpcResponse::error(
+                        request_id,
+                        JsonRpcError::custom(
+                            -32603,
+                            format!("Failed to convert sampling response: {}", e),
+                            None,
+                        ),
+                    ),
+                }
+            }
+            Err(e) => JsonRpcResponse::error(
+                request_id,
+                JsonRpcError::custom(-32603, format!("LLM completion failed: {}", e), None),
+            ),
+        }
+    }
+
     /// Handle broadcast request (initialize, tools/list, etc.)
     async fn handle_broadcast_request(
         &self,
@@ -963,6 +1431,9 @@ impl McpGateway {
             "initialize" => self.handle_initialize(session, request).await,
             "tools/list" => self.handle_tools_list(session, request).await,
             "resources/list" => self.handle_resources_list(session, request).await,
+            "resources/templates/list" => {
+                self.handle_resource_templates_list(session, request).await
+            }
             "prompts/list" => self.handle_prompts_list(session, request).await,
             "logging/setLevel" | "ping" => {
                 // These are broadcast but we don't merge results
@@ -989,21 +1460,7 @@ impl McpGateway {
             "resources/read" => self.handle_resources_read(session, request).await,
             "prompts/get" => self.handle_prompts_get(session, request).await,
 
-            // MCP client capabilities - return helpful errors
-            "completion/complete" => {
-                Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(
-                        -32601,
-                        "completion/complete is a client capability. Servers request this from clients, not gateways.".to_string(),
-                        Some(json!({
-                            "method_type": "client_capability",
-                            "direction": "server_to_client",
-                            "hint": "This method should be implemented by your LLM client, not the MCP gateway"
-                        }))
-                    )
-                ))
-            }
+            "completion/complete" => self.handle_completion_complete(session, request).await,
 
             "sampling/createMessage" => {
                 // Sampling is handled in route handlers (mcp.rs) not in gateway
@@ -1012,28 +1469,23 @@ impl McpGateway {
                     request.id.unwrap_or(Value::Null),
                     JsonRpcError::custom(
                         -32601,
-                        "sampling/createMessage should use individual server proxy endpoint".to_string(),
+                        "sampling/createMessage should use individual server proxy endpoint"
+                            .to_string(),
                         Some(json!({
                             "hint": "Use POST /mcp/:server_id for sampling requests from backend servers"
-                        }))
-                    )
+                        })),
+                    ),
                 ))
             }
 
-            "elicitation/requestInput" => {
-                self.handle_elicitation_request(session, request).await
-            }
+            "elicitation/requestInput" => self.handle_elicitation_request(session, request).await,
 
             "roots/list" => self.handle_roots_list(session, request).await,
 
             // Resource subscription methods
-            "resources/subscribe" => {
-                self.handle_resources_subscribe(session, request).await
-            }
+            "resources/subscribe" => self.handle_resources_subscribe(session, request).await,
 
-            "resources/unsubscribe" => {
-                self.handle_resources_unsubscribe(session, request).await
-            }
+            "resources/unsubscribe" => self.handle_resources_unsubscribe(session, request).await,
 
             _ => {
                 // Return JSON-RPC error for unknown methods
@@ -1149,6 +1601,103 @@ impl McpGateway {
             Err(e) => Ok(JsonRpcResponse::error(
                 request.id.unwrap_or(Value::Null),
                 JsonRpcError::custom(-32603, format!("Elicitation failed: {}", e), None),
+            )),
+        }
+    }
+
+    /// Handle completion/complete request
+    ///
+    /// Forwards argument auto-completion requests to the appropriate upstream server.
+    /// The `ref` field identifies the prompt or resource being completed (namespaced),
+    /// which we un-namespace before forwarding.
+    async fn handle_completion_complete(
+        &self,
+        _session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        let request_id = request.id.clone().unwrap_or(Value::Null);
+        let params = match request.params.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request_id,
+                    JsonRpcError::invalid_params("Missing params"),
+                ));
+            }
+        };
+
+        // Extract ref object and its name
+        let ref_obj = match params.get("ref") {
+            Some(r) => r,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request_id,
+                    JsonRpcError::invalid_params("Missing 'ref' in params"),
+                ));
+            }
+        };
+
+        let ref_name = match ref_obj.get("name").and_then(|v| v.as_str()) {
+            Some(name) => name,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request_id,
+                    JsonRpcError::invalid_params("Missing 'name' in ref"),
+                ));
+            }
+        };
+
+        // Parse namespace from ref name to determine target server
+        let (server_id, original_name) = match parse_namespace(ref_name) {
+            Some(parsed) => parsed,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request_id,
+                    JsonRpcError::invalid_params(format!(
+                        "Could not determine server from ref name '{}'. Expected namespaced format (e.g., 'server__name').",
+                        ref_name
+                    )),
+                ));
+            }
+        };
+
+        // Build modified params with un-namespaced ref name
+        let mut modified_params = params.clone();
+        if let Some(ref_mut) = modified_params.get_mut("ref") {
+            if let Some(obj) = ref_mut.as_object_mut() {
+                obj.insert("name".to_string(), json!(original_name));
+            }
+        }
+
+        // Forward to the specific upstream server
+        let forward_request = JsonRpcRequest::new(
+            Some(request_id.clone()),
+            "completion/complete".to_string(),
+            Some(modified_params),
+        );
+
+        let timeout = Duration::from_secs(self.config.server_timeout_seconds);
+        match tokio::time::timeout(
+            timeout,
+            self.server_manager
+                .send_request(&server_id, forward_request),
+        )
+        .await
+        {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(e)) => Ok(JsonRpcResponse::error(
+                request_id,
+                JsonRpcError::internal_error(format!(
+                    "completion/complete failed for server '{}': {}",
+                    server_id, e
+                )),
+            )),
+            Err(_) => Ok(JsonRpcResponse::error(
+                request_id,
+                JsonRpcError::internal_error(format!(
+                    "completion/complete timed out for server '{}'",
+                    server_id
+                )),
             )),
         }
     }
@@ -1306,6 +1855,7 @@ impl McpGateway {
                     resources: None,
                     prompts: None,
                     logging: None,
+                    completions: None,
                 },
                 server_info: ServerInfo {
                     name: "LocalRouter MCP Gateway".to_string(),
@@ -1361,17 +1911,16 @@ impl McpGateway {
         // Use only the successfully started servers for broadcast
         let servers_to_initialize = started_servers;
 
-        // Filter client capabilities based on permission settings before broadcasting
+        // Filter client capabilities based on global gateway settings before broadcasting
         let broadcast_request_msg = {
-            let session_read = session.read().await;
-            let sampling_perm = &session_read.mcp_sampling_permission;
-            let elicitation_perm = &session_read.mcp_elicitation_permission;
+            let sampling_behavior = self.live_sampling.read().clone();
+            let elicitation_mode = self.live_elicitation_mode.read().clone();
             let mut modified_request = request.clone();
 
             if let Some(ref mut params) = modified_request.params {
                 if let Some(caps) = params.get_mut("capabilities") {
-                    // Remove sampling capability if permission is Off
-                    if matches!(sampling_perm, lr_config::PermissionState::Off) {
+                    // Remove sampling capability if behavior is Off
+                    if matches!(sampling_behavior, lr_config::SamplingBehavior::Off) {
                         if let Some(obj) = caps.as_object_mut() {
                             obj.remove("sampling");
                         }
@@ -1382,23 +1931,25 @@ impl McpGateway {
                         }
                     }
 
-                    // Remove elicitation capability if permission is Off
-                    if matches!(elicitation_perm, lr_config::PermissionState::Off) {
+                    // Remove elicitation capability if mode is Off
+                    if matches!(elicitation_mode, lr_config::ElicitationMode::Off) {
                         if let Some(obj) = caps.as_object_mut() {
                             obj.remove("elicitation");
                         }
-                    } else if !caps
-                        .as_object()
-                        .is_some_and(|o| o.contains_key("elicitation"))
-                    {
-                        // Ensure elicitation capability exists if permission is Allow/Ask
-                        if let Some(obj) = caps.as_object_mut() {
-                            obj.insert("elicitation".to_string(), serde_json::json!({}));
+                    } else {
+                        // For Direct mode, always advertise even if client doesn't support it
+                        // For Passthrough mode, ensure it's present if client declared support
+                        if !caps
+                            .as_object()
+                            .is_some_and(|o| o.contains_key("elicitation"))
+                        {
+                            if let Some(obj) = caps.as_object_mut() {
+                                obj.insert("elicitation".to_string(), serde_json::json!({}));
+                            }
                         }
                     }
                 }
             }
-            drop(session_read);
             modified_request
         };
 
@@ -1436,8 +1987,20 @@ impl McpGateway {
         // from their oninitialized callback which fires when they receive the notification.
         let initialized_server_ids: Vec<String> =
             init_results.iter().map(|(id, _)| id.clone()).collect();
-        let client_id_for_callbacks = session.read().await.client_id.clone();
-        self.register_request_handlers(&initialized_server_ids, &client_id_for_callbacks);
+        let (client_id_for_callbacks, session_key_for_callbacks, client_mode_for_callbacks) = {
+            let s = session.read().await;
+            (
+                s.client_id.clone(),
+                s.session_key.clone(),
+                s.client_mode.clone(),
+            )
+        };
+        self.register_request_handlers(
+            &initialized_server_ids,
+            &client_id_for_callbacks,
+            &session_key_for_callbacks,
+            client_mode_for_callbacks,
+        );
 
         // Send notifications/initialized to all successfully initialized servers.
         // This completes the MCP handshake — servers fire oninitialized callbacks
@@ -1490,6 +2053,7 @@ impl McpGateway {
                         resources: None,
                         prompts: None,
                         logging: None,
+                        completions: None,
                     },
                     server_info: ServerInfo {
                         name: "LocalRouter MCP Gateway (skills-only)".to_string(),

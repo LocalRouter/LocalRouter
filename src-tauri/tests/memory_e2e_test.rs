@@ -94,6 +94,7 @@ async fn tools_list(
             lr_config::PermissionState::default(),
             lr_config::PermissionState::default(),
             memory_enabled,
+            lr_config::ClientMode::default(),
             req,
             None, // monitor_session_id
         )

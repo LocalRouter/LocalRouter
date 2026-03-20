@@ -160,6 +160,7 @@ pub fn should_broadcast(method: &str) -> bool {
         "initialize"
             | "tools/list"
             | "resources/list"
+            | "resources/templates/list"
             | "prompts/list"
             | "logging/setLevel"
             | "ping"

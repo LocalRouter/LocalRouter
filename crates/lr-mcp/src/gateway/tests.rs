@@ -249,4 +249,99 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
         assert!(!cached.is_valid());
     }
+
+    #[test]
+    fn test_gateway_config_default_includes_mcp_settings() {
+        let config = types::GatewayConfig::default();
+        assert_eq!(config.sampling, lr_config::SamplingBehavior::Passthrough);
+        assert_eq!(
+            config.elicitation_mode,
+            lr_config::ElicitationMode::Passthrough
+        );
+    }
+
+    #[test]
+    fn test_server_capabilities_with_completions() {
+        let capabilities = types::ServerCapabilities {
+            completions: Some(types::CompletionsCapability {}),
+            ..Default::default()
+        };
+        assert!(capabilities.completions.is_some());
+
+        // Default should have no completions
+        let default_caps = types::ServerCapabilities::default();
+        assert!(default_caps.completions.is_none());
+    }
+
+    #[test]
+    fn test_completions_capability_merging() {
+        // Server 1 has tools, no completions
+        let result1 = types::InitializeResult {
+            protocol_version: "2024-11-05".to_string(),
+            capabilities: types::ServerCapabilities {
+                tools: Some(types::ToolsCapability {
+                    list_changed: Some(true),
+                }),
+                ..Default::default()
+            },
+            server_info: types::ServerInfo {
+                name: "Server A".to_string(),
+                version: "1.0.0".to_string(),
+                description: None,
+            },
+            instructions: None,
+        };
+
+        // Server 2 has completions
+        let result2 = types::InitializeResult {
+            protocol_version: "2024-11-05".to_string(),
+            capabilities: types::ServerCapabilities {
+                completions: Some(types::CompletionsCapability {}),
+                ..Default::default()
+            },
+            server_info: types::ServerInfo {
+                name: "Server B".to_string(),
+                version: "1.0.0".to_string(),
+                description: None,
+            },
+            instructions: None,
+        };
+
+        let results = vec![
+            ("server-a".to_string(), result1),
+            ("server-b".to_string(), result2),
+        ];
+
+        let merged = merger::merge_initialize_results(results, vec![]);
+
+        // Merged should have both tools and completions
+        assert!(merged.capabilities.tools.is_some());
+        assert!(merged.capabilities.completions.is_some());
+    }
+
+    #[test]
+    fn test_resource_templates_list_broadcast() {
+        // resources/templates/list should be broadcast
+        assert!(router::should_broadcast("resources/templates/list"));
+
+        // Other template-related methods should not
+        assert!(!router::should_broadcast("resources/templates/read"));
+    }
+
+    #[test]
+    fn test_parse_namespace_for_completion() {
+        // Completions use namespaced refs like "server__ref/name"
+        let result = types::parse_namespace("filesystem__file:///path/to/file");
+        assert!(result.is_some());
+        let (server, original) = result.unwrap();
+        assert_eq!(server, "filesystem");
+        assert_eq!(original, "file:///path/to/file");
+
+        // Prompt argument completion ref
+        let result = types::parse_namespace("github__pr_template");
+        assert!(result.is_some());
+        let (server, original) = result.unwrap();
+        assert_eq!(server, "github");
+        assert_eq!(original, "pr_template");
+    }
 }

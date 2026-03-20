@@ -1789,6 +1789,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       { name: "config.json", category: "reference", content_preview: "{}" },
     ]
   },
+  'get_mcp_gateway_settings': () => ({
+    sampling: 'passthrough',
+    elicitation_mode: 'passthrough',
+  }),
+  'set_mcp_gateway_settings': () => {},
   'get_skill_tools': (args) => {
     const skill = mockData.skills.find(s => s.name === args?.name || s.name === args?.skillName)
     // Return skill-specific tools

@@ -19,7 +19,16 @@ use crate::protocol::{JsonRpcRequest, JsonRpcResponse, StreamingChunk};
 use async_trait::async_trait;
 use futures_util::stream::Stream;
 use lr_types::errors::AppResult;
+use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+
+/// Request callback type for server-initiated requests (sampling, elicitation, etc.)
+///
+/// Shared across transport types. Returns a future that resolves to the response.
+pub type RequestCallback = Arc<
+    dyn Fn(JsonRpcRequest) -> Pin<Box<dyn Future<Output = JsonRpcResponse> + Send>> + Send + Sync,
+>;
 
 /// Transport trait for MCP communication
 ///

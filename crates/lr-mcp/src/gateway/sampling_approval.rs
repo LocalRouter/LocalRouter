@@ -228,11 +228,50 @@ impl SamplingApprovalManager {
     pub fn get_details(&self, request_id: &str) -> Option<SamplingApprovalDetails> {
         self.pending.get(request_id).map(|session| {
             let req = &session.sampling_request;
+
+            // Build message previews (last 5 messages, truncated)
+            let messages_preview: Vec<SamplingMessagePreview> = req
+                .messages
+                .iter()
+                .rev()
+                .take(5)
+                .rev()
+                .map(|msg| {
+                    let content = match &msg.content {
+                        crate::protocol::SamplingContent::Text(text) => {
+                            if text.len() > 200 {
+                                format!("{}...", &text[..200])
+                            } else {
+                                text.clone()
+                            }
+                        }
+                        crate::protocol::SamplingContent::Structured(v) => {
+                            // Try to extract text from structured content
+                            v.get("text")
+                                .and_then(|t| t.as_str())
+                                .map(|s| {
+                                    if s.len() > 200 {
+                                        format!("{}...", &s[..200])
+                                    } else {
+                                        s.to_string()
+                                    }
+                                })
+                                .unwrap_or_else(|| "[structured content]".to_string())
+                        }
+                    };
+                    SamplingMessagePreview {
+                        role: msg.role.clone(),
+                        content,
+                    }
+                })
+                .collect();
+
             SamplingApprovalDetails {
                 request_id: session.request_id.clone(),
                 server_id: session.server_id.clone(),
                 message_count: req.messages.len(),
                 system_prompt: req.system_prompt.clone(),
+                messages_preview,
                 model_preferences: req
                     .model_preferences
                     .as_ref()
@@ -283,10 +322,19 @@ pub struct SamplingApprovalDetails {
     pub server_id: String,
     pub message_count: usize,
     pub system_prompt: Option<String>,
+    /// Preview of the last few messages (role: content)
+    pub messages_preview: Vec<SamplingMessagePreview>,
     pub model_preferences: Option<serde_json::Value>,
     pub max_tokens: Option<u64>,
     pub timeout_seconds: u64,
     pub created_at_secs_ago: u64,
+}
+
+/// Simplified message for popup display
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SamplingMessagePreview {
+    pub role: String,
+    pub content: String,
 }
 
 // ---------------------------------------------------------------------------

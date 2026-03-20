@@ -294,9 +294,13 @@ impl McpServerManager {
             transport.set_request_callback(callback);
             tracing::info!("Set request callback for STDIO server: {}", server_id);
             true
+        } else if let Some(transport) = self.sse_transports.get(server_id) {
+            transport.set_request_callback(callback);
+            tracing::info!("Set request callback for SSE server: {}", server_id);
+            true
         } else {
             tracing::debug!(
-                "Skipping request callback - server {} is not a STDIO transport",
+                "Skipping request callback - server {} has no active transport",
                 server_id
             );
             false

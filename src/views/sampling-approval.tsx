@@ -5,11 +5,17 @@ import { LogicalSize } from "@tauri-apps/api/dpi"
 import { Button } from "@/components/ui/Button"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 
+interface SamplingMessagePreview {
+  role: string
+  content: string
+}
+
 interface SamplingApprovalDetails {
   request_id: string
   server_id: string
   message_count: number
   system_prompt: string | null
+  messages_preview: SamplingMessagePreview[]
   model_preferences: unknown | null
   max_tokens: number | null
   timeout_seconds: number
@@ -145,10 +151,24 @@ export function SamplingApproval() {
           {details.system_prompt && (
             <div className="mt-2">
               <span className="text-[10px] font-semibold text-muted-foreground uppercase">System prompt</span>
-              <div className="text-xs mt-0.5 bg-muted/50 rounded p-2 max-h-20 overflow-auto font-mono">
-                {details.system_prompt.length > 300
-                  ? details.system_prompt.slice(0, 300) + "..."
+              <div className="text-xs mt-0.5 bg-muted/50 rounded p-2 max-h-16 overflow-auto font-mono">
+                {details.system_prompt.length > 200
+                  ? details.system_prompt.slice(0, 200) + "..."
                   : details.system_prompt}
+              </div>
+            </div>
+          )}
+
+          {details.messages_preview.length > 0 && (
+            <div className="mt-2">
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase">Messages</span>
+              <div className="mt-0.5 space-y-1 max-h-28 overflow-auto">
+                {details.messages_preview.map((msg, i) => (
+                  <div key={i} className="text-xs bg-muted/50 rounded p-1.5">
+                    <span className="font-semibold text-muted-foreground">{msg.role}: </span>
+                    <span className="font-mono">{msg.content}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}

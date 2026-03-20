@@ -2346,3 +2346,64 @@ pub async fn get_mcp_server_capabilities(
 
     Ok(capabilities)
 }
+
+// ============================================================================
+// MCP Gateway Settings Commands
+// ============================================================================
+
+/// Response type for MCP gateway settings
+#[derive(Clone, Serialize, Deserialize)]
+pub struct McpGatewaySettingsResponse {
+    pub sampling: String,
+    pub elicitation_mode: String,
+}
+
+/// Get the global MCP gateway settings
+#[tauri::command]
+pub async fn get_mcp_gateway_settings(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<McpGatewaySettingsResponse, String> {
+    let config = config_manager.get();
+    let settings = &config.mcp_gateway;
+
+    Ok(McpGatewaySettingsResponse {
+        sampling: serde_json::to_value(&settings.sampling)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "passthrough".to_string()),
+        elicitation_mode: serde_json::to_value(&settings.elicitation_mode)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "passthrough".to_string()),
+    })
+}
+
+/// Update the global MCP gateway settings
+#[tauri::command]
+pub async fn set_mcp_gateway_settings(
+    config_manager: State<'_, ConfigManager>,
+    server_manager: State<'_, Arc<ServerManager>>,
+    sampling: Option<String>,
+    elicitation_mode: Option<String>,
+) -> Result<(), String> {
+    config_manager
+        .update(|config| {
+            if let Some(s) = sampling {
+                config.mcp_gateway.sampling =
+                    serde_json::from_value(serde_json::Value::String(s)).unwrap_or_default();
+            }
+            if let Some(mode) = elicitation_mode {
+                config.mcp_gateway.elicitation_mode =
+                    serde_json::from_value(serde_json::Value::String(mode)).unwrap_or_default();
+            }
+        })
+        .map_err(|e| format!("Failed to save settings: {}", e))?;
+
+    // Update live settings on the gateway so changes take effect without restart
+    let settings = config_manager.get().mcp_gateway.clone();
+    if let Some(gateway) = server_manager.get_mcp_gateway() {
+        gateway.update_gateway_settings(&settings);
+    }
+
+    Ok(())
+}

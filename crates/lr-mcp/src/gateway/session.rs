@@ -13,6 +13,9 @@ pub struct GatewaySession {
     /// Client ID
     pub client_id: String,
 
+    /// Session key (SSE connection UUID for SSE, client_id for non-SSE)
+    pub session_key: String,
+
     /// List of MCP servers this client is allowed to access
     pub allowed_servers: Vec<String>,
 
@@ -103,10 +106,18 @@ pub struct GatewaySession {
     pub instructions_context: Option<super::merger::InstructionsContext>,
 
     /// Sampling permission for this client session (Allow/Ask/Off)
+    /// Deprecated: now global via McpGatewaySettings, kept for backward compat
     pub mcp_sampling_permission: lr_config::PermissionState,
 
     /// Elicitation permission for this client session (Allow/Ask/Off)
+    /// Deprecated: now global via McpGatewaySettings, kept for backward compat
     pub mcp_elicitation_permission: lr_config::PermissionState,
+
+    /// Client mode for this session (Both/LlmOnly/McpOnly/McpViaLlm)
+    pub client_mode: lr_config::ClientMode,
+
+    /// Pending requests: request_id -> server_id (for forwarding notifications/cancelled)
+    pub pending_requests: HashMap<String, String>,
 
     /// Monitor session ID for grouping events from one API request.
     /// Set by MCP-via-LLM to link tool call events to the parent LLM call.
@@ -131,6 +142,7 @@ impl GatewaySession {
         }
 
         Self {
+            session_key: client_id.clone(), // default; overridden by gateway for SSE
             client_id,
             allowed_servers,
             server_init_status,
@@ -162,6 +174,8 @@ impl GatewaySession {
             instructions_context: None,
             mcp_sampling_permission: lr_config::PermissionState::default(),
             mcp_elicitation_permission: lr_config::PermissionState::default(),
+            client_mode: lr_config::ClientMode::default(),
+            pending_requests: HashMap::new(),
             monitor_session_id: None,
         }
     }

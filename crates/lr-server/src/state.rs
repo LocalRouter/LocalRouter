@@ -968,13 +968,30 @@ impl AppState {
 
     /// Add MCP manager to the state
     pub fn with_mcp(self, mcp_server_manager: Arc<McpServerManager>) -> Self {
+        // Build gateway config from global MCP gateway settings
+        let mcp_gateway_settings = self.config_manager.get().mcp_gateway.clone();
+        let gateway_config = lr_mcp::gateway::GatewayConfig {
+            sampling: mcp_gateway_settings.sampling,
+            elicitation_mode: mcp_gateway_settings.elicitation_mode,
+            ..lr_mcp::gateway::GatewayConfig::default()
+        };
+
         // Create gateway with the actual MCP server manager and notification broadcast
         let mcp_gateway = Arc::new(McpGateway::new_with_broadcast(
             mcp_server_manager.clone(),
-            lr_mcp::gateway::GatewayConfig::default(),
+            gateway_config,
             self.router.clone(),
             Some(self.mcp_notification_broadcast.clone()),
         ));
+
+        // Share the same approval manager between gateway and server
+        mcp_gateway.set_sampling_approval_manager(self.sampling_approval_manager.clone());
+
+        // Wire passthrough: forward server→client requests via SSE connection manager
+        let sse_mgr = self.sse_connection_manager.clone();
+        mcp_gateway.set_client_request_sender(move |client_id, request| {
+            sse_mgr.send_request(client_id, request)
+        });
 
         // Wire context management savings to the metrics database
         let mc = self.metrics_collector.clone();

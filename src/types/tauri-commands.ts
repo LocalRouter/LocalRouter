@@ -566,6 +566,18 @@ export interface McpServerCapabilities {
   server_name: string
 }
 
+/** Rust: src-tauri/src/ui/commands_mcp.rs - McpGatewaySettingsResponse struct */
+export interface McpGatewaySettingsResponse {
+  sampling: 'passthrough' | 'direct_allow' | 'direct_ask' | 'off'
+  elicitation_mode: 'passthrough' | 'direct' | 'off'
+}
+
+/** Params for set_mcp_gateway_settings */
+export interface SetMcpGatewaySettingsParams {
+  sampling?: string | null
+  elicitationMode?: string | null
+}
+
 /**
  * MCP tool definition.
  */

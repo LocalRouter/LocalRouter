@@ -135,6 +135,12 @@ pub struct GatewayConfig {
 
     /// Whether async skill script execution is enabled (default: false)
     pub skills_async_enabled: bool,
+
+    /// How sampling requests are handled (Passthrough/DirectAllow/DirectAsk/Off)
+    pub sampling: lr_config::SamplingBehavior,
+
+    /// How elicitation requests are handled (Passthrough/Direct/Off)
+    pub elicitation_mode: lr_config::ElicitationMode,
 }
 
 impl Default for GatewayConfig {
@@ -146,6 +152,8 @@ impl Default for GatewayConfig {
             cache_ttl_seconds: 300,
             max_retry_attempts: 1,
             skills_async_enabled: false,
+            sampling: lr_config::SamplingBehavior::default(),
+            elicitation_mode: lr_config::ElicitationMode::default(),
         }
     }
 }
@@ -438,7 +446,14 @@ pub struct ServerCapabilities {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingCapability>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completions: Option<CompletionsCapability>,
 }
+
+/// Completions capability (argument auto-completion)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionsCapability {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsCapability {

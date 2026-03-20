@@ -75,6 +75,7 @@ async fn gateway_request(
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            lr_config::ClientMode::default(),
             request,
             None, // monitor_session_id
         )

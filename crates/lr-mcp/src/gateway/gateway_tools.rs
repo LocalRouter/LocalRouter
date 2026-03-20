@@ -311,11 +311,34 @@ impl McpGateway {
 
         let tool_call_start = std::time::Instant::now();
 
+        // Track pending request for cancellation forwarding
+        let request_id_str = transformed_request
+            .id
+            .as_ref()
+            .map(|id| {
+                id.as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| id.to_string())
+            })
+            .unwrap_or_default();
+        if !request_id_str.is_empty() {
+            let mut session_write = session.write().await;
+            session_write
+                .pending_requests
+                .insert(request_id_str.clone(), server_id.clone());
+        }
+
         // Route to server
         let result = self
             .server_manager
             .send_request(&server_id, transformed_request)
             .await;
+
+        // Remove from pending requests
+        if !request_id_str.is_empty() {
+            let mut session_write = session.write().await;
+            session_write.pending_requests.remove(&request_id_str);
+        }
 
         let tool_call_latency = tool_call_start.elapsed().as_millis() as u64;
 

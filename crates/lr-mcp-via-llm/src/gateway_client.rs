@@ -58,6 +58,7 @@ pub struct GatewayClient<'a> {
     mcp_sampling_permission: lr_config::PermissionState,
     mcp_elicitation_permission: lr_config::PermissionState,
     memory_enabled: Option<bool>,
+    client_mode: lr_config::ClientMode,
     /// Monitor session ID for grouping tool call events with parent LLM call
     pub monitor_session_id: Option<String>,
 }
@@ -129,6 +130,7 @@ impl<'a> GatewayClient<'a> {
             mcp_sampling_permission: client.mcp_sampling_permission.clone(),
             mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
             memory_enabled: client.memory_enabled,
+            client_mode: client.client_mode.clone(),
             monitor_session_id: None,
         }
     }
@@ -160,6 +162,7 @@ impl<'a> GatewayClient<'a> {
                 self.mcp_sampling_permission.clone(),
                 self.mcp_elicitation_permission.clone(),
                 self.memory_enabled,
+                self.client_mode.clone(),
                 request,
                 self.monitor_session_id.clone(),
             )

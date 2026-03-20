@@ -10,7 +10,10 @@ import { listenSafe } from "@/hooks/useTauriListener"
 import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { McpIcon } from "@/components/icons/category-icons"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { McpServersPanel, McpHealthStatus, McpHealthCheckEvent } from "../resources/mcp-servers-panel"
+import { McpSettingsPanel } from "./mcp-settings-panel"
 
 interface McpServersViewProps {
   activeSubTab: string | null
@@ -129,20 +132,50 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
         </div>
       )}
 
-      <McpServersPanel
-        selectedId={selectedId}
-        onSelect={handleSelect}
-        healthStatus={healthStatus}
-        onHealthInit={(serverIds) => {
-          if (!healthInitialized) {
-            setHealthInitialized(true)
-            startHealthChecks(serverIds)
-          }
-        }}
-        onRefreshHealth={refreshHealth}
-        initialAddTemplateId={addTemplateId}
-        onViewChange={onTabChange}
-      />
+      {selectedId ? (
+        <McpServersPanel
+          selectedId={selectedId}
+          onSelect={handleSelect}
+          healthStatus={healthStatus}
+          onHealthInit={(serverIds) => {
+            if (!healthInitialized) {
+              setHealthInitialized(true)
+              startHealthChecks(serverIds)
+            }
+          }}
+          onRefreshHealth={refreshHealth}
+          initialAddTemplateId={addTemplateId}
+          onViewChange={onTabChange}
+        />
+      ) : (
+        <Tabs defaultValue="servers" className="flex flex-col flex-1 min-h-0">
+          <TabsList className="flex-shrink-0 w-fit">
+            <TabsTrigger value="servers"><TAB_ICONS.browse className={TAB_ICON_CLASS} />Servers</TabsTrigger>
+            <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="servers" className="flex-1 min-h-0 mt-4">
+            <McpServersPanel
+              selectedId={null}
+              onSelect={handleSelect}
+              healthStatus={healthStatus}
+              onHealthInit={(serverIds) => {
+                if (!healthInitialized) {
+                  setHealthInitialized(true)
+                  startHealthChecks(serverIds)
+                }
+              }}
+              onRefreshHealth={refreshHealth}
+              initialAddTemplateId={addTemplateId}
+              onViewChange={onTabChange}
+            />
+          </TabsContent>
+
+          <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-auto">
+            <McpSettingsPanel />
+          </TabsContent>
+        </Tabs>
+      )}
     </div>
   )
 }
