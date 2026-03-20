@@ -65,7 +65,7 @@ export function MonitorView() {
           onSelect={selectEvent}
         />
       </ResizablePanel>
-      <ResizableHandle withHandle />
+      <ResizableHandle withHandle orientation="vertical" />
       <ResizablePanel defaultSize={45} minSize={15}>
         <EventDetail event={selectedEvent} />
       </ResizablePanel>
