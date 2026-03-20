@@ -364,9 +364,51 @@ export function ToolsPanel({
                         {error}
                       </pre>
                     ) : (
-                      <pre className="p-3 bg-muted rounded-md text-xs overflow-auto max-h-64 whitespace-pre-wrap break-all">
-                        {JSON.stringify(result?.data, null, 2)}
-                      </pre>
+                      <div className="space-y-2 max-h-64 overflow-auto">
+                        {(() => {
+                          const content = result?.data
+                          if (!Array.isArray(content)) {
+                            return (
+                              <pre className="p-3 bg-muted rounded-md text-xs whitespace-pre-wrap break-all">
+                                {JSON.stringify(content, null, 2)}
+                              </pre>
+                            )
+                          }
+                          return content.map((item: Record<string, unknown>, i: number) => {
+                            if (item.type === 'text') {
+                              return (
+                                <pre key={i} className="p-3 bg-muted rounded-md text-xs whitespace-pre-wrap break-all">
+                                  {item.text as string}
+                                </pre>
+                              )
+                            }
+                            if (item.type === 'image') {
+                              return (
+                                <img
+                                  key={i}
+                                  src={`data:${item.mimeType || 'image/png'};base64,${item.data}`}
+                                  alt="Tool result"
+                                  className="rounded-md max-w-full"
+                                />
+                              )
+                            }
+                            if (item.type === 'resource') {
+                              const res = item.resource as Record<string, unknown> | undefined
+                              const text = res?.text as string | undefined
+                              return (
+                                <pre key={i} className="p-3 bg-muted rounded-md text-xs whitespace-pre-wrap break-all">
+                                  {text ?? `[Resource: ${res?.uri ?? 'unknown'}]`}
+                                </pre>
+                              )
+                            }
+                            return (
+                              <pre key={i} className="p-3 bg-muted rounded-md text-xs whitespace-pre-wrap break-all">
+                                {JSON.stringify(item, null, 2)}
+                              </pre>
+                            )
+                          })
+                        })()}
+                      </div>
                     )}
                   </div>
                 )}
