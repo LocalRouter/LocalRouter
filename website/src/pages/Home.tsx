@@ -28,6 +28,12 @@ import {
   KeyRound,
   MessagesSquare,
   Brain,
+  Activity,
+  Bug,
+  Layers,
+  Eye,
+  Settings2,
+  RefreshCw,
 } from 'lucide-react'
 
 export default function Home() {
@@ -38,18 +44,20 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 sm:py-32 lg:px-8">
           <div className="mx-auto max-w-3xl text-center">
             <h1 className="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-              Local proxy for
+              Swiss Army Knife
               <br />
-              <span className="text-primary">LLM</span>
-              {"s, "}
-              <span className="text-primary">MCP</span>
-              {"s and "}
-              <span className="text-primary">Skill</span>
-              s.
+              for <span className="text-primary">AI Apps</span>.
             </h1>
             <p className="mt-6 text-lg text-muted-foreground sm:text-xl">
-              Centralized API key storage with per-client access control. Automatic model failover across providers. Audio transcription and speech synthesis. Single Unified MCP Gateway aggregating all MCPs and skills.
+              Open-source desktop app for centrally managing <span className="text-primary">LLMs</span>, <span className="text-primary">MCPs</span>, and <span className="text-primary">Skills</span>.
             </p>
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted-foreground">
+              <span className="flex items-center gap-1.5"><RefreshCw className="h-4 w-4 text-violet-500" /> Routing</span>
+              <span className="flex items-center gap-1.5"><ShieldCheck className="h-4 w-4 text-rose-500" />Protect</span>
+              <span className="flex items-center gap-1.5"><Activity className="h-4 w-4 text-emerald-500" /> Monitor</span>
+              <span className="flex items-center gap-1.5"><Bug className="h-4 w-4 text-amber-500" /> Debug</span>
+              <span className="flex items-center gap-1.5"><Settings2 className="h-4 w-4 text-blue-500" /> Modify</span>
+            </div>
             <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <Button asChild size="xl">
                 <Link to="/download">
@@ -67,7 +75,10 @@ export default function Home() {
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  View on GitHub
+                  Source code
+                  <span className="ml-3 flex items-center gap-1.5">
+                    <img src="/icons/github.svg" alt="Github" className="h-4 w-4 fill-current" style={{ filter: 'invert(1)' }} />
+                  </span>
                 </a>
               </Button>
             </div>
@@ -125,7 +136,7 @@ export default function Home() {
             {/* Left side label - anchored from bottom to stay above first node */}
             <div className="absolute left-[5%] top-[20%] -translate-y-full pb-8 text-left">
               <span className="text-[8px] sm:text-xs font-medium text-blue-500 uppercase tracking-wide">Works With</span>
-              <h3 className="text-[10px] sm:text-lg font-semibold leading-tight"><i>bring-your-own-key</i> Apps</h3>
+              <h3 className="text-[10px] sm:text-lg font-semibold leading-tight">AI Apps</h3>
             </div>
 
             {/* Left Apps - spread from 20% to 62% */}
