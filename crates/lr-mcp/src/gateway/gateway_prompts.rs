@@ -116,16 +116,92 @@ impl McpGateway {
             )));
         }
 
-        // Parse prompts from results
-        let server_prompts: Vec<(String, Vec<McpPrompt>)> = successes
-            .into_iter()
-            .filter_map(|(server_id, value)| {
-                value
-                    .get("prompts")
-                    .and_then(|p| serde_json::from_value::<Vec<McpPrompt>>(p.clone()).ok())
-                    .map(|prompts| (server_id, prompts))
-            })
-            .collect();
+        // Parse prompts from results, exhausting pagination for each server
+        let mut server_prompts: Vec<(String, Vec<McpPrompt>)> = Vec::new();
+
+        for (server_id, value) in successes {
+            let mut all_items: Vec<McpPrompt> = value
+                .get("prompts")
+                .and_then(|p| serde_json::from_value::<Vec<McpPrompt>>(p.clone()).ok())
+                .unwrap_or_default();
+
+            // Exhaust pagination if the server returned a nextCursor
+            let mut next_cursor = value
+                .get("nextCursor")
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+            let mut page = 1u32;
+            const MAX_PAGES: u32 = 100;
+
+            while let Some(cursor) = next_cursor.take() {
+                if page >= MAX_PAGES {
+                    tracing::warn!(
+                        "prompts/list pagination: hit max page limit ({}) for server {}",
+                        MAX_PAGES,
+                        server_id
+                    );
+                    break;
+                }
+
+                let page_request = JsonRpcRequest::new(
+                    Some(json!(format!("page-{}", page))),
+                    "prompts/list".to_string(),
+                    Some(json!({ "cursor": cursor })),
+                );
+
+                match tokio::time::timeout(
+                    timeout,
+                    self.server_manager.send_request(&server_id, page_request),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => {
+                        if let Some(result) = &response.result {
+                            if let Some(prompts) = result.get("prompts").and_then(|p| {
+                                serde_json::from_value::<Vec<McpPrompt>>(p.clone()).ok()
+                            }) {
+                                all_items.extend(prompts);
+                            }
+                            next_cursor = result
+                                .get("nextCursor")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            "prompts/list pagination error for server {} (page {}): {}",
+                            server_id,
+                            page,
+                            e
+                        );
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "prompts/list pagination timeout for server {} (page {})",
+                            server_id,
+                            page
+                        );
+                        break;
+                    }
+                }
+
+                page += 1;
+            }
+
+            if !all_items.is_empty() {
+                if page > 1 {
+                    tracing::info!(
+                        "prompts/list: fetched {} prompts from server {} across {} pages",
+                        all_items.len(),
+                        server_id,
+                        page
+                    );
+                }
+                server_prompts.push((server_id, all_items));
+            }
+        }
 
         // Build server ID to human-readable name mapping
         let name_mapping = self.build_server_id_to_name_mapping(server_ids);

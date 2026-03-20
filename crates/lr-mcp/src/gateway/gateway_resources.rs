@@ -137,16 +137,92 @@ impl McpGateway {
             )));
         }
 
-        // Parse resources from results
-        let server_resources: Vec<(String, Vec<McpResource>)> = successes
-            .into_iter()
-            .filter_map(|(server_id, value)| {
-                value
-                    .get("resources")
-                    .and_then(|r| serde_json::from_value::<Vec<McpResource>>(r.clone()).ok())
-                    .map(|resources| (server_id, resources))
-            })
-            .collect();
+        // Parse resources from results, exhausting pagination for each server
+        let mut server_resources: Vec<(String, Vec<McpResource>)> = Vec::new();
+
+        for (server_id, value) in successes {
+            let mut all_items: Vec<McpResource> = value
+                .get("resources")
+                .and_then(|r| serde_json::from_value::<Vec<McpResource>>(r.clone()).ok())
+                .unwrap_or_default();
+
+            // Exhaust pagination if the server returned a nextCursor
+            let mut next_cursor = value
+                .get("nextCursor")
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+            let mut page = 1u32;
+            const MAX_PAGES: u32 = 100;
+
+            while let Some(cursor) = next_cursor.take() {
+                if page >= MAX_PAGES {
+                    tracing::warn!(
+                        "resources/list pagination: hit max page limit ({}) for server {}",
+                        MAX_PAGES,
+                        server_id
+                    );
+                    break;
+                }
+
+                let page_request = JsonRpcRequest::new(
+                    Some(json!(format!("page-{}", page))),
+                    "resources/list".to_string(),
+                    Some(json!({ "cursor": cursor })),
+                );
+
+                match tokio::time::timeout(
+                    timeout,
+                    self.server_manager.send_request(&server_id, page_request),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => {
+                        if let Some(result) = &response.result {
+                            if let Some(resources) = result.get("resources").and_then(|r| {
+                                serde_json::from_value::<Vec<McpResource>>(r.clone()).ok()
+                            }) {
+                                all_items.extend(resources);
+                            }
+                            next_cursor = result
+                                .get("nextCursor")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            "resources/list pagination error for server {} (page {}): {}",
+                            server_id,
+                            page,
+                            e
+                        );
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "resources/list pagination timeout for server {} (page {})",
+                            server_id,
+                            page
+                        );
+                        break;
+                    }
+                }
+
+                page += 1;
+            }
+
+            if !all_items.is_empty() {
+                if page > 1 {
+                    tracing::info!(
+                        "resources/list: fetched {} resources from server {} across {} pages",
+                        all_items.len(),
+                        server_id,
+                        page
+                    );
+                }
+                server_resources.push((server_id, all_items));
+            }
+        }
 
         // Build server ID to human-readable name mapping
         let name_mapping = self.build_server_id_to_name_mapping(server_ids);
@@ -559,25 +635,106 @@ impl McpGateway {
 
         let (successes, failures) = separate_results(results);
 
-        // Merge resource templates from all servers, namespacing names
+        // Merge resource templates from all servers, namespacing names,
+        // exhausting pagination for each server
         let mut all_templates: Vec<serde_json::Value> = Vec::new();
 
         for (server_id, value) in successes {
-            if let Some(templates) = value.get("resourceTemplates").and_then(|t| t.as_array()) {
-                for template in templates {
-                    let mut namespaced = template.clone();
-                    if let Some(obj) = namespaced.as_object_mut() {
-                        if let Some(name) = obj
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .map(|n| n.to_string())
-                        {
-                            let ns_name = apply_namespace(&server_id, &name);
-                            obj.insert("name".to_string(), serde_json::json!(ns_name));
+            // Collect templates from the first page
+            let mut server_templates: Vec<serde_json::Value> = value
+                .get("resourceTemplates")
+                .and_then(|t| t.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            // Exhaust pagination if the server returned a nextCursor
+            let mut next_cursor = value
+                .get("nextCursor")
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+            let mut page = 1u32;
+            const MAX_PAGES: u32 = 100;
+
+            while let Some(cursor) = next_cursor.take() {
+                if page >= MAX_PAGES {
+                    tracing::warn!(
+                        "resources/templates/list pagination: hit max page limit ({}) for server {}",
+                        MAX_PAGES,
+                        server_id
+                    );
+                    break;
+                }
+
+                let page_request = JsonRpcRequest::new(
+                    Some(json!(format!("page-{}", page))),
+                    "resources/templates/list".to_string(),
+                    Some(json!({ "cursor": cursor })),
+                );
+
+                match tokio::time::timeout(
+                    timeout,
+                    self.server_manager.send_request(&server_id, page_request),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => {
+                        if let Some(result) = &response.result {
+                            if let Some(templates) =
+                                result.get("resourceTemplates").and_then(|t| t.as_array())
+                            {
+                                server_templates.extend(templates.iter().cloned());
+                            }
+                            next_cursor = result
+                                .get("nextCursor")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
                         }
                     }
-                    all_templates.push(namespaced);
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            "resources/templates/list pagination error for server {} (page {}): {}",
+                            server_id,
+                            page,
+                            e
+                        );
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "resources/templates/list pagination timeout for server {} (page {})",
+                            server_id,
+                            page
+                        );
+                        break;
+                    }
                 }
+
+                page += 1;
+            }
+
+            if page > 1 {
+                tracing::info!(
+                    "resources/templates/list: fetched {} templates from server {} across {} pages",
+                    server_templates.len(),
+                    server_id,
+                    page
+                );
+            }
+
+            // Namespace the template names
+            for template in server_templates {
+                let mut namespaced = template;
+                if let Some(obj) = namespaced.as_object_mut() {
+                    if let Some(name) = obj
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|n| n.to_string())
+                    {
+                        let ns_name = apply_namespace(&server_id, &name);
+                        obj.insert("name".to_string(), serde_json::json!(ns_name));
+                    }
+                }
+                all_templates.push(namespaced);
             }
         }
 

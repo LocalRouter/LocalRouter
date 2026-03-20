@@ -151,16 +151,92 @@ impl McpGateway {
             )));
         }
 
-        // Parse tools from results
-        let server_tools: Vec<(String, Vec<McpTool>)> = successes
-            .into_iter()
-            .filter_map(|(server_id, value)| {
-                value
-                    .get("tools")
-                    .and_then(|tools| serde_json::from_value::<Vec<McpTool>>(tools.clone()).ok())
-                    .map(|tools| (server_id, tools))
-            })
-            .collect();
+        // Parse tools from results, exhausting pagination for each server
+        let mut server_tools: Vec<(String, Vec<McpTool>)> = Vec::new();
+
+        for (server_id, value) in successes {
+            let mut all_items: Vec<McpTool> = value
+                .get("tools")
+                .and_then(|t| serde_json::from_value::<Vec<McpTool>>(t.clone()).ok())
+                .unwrap_or_default();
+
+            // Exhaust pagination if the server returned a nextCursor
+            let mut next_cursor = value
+                .get("nextCursor")
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+            let mut page = 1u32;
+            const MAX_PAGES: u32 = 100;
+
+            while let Some(cursor) = next_cursor.take() {
+                if page >= MAX_PAGES {
+                    tracing::warn!(
+                        "tools/list pagination: hit max page limit ({}) for server {}",
+                        MAX_PAGES,
+                        server_id
+                    );
+                    break;
+                }
+
+                let page_request = JsonRpcRequest::new(
+                    Some(json!(format!("page-{}", page))),
+                    "tools/list".to_string(),
+                    Some(json!({ "cursor": cursor })),
+                );
+
+                match tokio::time::timeout(
+                    timeout,
+                    self.server_manager.send_request(&server_id, page_request),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => {
+                        if let Some(result) = &response.result {
+                            if let Some(tools) = result.get("tools").and_then(|t| {
+                                serde_json::from_value::<Vec<McpTool>>(t.clone()).ok()
+                            }) {
+                                all_items.extend(tools);
+                            }
+                            next_cursor = result
+                                .get("nextCursor")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            "tools/list pagination error for server {} (page {}): {}",
+                            server_id,
+                            page,
+                            e
+                        );
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "tools/list pagination timeout for server {} (page {})",
+                            server_id,
+                            page
+                        );
+                        break;
+                    }
+                }
+
+                page += 1;
+            }
+
+            if !all_items.is_empty() {
+                if page > 1 {
+                    tracing::info!(
+                        "tools/list: fetched {} tools from server {} across {} pages",
+                        all_items.len(),
+                        server_id,
+                        page
+                    );
+                }
+                server_tools.push((server_id, all_items));
+            }
+        }
 
         // Build server ID to human-readable name mapping
         let name_mapping = self.build_server_id_to_name_mapping(server_ids);
