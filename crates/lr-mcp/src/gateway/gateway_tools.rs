@@ -525,6 +525,14 @@ impl McpGateway {
         request: &JsonRpcRequest,
     ) -> AppResult<FirewallDecisionResult> {
         let session_read = session.read().await;
+
+        // Bypass firewall for internal test client (Try It Out UI).
+        // The test client is for testing tool behavior, not permission enforcement.
+        if session_read.client_id == "internal-test" {
+            drop(session_read);
+            return Ok(FirewallDecisionResult::Proceed);
+        }
+
         let ctx = FirewallCheckContext::McpTool {
             permissions: &session_read.mcp_permissions,
             server_id,
@@ -782,6 +790,11 @@ impl McpGateway {
         // 1. Permission check (read lock, then drop)
         let (firewall_result, client_id, client_name) = {
             let session_read = session.read().await;
+
+            // Bypass firewall for internal test client (Try It Out UI).
+            // The test client is for testing tool behavior, not permission enforcement.
+            let is_internal_test = session_read.client_id == "internal-test";
+
             let state = match session_read.virtual_server_state.get(vs.id()) {
                 Some(s) => s,
                 None => {
@@ -798,11 +811,16 @@ impl McpGateway {
                     ));
                 }
             };
-            let approved = session_read.firewall_session_approvals.contains(tool_name);
-            let denied = session_read.firewall_session_denials.contains(tool_name);
-            let arguments = request.params.as_ref().and_then(|p| p.get("arguments"));
-            let result =
-                vs.check_permissions(state.as_ref(), tool_name, arguments, approved, denied);
+
+            let result = if is_internal_test {
+                VirtualFirewallResult::Handled(FirewallDecisionResult::Proceed)
+            } else {
+                let approved = session_read.firewall_session_approvals.contains(tool_name);
+                let denied = session_read.firewall_session_denials.contains(tool_name);
+                let arguments = request.params.as_ref().and_then(|p| p.get("arguments"));
+                vs.check_permissions(state.as_ref(), tool_name, arguments, approved, denied)
+            };
+
             (
                 result,
                 session_read.client_id.clone(),
