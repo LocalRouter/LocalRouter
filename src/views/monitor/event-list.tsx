@@ -92,11 +92,11 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
       <table className="w-full text-xs">
         <thead className="sticky top-0 bg-background border-b z-10">
           <tr className="text-left text-muted-foreground">
+            <th className="px-2 py-1.5 w-[24px]"></th>
             <th className="px-2 py-1.5 w-[105px]">Time</th>
             <th className="px-2 py-1.5 w-[140px]">Type</th>
             <th className="px-2 py-1.5 w-[100px]">Client</th>
             <th className="px-2 py-1.5">Summary</th>
-            <th className="px-2 py-1.5 w-[24px]"></th>
             <th className="px-2 py-1.5 w-[60px] text-right">Duration</th>
           </tr>
         </thead>
@@ -115,6 +115,9 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
                   selectedId === event.id && 'bg-accent'
                 )}
               >
+                <td className="px-2 py-1">
+                  <StatusBadge status={event.status} />
+                </td>
                 <td className="px-2 py-1 font-mono text-muted-foreground whitespace-nowrap" title={formatTime(event.timestamp).full}>
                   {formatTime(event.timestamp).short}
                 </td>
@@ -129,9 +132,6 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
                 </td>
                 <td className="px-2 py-1 truncate" title={event.summary}>
                   {event.summary}
-                </td>
-                <td className="px-2 py-1">
-                  <StatusBadge status={event.status} />
                 </td>
                 <td className="px-2 py-1 text-right font-mono text-muted-foreground">
                   {event.duration_ms != null ? `${event.duration_ms}ms` : '—'}
