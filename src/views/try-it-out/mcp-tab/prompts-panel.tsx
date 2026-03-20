@@ -15,6 +15,7 @@ interface PromptsPanelProps {
   isConnected: boolean
   promptState: PromptState
   onPromptStateChange: (state: SetStateAction<PromptState>) => void
+  refreshTrigger?: number
 }
 
 export function PromptsPanel({
@@ -22,6 +23,7 @@ export function PromptsPanel({
   isConnected,
   promptState,
   onPromptStateChange,
+  refreshTrigger,
 }: PromptsPanelProps) {
   const [prompts, setPrompts] = useState<Prompt[]>([])
   const [filteredPrompts, setFilteredPrompts] = useState<Prompt[]>([])
@@ -72,6 +74,13 @@ export function PromptsPanel({
       })
     }
   }, [isConnected, mcpClient, fetchPrompts, onPromptStateChange])
+
+  // Re-fetch prompts when server sends prompts/list_changed notification
+  useEffect(() => {
+    if (refreshTrigger && isConnected && mcpClient) {
+      fetchPrompts()
+    }
+  }, [refreshTrigger, isConnected, mcpClient, fetchPrompts])
 
   // Filter prompts by search query
   useEffect(() => {

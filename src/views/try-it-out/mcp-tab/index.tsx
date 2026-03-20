@@ -223,8 +223,10 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     error: null,
   })
 
-  // Counter that increments when server sends tools/list_changed notification
+  // Counters that increment when server sends list_changed notifications
   const [toolsRefreshTrigger, setToolsRefreshTrigger] = useState(0)
+  const [resourcesRefreshTrigger, setResourcesRefreshTrigger] = useState(0)
+  const [promptsRefreshTrigger, setPromptsRefreshTrigger] = useState(0)
 
   // Resources panel state (lifted to persist across tab switches)
   const [resourceState, setResourceState] = useState<ResourceState>({
@@ -578,6 +580,8 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
           onSamplingRequest: handleSamplingRequest,
           onElicitationRequest: handleElicitationRequest,
           onToolsListChanged: () => setToolsRefreshTrigger(prev => prev + 1),
+          onResourcesListChanged: () => setResourcesRefreshTrigger(prev => prev + 1),
+          onPromptsListChanged: () => setPromptsRefreshTrigger(prev => prev + 1),
         })
 
         mcpClientRef.current = client
@@ -911,6 +915,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                 onResourceViewed={handleResourceViewed}
                 resourceState={resourceState}
                 onResourceStateChange={setResourceState}
+                refreshTrigger={resourcesRefreshTrigger}
               />
             </TabsContent>
 
@@ -920,6 +925,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                 isConnected={isConnected}
                 promptState={promptState}
                 onPromptStateChange={setPromptState}
+                refreshTrigger={promptsRefreshTrigger}
               />
             </TabsContent>
 

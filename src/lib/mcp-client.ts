@@ -4,6 +4,8 @@ import { WebSocketClientTransport } from "@modelcontextprotocol/sdk/client/webso
 import {
   ResourceUpdatedNotificationSchema,
   ToolListChangedNotificationSchema,
+  ResourceListChangedNotificationSchema,
+  PromptListChangedNotificationSchema,
   CreateMessageRequestSchema,
   ElicitRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
@@ -114,6 +116,8 @@ export interface McpClientCallbacks {
   onSamplingRequest?: SamplingRequestHandler
   onElicitationRequest?: ElicitationRequestHandler
   onToolsListChanged?: () => void
+  onResourcesListChanged?: () => void
+  onPromptsListChanged?: () => void
 }
 
 export class McpClientWrapper {
@@ -259,10 +263,20 @@ export class McpClientWrapper {
         }
       })
 
-      // Register notification handler for tools list changes
+      // Register notification handlers for list changes
       this.client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
         console.log("[MCP Client] Received tools/list_changed notification")
         this.callbacks.onToolsListChanged?.()
+      })
+
+      this.client.setNotificationHandler(ResourceListChangedNotificationSchema, () => {
+        console.log("[MCP Client] Received resources/list_changed notification")
+        this.callbacks.onResourcesListChanged?.()
+      })
+
+      this.client.setNotificationHandler(PromptListChangedNotificationSchema, () => {
+        console.log("[MCP Client] Received prompts/list_changed notification")
+        this.callbacks.onPromptsListChanged?.()
       })
 
       // Get server info

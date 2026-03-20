@@ -18,6 +18,7 @@ interface ResourcesPanelProps {
   onResourceViewed: (uri: string) => void
   resourceState: ResourceState
   onResourceStateChange: (state: SetStateAction<ResourceState>) => void
+  refreshTrigger?: number
 }
 
 export function ResourcesPanel({
@@ -30,6 +31,7 @@ export function ResourcesPanel({
   onResourceViewed,
   resourceState,
   onResourceStateChange,
+  refreshTrigger,
 }: ResourcesPanelProps) {
   const [resources, setResources] = useState<Resource[]>([])
   const [filteredResources, setFilteredResources] = useState<Resource[]>([])
@@ -81,6 +83,13 @@ export function ResourcesPanel({
       // Note: subscribedUris is cleared by parent on disconnect
     }
   }, [isConnected, mcpClient, fetchResources, onResourceStateChange])
+
+  // Re-fetch resources when server sends resources/list_changed notification
+  useEffect(() => {
+    if (refreshTrigger && isConnected && mcpClient) {
+      fetchResources()
+    }
+  }, [refreshTrigger, isConnected, mcpClient, fetchResources])
 
   // Filter resources by search query
   useEffect(() => {
