@@ -1,6 +1,5 @@
 import { cn } from '@/lib/utils'
-import { Activity, Wrench, Shield, GitBranch, Zap, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, ChevronRight, ChevronDown } from 'lucide-react'
-import { useState, useMemo } from 'react'
+import { Activity, Wrench, Shield, GitBranch, Zap, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban } from 'lucide-react'
 import type { MonitorEventSummary, MonitorEventType, EventStatus } from '@/types/tauri-commands'
 
 interface EventListProps {
@@ -75,171 +74,7 @@ function formatTime(timestamp: string): { short: string; full: string } {
   }
 }
 
-type SessionGroup = {
-  kind: 'group'
-  sessionId: string
-  header: MonitorEventSummary
-  children: MonitorEventSummary[]
-} | {
-  kind: 'standalone'
-  event: MonitorEventSummary
-}
-
-function EventRow({
-  event,
-  selectedId,
-  onSelect,
-  indent,
-}: {
-  event: MonitorEventSummary
-  selectedId: string | null
-  onSelect: (id: string) => void
-  indent?: boolean
-}) {
-  const category = getCategory(event.event_type)
-  const config = categoryConfig[category] ?? categoryConfig.llm
-  const Icon = config.icon
-
-  return (
-    <tr
-      key={event.id}
-      onClick={() => onSelect(event.id)}
-      className={cn(
-        'cursor-pointer hover:bg-accent/50 transition-colors border-b border-border/50',
-        selectedId === event.id && 'bg-accent'
-      )}
-    >
-      <td className="px-2 py-1 font-mono text-muted-foreground whitespace-nowrap" title={formatTime(event.timestamp).full}>
-        {indent && <span className="inline-block w-4" />}
-        {formatTime(event.timestamp).short}
-      </td>
-      <td className="px-2 py-1">
-        <div className="flex items-center gap-1">
-          <Icon className={cn('h-3 w-3 shrink-0', config.color)} />
-          <span className="truncate">{getTypeLabel(event.event_type)}</span>
-        </div>
-      </td>
-      <td className="px-2 py-1 truncate text-muted-foreground">
-        {event.client_name || event.client_id?.slice(0, 8) || '—'}
-      </td>
-      <td className="px-2 py-1 truncate" title={event.summary}>
-        {event.summary}
-      </td>
-      <td className="px-2 py-1">
-        <StatusBadge status={event.status} />
-      </td>
-      <td className="px-2 py-1 text-right font-mono text-muted-foreground">
-        {event.duration_ms != null ? `${event.duration_ms}ms` : '—'}
-      </td>
-    </tr>
-  )
-}
-
-function SessionGroupRows({
-  group,
-  selectedId,
-  onSelect,
-}: {
-  group: Extract<SessionGroup, { kind: 'group' }>
-  selectedId: string | null
-  onSelect: (id: string) => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const header = group.header
-  const category = getCategory(header.event_type)
-  const config = categoryConfig[category] ?? categoryConfig.llm
-  const Icon = config.icon
-
-  return (
-    <>
-      <tr
-        onClick={() => onSelect(header.id)}
-        className={cn(
-          'cursor-pointer hover:bg-accent/50 transition-colors border-b border-border/50',
-          selectedId === header.id && 'bg-accent'
-        )}
-      >
-        <td className="px-2 py-1 font-mono text-muted-foreground whitespace-nowrap" title={formatTime(header.timestamp).full}>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }}
-            className="inline-flex items-center justify-center w-4 h-4 mr-0.5 hover:bg-accent rounded"
-          >
-            {expanded
-              ? <ChevronDown className="h-3 w-3" />
-              : <ChevronRight className="h-3 w-3" />
-            }
-          </button>
-          {formatTime(header.timestamp).short}
-        </td>
-        <td className="px-2 py-1">
-          <div className="flex items-center gap-1">
-            <Icon className={cn('h-3 w-3 shrink-0', config.color)} />
-            <span className="truncate">{getTypeLabel(header.event_type)}</span>
-            <span className="ml-1 inline-flex items-center justify-center rounded-full bg-muted px-1.5 py-0 text-[10px] font-medium text-muted-foreground">
-              +{group.children.length}
-            </span>
-          </div>
-        </td>
-        <td className="px-2 py-1 truncate text-muted-foreground">
-          {header.client_name || header.client_id?.slice(0, 8) || '—'}
-        </td>
-        <td className="px-2 py-1 truncate" title={header.summary}>
-          {header.summary}
-        </td>
-        <td className="px-2 py-1">
-          <StatusBadge status={header.status} />
-        </td>
-        <td className="px-2 py-1 text-right font-mono text-muted-foreground">
-          {header.duration_ms != null ? `${header.duration_ms}ms` : '—'}
-        </td>
-      </tr>
-      {expanded && group.children.map(child => (
-        <EventRow
-          key={child.id}
-          event={child}
-          selectedId={selectedId}
-          onSelect={onSelect}
-          indent
-        />
-      ))}
-    </>
-  )
-}
-
 export function EventList({ events, selectedId, onSelect }: EventListProps) {
-  const groups = useMemo<SessionGroup[]>(() => {
-    const sessionMap = new Map<string, MonitorEventSummary[]>()
-    const result: SessionGroup[] = []
-
-    // Collect session groups maintaining order of first appearance
-    for (const event of events) {
-      if (!event.session_id) {
-        result.push({ kind: 'standalone', event })
-      } else {
-        const existing = sessionMap.get(event.session_id)
-        if (existing) {
-          existing.push(event)
-        } else {
-          const group: MonitorEventSummary[] = [event]
-          sessionMap.set(event.session_id, group)
-          // Push placeholder — we'll resolve it below
-          result.push({ kind: 'group', sessionId: event.session_id, header: event, children: [] })
-        }
-      }
-    }
-
-    // Finalize groups: single-event sessions become standalone
-    return result.map(item => {
-      if (item.kind === 'standalone') return item
-      const all = sessionMap.get(item.sessionId)!
-      if (all.length === 1) {
-        return { kind: 'standalone' as const, event: all[0] }
-      }
-      return { kind: 'group' as const, sessionId: item.sessionId, header: all[0], children: all.slice(1) }
-    })
-  }, [events])
-
   if (events.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
@@ -266,24 +101,42 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
           </tr>
         </thead>
         <tbody>
-          {groups.map(group => {
-            if (group.kind === 'standalone') {
-              return (
-                <EventRow
-                  key={group.event.id}
-                  event={group.event}
-                  selectedId={selectedId}
-                  onSelect={onSelect}
-                />
-              )
-            }
+          {events.map(event => {
+            const category = getCategory(event.event_type)
+            const config = categoryConfig[category] ?? categoryConfig.llm
+            const Icon = config.icon
+
             return (
-              <SessionGroupRows
-                key={group.sessionId}
-                group={group}
-                selectedId={selectedId}
-                onSelect={onSelect}
-              />
+              <tr
+                key={event.id}
+                onClick={() => onSelect(event.id)}
+                className={cn(
+                  'cursor-pointer hover:bg-accent/50 transition-colors border-b border-border/50',
+                  selectedId === event.id && 'bg-accent'
+                )}
+              >
+                <td className="px-2 py-1 font-mono text-muted-foreground whitespace-nowrap" title={formatTime(event.timestamp).full}>
+                  {formatTime(event.timestamp).short}
+                </td>
+                <td className="px-2 py-1">
+                  <div className="flex items-center gap-1">
+                    <Icon className={cn('h-3 w-3 shrink-0', config.color)} />
+                    <span className="truncate">{getTypeLabel(event.event_type)}</span>
+                  </div>
+                </td>
+                <td className="px-2 py-1 truncate text-muted-foreground">
+                  {event.client_name || event.client_id?.slice(0, 8) || '—'}
+                </td>
+                <td className="px-2 py-1 truncate" title={event.summary}>
+                  {event.summary}
+                </td>
+                <td className="px-2 py-1">
+                  <StatusBadge status={event.status} />
+                </td>
+                <td className="px-2 py-1 text-right font-mono text-muted-foreground">
+                  {event.duration_ms != null ? `${event.duration_ms}ms` : '—'}
+                </td>
+              </tr>
             )
           })}
         </tbody>
