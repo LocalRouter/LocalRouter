@@ -432,8 +432,69 @@ function ServerField({ data }: { data: EventData }) {
   )
 }
 
+/// Extract text from MCP response content structure:
+/// {"content":[{"type":"text","text":"..."}]} → the text value
+/// Falls back to the raw string if not in this format.
+function extractMcpContent(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed?.content && Array.isArray(parsed.content)) {
+      const textParts = (parsed.content as Array<Record<string, unknown>>)
+        .filter(p => p.type === 'text' && typeof p.text === 'string')
+        .map(p => p.text as string)
+      if (textParts.length > 0) return textParts.join('\n')
+    }
+    // If it's a JSON object but not MCP format, pretty-print it
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return raw
+  }
+}
+
+/// Pretty-print tool arguments as a key-value table
+function ArgumentsTable({ args }: { args: unknown }) {
+  const [isOpen, setIsOpen] = useState(true)
+
+  if (args == null || (typeof args === 'object' && Object.keys(args as Record<string, unknown>).length === 0)) return null
+
+  const entries = typeof args === 'object' && !Array.isArray(args)
+    ? Object.entries(args as Record<string, unknown>).filter(([, v]) => v != null)
+    : []
+
+  if (entries.length === 0) {
+    return <JsonSection title="Arguments" data={args} defaultOpen={true} />
+  }
+
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+        <ChevronRight className={cn('h-3 w-3 transition-transform', isOpen && 'rotate-90')} />
+        <span className="font-medium">Arguments</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <table className="mt-1 text-xs w-full">
+          <tbody>
+            {entries.map(([key, value]) => (
+              <tr key={key} className="border-b border-border/20">
+                <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap align-top">{key}</td>
+                <td className="py-0.5 font-mono whitespace-pre-wrap break-all max-w-0">
+                  {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
 function McpResponseSection({ data }: { data: EventData }) {
   if (data.success == null && !data.error && !data.response_preview && !data.content_preview) return null
+
+  const rawContent = (data.response_preview || data.content_preview) as string | undefined
+  const displayContent = rawContent ? extractMcpContent(rawContent) : null
+
   return (
     <>
       <SectionHeader title="Response" />
@@ -448,13 +509,10 @@ function McpResponseSection({ data }: { data: EventData }) {
           {data.error as string}
         </pre>
       )}
-      {(data.response_preview || data.content_preview) && (
-        <div className="text-xs">
-          <span className="text-muted-foreground font-medium">Content:</span>
-          <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-            {(data.response_preview || data.content_preview) as string}
-          </pre>
-        </div>
+      {displayContent && (
+        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
+          {displayContent}
+        </pre>
       )}
     </>
   )
@@ -470,7 +528,7 @@ function McpToolCallDetail({ data }: { data: EventData }) {
       {data.firewall_action && (
         <Field label="Firewall" value={data.firewall_action as string} />
       )}
-      <JsonSection title="Arguments" data={data.arguments as unknown} defaultOpen={true} />
+      <ArgumentsTable args={data.arguments as unknown} />
       <McpResponseSection data={data} />
     </div>
   )
