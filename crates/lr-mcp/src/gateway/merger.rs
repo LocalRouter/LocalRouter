@@ -179,12 +179,12 @@ fn build_server_description(
 /// 2. Capability listing: virtual servers first, then regular servers, then unavailable
 /// 3. Instructions in XML tags for virtual and regular servers
 pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
-    let has_servers = !ctx.servers.is_empty();
+    let server_count = ctx.servers.len();
     let has_unavailable = !ctx.unavailable_servers.is_empty();
     let has_virtual = !ctx.virtual_instructions.is_empty();
 
     // Nothing to describe
-    if !has_servers && !has_unavailable && !has_virtual {
+    if server_count == 0 && !has_unavailable && !has_virtual {
         return None;
     }
 
@@ -196,7 +196,7 @@ pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     let mut inst = String::new();
 
     // --- 1. Header ---
-    build_header(&mut inst, has_servers, has_virtual);
+    build_header(&mut inst, server_count, has_virtual);
 
     // --- 2. Unified per-server XML blocks ---
     build_unified_server_blocks(&mut inst, ctx);
@@ -225,17 +225,16 @@ fn slugify(name: &str) -> String {
 }
 
 /// Build the header line based on what's available.
-fn build_header(inst: &mut String, has_mcp_servers: bool, has_virtual: bool) {
-    if !has_mcp_servers && !has_virtual {
+fn build_header(inst: &mut String, mcp_server_count: usize, has_virtual: bool) {
+    if mcp_server_count == 0 && !has_virtual {
         // Only unavailable servers — nothing usable
         inst.push_str("Unified MCP Gateway: no servers or tools are currently available.\n\n");
-    } else if has_mcp_servers {
+    } else if mcp_server_count >= 2 {
         inst.push_str(
             "Unified MCP Gateway. Tools from MCP servers are namespaced \
              with a `servername__` prefix.\n\n",
         );
     } else {
-        // Only virtual servers
         inst.push_str("Unified MCP Gateway.\n\n");
     }
 }
@@ -268,6 +267,11 @@ fn build_unified_server_blocks(inst: &mut String, ctx: &InstructionsContext) {
 
         if total_items == 0 && !has_content {
             inst.push_str(&format!("**{}** (no capabilities)\n\n", server.name));
+            continue;
+        }
+
+        // Skip empty XML blocks when server has no description or instructions
+        if !has_content {
             continue;
         }
 
@@ -312,11 +316,18 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
     let server_count = ctx.servers.len();
     if server_count == 0 && ctx.virtual_instructions.is_empty() {
         inst.push_str("Unified MCP Gateway: no servers or tools are currently available.\n\n");
-    } else {
+    } else if server_count >= 2 {
         inst.push_str(
             "Unified MCP Gateway. Tools from MCP servers are namespaced \
              with a `servername__` prefix.\n",
         );
+        inst.push_str(&format!(
+            "Use {} to discover capabilities and retrieve compressed content.\n",
+            ctx.search_tool_name
+        ));
+        inst.push('\n');
+    } else {
+        inst.push_str("Unified MCP Gateway.\n");
         if server_count > 0 {
             inst.push_str(&format!(
                 "Use {} to discover capabilities and retrieve compressed content.\n",
@@ -374,10 +385,17 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
         let server_slug = slugify(&server.name);
         let slug_str = server_slug.as_str();
 
-        inst.push_str(&format!("<{}>\n", server_slug));
-
         let has_indexed_welcome = indexed_welcome_slugs.contains_key(slug_str);
         let has_deferred = deferred_server_slugs.contains_key(slug_str);
+        let has_raw_content = server.instructions.is_some() || server.description.is_some();
+
+        // Skip empty XML blocks — no welcome, no deferred batches, no raw content
+        if !has_indexed_welcome && !has_deferred && !has_raw_content {
+            continue;
+        }
+
+        inst.push_str(&format!("<{}>\n", server_slug));
+
         let toc_dropped = welcome_toc_dropped.contains(slug_str);
         let batch_toc_drop = batch_toc_dropped.contains(slug_str);
 
@@ -391,24 +409,21 @@ fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<Strin
                 inst.push_str(&welcome.toc);
                 inst.push('\n');
             }
-        } else {
+        } else if has_raw_content {
             // No compression: raw description + instructions (no tool listing)
-            let has_content = server.instructions.is_some() || server.description.is_some();
-            if has_content {
-                if let Some(desc) = &server.description {
-                    inst.push_str(desc);
-                    if !desc.ends_with('\n') {
-                        inst.push('\n');
-                    }
+            if let Some(desc) = &server.description {
+                inst.push_str(desc);
+                if !desc.ends_with('\n') {
+                    inst.push('\n');
                 }
-                if let Some(instructions) = &server.instructions {
-                    if server.description.is_some() {
-                        inst.push('\n');
-                    }
-                    inst.push_str(instructions);
-                    if !instructions.ends_with('\n') {
-                        inst.push('\n');
-                    }
+            }
+            if let Some(instructions) = &server.instructions {
+                if server.description.is_some() {
+                    inst.push('\n');
+                }
+                inst.push_str(instructions);
+                if !instructions.ends_with('\n') {
+                    inst.push('\n');
                 }
             }
         }
@@ -2380,9 +2395,9 @@ mod tests {
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Header
+        // Header — single server, no namespacing hint
         assert!(instructions.contains("Unified MCP Gateway"));
-        assert!(instructions.contains("servername__"));
+        assert!(!instructions.contains("servername__"));
         // Server instructions in XML tags (no tool listing)
         assert!(instructions.contains("<filesystem>"));
         assert!(!instructions.contains("`filesystem__read_file` (tool)"));
@@ -2588,9 +2603,9 @@ mod tests {
         let instructions = build_gateway_instructions(&ctx).unwrap();
         // Tools NOT listed in welcome (they are in tools/list)
         assert!(!instructions.contains("`barebones__tool` (tool)"));
-        // Servers with tools still get XML blocks (even if empty)
-        assert!(instructions.contains("<barebones>"));
-        assert!(instructions.contains("</barebones>"));
+        // Servers with tools but no description/instructions are omitted (no empty XML blocks)
+        assert!(!instructions.contains("<barebones>"));
+        assert!(!instructions.contains("</barebones>"));
     }
 
     #[test]
@@ -2708,12 +2723,12 @@ mod tests {
         assert!(instructions.contains("<marketplace>"));
         assert!(instructions.contains("</marketplace>"));
 
-        // XML blocks for regular servers (all servers with tools get XML blocks)
+        // XML blocks for regular servers with content
         assert!(instructions.contains("<filesystem>"));
         assert!(instructions.contains("</filesystem>"));
-        // knowledge also gets XML block (unified format)
-        assert!(instructions.contains("<knowledge>"));
-        assert!(instructions.contains("</knowledge>"));
+        // knowledge has no description/instructions — no empty XML block
+        assert!(!instructions.contains("<knowledge>"));
+        assert!(!instructions.contains("</knowledge>"));
 
         // Unavailable server
         assert!(instructions.contains("**broken-server** — unavailable: Connection refused"));
@@ -3081,7 +3096,8 @@ mod tests {
 
         let inst = build_context_managed_instructions(&ctx).unwrap();
         assert!(inst.contains("Unified MCP Gateway"));
-        assert!(inst.contains("servername__"));
+        // Single server — no namespacing hint
+        assert!(!inst.contains("servername__"));
         // Uncompressed: raw description shown
         assert!(inst.contains("<filesystem>"));
         assert!(inst.contains("File system server"));
