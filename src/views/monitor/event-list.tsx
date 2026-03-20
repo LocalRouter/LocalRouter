@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { Activity, Wrench, Shield, GitBranch, Zap, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban } from 'lucide-react'
+import { Activity, Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2 } from 'lucide-react'
 import type { MonitorEventSummary, MonitorEventType, EventStatus } from '@/types/tauri-commands'
 
 interface EventListProps {
@@ -12,9 +12,10 @@ const categoryConfig: Record<string, { icon: typeof Activity; color: string }> =
   llm: { icon: Activity, color: 'text-blue-500' },
   mcp: { icon: Wrench, color: 'text-green-500' },
   mcp_server: { icon: Server, color: 'text-emerald-500' },
-  security: { icon: Shield, color: 'text-orange-500' },
+  guardrail: { icon: Shield, color: 'text-red-500' },
+  secret_scan: { icon: KeyRound, color: 'text-orange-500' },
   routing: { icon: GitBranch, color: 'text-purple-500' },
-  optimization: { icon: Zap, color: 'text-yellow-500' },
+  optimization: { icon: Minimize2, color: 'text-blue-500' },
   firewall: { icon: Shield, color: 'text-red-500' },
   connection: { icon: Link, color: 'text-gray-500' },
   auth: { icon: KeyRound, color: 'text-red-500' },
@@ -28,7 +29,8 @@ function getCategory(type: MonitorEventType): string {
   if (type === 'llm_call') return 'llm'
   if (type === 'mcp_server_event') return 'mcp_server'
   if (type.startsWith('mcp_')) return 'mcp'
-  if (type.startsWith('guardrail') || type === 'secret_scan') return 'security'
+  if (type.startsWith('guardrail')) return 'guardrail'
+  if (type === 'secret_scan') return 'secret_scan'
   if (type === 'route_llm_classify' || type === 'routing_decision') return 'routing'
   if (type === 'prompt_compression') return 'optimization'
   if (type === 'firewall_decision') return 'firewall'
