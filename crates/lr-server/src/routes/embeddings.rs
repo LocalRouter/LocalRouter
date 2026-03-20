@@ -180,13 +180,7 @@ pub async fn embeddings(
             }
 
             // Emit monitor error event
-            llm_guard.complete_error(
-                &state,
-                "unknown",
-                &request.model,
-                502,
-                &e.to_string(),
-            );
+            llm_guard.complete_error(&state, "unknown", &request.model, 502, &e.to_string());
 
             tracing::error!("Embedding request failed: {}", e);
             return Err(ApiErrorResponse::bad_gateway(format!(

@@ -241,10 +241,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
-        lr_skills::mcp_tools::build_skill_index_entries(
-            &self.skill_manager,
-            &state.permissions,
-        )
+        lr_skills::mcp_tools::build_skill_index_entries(&self.skill_manager, &state.permissions)
     }
 
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {

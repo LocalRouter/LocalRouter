@@ -1036,7 +1036,7 @@ impl McpGateway {
                 ))
             }
             VirtualToolCallResult::ToolError(e) => {
-                let err_msg = format!("{}", e);
+                let err_msg = e.to_string();
                 self.update_monitor_event(
                     &mon_event_id,
                     Box::new(move |event| {

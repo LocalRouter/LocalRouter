@@ -240,7 +240,6 @@ pub async fn run_agentic_loop_streaming(
 
 /// The inner streaming loop that runs in a spawned task.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 async fn streaming_loop(
     gateway: Arc<McpGateway>,
     router: Arc<Router>,

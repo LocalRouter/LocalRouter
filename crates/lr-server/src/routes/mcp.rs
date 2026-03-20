@@ -422,11 +422,8 @@ pub async fn mcp_gateway_handler(
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("Failed to parse client JSON-RPC response: {}", e);
-                return ApiErrorResponse::bad_request(format!(
-                    "Invalid JSON-RPC response: {}",
-                    e
-                ))
-                .into_response();
+                return ApiErrorResponse::bad_request(format!("Invalid JSON-RPC response: {}", e))
+                    .into_response();
             }
         };
 
@@ -455,9 +452,12 @@ pub async fn mcp_gateway_handler(
             );
             // Still return 202 - the response may have been for a request that already
             // timed out or was handled by another path
-            return (axum::http::StatusCode::ACCEPTED, Json(crate::types::MessageResponse {
-                message: "Response accepted (no pending request matched)".to_string(),
-            }))
+            return (
+                axum::http::StatusCode::ACCEPTED,
+                Json(crate::types::MessageResponse {
+                    message: "Response accepted (no pending request matched)".to_string(),
+                }),
+            )
                 .into_response();
         }
     }
@@ -467,11 +467,8 @@ pub async fn mcp_gateway_handler(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("Failed to parse JSON-RPC request: {}", e);
-            return ApiErrorResponse::bad_request(format!(
-                "Invalid JSON-RPC request: {}",
-                e
-            ))
-            .into_response();
+            return ApiErrorResponse::bad_request(format!("Invalid JSON-RPC request: {}", e))
+                .into_response();
         }
     };
 

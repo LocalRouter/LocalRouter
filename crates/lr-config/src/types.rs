@@ -908,7 +908,7 @@ pub enum ElicitationMode {
 }
 
 /// Global MCP gateway settings (not per-client)
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct McpGatewaySettings {
     /// How sampling requests are handled (single property combining mode + permission)
     #[serde(default)]
@@ -921,15 +921,6 @@ pub struct McpGatewaySettings {
 
 fn default_sampling_permission() -> PermissionState {
     PermissionState::Allow
-}
-
-impl Default for McpGatewaySettings {
-    fn default() -> Self {
-        Self {
-            sampling: SamplingBehavior::default(),
-            elicitation_mode: ElicitationMode::default(),
-        }
-    }
 }
 
 /// Custom deserializer that migrates old sampling_mode + sampling_permission to the new sampling field

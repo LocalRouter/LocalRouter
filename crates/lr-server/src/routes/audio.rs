@@ -371,16 +371,13 @@ pub async fn audio_transcriptions(
             }
 
             // Emit monitor error event
-            llm_guard.complete_error(
-                &state,
-                "unknown",
-                &model_for_log,
-                502,
-                &e.to_string(),
-            );
+            llm_guard.complete_error(&state, "unknown", &model_for_log, 502, &e.to_string());
 
             tracing::error!("Audio transcription failed: {}", e);
-            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+            return Err(ApiErrorResponse::bad_gateway(format!(
+                "Provider error: {}",
+                e
+            )));
         }
     };
 
@@ -798,16 +795,13 @@ pub async fn audio_translations(
             }
 
             // Emit monitor error event
-            llm_guard.complete_error(
-                &state,
-                "unknown",
-                &model_for_log,
-                502,
-                &e.to_string(),
-            );
+            llm_guard.complete_error(&state, "unknown", &model_for_log, 502, &e.to_string());
 
             tracing::error!("Audio translation failed: {}", e);
-            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+            return Err(ApiErrorResponse::bad_gateway(format!(
+                "Provider error: {}",
+                e
+            )));
         }
     };
 
@@ -1023,16 +1017,13 @@ pub async fn audio_speech(
             }
 
             // Emit monitor error event
-            llm_guard.complete_error(
-                &state,
-                "unknown",
-                &request.model,
-                502,
-                &e.to_string(),
-            );
+            llm_guard.complete_error(&state, "unknown", &request.model, 502, &e.to_string());
 
             tracing::error!("Speech generation failed: {}", e);
-            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+            return Err(ApiErrorResponse::bad_gateway(format!(
+                "Provider error: {}",
+                e
+            )));
         }
     };
 

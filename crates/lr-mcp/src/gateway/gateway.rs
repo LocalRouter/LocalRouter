@@ -2317,7 +2317,11 @@ impl McpGateway {
                     // Index virtual server catalog entries (skills, etc.)
                     for (label, content) in &virtual_idx {
                         if let Err(e) = store_idx.index(label, content) {
-                            tracing::warn!("Failed to index virtual catalog entry {}: {}", label, e);
+                            tracing::warn!(
+                                "Failed to index virtual catalog entry {}: {}",
+                                label,
+                                e
+                            );
                         }
                         indexed_count += 1;
                     }

@@ -159,7 +159,10 @@ mod tests {
         // Check error message was set
         if let MonitorEventData::LlmCall { error, .. } = &event.data {
             assert!(error.is_some());
-            assert!(error.as_ref().unwrap().contains("terminated without completion"));
+            assert!(error
+                .as_ref()
+                .unwrap()
+                .contains("terminated without completion"));
         } else {
             panic!("Expected LlmCall data");
         }
