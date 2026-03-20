@@ -74,7 +74,7 @@ pub fn merge_initialize_results(
         .map(|(_, result)| &result.protocol_version)
         .min()
         .cloned()
-        .unwrap_or_else(|| "2024-11-05".to_string());
+        .unwrap_or_else(|| crate::protocol::MCP_PROTOCOL_VERSION.to_string());
 
     // Merge capabilities (union of all capabilities)
     let mut merged_capabilities = ServerCapabilities::default();

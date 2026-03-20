@@ -295,8 +295,8 @@ impl McpServerManager {
             tracing::info!("Set request callback for STDIO server: {}", server_id);
             true
         } else {
-            tracing::warn!(
-                "Cannot set request callback - server {} is not a STDIO transport",
+            tracing::debug!(
+                "Skipping request callback - server {} is not a STDIO transport",
                 server_id
             );
             false

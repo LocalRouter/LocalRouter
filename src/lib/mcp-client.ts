@@ -192,6 +192,16 @@ export class McpClientWrapper {
         })
       }
 
+      // Declare client capabilities — stored for later reporting in connection info
+      const declaredCapabilities = {
+        // Declare support for receiving sampling requests from servers
+        sampling: {},
+        // Declare support for receiving elicitation requests (form mode)
+        elicitation: { form: {} },
+        // Declare support for filesystem roots with list change notifications
+        roots: { listChanged: true },
+      }
+
       // Create MCP client with proper capabilities declared
       // These tell the server what this client can handle
       this.client = new Client(
@@ -200,14 +210,7 @@ export class McpClientWrapper {
           version: "1.0.0",
         },
         {
-          capabilities: {
-            // Declare support for receiving sampling requests from servers
-            sampling: {},
-            // Declare support for receiving elicitation requests (form mode)
-            elicitation: { form: {} },
-            // Declare support for filesystem roots with list change notifications
-            roots: { listChanged: true },
-          },
+          capabilities: declaredCapabilities,
         }
       )
 
@@ -298,10 +301,18 @@ export class McpClientWrapper {
       }
 
       const clientCapsInfo: ClientCapabilitiesInfo = {
-        sampling: true, // We declared sampling support
-        elicitation: { form: true }, // We declared form elicitation support
-        roots: { listChanged: true },
+        sampling: !!declaredCapabilities.sampling,
+        elicitation: declaredCapabilities.elicitation
+          ? { form: !!(declaredCapabilities.elicitation as Record<string, unknown>).form }
+          : undefined,
+        roots: declaredCapabilities.roots
+          ? { listChanged: !!(declaredCapabilities.roots as Record<string, unknown>).listChanged }
+          : undefined,
       }
+
+      // Read the negotiated protocol version from the transport
+      const negotiatedProtocolVersion =
+        (this.transport as unknown as { _protocolVersion?: string })?._protocolVersion || "unknown"
 
       this.updateState({
         isConnected: true,
@@ -309,7 +320,7 @@ export class McpClientWrapper {
         serverInfo: serverInfo ? {
           name: serverInfo.name,
           version: serverInfo.version,
-          protocolVersion: "2024-11-05",
+          protocolVersion: negotiatedProtocolVersion,
           instructions,
         } : undefined,
         clientInfo: {

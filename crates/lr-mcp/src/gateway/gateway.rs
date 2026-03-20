@@ -215,7 +215,10 @@ impl McpGateway {
                 duration_ms,
             )
         } else {
-            tracing::warn!("Gateway monitor callback not set, dropping event: {:?}", event_type);
+            tracing::warn!(
+                "Gateway monitor callback not set, dropping event: {:?}",
+                event_type
+            );
             String::new()
         }
     }
@@ -440,7 +443,7 @@ impl McpGateway {
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                            // memory_enabled
             request,
-            None,                            // monitor_session_id
+            None, // monitor_session_id
         )
         .await
     }
@@ -559,6 +562,19 @@ impl McpGateway {
             }
         }
 
+        // Handle client notifications (fire-and-forget, no meaningful response)
+        if method.starts_with("notifications/") {
+            tracing::debug!("Gateway received client notification: {}", method);
+            // notifications/initialized is already sent to servers during handle_initialize.
+            // Other notifications are silently consumed.
+            return Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: Value::Null,
+                result: Some(Value::Null),
+                error: None,
+            });
+        }
+
         // Route based on method
         let result = if is_broadcast {
             self.handle_broadcast_request(session, request).await
@@ -647,8 +663,9 @@ impl McpGateway {
 
         let session = Arc::new(RwLock::new(session_data));
 
-        // Register GLOBAL notification handlers for each server (if not already registered)
+        // Register GLOBAL notification and request handlers for each server (if not already registered)
         self.register_notification_handlers(&allowed_servers).await;
+        self.register_request_handlers(&allowed_servers);
 
         self.sessions
             .insert(session_key.to_string(), session.clone());
@@ -780,6 +797,135 @@ impl McpGateway {
                             }
                         }
                     });
+                }),
+            );
+        }
+    }
+
+    /// Register request callbacks for server-initiated requests (sampling, elicitation, roots)
+    ///
+    /// Without these callbacks, server-initiated requests (e.g. during tool execution or init)
+    /// would be dropped, potentially causing the server to block indefinitely.
+    fn register_request_handlers(&self, allowed_servers: &[String]) {
+        for server_id in allowed_servers {
+            let server_id_clone = server_id.clone();
+            let elicitation_manager = self.elicitation_manager.clone();
+            let router = self.router.clone();
+
+            self.server_manager.set_request_callback(
+                server_id,
+                std::sync::Arc::new(move |request| {
+                    let server_id = server_id_clone.clone();
+                    let elicitation_mgr = elicitation_manager.clone();
+                    let router = router.clone();
+
+                    Box::pin(async move {
+                        tracing::info!(
+                            "Server {} sent request: method={}, id={:?}",
+                            server_id,
+                            request.method,
+                            request.id,
+                        );
+
+                        let request_id = request.id.unwrap_or(Value::Null);
+                        match request.method.as_str() {
+                            "roots/list" => {
+                                JsonRpcResponse::success(
+                                    request_id,
+                                    json!({ "roots": [] }),
+                                )
+                            }
+
+                            "elicitation/create" | "elicitation/requestInput" => {
+                                // Route through elicitation manager (broadcasts to UI, waits for response)
+                                let elicitation_req = match request.params.as_ref()
+                                    .and_then(|p| serde_json::from_value::<crate::protocol::ElicitationRequest>(p.clone()).ok())
+                                {
+                                    Some(req) => req,
+                                    None => {
+                                        return JsonRpcResponse::error(
+                                            request_id,
+                                            JsonRpcError::invalid_params("Invalid elicitation request".to_string()),
+                                        );
+                                    }
+                                };
+
+                                match elicitation_mgr.request_input(server_id, elicitation_req, None).await {
+                                    Ok(response) => {
+                                        JsonRpcResponse::success(
+                                            request_id,
+                                            serde_json::to_value(response).unwrap_or(json!({})),
+                                        )
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Elicitation failed: {}", e);
+                                        JsonRpcResponse::success(
+                                            request_id,
+                                            json!({ "action": "decline", "content": {} }),
+                                        )
+                                    }
+                                }
+                            }
+
+                            "sampling/createMessage" => {
+                                // Route through LLM provider
+                                let sampling_req = match request.params.as_ref()
+                                    .and_then(|p| serde_json::from_value::<crate::protocol::SamplingRequest>(p.clone()).ok())
+                                {
+                                    Some(req) => req,
+                                    None => {
+                                        return JsonRpcResponse::error(
+                                            request_id,
+                                            JsonRpcError::invalid_params("Invalid sampling request".to_string()),
+                                        );
+                                    }
+                                };
+
+                                let mut completion_req = match super::sampling::convert_sampling_to_chat_request(sampling_req) {
+                                    Ok(req) => req,
+                                    Err(e) => {
+                                        return JsonRpcResponse::error(
+                                            request_id,
+                                            JsonRpcError::custom(-32603, format!("Failed to convert sampling request: {}", e), None),
+                                        );
+                                    }
+                                };
+
+                                if completion_req.model.is_empty() {
+                                    completion_req.model = "localrouter/auto".to_string();
+                                }
+
+                                // Route through LLM — use empty client_id since this is a server-initiated request
+                                match router.complete("_sampling", completion_req).await {
+                                    Ok(resp) => {
+                                        match super::sampling::convert_chat_to_sampling_response(resp) {
+                                            Ok(sampling_resp) => JsonRpcResponse::success(
+                                                request_id,
+                                                serde_json::to_value(sampling_resp).unwrap_or(json!({})),
+                                            ),
+                                            Err(e) => JsonRpcResponse::error(
+                                                request_id,
+                                                JsonRpcError::custom(-32603, format!("Failed to convert sampling response: {}", e), None),
+                                            ),
+                                        }
+                                    }
+                                    Err(e) => {
+                                        JsonRpcResponse::error(
+                                            request_id,
+                                            JsonRpcError::custom(-32603, format!("LLM completion failed: {}", e), None),
+                                        )
+                                    }
+                                }
+                            }
+
+                            _ => {
+                                JsonRpcResponse::error(
+                                    request_id,
+                                    JsonRpcError::method_not_found(&request.method),
+                                )
+                            }
+                        }
+                    })
                 }),
             );
         }
@@ -1130,7 +1276,7 @@ impl McpGateway {
             });
 
             let merged = MergedCapabilities {
-                protocol_version: "2024-11-05".to_string(),
+                protocol_version: crate::protocol::MCP_PROTOCOL_VERSION.to_string(),
                 capabilities: ServerCapabilities {
                     tools: Some(ToolsCapability {
                         list_changed: Some(true),
@@ -1263,6 +1409,28 @@ impl McpGateway {
             })
             .collect();
 
+        // Send notifications/initialized to all successfully initialized servers.
+        // This completes the MCP handshake — servers fire oninitialized callbacks
+        // which may register conditional tools based on client capabilities.
+        for (server_id, _) in &init_results {
+            let notification = JsonRpcRequest::new(
+                None,
+                "notifications/initialized".to_string(),
+                Some(json!({})),
+            );
+            if let Err(e) = self
+                .server_manager
+                .send_request(server_id, notification)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to send notifications/initialized to server {}: {}",
+                    server_id,
+                    e
+                );
+            }
+        }
+
         // If all servers failed, check if virtual servers can serve as fallback
         if init_results.is_empty() && !failures.is_empty() {
             let has_virtual = !self.virtual_servers.read().is_empty();
@@ -1284,7 +1452,7 @@ impl McpGateway {
                 });
 
                 let merged = MergedCapabilities {
-                    protocol_version: "2024-11-05".to_string(),
+                    protocol_version: crate::protocol::MCP_PROTOCOL_VERSION.to_string(),
                     capabilities: ServerCapabilities {
                         tools: Some(ToolsCapability {
                             list_changed: Some(true),
@@ -2287,8 +2455,12 @@ impl McpGateway {
             Some(json!("_preview_init")),
             "initialize".to_string(),
             Some(json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
+                "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
+                "capabilities": {
+                    "sampling": {},
+                    "elicitation": { "form": {} },
+                    "roots": { "listChanged": true }
+                },
                 "clientInfo": {
                     "name": "LocalRouter",
                     "version": env!("CARGO_PKG_VERSION")
@@ -2313,6 +2485,19 @@ impl McpGateway {
                     .map(|result| (server_id, result))
             })
             .collect();
+
+        // Send notifications/initialized to complete MCP handshake for preview
+        for server_id in init_results.keys() {
+            let notification = JsonRpcRequest::new(
+                None,
+                "notifications/initialized".to_string(),
+                Some(json!({})),
+            );
+            let _ = self
+                .server_manager
+                .send_request(server_id, notification)
+                .await;
+        }
 
         // Fetch tools, resources, prompts from running servers
         let tools = self

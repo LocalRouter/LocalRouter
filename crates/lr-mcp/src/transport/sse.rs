@@ -167,65 +167,10 @@ impl SseTransport {
         // Use shared HTTP client with connection pooling
         let client = HTTP_CLIENT.clone();
 
-        // Validate connection with an MCP initialize request
-        let init_request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some(Value::Number(1.into())),
-            method: "initialize".to_string(),
-            params: Some(serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "localrouter",
-                    "version": "1.0.0"
-                }
-            })),
-        };
-
-        let mut validation_req = client.post(&url).json(&init_request);
-
-        // Add custom headers
-        for (key, value) in &headers {
-            validation_req = validation_req.header(key, value);
-        }
-
-        // Add required SSE headers
-        validation_req = validation_req.header("Accept", "application/json, text/event-stream");
-
-        let validation_response = validation_req
-            .send()
-            .await
-            .map_err(|e| AppError::Mcp(format!("Failed to connect to SSE server: {}", e)))?;
-
-        if !validation_response.status().is_success() {
-            let status = validation_response.status();
-            let body = validation_response.text().await.unwrap_or_default();
-            return Err(AppError::Mcp(format!(
-                "Server returned error status on connect: {} - {}",
-                status, body
-            )));
-        }
-
-        // Read the SSE response as text
-        let sse_text = validation_response
-            .text()
-            .await
-            .map_err(|e| AppError::Mcp(format!("Failed to read initialize response: {}", e)))?;
-
-        // Parse SSE format to extract JSON
-        let json_str = Self::parse_sse_response(&sse_text)?;
-
-        // Parse the JSON-RPC response
-        let init_response: JsonRpcResponse = serde_json::from_str(&json_str).map_err(|e| {
-            AppError::Mcp(format!("Failed to parse initialize response JSON: {}", e))
-        })?;
-
-        if let Some(error) = init_response.error {
-            return Err(AppError::Mcp(format!(
-                "MCP server returned error on initialize: {} (code {})",
-                error.message, error.code
-            )));
-        }
+        // Do NOT send initialize during transport connect.
+        // The gateway broadcasts the real initialize (with actual client capabilities
+        // and current protocol version) after all transports are connected.
+        // This aligns SSE with how stdio/websocket transports work.
 
         let pending = Arc::new(RwLock::new(HashMap::new()));
         let closed = Arc::new(RwLock::new(false));
@@ -272,10 +217,25 @@ impl SseTransport {
         })
         .await;
 
-        if ready_timeout.is_err() {
-            tracing::warn!(
-                "SSE stream did not become ready within timeout, proceeding anyway (inline responses will still work)"
-            );
+        // Check if the stream became ready
+        let is_ready = *stream_ready.read();
+        let is_closed = *closed.read();
+
+        if is_closed && !is_ready {
+            // Stream task gave up (exhausted reconnect attempts or permanent error)
+            return Err(AppError::Mcp(format!(
+                "Failed to connect to SSE server at {}: stream closed before becoming ready",
+                url
+            )));
+        }
+
+        if ready_timeout.is_err() && !is_ready {
+            // Close the stream task since we're giving up
+            *closed.write() = true;
+            return Err(AppError::Mcp(format!(
+                "Failed to connect to SSE server at {}: stream did not become ready within timeout",
+                url
+            )));
         }
 
         let transport = Self {
@@ -284,7 +244,7 @@ impl SseTransport {
             client,
             headers,
             pending,
-            next_id: Arc::new(RwLock::new(2)), // Start at 2 since we used 1 for initialization
+            next_id: Arc::new(RwLock::new(1)),
             closed,
             stream_ready,
             notification_callback,

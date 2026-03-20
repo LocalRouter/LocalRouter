@@ -153,6 +153,10 @@ pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
 
+/// Latest MCP protocol version supported by LocalRouter.
+/// Elicitation requires >= 2025-03-26; sampling improvements >= 2025-06-18.
+pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+
 // Application-specific error codes (MCP Gateway)
 pub const TOOL_NOT_FOUND: i32 = -32001;
 pub const RESOURCE_NOT_FOUND: i32 = -32002;

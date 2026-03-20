@@ -2179,6 +2179,77 @@ pub async fn get_mcp_server_capabilities(
             .map_err(|e| format!("Failed to start MCP server: {}", e))?;
     }
 
+    // Register a request callback so server-initiated requests (sampling/elicitation/roots)
+    // during init don't block the server. We decline or return defaults during discovery.
+    mcp_manager.set_request_callback(
+        &server_id,
+        std::sync::Arc::new(|request| {
+            Box::pin(async move {
+                let request_id = request.id.unwrap_or(serde_json::Value::Null);
+                match request.method.as_str() {
+                    "roots/list" => lr_mcp::protocol::JsonRpcResponse::success(
+                        request_id,
+                        serde_json::json!({ "roots": [] }),
+                    ),
+                    "elicitation/create" | "elicitation/requestInput" => {
+                        lr_mcp::protocol::JsonRpcResponse::success(
+                            request_id,
+                            serde_json::json!({ "action": "decline", "content": {} }),
+                        )
+                    }
+                    _ => lr_mcp::protocol::JsonRpcResponse::error(
+                        request_id,
+                        lr_mcp::protocol::JsonRpcError::custom(
+                            -32601,
+                            "Not available during server discovery".to_string(),
+                            None,
+                        ),
+                    ),
+                }
+            })
+        }),
+    );
+
+    // Complete MCP handshake before querying capabilities.
+    // Servers may conditionally register tools based on client capabilities
+    // (e.g. only exposing elicitation/sampling demo tools if the client supports them).
+    let init_request = JsonRpcRequest::with_id(
+        0,
+        "initialize".to_string(),
+        Some(serde_json::json!({
+            "protocolVersion": lr_mcp::protocol::MCP_PROTOCOL_VERSION,
+            "capabilities": {
+                "sampling": {},
+                "elicitation": { "form": {} },
+                "roots": { "listChanged": true }
+            },
+            "clientInfo": {
+                "name": "LocalRouter",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        })),
+    );
+    if let Err(e) = mcp_manager.send_request(&server_id, init_request).await {
+        tracing::warn!("Failed to initialize MCP server {}: {}", server_id, e);
+    }
+
+    // Send notifications/initialized to complete the handshake
+    let init_notification = JsonRpcRequest::new(
+        None,
+        "notifications/initialized".to_string(),
+        Some(serde_json::json!({})),
+    );
+    if let Err(e) = mcp_manager
+        .send_request(&server_id, init_notification)
+        .await
+    {
+        tracing::warn!(
+            "Failed to send initialized notification to {}: {}",
+            server_id,
+            e
+        );
+    }
+
     let mut capabilities = McpServerCapabilities {
         tools: Vec::new(),
         resources: Vec::new(),
