@@ -807,11 +807,12 @@ impl McpGateway {
     ///
     /// Without these callbacks, server-initiated requests (e.g. during tool execution or init)
     /// would be dropped, potentially causing the server to block indefinitely.
-    fn register_request_handlers(&self, allowed_servers: &[String]) {
+    fn register_request_handlers(&self, allowed_servers: &[String], client_id: &str) {
         for server_id in allowed_servers {
             let server_id_clone = server_id.clone();
             let elicitation_manager = self.elicitation_manager.clone();
             let router = self.router.clone();
+            let client_id = client_id.to_string();
 
             self.server_manager.set_request_callback(
                 server_id,
@@ -819,6 +820,7 @@ impl McpGateway {
                     let server_id = server_id_clone.clone();
                     let elicitation_mgr = elicitation_manager.clone();
                     let router = router.clone();
+                    let client_id = client_id.clone();
 
                     Box::pin(async move {
                         tracing::info!(
@@ -838,17 +840,21 @@ impl McpGateway {
                             }
 
                             "elicitation/create" | "elicitation/requestInput" => {
-                                // Route through elicitation manager (broadcasts to UI, waits for response)
-                                let elicitation_req = match request.params.as_ref()
-                                    .and_then(|p| serde_json::from_value::<crate::protocol::ElicitationRequest>(p.clone()).ok())
-                                {
-                                    Some(req) => req,
-                                    None => {
-                                        return JsonRpcResponse::error(
-                                            request_id,
-                                            JsonRpcError::invalid_params("Invalid elicitation request".to_string()),
-                                        );
-                                    }
+                                // Extract message and schema from raw params
+                                // MCP spec uses "requestedSchema" for the schema field
+                                let params = request.params.unwrap_or(json!({}));
+                                let message = params.get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Server requests input")
+                                    .to_string();
+                                let schema = params.get("requestedSchema")
+                                    .or_else(|| params.get("schema"))
+                                    .cloned()
+                                    .unwrap_or(json!({}));
+
+                                let elicitation_req = crate::protocol::ElicitationRequest {
+                                    message,
+                                    schema,
                                 };
 
                                 match elicitation_mgr.request_input(server_id, elicitation_req, None).await {
@@ -862,7 +868,7 @@ impl McpGateway {
                                         tracing::warn!("Elicitation failed: {}", e);
                                         JsonRpcResponse::success(
                                             request_id,
-                                            json!({ "action": "decline", "content": {} }),
+                                            json!({ "action": "decline" }),
                                         )
                                     }
                                 }
@@ -896,8 +902,7 @@ impl McpGateway {
                                     completion_req.model = "localrouter/auto".to_string();
                                 }
 
-                                // Route through LLM — use empty client_id since this is a server-initiated request
-                                match router.complete("_sampling", completion_req).await {
+                                match router.complete(&client_id, completion_req).await {
                                     Ok(resp) => {
                                         match super::sampling::convert_chat_to_sampling_response(resp) {
                                             Ok(sampling_resp) => JsonRpcResponse::success(
@@ -1415,7 +1420,8 @@ impl McpGateway {
         // from their oninitialized callback which fires when they receive the notification.
         let initialized_server_ids: Vec<String> =
             init_results.iter().map(|(id, _)| id.clone()).collect();
-        self.register_request_handlers(&initialized_server_ids);
+        let client_id_for_callbacks = session.read().await.client_id.clone();
+        self.register_request_handlers(&initialized_server_ids, &client_id_for_callbacks);
 
         // Send notifications/initialized to all successfully initialized servers.
         // This completes the MCP handshake — servers fire oninitialized callbacks
