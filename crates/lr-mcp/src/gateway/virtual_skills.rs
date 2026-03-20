@@ -54,6 +54,8 @@ pub struct SkillsSessionState {
     pub tool_name: String,
     /// Configured tool name for the internal skill file reader.
     pub read_file_tool_name: String,
+    /// Configured search tool name (e.g. "IndexSearch") for catalog hints.
+    pub search_tool_name: String,
 }
 
 impl VirtualSessionState for SkillsSessionState {
@@ -109,7 +111,6 @@ impl VirtualMcpServer for SkillsVirtualServer {
             &self.skill_manager,
             &state.permissions,
             &state.tool_name,
-            "ResourceRead",
         )
     }
 
@@ -223,6 +224,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             state.context_management_enabled,
             &state.tool_name,
             "ResourceRead",
+            &state.search_tool_name,
         );
 
         Some(VirtualInstructions {
@@ -233,6 +235,18 @@ impl VirtualMcpServer for SkillsVirtualServer {
         })
     }
 
+    fn catalog_index_entries(&self, state: &dyn VirtualSessionState) -> Vec<(String, String)> {
+        let state = state
+            .as_any()
+            .downcast_ref::<SkillsSessionState>()
+            .expect("wrong state type for SkillsVirtualServer");
+
+        lr_skills::mcp_tools::build_skill_index_entries(
+            &self.skill_manager,
+            &state.permissions,
+        )
+    }
+
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {
         let config = self.config.read().unwrap();
         let skills_config = self.skills_config.read().unwrap();
@@ -241,6 +255,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             context_management_enabled: client.is_context_management_enabled(&config),
             tool_name: skills_config.tool_name.clone(),
             read_file_tool_name: skills_config.read_file_tool_name.clone(),
+            search_tool_name: config.search_tool_name.clone(),
         })
     }
 
@@ -256,6 +271,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             s.context_management_enabled = client.is_context_management_enabled(&config);
             s.tool_name = skills_config.tool_name.clone();
             s.read_file_tool_name = skills_config.read_file_tool_name.clone();
+            s.search_tool_name = config.search_tool_name.clone();
         }
     }
 

@@ -447,6 +447,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            lr_config::ClientMode::default(),
             req2,
             None, // monitor_session_id
         )

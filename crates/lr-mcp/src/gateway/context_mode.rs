@@ -31,6 +31,8 @@ MCP Gateway source labels (use with 'source' parameter):
   source="mcp/filesystem"               — search within a specific server (docs + all its items)
   source="mcp/filesystem/tool/"         — search tools from a specific server
   source="mcp/filesystem/resource/"     — search resources from a specific server
+  source="catalog:skills"               — search all skill descriptions and metadata
+  source="catalog:skills/MySkill"       — find a specific skill's details
   source="filesystem__read_file:"       — find all compressed responses from a specific tool
   source="filesystem__read_file:3"      — find a specific invocation
 
@@ -46,6 +48,7 @@ pub enum CatalogItemType {
     Resource,
     Prompt,
     ServerWelcome,
+    Skill,
 }
 
 /// Virtual MCP server for context-mode integration.
@@ -537,7 +540,7 @@ fn handle_ctx_search_blocking(
                         CatalogItemType::Prompt => {
                             cm.activated_prompts.insert(name.clone());
                         }
-                        CatalogItemType::ServerWelcome => {} // No activation needed
+                        CatalogItemType::ServerWelcome | CatalogItemType::Skill => {} // No activation needed
                     }
                 }
             }
@@ -598,7 +601,7 @@ fn handle_index_read_blocking(
                     CatalogItemType::Tool => activated_tools.contains(name),
                     CatalogItemType::Resource => activated_resources.contains(name),
                     CatalogItemType::Prompt => activated_prompts.contains(name),
-                    CatalogItemType::ServerWelcome => true,
+                    CatalogItemType::ServerWelcome | CatalogItemType::Skill => true,
                 };
                 if !already_active {
                     let name_owned = name.to_string();
@@ -618,7 +621,7 @@ fn handle_index_read_blocking(
                                 CatalogItemType::Prompt => {
                                     cm.activated_prompts.insert(name_owned);
                                 }
-                                CatalogItemType::ServerWelcome => {}
+                                CatalogItemType::ServerWelcome | CatalogItemType::Skill => {}
                             }
                         }
                     });
@@ -670,7 +673,7 @@ fn extract_catalog_activations_from_results(
                     CatalogItemType::Tool => activated_tools.contains(name),
                     CatalogItemType::Resource => activated_resources.contains(name),
                     CatalogItemType::Prompt => activated_prompts.contains(name),
-                    CatalogItemType::ServerWelcome => true,
+                    CatalogItemType::ServerWelcome | CatalogItemType::Skill => true,
                 };
                 if !already_active {
                     newly_activated.push((name.to_string(), item_type.clone()));

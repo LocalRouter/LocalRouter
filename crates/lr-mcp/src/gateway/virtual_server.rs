@@ -88,6 +88,15 @@ pub trait VirtualMcpServer: Send + Sync {
     fn is_tool_indexable(&self, _tool_name: &str) -> bool {
         true
     }
+
+    /// Provide catalog entries for FTS5 indexing.
+    ///
+    /// Returns `Vec<(label, content)>` for `ContentStore::index()`.
+    /// Virtual servers that expose searchable catalogs (e.g. skills)
+    /// can override this to make their items discoverable via `IndexSearch`.
+    fn catalog_index_entries(&self, _state: &dyn VirtualSessionState) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// Per-session state for a virtual server. Stored in a HashMap on GatewaySession,

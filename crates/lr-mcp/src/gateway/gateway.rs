@@ -2207,20 +2207,34 @@ impl McpGateway {
             let prompts_catalog_bg = prompts_catalog.clone();
             let client_id_bg = client_id_for_log.clone();
 
-            // Get ContentStore and gateway indexing permissions
-            let (store, gateway_indexing) = {
+            // Get ContentStore, gateway indexing permissions, and virtual catalog entries
+            let (store, gateway_indexing, virtual_catalog_entries) = {
                 let session_read = session_bg.read().await;
-                if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
-                    if let Some(cm) = state
-                        .as_any()
-                        .downcast_ref::<super::context_mode::ContextModeSessionState>()
-                    {
-                        (Some(cm.store.clone()), cm.gateway_indexing.clone())
-                    } else {
-                        (None, lr_config::GatewayIndexingPermissions::default())
+                let cm_info = session_read
+                    .virtual_server_state
+                    .get("_context_mode")
+                    .and_then(|state| {
+                        state
+                            .as_any()
+                            .downcast_ref::<super::context_mode::ContextModeSessionState>()
+                            .map(|cm| (cm.store.clone(), cm.gateway_indexing.clone()))
+                    });
+
+                // Collect catalog entries from virtual servers (e.g. skills)
+                let mut virt_entries: Vec<(String, String)> = Vec::new();
+                for vs in self.virtual_servers.read().iter() {
+                    if let Some(state) = session_read.virtual_server_state.get(vs.id()) {
+                        virt_entries.extend(vs.catalog_index_entries(state.as_ref()));
                     }
-                } else {
-                    (None, lr_config::GatewayIndexingPermissions::default())
+                }
+
+                match cm_info {
+                    Some((store, perms)) => (Some(store), perms, virt_entries),
+                    None => (
+                        None,
+                        lr_config::GatewayIndexingPermissions::default(),
+                        virt_entries,
+                    ),
                 }
             };
 
@@ -2230,6 +2244,7 @@ impl McpGateway {
                 let tools_idx = tools_catalog_bg.clone();
                 let resources_idx = resources_catalog_bg.clone();
                 let prompts_idx = prompts_catalog_bg.clone();
+                let virtual_idx = virtual_catalog_entries.clone();
                 let store_idx = store.clone();
                 let client_id_idx = client_id_bg.clone();
                 let gateway_perms = gateway_indexing.clone();
@@ -2299,6 +2314,14 @@ impl McpGateway {
                         indexed_count += 1;
                     }
 
+                    // Index virtual server catalog entries (skills, etc.)
+                    for (label, content) in &virtual_idx {
+                        if let Err(e) = store_idx.index(label, content) {
+                            tracing::warn!("Failed to index virtual catalog entry {}: {}", label, e);
+                        }
+                        indexed_count += 1;
+                    }
+
                     tracing::info!(
                         "Context management catalog indexed for client {}: {} indexed, {} skipped",
                         &client_id_idx[..8.min(client_id_idx.len())],
@@ -2352,6 +2375,14 @@ impl McpGateway {
                                         super::context_mode::CatalogItemType::Prompt,
                                     );
                                 }
+                            }
+
+                            // Register virtual catalog sources (skills, etc.)
+                            for (label, _) in &virtual_catalog_entries {
+                                cm_state.catalog_sources.insert(
+                                    label.clone(),
+                                    super::context_mode::CatalogItemType::Skill,
+                                );
                             }
 
                             cm_state.full_tool_catalog = tools_catalog_bg;
@@ -2805,7 +2836,8 @@ impl McpGateway {
                     super::context_mode::CatalogItemType::Prompt => {
                         cm.activated_prompts.contains(name)
                     }
-                    super::context_mode::CatalogItemType::ServerWelcome => true,
+                    super::context_mode::CatalogItemType::ServerWelcome
+                    | super::context_mode::CatalogItemType::Skill => true,
                 };
                 CatalogSourceEntry {
                     source_label: label.clone(),

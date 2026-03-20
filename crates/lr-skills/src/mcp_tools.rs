@@ -34,24 +34,26 @@ pub enum SkillToolResult {
 
 /// Build the single skill-read meta-tool.
 ///
-/// The tool accepts a `name` parameter (any string). The catalog of available
-/// skills is listed in the welcome message, NOT embedded in the tool definition.
-fn build_meta_tool(tool_name: &str, resource_read_name: &str) -> McpTool {
+/// The tool accepts a `name` parameter. Available skill names are listed
+/// in the parameter description for direct discoverability.
+fn build_meta_tool(tool_name: &str, skill_names: &[&str]) -> McpTool {
+    let name_desc = if skill_names.is_empty() {
+        "Skill name".to_string()
+    } else {
+        format!("Skill name. Available: {}", skill_names.join(", "))
+    };
+
     McpTool {
         name: tool_name.to_string(),
-        description: Some(format!(
-            "Read a skill's full instructions, metadata, and file listing. \
-             Skill names are listed in the welcome message. \
-             If skills are hidden due to compression, use ctx_search to discover them. \
-             Skill files (scripts, references, assets) can be read with {}.",
-            resource_read_name,
-        )),
+        description: Some(
+            "Read a skill's full instructions, metadata, and file listing.".to_string(),
+        ),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Name of the skill to read"
+                    "description": name_desc
                 }
             },
             "required": ["name"],
@@ -67,15 +69,13 @@ fn build_meta_tool(tool_name: &str, resource_read_name: &str) -> McpTool {
 /// Generate skill MCP tools for a client's allowed skills.
 ///
 /// Returns a single skill-read meta-tool if there are accessible skills.
-/// The skill catalog is NOT embedded in the tool — it's in the welcome message.
+/// Available skill names are listed in the `name` parameter description.
 ///
 /// `tool_name` is the configured name for the meta-tool (e.g. "SkillRead").
-/// `resource_read_name` is the name referenced in descriptions (e.g. "ResourceRead").
 pub fn build_skill_tools(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
     tool_name: &str,
-    resource_read_name: &str,
 ) -> Vec<McpTool> {
     let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
     if !has_any_access {
@@ -92,23 +92,30 @@ pub fn build_skill_tools(
         return Vec::new();
     }
 
-    vec![build_meta_tool(tool_name, resource_read_name)]
+    let skill_names: Vec<&str> = accessible
+        .iter()
+        .map(|s| s.metadata.name.as_str())
+        .collect();
+
+    vec![build_meta_tool(tool_name, &skill_names)]
 }
 
 /// Build the skill catalog text for inclusion in the welcome message.
 ///
 /// Returns a formatted listing of available skills with names, descriptions,
 /// and file counts. When `compress` is true and there are many skills,
-/// the listing is truncated with a ctx_search hint.
+/// the listing is truncated with a search hint.
 ///
 /// `tool_name` is the configured skill-read tool name (e.g. "SkillRead").
 /// `resource_read_name` is the name referenced in descriptions (e.g. "ResourceRead").
+/// `search_tool_name` is the configured search tool name (e.g. "IndexSearch").
 pub fn build_skill_catalog(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
     context_management_enabled: bool,
     tool_name: &str,
     resource_read_name: &str,
+    search_tool_name: &str,
 ) -> Option<String> {
     let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
     if !has_any_access {
@@ -137,17 +144,19 @@ pub fn build_skill_catalog(
             text.push_str(&format!("- `{}`\n", skill.metadata.name));
         }
         text.push_str(&format!(
-            "... and {} more — use ctx_search(source=\"catalog:skills\") to discover all skills\n",
-            accessible.len() - 10
+            "... and {} more — use {}(source=\"catalog:skills\") to discover all skills\n",
+            accessible.len() - 10,
+            search_tool_name,
         ));
     } else if context_management_enabled && accessible.len() > FULL_THRESHOLD {
-        // Phase 2: Names only + ctx_search hint
+        // Phase 2: Names only + search hint
         for skill in &accessible {
             text.push_str(&format!("- `{}`\n", skill.metadata.name));
         }
-        text.push_str(
-            "Use ctx_search(source=\"catalog:skills\") for skill descriptions and details.\n",
-        );
+        text.push_str(&format!(
+            "Use {}(source=\"catalog:skills\") for skill descriptions and details.\n",
+            search_tool_name,
+        ));
     } else {
         // Phase 1: Full listing with name + description + file counts
         for skill in &accessible {
@@ -178,6 +187,63 @@ pub fn build_skill_catalog(
     ));
 
     Some(text)
+}
+
+// ---------------------------------------------------------------------------
+// Catalog indexing
+// ---------------------------------------------------------------------------
+
+/// Build index entries for skills (name + description + tags + file listing).
+///
+/// Returns `Vec<(label, content)>` where label is `"catalog:skills/{name}"`.
+/// Used by the gateway to index skills into the FTS5 ContentStore so they
+/// are discoverable via `IndexSearch(source="catalog:skills")`.
+pub fn build_skill_index_entries(
+    skill_manager: &SkillManager,
+    permissions: &SkillsPermissions,
+) -> Vec<(String, String)> {
+    let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+    if !has_any_access {
+        return Vec::new();
+    }
+
+    let all_skills = skill_manager.get_all();
+    let accessible: Vec<&SkillDefinition> = all_skills
+        .iter()
+        .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
+        .collect();
+
+    let mut entries = Vec::with_capacity(accessible.len());
+    for skill in &accessible {
+        let label = format!("catalog:skills/{}", skill.metadata.name);
+        let mut content = format!("# {}\n", skill.metadata.name);
+
+        if let Some(desc) = &skill.metadata.description {
+            content.push_str(&format!("{}\n", desc));
+        }
+
+        if !skill.metadata.tags.is_empty() {
+            content.push_str(&format!("Tags: {}\n", skill.metadata.tags.join(", ")));
+        }
+
+        let file_count = skill.scripts.len() + skill.references.len() + skill.assets.len();
+        if file_count > 0 {
+            content.push_str(&format!("Files: {}\n", file_count));
+            for script in &skill.scripts {
+                content.push_str(&format!("- scripts/{}\n", script));
+            }
+            for reference in &skill.references {
+                content.push_str(&format!("- references/{}\n", reference));
+            }
+            for asset in &skill.assets {
+                content.push_str(&format!("- assets/{}\n", asset));
+            }
+        }
+
+        entries.push((label, content));
+    }
+
+    entries
 }
 
 // ---------------------------------------------------------------------------
