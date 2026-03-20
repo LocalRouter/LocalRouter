@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/Button"
 import { FolderOpen } from "lucide-react"
+import type { MemoryConfig } from "@/types/tauri-commands"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,14 +33,19 @@ interface ClientMemoryTabProps {
 
 export function ClientMemoryTab({ client, onUpdate }: ClientMemoryTabProps) {
   const [memoryEnabled, setMemoryEnabled] = useState<boolean | null>(null)
+  const [memoryConfig, setMemoryConfig] = useState<MemoryConfig | null>(null)
   const [loading, setLoading] = useState(true)
 
   const loadConfig = useCallback(async () => {
     try {
-      const result = await invoke<{ memory_enabled: boolean | null }>("get_client_memory_config", {
-        clientId: client.id,
-      })
+      const [result, globalMemoryConfig] = await Promise.all([
+        invoke<{ memory_enabled: boolean | null }>("get_client_memory_config", {
+          clientId: client.id,
+        }),
+        invoke<MemoryConfig>("get_memory_config"),
+      ])
       setMemoryEnabled(result.memory_enabled)
+      setMemoryConfig(globalMemoryConfig)
     } catch (err) {
       console.error("Failed to load memory config:", err)
     } finally {
@@ -81,7 +87,7 @@ export function ClientMemoryTab({ client, onUpdate }: ClientMemoryTabProps) {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <FEATURES.memory.icon className={`h-5 w-5 ${FEATURES.memory.color}`} />
-              <CardTitle>Memory</CardTitle>
+              <CardTitle>{FEATURES.memory.name}</CardTitle>
             </div>
             <Switch
               checked={memoryEnabled === true}
@@ -94,8 +100,23 @@ export function ClientMemoryTab({ client, onUpdate }: ClientMemoryTabProps) {
               : "Enable to record conversations and make them searchable via the MemoryRecall tool."}
           </CardDescription>
         </CardHeader>
+        {memoryConfig && (
+          <CardContent className="pt-0 pb-3">
+            <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
+            <div className="flex flex-wrap gap-1.5">
+              <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">{memoryConfig.recall_tool_name}</code>
+              <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">
+                {memoryConfig.recall_tool_name.endsWith("Search")
+                  ? memoryConfig.recall_tool_name.replace(/Search$/, "Read")
+                  : memoryConfig.recall_tool_name.endsWith("Recall")
+                    ? memoryConfig.recall_tool_name.replace(/Recall$/, "Read")
+                    : `${memoryConfig.recall_tool_name}Read`}
+              </code>
+            </div>
+          </CardContent>
+        )}
         {memoryEnabled && (
-          <CardContent>
+          <CardContent className="pt-0">
             <div className="flex gap-2">
               <Button
                 variant="outline"

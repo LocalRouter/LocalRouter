@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
+import { FEATURES } from "@/constants/features"
 import ReactFlow, {
   Background,
   Controls,
@@ -170,13 +171,13 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
   if (showMcp && effectiveConfig) {
     if (effectiveConfig.context_management_effective) {
       pills.push({
-        label: "Context Management",
+        label: FEATURES.responseRag.name,
         source: effectiveConfig.context_management_source,
       })
     }
     if (effectiveConfig.catalog_compression_effective) {
       pills.push({
-        label: "Catalog Compression",
+        label: FEATURES.catalogCompression.name,
         source: effectiveConfig.catalog_compression_source,
       })
     }

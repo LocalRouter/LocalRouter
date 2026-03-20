@@ -53,7 +53,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
       })
       setContextManagement(value)
       const label = value === null ? "inheriting global" : value ? "enabled" : "disabled"
-      toast.success("Context management " + label)
+      toast.success(FEATURES.responseRag.name + " " + label)
       onUpdate()
     } catch (error) {
       console.error("Failed to update context management:", error)
@@ -72,7 +72,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
       })
       setCatalogCompression(value)
       const label = value === null ? "inheriting global" : value ? "enabled" : "disabled"
-      toast.success("Catalog compression " + label)
+      toast.success(FEATURES.catalogCompression.name + " " + label)
       onUpdate()
     } catch (error) {
       console.error("Failed to update catalog compression:", error)
@@ -102,7 +102,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <FEATURES.responseRag.icon className={`h-5 w-5 ${FEATURES.responseRag.color}`} />
-              <CardTitle className="text-base">Response RAG</CardTitle>
+              <CardTitle className="text-base">{FEATURES.responseRag.name}</CardTitle>
             </div>
             <TriStateButton
               value={contextManagement}
@@ -119,6 +119,15 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
             <code className="px-1 py-0.5 rounded bg-muted text-xs">tools/listChanged</code> notifications.
           </CardDescription>
         </CardHeader>
+        {globalConfig && (
+          <CardContent>
+            <p className="text-xs text-muted-foreground mb-1.5">Exposed tools:</p>
+            <div className="flex flex-wrap gap-1.5">
+              <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">{globalConfig.search_tool_name}</code>
+              <code className="text-[11px] px-1.5 py-0.5 rounded bg-muted">{globalConfig.read_tool_name}</code>
+            </div>
+          </CardContent>
+        )}
       </Card>
 
       {/* Catalog Compression */}
@@ -127,7 +136,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <FEATURES.catalogCompression.icon className={`h-5 w-5 ${FEATURES.catalogCompression.color}`} />
-              <CardTitle className="text-base">Catalog Compression</CardTitle>
+              <CardTitle className="text-base">{FEATURES.catalogCompression.name}</CardTitle>
             </div>
             <TriStateButton
               value={catalogCompression}
