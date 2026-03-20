@@ -48,7 +48,7 @@ pub async fn moderations(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let llm_event_id = super::monitor_helpers::emit_llm_call(
+    let llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         None,
         Some(&session_id),
@@ -158,9 +158,8 @@ pub async fn moderations(
 
     // Emit monitor response event
     let flagged_count = response.results.iter().filter(|r| r.flagged).count();
-    super::monitor_helpers::complete_llm_call(
+    llm_guard.complete(
         &state,
-        &llm_event_id,
         "localrouter",
         &response.model,
         200,

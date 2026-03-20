@@ -161,6 +161,19 @@ pub async fn start_server(
         }
     });
 
+    // Spawn monitor event sweep task (marks stale pending events as errors, every 60s)
+    let monitor_for_sweep = state.monitor_store.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let swept = monitor_for_sweep.sweep_stale_pending(chrono::Duration::minutes(5));
+            if swept > 0 {
+                info!("Swept {} stale pending monitor events", swept);
+            }
+        }
+    });
+
     // Start server (this runs forever)
     let handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(

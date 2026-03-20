@@ -44,7 +44,7 @@ pub async fn image_generations(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let llm_event_id = super::monitor_helpers::emit_llm_call(
+    let llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         None,
         Some(&session_id),
@@ -128,16 +128,14 @@ pub async fn image_generations(
     };
 
     // Call the provider's generate_image method
-    let provider_response = provider
-        .generate_image(provider_request)
-        .await
-        .map_err(|e| {
+    let provider_response = match provider.generate_image(provider_request).await {
+        Ok(resp) => resp,
+        Err(e) => {
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
 
             // Emit monitor error event
-            super::monitor_helpers::complete_llm_call_error(
+            llm_guard.complete_error(
                 &state,
-                &llm_event_id,
                 &provider_name,
                 &request.model,
                 502,
@@ -149,8 +147,9 @@ pub async fn image_generations(
                 latency,
                 e
             );
-            ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
-        })?;
+            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+        }
+    };
 
     let latency_ms = Instant::now().duration_since(started_at).as_millis() as u64;
 
@@ -178,9 +177,8 @@ pub async fn image_generations(
 
     // Emit monitor response event
     let image_count = api_response.data.len();
-    super::monitor_helpers::complete_llm_call(
+    llm_guard.complete(
         &state,
-        &llm_event_id,
         &provider_name,
         &request.model,
         200,

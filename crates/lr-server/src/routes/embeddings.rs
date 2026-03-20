@@ -53,7 +53,7 @@ pub async fn embeddings(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let llm_event_id = super::monitor_helpers::emit_llm_call(
+    let llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -180,9 +180,8 @@ pub async fn embeddings(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::complete_llm_call_error(
+            llm_guard.complete_error(
                 &state,
-                &llm_event_id,
                 "unknown",
                 &request.model,
                 502,
@@ -256,9 +255,8 @@ pub async fn embeddings(
     }
 
     // Emit monitor response event
-    super::monitor_helpers::complete_llm_call(
+    llm_guard.complete(
         &state,
-        &llm_event_id,
         &provider,
         &response.model,
         200,

@@ -312,7 +312,7 @@ pub async fn audio_transcriptions(
 
     // Emit monitor event for traffic inspection
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/transcriptions"});
-    let llm_event_id = super::monitor_helpers::emit_llm_call(
+    let llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -339,11 +339,13 @@ pub async fn audio_transcriptions(
 
     let model_for_log = provider_request.model.clone();
 
-    let response = state
+    let response = match state
         .router
         .transcribe(&auth.api_key_id, provider_request)
         .await
-        .map_err(|e| {
+    {
+        Ok(resp) => resp,
+        Err(e) => {
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -369,9 +371,8 @@ pub async fn audio_transcriptions(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::complete_llm_call_error(
+            llm_guard.complete_error(
                 &state,
-                &llm_event_id,
                 "unknown",
                 &model_for_log,
                 502,
@@ -379,8 +380,9 @@ pub async fn audio_transcriptions(
             );
 
             tracing::error!("Audio transcription failed: {}", e);
-            ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
-        })?;
+            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+        }
+    };
 
     let completed_at = Instant::now();
     let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
@@ -432,9 +434,8 @@ pub async fn audio_transcriptions(
     } else {
         &response.text
     };
-    super::monitor_helpers::complete_llm_call(
+    llm_guard.complete(
         &state,
-        &llm_event_id,
         &provider,
         &model_for_log,
         200,
@@ -740,7 +741,7 @@ pub async fn audio_translations(
 
     // Emit monitor event for traffic inspection
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/translations"});
-    let llm_event_id = super::monitor_helpers::emit_llm_call(
+    let llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -765,11 +766,13 @@ pub async fn audio_translations(
 
     let model_for_log = provider_request.model.clone();
 
-    let response = state
+    let response = match state
         .router
         .translate_audio(&auth.api_key_id, provider_request)
         .await
-        .map_err(|e| {
+    {
+        Ok(resp) => resp,
+        Err(e) => {
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -795,9 +798,8 @@ pub async fn audio_translations(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::complete_llm_call_error(
+            llm_guard.complete_error(
                 &state,
-                &llm_event_id,
                 "unknown",
                 &model_for_log,
                 502,
@@ -805,8 +807,9 @@ pub async fn audio_translations(
             );
 
             tracing::error!("Audio translation failed: {}", e);
-            ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
-        })?;
+            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+        }
+    };
 
     let completed_at = Instant::now();
     let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
@@ -855,9 +858,8 @@ pub async fn audio_translations(
     } else {
         &response.text
     };
-    super::monitor_helpers::complete_llm_call(
+    llm_guard.complete(
         &state,
-        &llm_event_id,
         &provider,
         &model_for_log,
         200,
@@ -942,7 +944,7 @@ pub async fn audio_speech(
 
     // Emit monitor event for traffic inspection
     let monitor_body = serde_json::json!({"model": &request.model, "endpoint": "/v1/audio/speech", "voice": &request.voice});
-    let llm_event_id = super::monitor_helpers::emit_llm_call(
+    let llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -989,11 +991,13 @@ pub async fn audio_speech(
         speed: request.speed,
     };
 
-    let response = state
+    let response = match state
         .router
         .speech(&auth.api_key_id, provider_request)
         .await
-        .map_err(|e| {
+    {
+        Ok(resp) => resp,
+        Err(e) => {
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -1019,9 +1023,8 @@ pub async fn audio_speech(
             }
 
             // Emit monitor error event
-            super::monitor_helpers::complete_llm_call_error(
+            llm_guard.complete_error(
                 &state,
-                &llm_event_id,
                 "unknown",
                 &request.model,
                 502,
@@ -1029,8 +1032,9 @@ pub async fn audio_speech(
             );
 
             tracing::error!("Speech generation failed: {}", e);
-            ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
-        })?;
+            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+        }
+    };
 
     let completed_at = Instant::now();
     let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
@@ -1078,9 +1082,8 @@ pub async fn audio_speech(
     }
 
     // Emit monitor response event
-    super::monitor_helpers::complete_llm_call(
+    llm_guard.complete(
         &state,
-        &llm_event_id,
         &provider,
         &request.model,
         200,

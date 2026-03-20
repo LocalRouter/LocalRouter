@@ -65,7 +65,7 @@ pub async fn completions(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let llm_event_id = super::monitor_helpers::emit_llm_call(
+    let llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -192,6 +192,10 @@ pub async fn completions(
     // Determine if we can run guardrails in parallel with the LLM request
     let config = state.config_manager.get();
     let use_parallel = config.guardrails.parallel_guardrails && !has_side_effects(&request);
+
+    // Defuse the guard: sub-functions manage their own completion.
+    // All early returns above this point auto-error via the guard's Drop.
+    let llm_event_id = llm_guard.into_event_id();
 
     if use_parallel {
         if request.stream {

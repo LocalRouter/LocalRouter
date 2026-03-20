@@ -162,6 +162,57 @@ impl MonitorEventStore {
         }
     }
 
+    /// Mark stale pending events as errors.
+    ///
+    /// Any event with `status == Pending` older than `max_age` is transitioned
+    /// to `Error` with a timeout message. Returns the number of events swept.
+    pub fn sweep_stale_pending(&self, max_age: chrono::Duration) -> usize {
+        let cutoff = Utc::now() - max_age;
+        let mut events = self.events.write();
+        let mut swept_ids = Vec::new();
+
+        for event in events.iter_mut() {
+            if event.status == EventStatus::Pending && event.timestamp < cutoff {
+                event.status = EventStatus::Error;
+                event.duration_ms =
+                    Some((Utc::now() - event.timestamp).num_milliseconds().max(0) as u64);
+
+                // Set error in event data where applicable
+                match &mut event.data {
+                    MonitorEventData::LlmCall { error, .. } => {
+                        *error = Some("Event timed out (exceeded maximum pending duration)".to_string());
+                    }
+                    MonitorEventData::McpToolCall { error, .. } => {
+                        *error = Some("Event timed out (exceeded maximum pending duration)".to_string());
+                    }
+                    MonitorEventData::McpResourceRead { error, .. } => {
+                        *error = Some("Event timed out (exceeded maximum pending duration)".to_string());
+                    }
+                    MonitorEventData::McpPromptGet { error, .. } => {
+                        *error = Some("Event timed out (exceeded maximum pending duration)".to_string());
+                    }
+                    _ => {}
+                }
+
+                swept_ids.push(event.id.clone());
+            }
+        }
+
+        if !swept_ids.is_empty() {
+            // Emit updates only for events we just swept
+            if let Some(emitter) = self.emitter.read().as_ref() {
+                for event in events.iter().filter(|e| swept_ids.contains(&e.id)) {
+                    let summary = crate::summary::to_summary(event);
+                    if let Ok(payload) = serde_json::to_string(&summary) {
+                        emitter("monitor-event-updated", payload);
+                    }
+                }
+            }
+        }
+
+        swept_ids.len()
+    }
+
     /// Get current store statistics.
     pub fn stats(&self) -> MonitorStats {
         let events = self.events.read();
@@ -508,5 +559,46 @@ mod tests {
             stats.events_by_type.get(&MonitorEventType::McpToolCall),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn test_sweep_stale_pending() {
+        let store = make_store(100);
+
+        // Push a pending event and manually backdate its timestamp
+        let id = push_llm_call(&store, "stale-model");
+        store.update(&id, |event| {
+            event.timestamp = Utc::now() - chrono::Duration::minutes(10);
+        });
+
+        // Push a recent pending event (should NOT be swept)
+        let recent_id = push_llm_call(&store, "recent-model");
+
+        // Push a completed event with old timestamp (should NOT be swept)
+        let completed_id = push_llm_call(&store, "completed-model");
+        store.update(&completed_id, |event| {
+            event.status = EventStatus::Complete;
+            event.timestamp = Utc::now() - chrono::Duration::minutes(10);
+        });
+
+        // Sweep with 5-minute max age
+        let swept = store.sweep_stale_pending(chrono::Duration::minutes(5));
+        assert_eq!(swept, 1);
+
+        // The stale event should now be Error
+        let event = store.get(&id).unwrap();
+        assert_eq!(event.status, EventStatus::Error);
+        assert!(event.duration_ms.is_some());
+        if let MonitorEventData::LlmCall { error, .. } = &event.data {
+            assert!(error.as_ref().unwrap().contains("timed out"));
+        }
+
+        // The recent event should still be Pending
+        let recent = store.get(&recent_id).unwrap();
+        assert_eq!(recent.status, EventStatus::Pending);
+
+        // The completed event should still be Complete
+        let completed = store.get(&completed_id).unwrap();
+        assert_eq!(completed.status, EventStatus::Complete);
     }
 }

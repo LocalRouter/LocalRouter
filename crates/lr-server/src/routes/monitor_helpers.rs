@@ -1,17 +1,91 @@
 //! Helper functions for emitting monitor events from route handlers.
 //!
 //! Combined events follow the emit-then-update pattern:
-//! 1. `emit_*()` creates a Pending event with request data, returns the event ID
-//! 2. `complete_*()` updates the event with response data and sets status to Complete/Error
+//! 1. `emit_*()` creates a Pending event with request data, returns an `LlmCallGuard`
+//! 2. The guard auto-completes the event as Error on drop if not explicitly completed
+//! 3. `complete_*()` updates the event with response data and sets status to Complete/Error
 
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::state::AppState;
 use axum::Extension;
-use lr_monitor::{EventStatus, MonitorEventData, MonitorEventType};
+use lr_monitor::{EventStatus, MonitorEventData, MonitorEventGuard, MonitorEventType};
+
+// ---- LLM Call Guard ----
+
+/// RAII guard for LlmCall monitor events.
+///
+/// Wraps a `MonitorEventGuard` and provides LLM-specific completion methods.
+/// If dropped without calling `complete()`, `complete_error()`, or `into_event_id()`,
+/// the event is automatically marked as Error.
+pub struct LlmCallGuard {
+    inner: MonitorEventGuard,
+}
+
+impl LlmCallGuard {
+    /// Get the event ID.
+    pub fn event_id(&self) -> &str {
+        self.inner.event_id()
+    }
+
+    /// Complete the LLM call event with success data, consuming the guard.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete(
+        self,
+        state: &AppState,
+        provider: &str,
+        model: &str,
+        status_code: u16,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: Option<f64>,
+        latency_ms: u64,
+        finish_reason: Option<&str>,
+        content_preview: &str,
+        streamed: bool,
+    ) {
+        let event_id = self.inner.defuse();
+        complete_llm_call(
+            state,
+            &event_id,
+            provider,
+            model,
+            status_code,
+            input_tokens,
+            output_tokens,
+            cost_usd,
+            latency_ms,
+            finish_reason,
+            content_preview,
+            streamed,
+        );
+    }
+
+    /// Complete the LLM call event with an error, consuming the guard.
+    pub fn complete_error(
+        self,
+        state: &AppState,
+        provider: &str,
+        model: &str,
+        status_code: u16,
+        error_msg: &str,
+    ) {
+        let event_id = self.inner.defuse();
+        complete_llm_call_error(state, &event_id, provider, model, status_code, error_msg);
+    }
+
+    /// Extract the event ID, defusing the guard.
+    ///
+    /// Use this when handing off the event ID to a spawned task (e.g., streaming
+    /// response handlers) that manages its own completion calls.
+    pub fn into_event_id(self) -> String {
+        self.inner.defuse()
+    }
+}
 
 // ---- LLM Call (combined: request + transform + response/error) ----
 
-/// Emit a pending LlmCall event at the start of a request. Returns the event ID.
+/// Emit a pending LlmCall event at the start of a request. Returns an `LlmCallGuard`
+/// that auto-completes the event as Error if dropped without explicit completion.
 pub fn emit_llm_call(
     state: &AppState,
     client_auth: Option<&Extension<ClientAuthContext>>,
@@ -20,7 +94,7 @@ pub fn emit_llm_call(
     model: &str,
     stream: bool,
     request_body: &serde_json::Value,
-) -> String {
+) -> LlmCallGuard {
     let (client_id, client_name) = resolve_client(state, client_auth);
 
     let message_count = request_body
@@ -33,7 +107,7 @@ pub fn emit_llm_call(
     let has_tools = tools.is_some_and(|t| !t.is_empty());
     let tool_count = tools.map(|t| t.len()).unwrap_or(0);
 
-    state.monitor_store.push(
+    let event_id = state.monitor_store.push(
         MonitorEventType::LlmCall,
         client_id,
         client_name,
@@ -62,7 +136,15 @@ pub fn emit_llm_call(
         },
         EventStatus::Pending,
         None,
-    )
+    );
+
+    LlmCallGuard {
+        inner: MonitorEventGuard::new(
+            state.monitor_store.clone(),
+            event_id,
+            MonitorEventType::LlmCall,
+        ),
+    }
 }
 
 /// Update the LlmCall event with transformation data (compression, MCP tools, etc.).
