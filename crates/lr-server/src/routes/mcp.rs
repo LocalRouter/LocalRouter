@@ -393,7 +393,7 @@ pub async fn mcp_gateway_handler(
     client_auth: Option<axum::Extension<ClientAuthContext>>,
     headers: axum::http::HeaderMap,
     query: Query<McpQueryParams>,
-    Json(request): Json<JsonRpcRequest>,
+    Json(body): Json<serde_json::Value>,
 ) -> Response {
     // Extract client_id from auth context (no URL parameter)
     let client_id = match client_auth {
@@ -408,6 +408,72 @@ pub async fn mcp_gateway_handler(
     let session_id = query.0.session_id;
     // Connection key for SSE routing: session_id if available, otherwise client_id
     let connection_key = session_id.as_deref().unwrap_or(&client_id).to_string();
+
+    // Detect whether this is a JSON-RPC response (from client answering a server-initiated
+    // request, e.g. passthrough sampling/elicitation) or a normal JSON-RPC request.
+    // Responses have "result" or "error" fields but no "method" field.
+    let is_response = !body.get("method").is_some_and(|v| v.is_string())
+        && (body.get("result").is_some() || body.get("error").is_some());
+
+    if is_response {
+        // This is a JSON-RPC response from the client (e.g. answering a passthrough
+        // sampling/createMessage or elicitation/create request we forwarded via SSE).
+        let response: JsonRpcResponse = match serde_json::from_value(body) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Failed to parse client JSON-RPC response: {}", e);
+                return ApiErrorResponse::bad_request(format!(
+                    "Invalid JSON-RPC response: {}",
+                    e
+                ))
+                .into_response();
+            }
+        };
+
+        let response_id = response.id.clone();
+
+        tracing::info!(
+            "Received client JSON-RPC response: connection={}, id={}",
+            &connection_key[..8.min(connection_key.len())],
+            response_id
+        );
+
+        // Route the response to the pending server-initiated request
+        if state
+            .sse_connection_manager
+            .resolve_server_request(&connection_key, response)
+        {
+            return Json(crate::types::MessageResponse {
+                message: "Response accepted".to_string(),
+            })
+            .into_response();
+        } else {
+            tracing::warn!(
+                "No pending server request matched for response id={} on connection={}",
+                response_id,
+                &connection_key[..8.min(connection_key.len())]
+            );
+            // Still return 202 - the response may have been for a request that already
+            // timed out or was handled by another path
+            return (axum::http::StatusCode::ACCEPTED, Json(crate::types::MessageResponse {
+                message: "Response accepted (no pending request matched)".to_string(),
+            }))
+                .into_response();
+        }
+    }
+
+    // Parse as a JSON-RPC request
+    let request: JsonRpcRequest = match serde_json::from_value(body) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("Failed to parse JSON-RPC request: {}", e);
+            return ApiErrorResponse::bad_request(format!(
+                "Invalid JSON-RPC request: {}",
+                e
+            ))
+            .into_response();
+        }
+    };
 
     // Record client activity for connection graph
     state.record_client_activity(&client_id);
