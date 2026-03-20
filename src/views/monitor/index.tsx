@@ -56,7 +56,7 @@ export function MonitorView() {
     </div>
   )
 
-  const eventSplit = (
+  const eventSplit = selectedEvent ? (
     <ResizablePanelGroup direction="vertical" className="flex-1">
       <ResizablePanel defaultSize={55} minSize={20}>
         <EventList
@@ -70,6 +70,14 @@ export function MonitorView() {
         <EventDetail event={selectedEvent} />
       </ResizablePanel>
     </ResizablePanelGroup>
+  ) : (
+    <div className="flex-1">
+      <EventList
+        events={events}
+        selectedId={selectedId}
+        onSelect={selectEvent}
+      />
+    </div>
   )
 
   if (!tryItOutOpen) {
