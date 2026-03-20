@@ -1,5 +1,6 @@
 import { cn } from '@/lib/utils'
-import { Activity, Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2 } from 'lucide-react'
+import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2 } from 'lucide-react'
+import { ProvidersIcon } from '@/components/icons/category-icons'
 import type { MonitorEventSummary, MonitorEventType, EventStatus } from '@/types/tauri-commands'
 
 interface EventListProps {
@@ -8,8 +9,8 @@ interface EventListProps {
   onSelect: (id: string) => void
 }
 
-const categoryConfig: Record<string, { icon: typeof Activity; color: string }> = {
-  llm: { icon: Activity, color: 'text-blue-500' },
+const categoryConfig: Record<string, { icon: React.ComponentType<{ className?: string }>; color: string }> = {
+  llm: { icon: ProvidersIcon, color: 'text-blue-500' },
   mcp: { icon: Wrench, color: 'text-green-500' },
   mcp_server: { icon: Server, color: 'text-emerald-500' },
   guardrail: { icon: Shield, color: 'text-red-500' },
