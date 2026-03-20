@@ -991,7 +991,6 @@ impl McpGateway {
             let server_id_clone = server_id.clone();
             let elicitation_manager = self.elicitation_manager.clone();
             let sampling_approval_manager = self.sampling_approval_manager.read().clone();
-            let notification_broadcast = self.notification_broadcast.clone();
             let client_request_sender = self.client_request_sender.read().clone();
             let router = self.router.clone();
             let client_id = client_id.to_string();
@@ -1007,7 +1006,6 @@ impl McpGateway {
                     let server_id = server_id_clone.clone();
                     let elicitation_mgr = elicitation_manager.clone();
                     let sampling_approval_mgr = sampling_approval_manager.clone();
-                    let _notification_broadcast = notification_broadcast.clone();
                     let client_request_sender = client_request_sender.clone();
                     let router = router.clone();
                     let client_id = client_id.clone();

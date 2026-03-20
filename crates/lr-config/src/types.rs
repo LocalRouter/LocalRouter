@@ -908,19 +908,11 @@ pub enum ElicitationMode {
 }
 
 /// Global MCP gateway settings (not per-client)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct McpGatewaySettings {
     /// How sampling requests are handled (single property combining mode + permission)
     #[serde(default)]
     pub sampling: SamplingBehavior,
-
-    /// Migration shim: old sampling_mode (deserialize only, maps to sampling)
-    #[serde(default, skip_serializing)]
-    pub sampling_mode: SamplingMode,
-
-    /// Migration shim: old sampling_permission (deserialize only, maps to sampling)
-    #[serde(default = "default_sampling_permission", skip_serializing)]
-    pub sampling_permission: PermissionState,
 
     /// How elicitation requests are handled
     #[serde(default)]
@@ -935,10 +927,53 @@ impl Default for McpGatewaySettings {
     fn default() -> Self {
         Self {
             sampling: SamplingBehavior::default(),
-            sampling_mode: SamplingMode::default(),
-            sampling_permission: default_sampling_permission(),
             elicitation_mode: ElicitationMode::default(),
         }
+    }
+}
+
+/// Custom deserializer that migrates old sampling_mode + sampling_permission to the new sampling field
+impl<'de> serde::Deserialize<'de> for McpGatewaySettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            sampling: Option<SamplingBehavior>,
+            #[serde(default)]
+            sampling_mode: Option<SamplingMode>,
+            #[serde(default)]
+            sampling_permission: Option<PermissionState>,
+            #[serde(default)]
+            elicitation_mode: ElicitationMode,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+
+        // If the new `sampling` field is present, use it directly
+        let sampling = if let Some(s) = raw.sampling {
+            s
+        } else if let Some(mode) = raw.sampling_mode {
+            // Migrate from old format: sampling_mode + sampling_permission → SamplingBehavior
+            let perm = raw
+                .sampling_permission
+                .unwrap_or(default_sampling_permission());
+            match (&mode, &perm) {
+                (_, PermissionState::Off) => SamplingBehavior::Off,
+                (SamplingMode::Passthrough, _) => SamplingBehavior::Passthrough,
+                (SamplingMode::Direct, PermissionState::Allow) => SamplingBehavior::DirectAllow,
+                (SamplingMode::Direct, PermissionState::Ask) => SamplingBehavior::DirectAsk,
+            }
+        } else {
+            SamplingBehavior::default()
+        };
+
+        Ok(McpGatewaySettings {
+            sampling,
+            elicitation_mode: raw.elicitation_mode,
+        })
     }
 }
 
@@ -4255,17 +4290,15 @@ read_tool_name: "ctx_read"
 
     #[test]
     fn test_app_config_with_mcp_gateway() {
-        // With mcp_gateway field present
+        // New format: sampling field directly
         let yaml = r#"
 version: 1
 mcp_gateway:
-  sampling_mode: direct
-  sampling_permission: ask
+  sampling: direct_ask
   elicitation_mode: "off"
 "#;
         let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.mcp_gateway.sampling_mode, SamplingMode::Direct);
-        assert_eq!(config.mcp_gateway.sampling_permission, PermissionState::Ask);
+        assert_eq!(config.mcp_gateway.sampling, SamplingBehavior::DirectAsk);
         assert_eq!(config.mcp_gateway.elicitation_mode, ElicitationMode::Off);
 
         // With mcp_gateway field missing (should use defaults)
@@ -4273,15 +4306,57 @@ mcp_gateway:
 version: 1
 "#;
         let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.mcp_gateway.sampling_mode, SamplingMode::Passthrough);
-        assert_eq!(
-            config.mcp_gateway.sampling_permission,
-            PermissionState::Allow
-        );
+        assert_eq!(config.mcp_gateway.sampling, SamplingBehavior::Passthrough);
         assert_eq!(
             config.mcp_gateway.elicitation_mode,
             ElicitationMode::Passthrough
         );
+    }
+
+    #[test]
+    fn test_mcp_gateway_settings_migration_from_old_format() {
+        // Old format: sampling_mode + sampling_permission → migrated to sampling
+        let yaml = r#"
+sampling_mode: direct
+sampling_permission: ask
+elicitation_mode: direct
+"#;
+        let settings: McpGatewaySettings = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(settings.sampling, SamplingBehavior::DirectAsk);
+        assert_eq!(settings.elicitation_mode, ElicitationMode::Direct);
+
+        // Old format: direct + allow → DirectAllow
+        let yaml = r#"
+sampling_mode: direct
+sampling_permission: allow
+"#;
+        let settings: McpGatewaySettings = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(settings.sampling, SamplingBehavior::DirectAllow);
+
+        // Old format: any mode + off → Off
+        let yaml = r#"
+sampling_mode: passthrough
+sampling_permission: "off"
+"#;
+        let settings: McpGatewaySettings = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(settings.sampling, SamplingBehavior::Off);
+
+        // Old format: passthrough (any permission) → Passthrough
+        let yaml = r#"
+sampling_mode: passthrough
+sampling_permission: ask
+"#;
+        let settings: McpGatewaySettings = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(settings.sampling, SamplingBehavior::Passthrough);
+
+        // New format takes precedence over old fields
+        let yaml = r#"
+sampling: direct_allow
+sampling_mode: passthrough
+sampling_permission: "off"
+"#;
+        let settings: McpGatewaySettings = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(settings.sampling, SamplingBehavior::DirectAllow);
     }
 
     #[test]
