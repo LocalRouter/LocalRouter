@@ -9,6 +9,7 @@ import type { McpGatewaySettingsResponse, SetMcpGatewaySettingsParams } from "@/
 interface ButtonGroupOption {
   value: string
   label: string
+  activeClass: string
 }
 
 function ButtonGroup({
@@ -30,7 +31,7 @@ function ButtonGroup({
           className={cn(
             "px-3 py-1.5 text-xs font-medium transition-colors",
             value === opt.value
-              ? "bg-primary text-primary-foreground"
+              ? opt.activeClass
               : "text-muted-foreground hover:text-foreground hover:bg-muted",
             i === 0 && "rounded-l-md",
             i === options.length - 1 && "rounded-r-md"
@@ -44,16 +45,16 @@ function ButtonGroup({
 }
 
 const SAMPLING_OPTIONS: ButtonGroupOption[] = [
-  { value: "passthrough", label: "Passthrough" },
-  { value: "direct_allow", label: "Direct" },
-  { value: "direct_ask", label: "Direct (Ask)" },
-  { value: "off", label: "Off" },
+  { value: "passthrough", label: "Passthrough", activeClass: "bg-emerald-500 text-white" },
+  { value: "direct_allow", label: "Direct", activeClass: "bg-emerald-500 text-white" },
+  { value: "direct_ask", label: "Direct (Ask)", activeClass: "bg-amber-500 text-white" },
+  { value: "off", label: "Off", activeClass: "bg-zinc-500 text-white" },
 ]
 
 const ELICITATION_OPTIONS: ButtonGroupOption[] = [
-  { value: "passthrough", label: "Passthrough" },
-  { value: "direct", label: "Direct" },
-  { value: "off", label: "Off" },
+  { value: "passthrough", label: "Passthrough", activeClass: "bg-emerald-500 text-white" },
+  { value: "direct", label: "Direct", activeClass: "bg-emerald-500 text-white" },
+  { value: "off", label: "Off", activeClass: "bg-zinc-500 text-white" },
 ]
 
 const SAMPLING_DESCRIPTIONS: Record<string, string> = {

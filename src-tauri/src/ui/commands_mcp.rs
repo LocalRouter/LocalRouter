@@ -2399,6 +2399,12 @@ pub async fn set_mcp_gateway_settings(
         })
         .map_err(|e| format!("Failed to save settings: {}", e))?;
 
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| format!("Failed to save settings: {}", e))?;
+
     // Update live settings on the gateway so changes take effect without restart
     let settings = config_manager.get().mcp_gateway.clone();
     if let Some(gateway) = server_manager.get_mcp_gateway() {
