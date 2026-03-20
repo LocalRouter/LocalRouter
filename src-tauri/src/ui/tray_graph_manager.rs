@@ -217,7 +217,6 @@ impl TrayGraphManager {
                         *last_update_clone.write() = Some(Utc::now());
                     }
                 }
-
             }
 
             debug!("TrayGraphManager background task stopped");

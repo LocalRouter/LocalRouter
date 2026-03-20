@@ -128,14 +128,12 @@ impl McpViaLlmManager {
     /// Get the gateway session key for a client (if a session exists).
     pub fn get_gateway_session_key(&self, client_id: &str) -> Option<String> {
         let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
-        self.sessions_by_client
-            .get(client_id)
-            .and_then(|sessions| {
-                sessions
-                    .iter()
-                    .find(|s| !s.read().is_expired(ttl))
-                    .map(|s| s.read().gateway_session_key.clone())
-            })
+        self.sessions_by_client.get(client_id).and_then(|sessions| {
+            sessions
+                .iter()
+                .find(|s| !s.read().is_expired(ttl))
+                .map(|s| s.read().gateway_session_key.clone())
+        })
     }
 
     /// Get an existing session or create a new one for this client.

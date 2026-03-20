@@ -183,7 +183,11 @@ impl McpGateway {
         // Emit pending monitor event for prompt get
         let (mon_client_id, mon_client_name, mon_session_id) = {
             let s = session.read().await;
-            (Some(s.client_id.clone()), Some(s.client_name.clone()), s.monitor_session_id.clone())
+            (
+                Some(s.client_id.clone()),
+                Some(s.client_name.clone()),
+                s.monitor_session_id.clone(),
+            )
         };
         let mon_args = transformed_request
             .params

@@ -163,7 +163,7 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
             tools_list_req,
-            None,                                  // monitor_session_id
+            None, // monitor_session_id
         )
         .await
         .expect("tools/list should succeed");
@@ -219,7 +219,7 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
             show_req,
-            None,                                  // monitor_session_id
+            None, // monitor_session_id
         )
         .await
         .expect("skill_read should succeed");
@@ -272,7 +272,7 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
             tools_list_req2,
-            None,                                  // monitor_session_id
+            None, // monitor_session_id
         )
         .await
         .expect("tools/list after get_info should succeed");
@@ -364,7 +364,7 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
             req,
-            None,                                  // monitor_session_id
+            None, // monitor_session_id
         )
         .await
         .expect("tools/list should succeed");
@@ -412,7 +412,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
             req,
-            None,                                  // monitor_session_id
+            None, // monitor_session_id
         )
         .await
         .expect("first tools/list should succeed");
@@ -443,7 +443,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
             req2,
-            None,                                  // monitor_session_id
+            None, // monitor_session_id
         )
         .await
         .expect("second tools/list should succeed");

@@ -277,7 +277,11 @@ impl McpGateway {
         // Emit pending monitor event for MCP tool call
         let (mon_client_id, mon_client_name, mon_session_id) = {
             let s = session.read().await;
-            (Some(s.client_id.clone()), Some(s.client_name.clone()), s.monitor_session_id.clone())
+            (
+                Some(s.client_id.clone()),
+                Some(s.client_name.clone()),
+                s.monitor_session_id.clone(),
+            )
         };
         let arguments = transformed_request
             .params
@@ -806,13 +810,23 @@ impl McpGateway {
         match result {
             VirtualToolCallResult::Success(response) => {
                 let preview = serde_json::to_string(&response).unwrap_or_default();
-                let preview = if preview.len() > 2000 { format!("{}...", &preview[..2000]) } else { preview };
+                let preview = if preview.len() > 2000 {
+                    format!("{}...", &preview[..2000])
+                } else {
+                    preview
+                };
                 self.update_monitor_event(
                     &mon_event_id,
                     Box::new(move |event| {
                         event.status = lr_monitor::EventStatus::Complete;
                         event.duration_ms = Some(tool_call_latency);
-                        if let lr_monitor::MonitorEventData::McpToolCall { latency_ms, success, response_preview, .. } = &mut event.data {
+                        if let lr_monitor::MonitorEventData::McpToolCall {
+                            latency_ms,
+                            success,
+                            response_preview,
+                            ..
+                        } = &mut event.data
+                        {
                             *latency_ms = Some(tool_call_latency);
                             *success = Some(true);
                             *response_preview = Some(preview);
@@ -831,13 +845,23 @@ impl McpGateway {
                 state_update,
             } => {
                 let preview = serde_json::to_string(&response).unwrap_or_default();
-                let preview = if preview.len() > 2000 { format!("{}...", &preview[..2000]) } else { preview };
+                let preview = if preview.len() > 2000 {
+                    format!("{}...", &preview[..2000])
+                } else {
+                    preview
+                };
                 self.update_monitor_event(
                     &mon_event_id,
                     Box::new(move |event| {
                         event.status = lr_monitor::EventStatus::Complete;
                         event.duration_ms = Some(tool_call_latency);
-                        if let lr_monitor::MonitorEventData::McpToolCall { latency_ms, success, response_preview, .. } = &mut event.data {
+                        if let lr_monitor::MonitorEventData::McpToolCall {
+                            latency_ms,
+                            success,
+                            response_preview,
+                            ..
+                        } = &mut event.data
+                        {
                             *latency_ms = Some(tool_call_latency);
                             *success = Some(true);
                             *response_preview = Some(preview);
@@ -876,7 +900,13 @@ impl McpGateway {
                     Box::new(move |event| {
                         event.status = lr_monitor::EventStatus::Error;
                         event.duration_ms = Some(tool_call_latency);
-                        if let lr_monitor::MonitorEventData::McpToolCall { latency_ms, success, error, .. } = &mut event.data {
+                        if let lr_monitor::MonitorEventData::McpToolCall {
+                            latency_ms,
+                            success,
+                            error,
+                            ..
+                        } = &mut event.data
+                        {
                             *latency_ms = Some(tool_call_latency);
                             *success = Some(false);
                             *error = Some("Tool not handled".to_string());
@@ -895,7 +925,13 @@ impl McpGateway {
                     Box::new(move |event| {
                         event.status = lr_monitor::EventStatus::Error;
                         event.duration_ms = Some(tool_call_latency);
-                        if let lr_monitor::MonitorEventData::McpToolCall { latency_ms, success, error, .. } = &mut event.data {
+                        if let lr_monitor::MonitorEventData::McpToolCall {
+                            latency_ms,
+                            success,
+                            error,
+                            ..
+                        } = &mut event.data
+                        {
                             *latency_ms = Some(tool_call_latency);
                             *success = Some(false);
                             *error = Some(err_msg);

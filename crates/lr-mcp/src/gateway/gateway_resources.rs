@@ -282,7 +282,11 @@ impl McpGateway {
         // Emit pending monitor event for resource read
         let (mon_client_id, mon_client_name, mon_session_id) = {
             let s = session.read().await;
-            (Some(s.client_id.clone()), Some(s.client_name.clone()), s.monitor_session_id.clone())
+            (
+                Some(s.client_id.clone()),
+                Some(s.client_name.clone()),
+                s.monitor_session_id.clone(),
+            )
         };
         let mon_uri = resource_name
             .map(|n| n.to_string())
