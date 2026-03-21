@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 // DEPRECATED: Route unused - Strategy mode hidden
-import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Volume2, Mic, Loader2, ChevronsUpDown, Check, Search } from "lucide-react"
+import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Volume2, Mic, Loader2, ChevronsUpDown, Check, Search, AlertTriangle } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -319,6 +319,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
   const [models, setModels] = useState<Model[]>([])
   const [selectedModel, setSelectedModel] = useState<string>("")
   const [loadingModels, setLoadingModels] = useState(true)
+  const [modelLoadError, setModelLoadError] = useState<string | null>(null)
 
   // Model parameters
   const [showParameters, setShowParameters] = useState(false)
@@ -467,6 +468,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
     if (!openaiClient) return
 
     setLoadingModels(true)
+    setModelLoadError(null)
     try {
       const response = await openaiClient.models.list()
       const modelsList = response.data || []
@@ -481,6 +483,8 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
       })
     } catch (error) {
       console.error("Failed to fetch models:", error)
+      const msg = error instanceof Error ? error.message : String(error)
+      setModelLoadError(msg)
     } finally {
       setLoadingModels(false)
     }
@@ -703,6 +707,22 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
                     <RefreshCw className={cn("h-4 w-4", loadingModels && "animate-spin")} />
                   </Button>
                 </div>
+                {!loadingModels && models.length === 0 && (
+                  <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/50 rounded-md px-3 py-2">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5 text-amber-500" />
+                    <div>
+                      {modelLoadError ? (
+                        <span>Failed to load models: {modelLoadError}</span>
+                      ) : (
+                        <span>
+                          No models found. This can happen if the provider is not running,
+                          models haven't been downloaded yet, or the API key is invalid.
+                          {mode === "direct" && " Try checking that the provider is online and has models available."}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -877,6 +897,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
             isReady={isReady()}
             selectedModel={getEffectiveModel()}
             parameters={parameters}
+            noModelsAvailable={!loadingModels && models.length === 0}
           />
         </TabsContent>
 

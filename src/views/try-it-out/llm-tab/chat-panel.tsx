@@ -49,6 +49,7 @@ interface ChatPanelProps {
   isReady: boolean
   selectedModel: string
   parameters: ModelParameters
+  noModelsAvailable?: boolean
 }
 
 export function ChatPanel({
@@ -56,6 +57,7 @@ export function ChatPanel({
   isReady,
   selectedModel,
   parameters,
+  noModelsAvailable,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -329,9 +331,11 @@ export function ChatPanel({
           <div className="space-y-4">
             {messages.length === 0 ? (
               <div className="flex items-center justify-center h-64 text-muted-foreground">
-                <p className="text-sm">
+                <p className="text-sm text-center">
                   {!isReady
-                    ? "Select a model to start chatting"
+                    ? noModelsAvailable
+                      ? "No models available — check that your provider is running and has models downloaded"
+                      : "Select a model to start chatting"
                     : "Send a message to start chatting"}
                 </p>
               </div>
