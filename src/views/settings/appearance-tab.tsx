@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Monitor } from "lucide-react"
@@ -13,6 +13,80 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import type { TrayGraphSettings } from "@/types/tauri-commands"
+
+/** Static tray icon preview — LocalRouter logo in a rounded frame */
+function StaticIconPreview() {
+  return (
+    <svg width="36" height="36" viewBox="0 0 32 32" fill="none" className="shrink-0">
+      {/* Rounded border frame */}
+      <rect x="0.5" y="0.5" width="31" height="31" rx="5.5" stroke="currentColor" strokeOpacity={0.5} fill="none" />
+      {/* LocalRouter logo scaled to fit */}
+      <g transform="translate(4, 4) scale(0.24)">
+        <circle cx="20" cy="20" r="12" stroke="currentColor" strokeWidth="10" fill="none" />
+        <circle cx="80" cy="80" r="12" stroke="currentColor" strokeWidth="10" fill="none" />
+        <path
+          d="M 32 22 C 75 15, 90 40, 50 50 C 10 60, 25 85, 68 78"
+          stroke="currentColor"
+          strokeWidth="10"
+          strokeLinecap="round"
+          fill="none"
+        />
+      </g>
+    </svg>
+  )
+}
+
+/** Animated activity graph preview — scrolling sparkline bars */
+function GraphIconPreview() {
+  const BAR_COUNT = 20
+  const [bars, setBars] = useState<number[]>(() =>
+    Array.from({ length: BAR_COUNT }, () => Math.random() * 0.8 + 0.1)
+  )
+
+  const tick = useCallback(() => {
+    setBars(prev => {
+      const next = prev.slice(1)
+      // Generate next bar influenced by the previous value for smoother movement
+      const last = prev[prev.length - 1]
+      const delta = (Math.random() - 0.5) * 0.35
+      const newVal = Math.max(0.05, Math.min(1, last + delta))
+      next.push(newVal)
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    const id = setInterval(tick, 180)
+    return () => clearInterval(id)
+  }, [tick])
+
+  const padding = 3
+  const barAreaWidth = 36 - padding * 2
+  const barAreaHeight = 32 - padding * 2
+  const barWidth = barAreaWidth / BAR_COUNT
+
+  return (
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none" className="shrink-0">
+      {/* Rounded border frame */}
+      <rect x="0.5" y="0.5" width="35" height="35" rx="5.5" stroke="currentColor" strokeOpacity={0.5} fill="none" />
+      {/* Animated bars */}
+      {bars.map((h, i) => {
+        const barH = h * barAreaHeight
+        return (
+          <rect
+            key={i}
+            x={padding + i * barWidth}
+            y={padding + barAreaHeight - barH}
+            width={Math.max(barWidth - 0.5, 0.5)}
+            height={barH}
+            fill="currentColor"
+            opacity={0.7}
+          />
+        )
+      })}
+    </svg>
+  )
+}
 
 export function AppearanceTab() {
   const [settings, setSettings] = useState<TrayGraphSettings>({
@@ -87,20 +161,26 @@ export function AppearanceTab() {
             >
               <div className="flex items-start space-x-3">
                 <RadioGroupItem value="static" id="mode-static" className="mt-0.5" />
-                <div>
-                  <Label htmlFor="mode-static" className="font-medium cursor-pointer">Static Icon</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Clean icon with notification overlays for approvals, health issues, and updates
-                  </p>
+                <div className="flex items-start gap-3">
+                  <StaticIconPreview />
+                  <div>
+                    <Label htmlFor="mode-static" className="font-medium cursor-pointer">Static Icon</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Clean icon with notification overlays for approvals, health issues, and updates
+                    </p>
+                  </div>
                 </div>
               </div>
               <div className="flex items-start space-x-3">
                 <RadioGroupItem value="graph" id="mode-graph" className="mt-0.5" />
-                <div>
-                  <Label htmlFor="mode-graph" className="font-medium cursor-pointer">Activity Graph</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Live token usage sparkline that updates in real-time as requests flow through
-                  </p>
+                <div className="flex items-start gap-3">
+                  <GraphIconPreview />
+                  <div>
+                    <Label htmlFor="mode-graph" className="font-medium cursor-pointer">Activity Graph</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Live token usage sparkline that updates in real-time as requests flow through
+                    </p>
+                  </div>
                 </div>
               </div>
             </RadioGroup>
