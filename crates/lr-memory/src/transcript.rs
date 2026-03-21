@@ -155,6 +155,10 @@ impl TranscriptWriter {
             .await
             .map_err(|e| format!("Failed to write to transcript: {}", e))?;
 
+        file.flush()
+            .await
+            .map_err(|e| format!("Failed to flush transcript: {}", e))?;
+
         Ok(())
     }
 }
