@@ -223,6 +223,13 @@ impl SessionManager {
         }
     }
 
+    /// Return the file path of the active session for a client, if any.
+    pub fn active_session_path(&self, client_id: &str) -> Option<PathBuf> {
+        self.active_sessions
+            .get(client_id)
+            .map(|s| s.file_path.clone())
+    }
+
     /// Force-close any active session for the given client.
     pub fn force_close(&self, client_id: &str) {
         self.active_sessions.remove(client_id);

@@ -3209,6 +3209,48 @@ export interface MemoryClientInfo {
   total_lines: number
 }
 
+/** Rust: src-tauri/src/ui/commands.rs - CompactionStatsResult */
+export interface CompactionStatsResult {
+  active_sessions: number
+  pending_compaction: number
+  archived_sessions: number
+  indexed_sources: number
+  total_lines: number
+}
+
+/** Rust: src-tauri/src/ui/commands.rs - ForceCompactResult */
+export interface ForceCompactResult {
+  archived_count: number
+}
+
+/** Params for get_memory_compaction_stats */
+export interface GetMemoryCompactionStatsParams {
+  clientId: string
+}
+
+/** Params for force_compact_memory */
+export interface ForceCompactMemoryParams {
+  clientId: string
+}
+
+/** Params for reindex_client_memory */
+export interface ReindexClientMemoryParams {
+  clientId: string
+}
+
+/** Event payload for memory-reindex-progress */
+export interface MemoryReindexProgress {
+  client_id: string
+  current: number
+  total: number
+}
+
+/** Event payload for memory-reindex-complete */
+export interface MemoryReindexComplete {
+  client_id: string
+  indexed_count: number
+}
+
 // =============================================================================
 // Monitor Types
 // Rust: crates/lr-monitor/src/types.rs

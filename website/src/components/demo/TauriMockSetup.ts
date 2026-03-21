@@ -2777,6 +2777,17 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Client memory config updated (demo)')
     return null
   },
+  'get_memory_compaction_stats': () => ({
+    active_sessions: 1,
+    pending_compaction: 2,
+    archived_sessions: 5,
+    indexed_sources: 8,
+    total_lines: 342,
+  }),
+  'force_compact_memory': () => ({
+    archived_count: 2,
+  }),
+  'reindex_client_memory': () => null,
 
   // ============================================================================
   // GuardRails - LLM-based Safety Models

@@ -10,7 +10,7 @@ pub mod transcript;
 #[cfg(test)]
 mod tests;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -331,6 +331,138 @@ impl MemoryService {
         &self.memory_dir
     }
 
+    /// Get compaction statistics for a client.
+    pub fn get_compaction_stats(&self, client_id: &str) -> Result<CompactionStats, String> {
+        let client_dir = self.memory_dir.join(client_id);
+        let sessions_dir = client_dir.join("sessions");
+        let archive_dir = client_dir.join("archive");
+
+        let active_path = self.session_manager.active_session_path(client_id);
+        let session_files = count_md_files(&sessions_dir);
+        let active_sessions = if active_path.is_some() { 1 } else { 0 };
+        let pending_compaction = session_files.saturating_sub(active_sessions);
+        let archived_sessions = count_md_files(&archive_dir);
+
+        let (indexed_sources, total_lines) = match self.list_sources(client_id) {
+            Ok(sources) => {
+                let lines: usize = sources.iter().map(|s| s.total_lines).sum();
+                (sources.len(), lines)
+            }
+            Err(_) => (0, 0),
+        };
+
+        Ok(CompactionStats {
+            active_sessions,
+            pending_compaction,
+            archived_sessions,
+            indexed_sources,
+            total_lines,
+        })
+    }
+
+    /// Force-compact all expired (non-active) sessions for a client.
+    ///
+    /// Moves all `.md` files in `sessions/` that are not the active session
+    /// to the `archive/` directory. Does not require `compaction_model` to be set.
+    pub async fn force_compact(&self, client_id: &str) -> Result<CompactResult, String> {
+        let client_dir = self.memory_dir.join(client_id);
+        let sessions_dir = client_dir.join("sessions");
+        let archive_dir = client_dir.join("archive");
+
+        let active_path = self.session_manager.active_session_path(client_id);
+
+        let entries = std::fs::read_dir(&sessions_dir)
+            .map_err(|e| format!("Failed to read sessions dir: {}", e))?;
+
+        let mut archived_count = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            // Skip the active session
+            if active_path.as_ref().is_some_and(|active| active == &path) {
+                continue;
+            }
+            if let Err(e) = compaction::compact_session(&path, &archive_dir).await {
+                tracing::warn!("Force compact failed for {:?}: {}", path, e);
+            } else {
+                archived_count += 1;
+            }
+        }
+
+        Ok(CompactResult { archived_count })
+    }
+
+    /// Rebuild the FTS5 index from all session and archive `.md` files on disk.
+    ///
+    /// Drops the existing store, deletes `memory.db`, and re-indexes everything.
+    /// Calls `progress_fn(current, total)` after each file is indexed.
+    pub fn reindex(
+        &self,
+        client_id: &str,
+        mut progress_fn: impl FnMut(usize, usize),
+    ) -> Result<usize, String> {
+        // Remove existing store from cache
+        self.stores.remove(client_id);
+
+        let client_dir = self.memory_dir.join(client_id);
+        let db_path = client_dir.join("memory.db");
+
+        // Delete existing database files
+        for suffix in ["", "-shm", "-wal"] {
+            let p = if suffix.is_empty() {
+                db_path.clone()
+            } else {
+                db_path.with_extension(format!("db{}", suffix))
+            };
+            if p.exists() {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+
+        // Collect all .md files from sessions/ and archive/
+        let sessions_dir = client_dir.join("sessions");
+        let archive_dir = client_dir.join("archive");
+        let mut files: Vec<PathBuf> = Vec::new();
+        for dir in [&sessions_dir, &archive_dir] {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+
+        let total = files.len();
+        progress_fn(0, total);
+
+        // Re-create the store and index each file
+        let store = self.get_or_create_store(client_id)?;
+        for (i, file_path) in files.iter().enumerate() {
+            let file_name = file_path.file_stem().unwrap_or_default().to_string_lossy();
+            let label = format!("session/{}", file_name);
+
+            match std::fs::read_to_string(file_path) {
+                Ok(content) if !content.trim().is_empty() => {
+                    if let Err(e) = store.index(&label, &content) {
+                        tracing::warn!("Reindex failed for {:?}: {}", file_path, e);
+                    }
+                }
+                Ok(_) => {} // empty file, skip
+                Err(e) => {
+                    tracing::warn!("Failed to read {:?} for reindex: {}", file_path, e);
+                }
+            }
+
+            progress_fn(i + 1, total);
+        }
+
+        Ok(total)
+    }
+
     /// Clear all memory for a client: deletes FTS5 index, session files, and archive.
     pub fn clear_memory(&self, client_id: &str) -> Result<(), String> {
         // Close any active sessions for this client
@@ -352,4 +484,32 @@ impl MemoryService {
         );
         Ok(())
     }
+}
+
+/// Compaction statistics for a client's memory.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CompactionStats {
+    pub active_sessions: usize,
+    pub pending_compaction: usize,
+    pub archived_sessions: usize,
+    pub indexed_sources: usize,
+    pub total_lines: usize,
+}
+
+/// Result of a force-compact operation.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CompactResult {
+    pub archived_count: usize,
+}
+
+/// Count `.md` files in a directory.
+fn count_md_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("md"))
+                .count()
+        })
+        .unwrap_or(0)
 }

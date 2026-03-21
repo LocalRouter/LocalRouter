@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { Search, BookOpen, Loader2, FolderOpen, RefreshCw, Trash2 } from "lucide-react"
+import { Search, BookOpen, Loader2, FolderOpen, RefreshCw, Trash2, Archive, RotateCcw } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
+import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   ResizablePanelGroup,
@@ -23,7 +25,15 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
-import type { MemoryClientInfo, RagSearchResult, RagReadResult } from "@/types/tauri-commands"
+import type {
+  MemoryClientInfo,
+  RagSearchResult,
+  RagReadResult,
+  CompactionStatsResult,
+  ForceCompactResult,
+  MemoryReindexProgress,
+  MemoryReindexComplete,
+} from "@/types/tauri-commands"
 
 interface MemorySessionsTabProps {}
 
@@ -31,6 +41,13 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
   const [clients, setClients] = useState<MemoryClientInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
+
+  // Compaction state
+  const [compactionStats, setCompactionStats] = useState<CompactionStatsResult | null>(null)
+  const [loadingStats, setLoadingStats] = useState(false)
+  const [compacting, setCompacting] = useState(false)
+  const [reindexing, setReindexing] = useState(false)
+  const [reindexProgress, setReindexProgress] = useState<{ current: number; total: number } | null>(null)
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("")
@@ -61,6 +78,41 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
     setReadOffset("")
     setReadLimit("")
     setReadResult(null)
+    setCompactionStats(null)
+    if (selectedClientId) {
+      loadCompactionStats(selectedClientId)
+    }
+  }, [selectedClientId])
+
+  // Listen for reindex progress events
+  useEffect(() => {
+    const progressListener = listenSafe<MemoryReindexProgress>("memory-reindex-progress", (e) => {
+      if (e.payload.client_id === selectedClientId) {
+        setReindexProgress({ current: e.payload.current, total: e.payload.total })
+      }
+    })
+    const completeListener = listenSafe<MemoryReindexComplete>("memory-reindex-complete", (e) => {
+      if (e.payload.client_id === selectedClientId) {
+        setReindexing(false)
+        setReindexProgress(null)
+        toast.success(`Index rebuilt: ${e.payload.indexed_count} file${e.payload.indexed_count !== 1 ? "s" : ""} indexed`)
+        loadCompactionStats(e.payload.client_id)
+        loadClients()
+      }
+    })
+    const failedListener = listenSafe<{ client_id: string; error: string }>("memory-reindex-failed", (e) => {
+      if (e.payload.client_id === selectedClientId) {
+        setReindexing(false)
+        setReindexProgress(null)
+        toast.error(`Reindex failed: ${e.payload.error}`)
+      }
+    })
+
+    return () => {
+      progressListener.cleanup()
+      completeListener.cleanup()
+      failedListener.cleanup()
+    }
   }, [selectedClientId])
 
   const loadClients = useCallback(async () => {
@@ -75,12 +127,51 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
     }
   }, [])
 
+  const loadCompactionStats = useCallback(async (clientId: string) => {
+    setLoadingStats(true)
+    try {
+      const stats = await invoke<CompactionStatsResult>("get_memory_compaction_stats", { clientId })
+      setCompactionStats(stats)
+    } catch (error) {
+      console.error("Failed to load compaction stats:", error)
+    } finally {
+      setLoadingStats(false)
+    }
+  }, [])
+
   const handleOpenFolder = async () => {
     if (!selectedClientId) return
     try {
       await invoke("open_client_memory_folder", { clientId: selectedClientId })
     } catch (error: any) {
       toast.error(`Failed to open folder: ${error.message || error}`)
+    }
+  }
+
+  const handleForceCompact = async () => {
+    if (!selectedClientId) return
+    setCompacting(true)
+    try {
+      const result = await invoke<ForceCompactResult>("force_compact_memory", { clientId: selectedClientId })
+      toast.success(`Compacted ${result.archived_count} session${result.archived_count !== 1 ? "s" : ""}`)
+      await loadCompactionStats(selectedClientId)
+      await loadClients()
+    } catch (error: any) {
+      toast.error(`Compaction failed: ${error.message || error}`)
+    } finally {
+      setCompacting(false)
+    }
+  }
+
+  const handleReindex = async () => {
+    if (!selectedClientId) return
+    setReindexing(true)
+    setReindexProgress(null)
+    try {
+      await invoke("reindex_client_memory", { clientId: selectedClientId })
+    } catch (error: any) {
+      setReindexing(false)
+      toast.error(`Reindex failed: ${error.message || error}`)
     }
   }
 
@@ -131,6 +222,14 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
       toast.error(`Failed to clear memory: ${error.message || error}`)
     } finally {
       setClearing(false)
+    }
+  }
+
+  const handleRefresh = async () => {
+    setLoading(true)
+    await loadClients()
+    if (selectedClientId) {
+      await loadCompactionStats(selectedClientId)
     }
   }
 
@@ -205,10 +304,7 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => {
-                        setLoading(true)
-                        loadClients()
-                      }}
+                      onClick={handleRefresh}
                     >
                       <RefreshCw className={cn("h-3.5 w-3.5 mr-1", loading && "animate-spin")} />
                       Refresh
@@ -217,7 +313,143 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                 </CardContent>
               </Card>
 
-              {/* Card 2: Search */}
+              {/* Card 2: Compaction Status */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Archive className="h-4 w-4" />
+                    Compaction Status
+                  </CardTitle>
+                  <CardDescription>
+                    Session lifecycle and index statistics
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {loadingStats ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Loading stats...
+                    </div>
+                  ) : compactionStats ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <div className="rounded-md border p-3">
+                          <p className="text-xs text-muted-foreground">Active</p>
+                          <p className="text-lg font-semibold text-green-600 dark:text-green-400">
+                            {compactionStats.active_sessions}
+                          </p>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <p className="text-xs text-muted-foreground">Pending</p>
+                          <p className={cn(
+                            "text-lg font-semibold",
+                            compactionStats.pending_compaction > 0
+                              ? "text-amber-600 dark:text-amber-400"
+                              : "text-muted-foreground"
+                          )}>
+                            {compactionStats.pending_compaction}
+                          </p>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <p className="text-xs text-muted-foreground">Archived</p>
+                          <p className="text-lg font-semibold text-blue-600 dark:text-blue-400">
+                            {compactionStats.archived_sessions}
+                          </p>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <p className="text-xs text-muted-foreground">Indexed</p>
+                          <p className="text-lg font-semibold">
+                            {compactionStats.indexed_sources}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {compactionStats.total_lines.toLocaleString()} lines
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={compacting || compactionStats.pending_compaction === 0}
+                            >
+                              {compacting ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                              ) : (
+                                <Archive className="h-3.5 w-3.5 mr-1" />
+                              )}
+                              Compact Now
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Compact sessions?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This will archive {compactionStats.pending_compaction} expired session{compactionStats.pending_compaction !== 1 ? "s" : ""} by
+                                moving them from the sessions directory to the archive directory.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction onClick={handleForceCompact}>
+                                Compact
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={reindexing}
+                            >
+                              {reindexing ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                              ) : (
+                                <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                              )}
+                              Rebuild Index
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Rebuild FTS5 index?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This will delete and rebuild the search index from all session and
+                                archive files on disk. The existing index will be replaced.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction onClick={handleReindex}>
+                                Rebuild
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </div>
+
+                      {reindexing && reindexProgress && (
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>Reindexing...</span>
+                            <span>{reindexProgress.current}/{reindexProgress.total} files</span>
+                          </div>
+                          <Progress
+                            value={reindexProgress.total > 0 ? (reindexProgress.current / reindexProgress.total) * 100 : 0}
+                          />
+                        </div>
+                      )}
+                    </>
+                  ) : null}
+                </CardContent>
+              </Card>
+
+              {/* Card 3: Search */}
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -287,7 +519,7 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                 </CardContent>
               </Card>
 
-              {/* Card 3: Read */}
+              {/* Card 4: Read */}
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -361,7 +593,7 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                 </CardContent>
               </Card>
 
-              {/* Card 4: Danger Zone */}
+              {/* Card 5: Danger Zone */}
               <Card className="border-red-200 dark:border-red-900">
                 <CardHeader>
                   <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>

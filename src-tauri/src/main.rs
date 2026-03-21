@@ -2030,6 +2030,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::open_client_memory_folder,
             ui::commands::get_client_memory_config,
             ui::commands::update_client_memory_config,
+            // Memory Compaction commands
+            ui::commands::get_memory_compaction_stats,
+            ui::commands::force_compact_memory,
+            ui::commands::reindex_client_memory,
             // Secret Scanning commands
             ui::commands::rebuild_secret_scanner,
             ui::commands::get_secret_scanning_config,
