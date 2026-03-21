@@ -29,7 +29,7 @@ function ButtonGroup({
           type="button"
           onClick={() => onChange(opt.value)}
           className={cn(
-            "px-3 py-1.5 text-xs font-medium transition-colors",
+            "px-2 py-0.5 text-xs font-medium transition-colors",
             value === opt.value
               ? opt.activeClass
               : "text-muted-foreground hover:text-foreground hover:bg-muted",
@@ -46,15 +46,15 @@ function ButtonGroup({
 
 const SAMPLING_OPTIONS: ButtonGroupOption[] = [
   { value: "passthrough", label: "Passthrough", activeClass: "bg-emerald-500 text-white" },
-  { value: "direct_allow", label: "Direct", activeClass: "bg-emerald-500 text-white" },
+  { value: "direct_allow", label: "Direct", activeClass: "bg-blue-500 text-white" },
   { value: "direct_ask", label: "Direct (Ask)", activeClass: "bg-amber-500 text-white" },
-  { value: "off", label: "Off", activeClass: "bg-zinc-500 text-white" },
+  { value: "off", label: "Off", activeClass: "bg-red-500 text-white" },
 ]
 
 const ELICITATION_OPTIONS: ButtonGroupOption[] = [
   { value: "passthrough", label: "Passthrough", activeClass: "bg-emerald-500 text-white" },
-  { value: "direct", label: "Direct", activeClass: "bg-emerald-500 text-white" },
-  { value: "off", label: "Off", activeClass: "bg-zinc-500 text-white" },
+  { value: "direct", label: "Direct", activeClass: "bg-blue-500 text-white" },
+  { value: "off", label: "Off", activeClass: "bg-red-500 text-white" },
 ]
 
 const SAMPLING_DESCRIPTIONS: Record<string, string> = {
