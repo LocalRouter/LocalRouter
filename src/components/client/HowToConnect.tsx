@@ -216,21 +216,22 @@ function QuickSetupTab({
     setSyncEnabled(syncConfig)
   }, [syncConfig])
 
-  useEffect(() => {
-    const fetchCapabilities = async () => {
-      try {
-        setCheckingInstall(true)
-        const caps = await invoke<AppCapabilities>("get_app_capabilities", {
-          templateId: template.id,
-        } satisfies GetAppCapabilitiesParams)
-        setCapabilities(caps)
-      } catch (error) {
-        console.error("Failed to check app capabilities:", error)
-      } finally {
-        setCheckingInstall(false)
-      }
+  const refreshCapabilities = async () => {
+    try {
+      setCheckingInstall(true)
+      const caps = await invoke<AppCapabilities>("get_app_capabilities", {
+        templateId: template.id,
+      } satisfies GetAppCapabilitiesParams)
+      setCapabilities(caps)
+    } catch (error) {
+      console.error("Failed to check app capabilities:", error)
+    } finally {
+      setCheckingInstall(false)
     }
-    fetchCapabilities()
+  }
+
+  useEffect(() => {
+    refreshCapabilities()
   }, [template.id])
 
   // Auto-fetch temporary launch command when capabilities indicate support
@@ -362,16 +363,26 @@ function QuickSetupTab({
           <div className="flex items-center gap-2 text-sm">
             <XCircle className="h-4 w-4 text-yellow-500" />
             <span>Not detected</span>
-            {template.docsUrl && isValidHttpUrl(template.docsUrl) && (
-              <a
-                href={template.docsUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-primary hover:underline flex items-center gap-1 ml-auto"
+            <div className="flex items-center gap-2 ml-auto">
+              {template.docsUrl && isValidHttpUrl(template.docsUrl) && (
+                <a
+                  href={template.docsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-primary hover:underline flex items-center gap-1"
+                >
+                  Install <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+                onClick={refreshCapabilities}
               >
-                Install <ExternalLink className="h-3 w-3" />
-              </a>
-            )}
+                <RefreshCw className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           </div>
         )}
       </div>
