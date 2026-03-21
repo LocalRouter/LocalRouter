@@ -1999,6 +1999,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // System commands
             ui::commands::get_home_dir,
             ui::commands::get_config_dir,
+            ui::commands::detect_available_runtimes,
             // Update checking commands
             ui::commands::get_app_version,
             ui::commands::get_update_config,

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { AlertTriangle } from 'lucide-react'
 import ServiceIcon from '../ServiceIcon'
+import type { AvailableRuntimes } from '@/types/tauri-commands'
 
 export type McpTemplateCategory = 'version_control' | 'productivity' | 'files_data' | 'databases' | 'search_web' | 'cloud_infra' | 'utilities' | 'development'
 
@@ -276,19 +278,6 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     docsUrl: 'https://pypi.org/project/mcp-server-time/',
   },
   {
-    id: 'memory',
-    name: 'Memory',
-    description: 'Knowledge-graph-based persistent memory server for agents; supports entities, relations, and observations with search.',
-    category: 'utilities',
-    icon: '💭',
-    transport: 'Stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-memory'],
-    authMethod: 'none',
-    setupInstructions: 'Run npx -y @modelcontextprotocol/server-memory. Optionally set MEMORY_FILE_PATH env var to control where the JSON graph is stored; default is memory.json.',
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/memory',
-  },
-  {
     id: 'sequential-thinking',
     name: 'Sequential Thinking',
     description: 'Reasoning-focused MCP server that structures multi-step thought processes with branching and revision for complex problem solving.',
@@ -356,16 +345,34 @@ const CATEGORY_ORDER: McpTemplateCategory[] = [
   'development',
 ]
 
+/** Check if a template's command requires a specific runtime */
+function getRequiredRuntime(template: McpServerTemplate): keyof AvailableRuntimes | null {
+  if (template.command === 'npx') return 'npx'
+  if (template.command === 'uvx') return 'uvx'
+  if (template.command === 'docker') return 'docker'
+  return null
+}
+
+const RUNTIME_LABELS: Record<keyof AvailableRuntimes, { name: string; install: string }> = {
+  npx: { name: 'npx (Node.js)', install: 'Install Node.js from https://nodejs.org' },
+  uvx: { name: 'uvx (uv/Python)', install: 'Install uv from https://docs.astral.sh/uv' },
+  docker: { name: 'Docker', install: 'Install Docker from https://docker.com' },
+}
+
 export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelectTemplate }) => {
   const isDev = import.meta.env.DEV
   const visibleTemplates = MCP_SERVER_TEMPLATES.filter(t => !t.devOnly || isDev)
   const [homeDir, setHomeDir] = useState<string | null>(null)
+  const [runtimes, setRuntimes] = useState<AvailableRuntimes | null>(null)
 
-  // Fetch user's home directory on mount
+  // Fetch user's home directory and available runtimes on mount
   useEffect(() => {
     invoke<string>('get_home_dir')
       .then(setHomeDir)
       .catch((err) => console.error('Failed to get home directory:', err))
+    invoke<AvailableRuntimes>('detect_available_runtimes')
+      .then(setRuntimes)
+      .catch((err) => console.error('Failed to detect runtimes:', err))
   }, [])
 
   // Replace placeholders in template args with actual values
@@ -383,9 +390,26 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
     onSelectTemplate(resolveTemplate(template))
   }
 
+  const isRuntimeAvailable = (template: McpServerTemplate): boolean => {
+    if (!runtimes) return true // Still loading, assume available
+    const required = getRequiredRuntime(template)
+    if (!required) return true // SSE or no command needed
+    return runtimes[required]
+  }
+
+  // Collect missing runtimes that affect visible templates
+  const missingRuntimes = runtimes
+    ? (Object.keys(RUNTIME_LABELS) as (keyof AvailableRuntimes)[]).filter(
+        rt => !runtimes[rt] && visibleTemplates.some(t => getRequiredRuntime(t) === rt)
+      )
+    : []
+
+  // Filter out templates with unavailable runtimes
+  const availableTemplates = visibleTemplates.filter(t => isRuntimeAvailable(t))
+
   // Group templates by category
   const templatesByCategory = CATEGORY_ORDER.reduce((acc, category) => {
-    const templates = visibleTemplates.filter(t => t.category === category)
+    const templates = availableTemplates.filter(t => t.category === category)
     if (templates.length > 0) {
       acc[category] = templates
     }
@@ -429,6 +453,24 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
 
   return (
     <div className="space-y-6">
+      {missingRuntimes.length > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-500" />
+          <div>
+            <p className="font-medium text-amber-600 dark:text-amber-400">
+              Some templates are hidden due to missing runtimes
+            </p>
+            <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+              {missingRuntimes.map(rt => (
+                <li key={rt}>
+                  <span className="font-medium">{RUNTIME_LABELS[rt].name}</span>
+                  {' — '}{RUNTIME_LABELS[rt].install}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
       {CATEGORY_ORDER.map(category => {
         const templates = templatesByCategory[category]
         if (!templates) return null

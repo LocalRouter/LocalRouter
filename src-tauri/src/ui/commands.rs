@@ -1326,6 +1326,44 @@ pub fn get_home_dir() -> Result<String, String> {
         .map(|s| s.to_string())
 }
 
+/// Detect which MCP-related runtimes are available on the system.
+///
+/// Checks for `npx`, `uvx`, and `docker` using the resolved shell PATH
+/// (which on macOS includes the user's login shell PATH).
+#[derive(Serialize, Clone)]
+pub struct AvailableRuntimes {
+    pub npx: bool,
+    pub uvx: bool,
+    pub docker: bool,
+}
+
+#[tauri::command]
+pub fn detect_available_runtimes() -> AvailableRuntimes {
+    let env = lr_mcp::manager::shell_env();
+
+    fn is_available(cmd: &str, env: &HashMap<String, String>) -> bool {
+        let mut command = std::process::Command::new(cmd);
+        command.arg("--version");
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::null());
+        // Clear inherited env vars and set only our resolved PATH
+        command.env_clear();
+        for (k, v) in env {
+            command.env(k, v);
+        }
+        command
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    AvailableRuntimes {
+        npx: is_available("npx", &env),
+        uvx: is_available("uvx", &env),
+        docker: is_available("docker", &env),
+    }
+}
+
 /// Get user's config directory (platform-specific)
 /// macOS: ~/Library/Application Support, Linux: ~/.config, Windows: %APPDATA%
 #[tauri::command]

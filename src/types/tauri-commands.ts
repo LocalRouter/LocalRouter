@@ -1083,6 +1083,16 @@ export interface ServerConfigInfo {
 }
 
 /**
+ * Available runtimes detected on the system.
+ * Rust: src-tauri/src/ui/commands.rs - AvailableRuntimes struct
+ */
+export interface AvailableRuntimes {
+  npx: boolean
+  uvx: boolean
+  docker: boolean
+}
+
+/**
  * Network interface information.
  * Rust: src-tauri/src/ui/commands.rs - NetworkInterface struct
  */

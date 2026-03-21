@@ -114,6 +114,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_setup_wizard_shown': () => null,
   'get_home_dir': () => mockData.homeDir,
   'get_config_dir': () => mockData.configDir,
+  'detect_available_runtimes': () => ({ npx: true, uvx: true, docker: true }),
   'get_config': () => ({
     providers: [
       { name: 'openai', api_key: 'sk-demo-fake-key-1234', models: ['gpt-4o', 'gpt-4o-mini'] },
