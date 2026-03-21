@@ -1,7 +1,7 @@
 import { Settings as SettingsIcon } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { LoggingTab } from "./logging-tab"
+// LoggingTab removed — logs feature is deprecated (replaced by Monitor view)
 import { UpdatesTab } from "./updates-tab"
 import { AppearanceTab } from "./appearance-tab"
 import { HealthChecksTab } from "./health-checks-tab"
@@ -36,7 +36,6 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
         <TabsList>
           <TabsTrigger value="appearance"><TAB_ICONS.appearance className={TAB_ICON_CLASS} />Appearance</TabsTrigger>
           <TabsTrigger value="health-checks"><TAB_ICONS.healthChecks className={TAB_ICON_CLASS} />Health Checks</TabsTrigger>
-          <TabsTrigger value="logs"><TAB_ICONS.logs className={TAB_ICON_CLASS} />Logs</TabsTrigger>
           <TabsTrigger value="updates"><TAB_ICONS.updates className={TAB_ICON_CLASS} />Updates</TabsTrigger>
           <TabsTrigger value="licenses"><TAB_ICONS.licenses className={TAB_ICON_CLASS} />Licenses</TabsTrigger>
         </TabsList>
@@ -47,10 +46,6 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
 
         <TabsContent value="health-checks">
           <HealthChecksTab />
-        </TabsContent>
-
-        <TabsContent value="logs">
-          <LoggingTab />
         </TabsContent>
 
         <TabsContent value="updates">

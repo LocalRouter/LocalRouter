@@ -1,3 +1,8 @@
+/**
+ * @deprecated The Logs tab has been removed from Settings.
+ * This file is kept for reference but is no longer rendered.
+ * Logging/monitoring functionality lives in the Monitor view.
+ */
 import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
