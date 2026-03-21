@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { Activity, DollarSign, Zap, CheckCircle, RefreshCw, Plus, LayoutDashboard, GitBranch, Wrench, FileDown, Database } from "lucide-react"
+import { Activity, DollarSign, Zap, CheckCircle, RefreshCw, LayoutDashboard, GitBranch, Wrench, FileDown, Database } from "lucide-react"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { StatsCard, StatsRow } from "@/components/shared/stats-card"
 import { MetricsChart } from "@/components/shared/metrics-chart"
@@ -229,18 +229,11 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
 
   return (
     <div className="space-y-6 max-w-5xl">
-      {/* Header with Create Client button */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><LayoutDashboard className="h-6 w-6" />Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            Monitor your LLM and MCP usage across all clients.
-          </p>
-        </div>
-        <Button onClick={() => setWizardOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create Client
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><LayoutDashboard className="h-6 w-6" />Dashboard</h1>
+        <p className="text-sm text-muted-foreground">
+          Monitor your LLM and MCP usage across all clients.
+        </p>
       </div>
 
       {/* Stats Row */}
