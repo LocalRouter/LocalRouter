@@ -141,6 +141,9 @@ export function McpServersPanel({
   const [oauthClientId, setOauthClientId] = useState("")
   const [oauthClientSecret, setOauthClientSecret] = useState("")
 
+  // Template field values: { fieldId: userInputValue }
+  const [templateFieldValues, setTemplateFieldValues] = useState<Record<string, string>>({})
+
   useEffect(() => {
     loadServers()
 
@@ -170,7 +173,14 @@ export function McpServersPanel({
           setUrl(template.url || "")
           setCommand("")
         }
-        setAuthMethod(template.authMethod)
+        setAuthMethod(template.authMethod === "oauth_browser" ? "oauth_browser" : "none")
+
+        // Initialize template field values from defaults
+        const initialValues: Record<string, string> = {}
+        template.fields?.forEach(field => {
+          initialValues[field.id] = field.defaultValue || ""
+        })
+        setTemplateFieldValues(initialValues)
       }
     }
   }, [initialAddTemplateId])
@@ -217,6 +227,7 @@ export function McpServersPanel({
     setBearerToken("")
     setOauthClientId("")
     setOauthClientSecret("")
+    setTemplateFieldValues({})
     setSelectedSource(null)
     setDialogPage("select")
     setDialogTab("templates")
@@ -238,11 +249,16 @@ export function McpServersPanel({
 
     if (template.authMethod === "oauth_browser") {
       setAuthMethod("oauth_browser")
-    } else if (template.authMethod === "none" || template.authMethod === "bearer") {
-      setAuthMethod(template.authMethod)
     } else {
       setAuthMethod("none")
     }
+
+    // Initialize template field values from defaults
+    const initialValues: Record<string, string> = {}
+    template.fields?.forEach(field => {
+      initialValues[field.id] = field.defaultValue || ""
+    })
+    setTemplateFieldValues(initialValues)
 
     // Switch to configure page
     setDialogPage("configure")
@@ -284,8 +300,33 @@ export function McpServersPanel({
     setIsCreating(true)
 
     try {
+      const template = selectedSource?.type === "template" ? selectedSource.template : null
+      const hasTemplateFields = template?.fields && template.fields.length > 0
+
       let transportConfig
-      if (transportType === "Stdio") {
+      if (hasTemplateFields && template) {
+        // Build transport config from template + field values
+        if (template.transport === "Stdio") {
+          let resolvedArgs = [...(template.args || [])]
+          const envVarsFromFields: Record<string, string> = {}
+
+          template.fields!.forEach(field => {
+            const value = templateFieldValues[field.id] || ""
+            if (field.type === "arg") {
+              resolvedArgs = resolvedArgs.map(arg =>
+                arg.includes(`{{${field.id}}}`) ? arg.replace(`{{${field.id}}}`, value) : arg
+              )
+            } else if (field.type === "env_var" && value) {
+              envVarsFromFields[field.id] = value
+            }
+          })
+
+          const fullCommand = [template.command, ...resolvedArgs].join(" ")
+          transportConfig = { type: "stdio", command: fullCommand, env: envVarsFromFields }
+        } else {
+          transportConfig = { type: "http_sse", url: template.url || url, headers: {} }
+        }
+      } else if (transportType === "Stdio") {
         transportConfig = { type: "stdio", command, env: envVars }
       } else {
         transportConfig = { type: "http_sse", url, headers: headers }
@@ -1221,53 +1262,125 @@ export function McpServersPanel({
               </form>
             </TabsContent>
           </Tabs>
-        ) : (
-          /* Page 2: Configuration Form */
+        ) : selectedSource?.type === "template" && selectedSource.template ? (
+          /* Page 2a: Simplified Template Form */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto space-y-4">
             {/* Back button and source header */}
             <div className="flex items-center gap-3 pb-2 border-b flex-shrink-0">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={handleBackToSelect}
-                className="h-8 px-2"
-              >
+              <Button type="button" variant="ghost" size="sm" onClick={handleBackToSelect} className="h-8 px-2">
                 <ArrowLeft className="h-4 w-4 mr-1" />
                 Back
               </Button>
-              {selectedSource && (
-                <div className="flex items-center gap-2">
-                  {selectedSource.type === "template" && selectedSource.template && (
-                    <>
-                      <ServiceIcon service={selectedSource.template.id} size={24} fallbackToServerIcon />
-                      <div>
-                        <p className="text-sm font-medium">{selectedSource.template.name}</p>
-                        <p className="text-xs text-muted-foreground">{selectedSource.template.description}</p>
-                      </div>
-                    </>
-                  )}
-                  {selectedSource.type === "marketplace" && selectedSource.listing && (
-                    <>
-                      <ServiceIcon service={selectedSource.listing.name.toLowerCase().replace(/[^a-z0-9]/g, "")} size={24} fallbackToServerIcon />
-                      <div>
-                        <p className="text-sm font-medium">{selectedSource.listing.name}</p>
-                        <p className="text-xs text-muted-foreground">{selectedSource.listing.description}</p>
-                      </div>
-                    </>
-                  )}
+              <div className="flex items-center gap-2">
+                <ServiceIcon service={selectedSource.template.id} size={24} fallbackToServerIcon />
+                <div>
+                  <p className="text-sm font-medium">{selectedSource.template.name}</p>
+                  <p className="text-xs text-muted-foreground">{selectedSource.template.description}</p>
                 </div>
-              )}
+              </div>
             </div>
 
             {/* Setup instructions */}
-            {selectedSource?.type === "template" && selectedSource.template?.setupInstructions && (
+            {selectedSource.template.setupInstructions && (
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-400 dark:border-blue-800 rounded p-3">
                 <p className="text-xs text-foreground">
                   {selectedSource.template.setupInstructions}
                 </p>
               </div>
             )}
+
+            <form onSubmit={handleCreateServer} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">Server Name</label>
+                <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" required />
+              </div>
+
+              {/* Template-defined fields */}
+              {selectedSource.template.fields?.map(field => {
+                const isRequired = field.required !== false
+                return (
+                  <div key={field.id}>
+                    <label className="block text-sm font-medium mb-2">
+                      {field.label}
+                    </label>
+                    <Input
+                      type={field.secret ? "password" : "text"}
+                      value={templateFieldValues[field.id] || ""}
+                      onChange={(e) => setTemplateFieldValues(prev => ({ ...prev, [field.id]: e.target.value }))}
+                      placeholder={field.placeholder}
+                      required={isRequired}
+                    />
+                    {field.helpText && (
+                      <p className="text-xs text-muted-foreground mt-1">{field.helpText}</p>
+                    )}
+                  </div>
+                )
+              })}
+
+              {/* OAuth browser note */}
+              {selectedSource.template.authMethod === "oauth_browser" && (
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-400 dark:border-blue-800 rounded p-3">
+                  <p className="text-xs text-foreground">
+                    After creating this server, you'll be prompted to authenticate in your browser.
+                  </p>
+                </div>
+              )}
+
+              {/* Command preview */}
+              {selectedSource.template.command && (
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">Command</label>
+                  <code className="block text-xs bg-muted rounded p-2 break-all text-muted-foreground">
+                    {(() => {
+                      const t = selectedSource.template!
+                      let args = [...(t.args || [])]
+                      t.fields?.forEach(f => {
+                        if (f.type === "arg") {
+                          const val = templateFieldValues[f.id]
+                          if (val) args = args.map(a => a.includes(`{{${f.id}}}`) ? a.replace(`{{${f.id}}}`, val) : a)
+                        }
+                      })
+                      return [t.command, ...args].join(" ")
+                    })()}
+                  </code>
+                </div>
+              )}
+              {selectedSource.template.transport === "Sse" && selectedSource.template.url && (
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">URL</label>
+                  <code className="block text-xs bg-muted rounded p-2 break-all text-muted-foreground">
+                    {selectedSource.template.url}
+                  </code>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-4">
+                <Button type="button" variant="secondary" onClick={() => { setShowCreateModal(false); resetForm() }} disabled={isCreating}>Cancel</Button>
+                <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>
+              </div>
+            </form>
+          </div>
+        ) : (
+          /* Page 2b: Full Configuration Form (marketplace/fallback) */
+          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto space-y-4">
+            {/* Back button and source header */}
+            <div className="flex items-center gap-3 pb-2 border-b flex-shrink-0">
+              <Button type="button" variant="ghost" size="sm" onClick={handleBackToSelect} className="h-8 px-2">
+                <ArrowLeft className="h-4 w-4 mr-1" />
+                Back
+              </Button>
+              {selectedSource?.type === "marketplace" && selectedSource.listing && (
+                <div className="flex items-center gap-2">
+                  <ServiceIcon service={selectedSource.listing.name.toLowerCase().replace(/[^a-z0-9]/g, "")} size={24} fallbackToServerIcon />
+                  <div>
+                    <p className="text-sm font-medium">{selectedSource.listing.name}</p>
+                    <p className="text-xs text-muted-foreground">{selectedSource.listing.description}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Install hint for marketplace */}
             {selectedSource?.type === "marketplace" && selectedSource.listing?.install_hint && (
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-400 dark:border-blue-800 rounded p-3">
                 <p className="text-xs text-foreground">

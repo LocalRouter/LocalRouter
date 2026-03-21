@@ -6,6 +6,19 @@ import type { AvailableRuntimes } from '@/types/tauri-commands'
 
 export type McpTemplateCategory = 'version_control' | 'productivity' | 'files_data' | 'databases' | 'search_web' | 'cloud_infra' | 'utilities' | 'development'
 
+export interface TemplateField {
+  /** For env_var: the env var key. For arg: used as {{id}} placeholder in args */
+  id: string
+  label: string
+  placeholder: string
+  type: 'env_var' | 'arg'
+  secret?: boolean
+  /** Default: true */
+  required?: boolean
+  helpText?: string
+  defaultValue?: string
+}
+
 export interface McpServerTemplate {
   id: string
   name: string
@@ -19,6 +32,8 @@ export interface McpServerTemplate {
   args?: string[]
   url?: string
   authMethod: 'none' | 'bearer' | 'oauth_browser'
+  /** User-configurable fields shown in the simplified template form */
+  fields?: TemplateField[]
   defaultScopes?: string[]
   setupInstructions?: string
   docsUrl?: string
@@ -39,10 +54,12 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     transport: 'Stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-github'],
-    authMethod: 'bearer',
-    setupInstructions: "Create a GitHub Personal Access Token (classic) at https://github.com/settings/tokens with at least 'repo' (and optionally 'read:user') scope. In your MCP config, set env: { \"GITHUB_PERSONAL_ACCESS_TOKEN\": \"<YOUR_TOKEN>\" }.",
+    authMethod: 'none',
+    fields: [
+      { id: 'GITHUB_PERSONAL_ACCESS_TOKEN', label: 'Personal Access Token', type: 'env_var', placeholder: 'ghp_...', secret: true, helpText: "Create at https://github.com/settings/tokens with 'repo' scope" },
+    ],
+    setupInstructions: "Create a GitHub Personal Access Token (classic) at https://github.com/settings/tokens with at least 'repo' (and optionally 'read:user') scope.",
     docsUrl: 'https://www.npmjs.com/package/@modelcontextprotocol/server-github',
-    defaultScopes: ['repo', 'read:user'],
   },
   {
     id: 'git',
@@ -52,9 +69,12 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     icon: '🔗',
     transport: 'Stdio',
     command: 'uvx',
-    args: ['mcp-server-git', '--repository', '/path/to/git/repo'],
+    args: ['mcp-server-git', '--repository', '{{repo_path}}'],
     authMethod: 'none',
-    setupInstructions: 'Install uv or Python, then run via uvx mcp-server-git. Pass --repository path/to/git/repo to specify the repository. No auth env vars are required.',
+    fields: [
+      { id: 'repo_path', label: 'Repository Path', type: 'arg', placeholder: '/path/to/your/git/repo' },
+    ],
+    setupInstructions: 'Point this server at a local Git repository. No auth env vars are required.',
     docsUrl: 'https://pypi.org/project/mcp-server-git/',
   },
   {
@@ -81,8 +101,11 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     transport: 'Stdio',
     command: 'npx',
     args: ['-y', '@notionhq/notion-mcp-server'],
-    authMethod: 'bearer',
-    setupInstructions: 'Create an internal Notion integration at https://www.notion.so/profile/integrations and copy its secret. Share relevant pages/databases with that integration. Set env: { "NOTION_TOKEN": "ntn_****" }.',
+    authMethod: 'none',
+    fields: [
+      { id: 'NOTION_TOKEN', label: 'Integration Secret', type: 'env_var', placeholder: 'ntn_...', secret: true, helpText: 'Create at https://www.notion.so/profile/integrations' },
+    ],
+    setupInstructions: 'Create an internal Notion integration and copy its secret. Share relevant pages/databases with that integration.',
     docsUrl: 'https://github.com/makenotion/notion-mcp-server',
   },
 
@@ -109,9 +132,12 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     icon: '📂',
     transport: 'Stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-filesystem', HOME_DIR_PLACEHOLDER],
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '{{directory}}'],
     authMethod: 'none',
-    setupInstructions: 'Decide which local directories the AI should be allowed to access. Pass directory paths as args after the package name. These paths become the allowed roots. No auth env vars needed.',
+    fields: [
+      { id: 'directory', label: 'Allowed Directory', type: 'arg', placeholder: '/path/to/directory', defaultValue: HOME_DIR_PLACEHOLDER },
+    ],
+    setupInstructions: 'Choose which local directory the AI should be allowed to access.',
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem',
   },
 
@@ -124,9 +150,12 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     icon: '🐘',
     transport: 'Stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://localhost/mydb'],
+    args: ['-y', '@modelcontextprotocol/server-postgres', '{{connection_url}}'],
     authMethod: 'none',
-    setupInstructions: 'Construct a connection URL like postgresql://user:password@host:5432/dbname. Pass the URL as the last arg. Credentials are embedded in the URL; no separate env vars required.',
+    fields: [
+      { id: 'connection_url', label: 'Connection URL', type: 'arg', placeholder: 'postgresql://user:pass@host:5432/dbname' },
+    ],
+    setupInstructions: 'Provide a PostgreSQL connection URL. Credentials are embedded in the URL.',
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/postgres',
   },
   {
@@ -149,9 +178,13 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     icon: '🗄️',
     transport: 'Stdio',
     command: 'npx',
-    args: ['-y', '@supabase/mcp-server-supabase@latest', '--read-only', '--project-ref=<project-ref>'],
-    authMethod: 'bearer',
-    setupInstructions: 'Create a Supabase personal access token in your dashboard. Set --project-ref=<your-ref> in args and env: { "SUPABASE_ACCESS_TOKEN": "<your-PAT>" }. Read-only mode is recommended.',
+    args: ['-y', '@supabase/mcp-server-supabase@latest', '--read-only', '--project-ref={{project_ref}}'],
+    authMethod: 'none',
+    fields: [
+      { id: 'project_ref', label: 'Project Reference', type: 'arg', placeholder: 'your-project-ref' },
+      { id: 'SUPABASE_ACCESS_TOKEN', label: 'Access Token', type: 'env_var', placeholder: 'sbp_...', secret: true, helpText: 'Create in your Supabase dashboard' },
+    ],
+    setupInstructions: 'Create a Supabase personal access token in your dashboard. Read-only mode is enabled by default.',
     docsUrl: 'https://github.com/supabase-community/supabase-mcp',
   },
 
@@ -165,8 +198,11 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     transport: 'Stdio',
     command: 'npx',
     args: ['-y', '@brave/brave-search-mcp-server', '--transport', 'stdio'],
-    authMethod: 'bearer',
-    setupInstructions: 'Sign up for a Brave Search API account and generate a BRAVE_API_KEY from the developer dashboard. Set env: { "BRAVE_API_KEY": "YOUR_API_KEY_HERE" }.',
+    authMethod: 'none',
+    fields: [
+      { id: 'BRAVE_API_KEY', label: 'API Key', type: 'env_var', placeholder: 'BSA...', secret: true, helpText: 'Get from https://brave.com/search/api/' },
+    ],
+    setupInstructions: 'Sign up for a Brave Search API account and generate an API key from the developer dashboard.',
     docsUrl: 'https://github.com/brave/brave-search-mcp-server',
   },
   {
@@ -258,8 +294,11 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     transport: 'Stdio',
     command: 'npx',
     args: ['-y', '@cloudflare/mcp-server-cloudflare'],
-    authMethod: 'bearer',
-    setupInstructions: 'Generate a Cloudflare API token at https://dash.cloudflare.com/profile/api-tokens with appropriate permissions. Set env: { "CLOUDFLARE_API_TOKEN": "your-token" }. Optionally set CLOUDFLARE_ACCOUNT_ID to target a specific account.',
+    authMethod: 'none',
+    fields: [
+      { id: 'CLOUDFLARE_API_TOKEN', label: 'API Token', type: 'env_var', placeholder: 'your-cloudflare-api-token', secret: true, helpText: 'Create at https://dash.cloudflare.com/profile/api-tokens' },
+    ],
+    setupInstructions: 'Generate a Cloudflare API token with appropriate permissions.',
     docsUrl: 'https://github.com/cloudflare/mcp-server-cloudflare',
   },
 
@@ -375,15 +414,24 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
       .catch((err) => console.error('Failed to detect runtimes:', err))
   }, [])
 
-  // Replace placeholders in template args with actual values
+  // Replace placeholders in template args and field defaults with actual values
   const resolveTemplate = (template: McpServerTemplate): McpServerTemplate => {
-    if (!template.args || !homeDir) return template
+    if (!homeDir) return template
 
-    const resolvedArgs = template.args.map(arg =>
-      arg === HOME_DIR_PLACEHOLDER ? homeDir : arg
+    const resolvedArgs = template.args?.map(arg =>
+      arg.includes(HOME_DIR_PLACEHOLDER) ? arg.replace(HOME_DIR_PLACEHOLDER, homeDir) : arg
     )
 
-    return { ...template, args: resolvedArgs }
+    const resolvedFields = template.fields?.map(field => ({
+      ...field,
+      defaultValue: field.defaultValue?.replace(HOME_DIR_PLACEHOLDER, homeDir),
+    }))
+
+    return {
+      ...template,
+      ...(resolvedArgs && { args: resolvedArgs }),
+      ...(resolvedFields && { fields: resolvedFields }),
+    }
   }
 
   const handleSelectTemplate = (template: McpServerTemplate) => {
