@@ -263,7 +263,7 @@ export function PermissionTreeSelector<S extends string>({
             : renderButton({
                 value: globalPermission,
                 onChange: onGlobalChange,
-                disabled,
+                disabled: disabled || nodes.length === 0,
                 size: "sm",
                 childRollupStates: globalChildRollupStates,
               })
