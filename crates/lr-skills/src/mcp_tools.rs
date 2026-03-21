@@ -264,6 +264,9 @@ pub fn is_skill_tool(
 /// Returns `Ok(Some(result))` if the tool was the skill meta-tool,
 /// `Ok(None)` if it's not a skill tool (should be routed elsewhere).
 ///
+/// When an exact name match fails, attempts fuzzy matching (case-insensitive,
+/// normalized, Levenshtein) and returns the matched skill with a correction note.
+///
 /// `configured_tool_name` is the configured name for the meta-tool (e.g. "SkillRead").
 /// `resource_read_name` is the name of the resource read tool (e.g. "ResourceRead").
 pub async fn handle_skill_tool_call(
@@ -283,25 +286,40 @@ pub async fn handle_skill_tool_call(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing required 'name' parameter".to_string())?;
 
-    // Verify the skill is accessible
+    // Verify the client has any skill access at all
     let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
     if !has_any_access {
         return Err("No skill access".to_string());
     }
-    if !permissions.resolve_skill(skill_name).is_enabled() {
-        return Err(format!("Skill '{}' is not permitted", skill_name));
+
+    // Try exact match first (fast path)
+    if let Some(skill) = skill_manager.get(skill_name) {
+        if !permissions.resolve_skill(skill_name).is_enabled() {
+            return Err(format!("Skill '{}' is not permitted", skill_name));
+        }
+        if !skill.enabled {
+            return Err(format!("Skill '{}' is disabled", skill_name));
+        }
+        let response = build_skill_read_response(&skill, resource_read_name);
+        return Ok(Some(SkillToolResult::Response(response)));
     }
 
-    let skill = skill_manager
-        .get(skill_name)
-        .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
+    // Exact match failed — try fuzzy matching
+    match skill_manager.find_closest(skill_name) {
+        Some((skill, match_kind)) => {
+            let resolved_name = &skill.metadata.name;
 
-    if !skill.enabled {
-        return Err(format!("Skill '{}' is disabled", skill_name));
+            // Check permissions on the resolved name
+            if !permissions.resolve_skill(resolved_name).is_enabled() {
+                return Err(not_found_error(skill_name, skill_manager, permissions));
+            }
+
+            let mut response = build_skill_read_response(&skill, resource_read_name);
+            prepend_correction_note(&mut response, skill_name, resolved_name, &match_kind);
+            Ok(Some(SkillToolResult::Response(response)))
+        }
+        None => Err(not_found_error(skill_name, skill_manager, permissions)),
     }
-
-    let response = build_skill_read_response(&skill, resource_read_name);
-    Ok(Some(SkillToolResult::Response(response)))
 }
 
 /// Read a skill file (script, reference, or asset) by relative path.
@@ -309,6 +327,9 @@ pub async fn handle_skill_tool_call(
 /// The `subpath` is relative to the skill directory, e.g. `scripts/build.sh`.
 /// Returns the file content as text, or an error if the file doesn't exist
 /// or is not part of the skill's known files.
+///
+/// When an exact skill name match fails, attempts fuzzy matching and prepends
+/// a correction note to the returned content.
 ///
 /// `configured_tool_name` is the configured skill-read meta-tool name, used in error messages.
 /// `configured_rfile_name` is the configured read-file tool name, used in error messages.
@@ -325,17 +346,33 @@ pub fn read_skill_file(
     if !has_any_access {
         return Err("No skill access".to_string());
     }
-    if !permissions.resolve_skill(skill_name).is_enabled() {
-        return Err(format!("Skill '{}' is not permitted", skill_name));
-    }
 
-    let skill = skill_manager
-        .get(skill_name)
-        .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
-
-    if !skill.enabled {
-        return Err(format!("Skill '{}' is disabled", skill_name));
-    }
+    // Resolve skill: exact match first, then fuzzy fallback
+    let (skill, correction_note) = if let Some(skill) = skill_manager.get(skill_name) {
+        if !permissions.resolve_skill(skill_name).is_enabled() {
+            return Err(format!("Skill '{}' is not permitted", skill_name));
+        }
+        if !skill.enabled {
+            return Err(format!("Skill '{}' is disabled", skill_name));
+        }
+        (skill, None)
+    } else {
+        // Fuzzy fallback
+        match skill_manager.find_closest(skill_name) {
+            Some((skill, match_kind)) if !matches!(match_kind, crate::fuzzy::MatchKind::Exact) => {
+                let resolved = &skill.metadata.name;
+                if !permissions.resolve_skill(resolved).is_enabled() {
+                    return Err(not_found_error(skill_name, skill_manager, permissions));
+                }
+                let note = format!(
+                    "Note: No skill named '{}' was found. Reading from skill '{}' instead.\n\n",
+                    skill_name, resolved
+                );
+                (skill, Some(note))
+            }
+            _ => return Err(not_found_error(skill_name, skill_manager, permissions)),
+        }
+    };
 
     // Block access to SKILL.md — that's only returned by the skill-read meta-tool
     if subpath == "SKILL.md" || subpath == "skill.md" {
@@ -358,15 +395,77 @@ pub fn read_skill_file(
         return Err(format!(
             "File '{}' is not part of skill '{}'. Available files: {}",
             subpath,
-            skill_name,
+            skill.metadata.name,
             all_files.join(", ")
         ));
     }
 
     // Read from disk
     let file_path = skill.skill_dir.join(subpath);
-    std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read '{}': {}", file_path.display(), e))
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read '{}': {}", file_path.display(), e))?;
+
+    match correction_note {
+        Some(note) => Ok(format!("{}{}", note, content)),
+        None => Ok(content),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fuzzy matching helpers
+// ---------------------------------------------------------------------------
+
+/// Prepend a correction note to the JSON response when a fuzzy match was used.
+fn prepend_correction_note(
+    response: &mut serde_json::Value,
+    requested: &str,
+    resolved: &str,
+    match_kind: &crate::fuzzy::MatchKind,
+) {
+    if matches!(match_kind, crate::fuzzy::MatchKind::Exact) {
+        return;
+    }
+
+    let note = format!(
+        "Note: No skill named '{}' was found. Showing skill '{}' instead.\n\n",
+        requested, resolved
+    );
+
+    if let Some(content) = response.get_mut("content") {
+        if let Some(arr) = content.as_array_mut() {
+            if let Some(first) = arr.first_mut() {
+                if let Some(text) = first.get_mut("text") {
+                    if let Some(s) = text.as_str() {
+                        *text = serde_json::Value::String(format!("{}{}", note, s));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Build an error message listing available skill names.
+fn not_found_error(
+    skill_name: &str,
+    skill_manager: &SkillManager,
+    permissions: &SkillsPermissions,
+) -> String {
+    let all_skills = skill_manager.get_all();
+    let accessible_names: Vec<&str> = all_skills
+        .iter()
+        .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
+        .map(|s| s.metadata.name.as_str())
+        .collect();
+
+    if accessible_names.is_empty() {
+        format!("Skill '{}' not found. No skills are available.", skill_name)
+    } else {
+        format!(
+            "Skill '{}' not found. Available skills: {}",
+            skill_name,
+            accessible_names.join(", ")
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

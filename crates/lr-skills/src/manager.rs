@@ -147,10 +147,28 @@ impl SkillManager {
         snapshot.iter().map(SkillInfo::from).collect()
     }
 
-    /// Get a specific skill by name
+    /// Get a specific skill by name (exact match only)
     pub fn get(&self, name: &str) -> Option<SkillDefinition> {
         let snapshot = self.snapshot();
         snapshot.iter().find(|s| s.metadata.name == name).cloned()
+    }
+
+    /// Find the closest matching skill using layered matching.
+    ///
+    /// Tries exact → case-insensitive → normalized → fuzzy (Levenshtein).
+    /// Only considers enabled skills. Does NOT filter by permissions — that
+    /// is the caller's responsibility.
+    pub fn find_closest(&self, name: &str) -> Option<(SkillDefinition, crate::fuzzy::MatchKind)> {
+        let snapshot = self.snapshot();
+        let candidates: Vec<(usize, &str)> = snapshot
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.enabled)
+            .map(|(i, s)| (i, s.metadata.name.as_str()))
+            .collect();
+
+        let (idx, kind) = crate::fuzzy::find_best_match(name, &candidates)?;
+        Some((snapshot[idx].clone(), kind))
     }
 
     /// Get all skill definitions (for MCP tool generation)

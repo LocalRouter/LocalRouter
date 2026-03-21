@@ -7,6 +7,7 @@
 
 pub mod discovery;
 pub mod executor;
+pub mod fuzzy;
 pub mod manager;
 pub mod mcp_tools;
 pub mod types;
