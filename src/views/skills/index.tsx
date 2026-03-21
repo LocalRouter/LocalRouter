@@ -4,7 +4,7 @@ import { listenSafe } from "@/hooks/useTauriListener"
 import { open } from "@tauri-apps/plugin-dialog"
 
 import { toast } from "sonner"
-import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Plus, Trash2, FolderOpen, Loader2, Store, FilePlus } from "lucide-react"
+import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Plus, Trash2, FolderOpen, Loader2, Store, FilePlus, Import } from "lucide-react"
 import { SkillsIcon } from "@/components/icons/category-icons"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
@@ -88,7 +88,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
 
   // Add skills dialog state
   const [showAddDialog, setShowAddDialog] = useState(false)
-  const [addDialogTab, setAddDialogTab] = useState<"paths" | "marketplace" | "new">("paths")
+  const [addDialogTab, setAddDialogTab] = useState<"paths" | "marketplace" | "new">("new")
   const [skillPaths, setSkillPaths] = useState<string[]>([])
   const [newPath, setNewPath] = useState("")
   const [addingPath, setAddingPath] = useState(false)
@@ -700,7 +700,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                         <CardHeader>
                           <CardTitle className="text-sm">Tool Names</CardTitle>
                           <CardDescription>
-                            Global tool names exposed to LLM clients. Changes apply to new sessions only.
+                            Rename tools to resolve conflicts with other tools the LLM client already uses. Changes apply to new sessions only.
                           </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-3">
@@ -843,29 +843,19 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
 
           <Tabs value={addDialogTab} onValueChange={(v) => setAddDialogTab(v as typeof addDialogTab)} className="flex-1 flex flex-col min-h-0">
             <TabsList className="grid w-full grid-cols-3 flex-shrink-0">
+              <TabsTrigger value="new" className="flex items-center gap-1.5">
+                <FilePlus className="h-3.5 w-3.5" />
+                New
+              </TabsTrigger>
               <TabsTrigger value="paths" className="flex items-center gap-1.5">
-                <FolderOpen className="h-3.5 w-3.5" />
-                Paths
+                <Import className="h-3.5 w-3.5" />
+                Import
               </TabsTrigger>
               <TabsTrigger value="marketplace" className="flex items-center gap-1.5">
                 <Store className="h-3.5 w-3.5" />
                 Marketplace
               </TabsTrigger>
-              <TabsTrigger value="new" className="flex items-center gap-1.5">
-                <FilePlus className="h-3.5 w-3.5" />
-                New
-              </TabsTrigger>
             </TabsList>
-
-            {/* Marketplace Tab */}
-            <TabsContent value="marketplace" className="flex-1 min-h-0 mt-4">
-              <MarketplaceSearchPanel
-                type="skill"
-                onSelectSkill={handleSelectMarketplaceSkill}
-                installedSkillNames={skills.map(s => s.name)}
-                maxHeight="calc(85vh - 220px)"
-              />
-            </TabsContent>
 
             {/* New Skill Tab */}
             <TabsContent value="new" className="flex-1 min-h-0 mt-4">
@@ -930,7 +920,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
               </form>
             </TabsContent>
 
-            {/* Paths Tab */}
+            {/* Import Tab */}
             <TabsContent value="paths" className="flex-1 flex flex-col min-h-0 mt-4">
               <div className="space-y-4 flex-1 overflow-y-auto">
                 {/* Existing Paths */}
@@ -1021,6 +1011,16 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                   Done
                 </Button>
               </div>
+            </TabsContent>
+
+            {/* Marketplace Tab */}
+            <TabsContent value="marketplace" className="flex-1 min-h-0 mt-4">
+              <MarketplaceSearchPanel
+                type="skill"
+                onSelectSkill={handleSelectMarketplaceSkill}
+                installedSkillNames={skills.map(s => s.name)}
+                maxHeight="calc(85vh - 220px)"
+              />
             </TabsContent>
           </Tabs>
         </DialogContent>
