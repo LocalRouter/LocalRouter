@@ -292,7 +292,6 @@ impl McpViaLlmManager {
                             .session_manager
                             .get_or_create_session(&client.id, &sessions_dir);
                         if is_new {
-                            let mcp_session_id = session.read().session_id.clone();
                             if let Err(e) = svc
                                 .transcript
                                 .create_session_file(&sessions_dir, &session_id, &client.id)
@@ -300,16 +299,6 @@ impl McpViaLlmManager {
                             {
                                 tracing::warn!("Failed to create memory transcript: {}", e);
                             }
-                            // Write initial conversation header
-                            let timestamp = chrono::Utc::now().to_rfc3339();
-                            let _ = svc
-                                .transcript
-                                .append_conversation_header(
-                                    &file_path,
-                                    &mcp_session_id[..8.min(mcp_session_id.len())],
-                                    &timestamp,
-                                )
-                                .await;
                         }
                         session.write().transcript_path = Some(file_path);
                     }
@@ -472,7 +461,6 @@ impl McpViaLlmManager {
                             .session_manager
                             .get_or_create_session(&client.id, &sessions_dir);
                         if is_new {
-                            let mcp_session_id = session.read().session_id.clone();
                             if let Err(e) = svc
                                 .transcript
                                 .create_session_file(&sessions_dir, &session_id, &client.id)
@@ -480,15 +468,6 @@ impl McpViaLlmManager {
                             {
                                 tracing::warn!("Failed to create memory transcript: {}", e);
                             }
-                            let timestamp = chrono::Utc::now().to_rfc3339();
-                            let _ = svc
-                                .transcript
-                                .append_conversation_header(
-                                    &file_path,
-                                    &mcp_session_id[..8.min(mcp_session_id.len())],
-                                    &timestamp,
-                                )
-                                .await;
                         }
                         session.write().transcript_path = Some(file_path);
                     }

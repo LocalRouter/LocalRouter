@@ -253,14 +253,8 @@ mod tests {
         assert!(content.contains("client_id: test-client"));
         assert!(content.contains("session_id: test-session"));
 
-        // Append conversation header
-        let ts = "2026-03-20T01:08:39+00:00";
-        writer
-            .append_conversation_header(&path, "conv-1", ts)
-            .await
-            .unwrap();
-
         // Append exchange
+        let ts = "2026-03-20T01:08:39+00:00";
         writer
             .append_exchange(
                 &path,
@@ -272,7 +266,6 @@ mod tests {
             .unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("<!-- conversation conv-1 2026-03-20T01:08:39+00:00 -->"));
         assert!(content
             .contains("<user timestamp=\"2026-03-20T01:08:39+00:00\">\nWhat is Rust?\n</user>"));
         assert!(
@@ -294,11 +287,6 @@ mod tests {
 
         let ts1 = "2026-03-20T01:08:39+00:00";
         let ts2 = "2026-03-20T01:09:15+00:00";
-
-        writer
-            .append_conversation_header(&path, "2f7a1e9e", ts1)
-            .await
-            .unwrap();
 
         writer
             .append_exchange(
@@ -336,9 +324,6 @@ client_id: e8dd2d9f-client
 session_id: 87286ef5-abcd-1234
 started: 2026-03-20T01:08:39.891052+00:00
 ---
-
-\n\
-<!-- conversation 2f7a1e9e 2026-03-20T01:08:39+00:00 -->
 
 <user timestamp=\"2026-03-20T01:08:39+00:00\">
 recall a past convo

@@ -47,17 +47,6 @@ impl TranscriptWriter {
         Ok(file_path)
     }
 
-    /// Append a conversation header to the session file.
-    pub async fn append_conversation_header(
-        &self,
-        path: &Path,
-        conversation_id: &str,
-        timestamp: &str,
-    ) -> Result<(), String> {
-        let header = format!("\n<!-- conversation {} {} -->\n\n", conversation_id, timestamp);
-        self.append_raw(path, &header).await
-    }
-
     /// Append a user/assistant exchange to the session file.
     pub async fn append_exchange(
         &self,
@@ -130,7 +119,6 @@ impl TranscriptWriter {
 
         if !exchanges.is_empty() {
             let ts = chrono::Utc::now().to_rfc3339();
-            out.push_str(&format!("\n<!-- conversation 1 {} -->\n\n", ts));
 
             for (user, assistant) in exchanges {
                 out.push_str(&format!(
