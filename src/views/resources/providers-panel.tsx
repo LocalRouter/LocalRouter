@@ -220,7 +220,7 @@ export function ProvidersPanel({
     setFeatureSupport(null)
   }, [selectedId])
 
-  // Load feature support when a provider is selected
+  // Load feature support and models when a provider is selected
   useEffect(() => {
     if (!selectedId) return
     invoke<ProviderFeatureSupport>("get_provider_feature_support", {
@@ -228,6 +228,8 @@ export function ProvidersPanel({
     } satisfies GetProviderFeatureSupportParams)
       .then(setFeatureSupport)
       .catch((err) => console.error("Failed to load feature support:", err))
+    loadDetailedModels(selectedId)
+    loadFreeTierStatus(selectedId)
   }, [selectedId])
 
   // Load providers and initialize health checks (only on first load)
@@ -541,7 +543,7 @@ export function ProvidersPanel({
                   <TabsList>
                     <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
                     {selectedProvider.enabled && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
-                    <TabsTrigger value="models" onClick={() => { loadDetailedModels(selectedProvider.instance_name); loadFreeTierStatus(selectedProvider.instance_name) }}><TAB_ICONS.models className={TAB_ICON_CLASS} />Models</TabsTrigger>
+                    <TabsTrigger value="compatibility"><TAB_ICONS.compatibility className={TAB_ICON_CLASS} />Compatibility</TabsTrigger>
                     <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}><TAB_ICONS.freeTier className={TAB_ICON_CLASS} />Free Tier</TabsTrigger>
                     <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
                   </TabsList>
@@ -671,78 +673,85 @@ export function ProvidersPanel({
                         </CardContent>
                       </Card>
 
-                      {/* Feature Support */}
-                      {featureSupport && (
-                        <Card>
-                          <CardHeader className="pb-3">
-                            <CardTitle className="text-sm">Feature Support</CardTitle>
-                          </CardHeader>
-                          <CardContent className="space-y-4">
-                            <ProviderFeatureTable title="API Endpoints" items={featureSupport.endpoints} />
-                            <ProviderFeatureTable title="Model Features" items={featureSupport.model_features} />
-                            <ProviderFeatureTable title="Optimization Features" items={featureSupport.optimization_features} />
-                          </CardContent>
-                        </Card>
-                      )}
+                      {/* Models */}
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm">
+                            Models
+                            {!detailedModelsLoading && detailedModels.length > 0 && (
+                              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                ({detailedModels.length})
+                              </span>
+                            )}
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          {detailedModelsLoading ? (
+                            <div className="flex items-center gap-2 text-muted-foreground">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <span>Loading models...</span>
+                            </div>
+                          ) : detailedModels.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">No models available</p>
+                          ) : (
+                            <div className="space-y-1">
+                              {detailedModels.map((model) => {
+                                const ftStatus = freeTierStatus[selectedProvider.instance_name]
+                                return (
+                                  <div
+                                    key={model.model_id}
+                                    className="flex items-center justify-between p-3 rounded-md hover:bg-muted cursor-pointer"
+                                    onClick={() => {
+                                      if (onViewChange) {
+                                        onViewChange("resources", `models/${model.provider_instance}/${model.model_id}`)
+                                      }
+                                    }}
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <p className="font-medium text-sm truncate">{model.model_id}</p>
+                                      {model.parameter_count && (
+                                        <p className="text-xs text-muted-foreground">{model.parameter_count}</p>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-3 ml-2">
+                                      <ModelPricingBadge
+                                        inputPricePerMillion={model.input_price_per_million}
+                                        outputPricePerMillion={model.output_price_per_million}
+                                        freeTierKind={ftStatus?.free_tier}
+                                      />
+                                      {model.context_window > 0 && (
+                                        <Badge variant="secondary" className="text-xs whitespace-nowrap">
+                                          {model.context_window >= 1000000
+                                            ? `${(model.context_window / 1000000).toFixed(1)}M`
+                                            : model.context_window >= 1000
+                                            ? `${Math.round(model.context_window / 1000)}k`
+                                            : model.context_window} ctx
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
                     </div>
                   </TabsContent>
 
-                  <TabsContent value="models">
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <p className="text-sm text-muted-foreground">
-                          {detailedModelsLoading ? "Loading..." : `${detailedModels.length} model${detailedModels.length !== 1 ? "s" : ""}`}
-                        </p>
+                  <TabsContent value="compatibility">
+                    {featureSupport ? (
+                      <div className="space-y-4">
+                        <ProviderFeatureTable title="API Endpoints" items={featureSupport.endpoints} />
+                        <ProviderFeatureTable title="Model Features" items={featureSupport.model_features} />
+                        <ProviderFeatureTable title="Optimization Features" items={featureSupport.optimization_features} />
                       </div>
-                      {detailedModelsLoading ? (
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          <span>Loading models...</span>
-                        </div>
-                      ) : detailedModels.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">No models available</p>
-                      ) : (
-                        <div className="space-y-1">
-                          {detailedModels.map((model) => {
-                            const ftStatus = freeTierStatus[selectedProvider.instance_name]
-                            return (
-                              <div
-                                key={model.model_id}
-                                className="flex items-center justify-between p-3 rounded-md hover:bg-muted cursor-pointer"
-                                onClick={() => {
-                                  if (onViewChange) {
-                                    onViewChange("resources", `models/${model.provider_instance}/${model.model_id}`)
-                                  }
-                                }}
-                              >
-                                <div className="min-w-0 flex-1">
-                                  <p className="font-medium text-sm truncate">{model.model_id}</p>
-                                  {model.parameter_count && (
-                                    <p className="text-xs text-muted-foreground">{model.parameter_count}</p>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-3 ml-2">
-                                  <ModelPricingBadge
-                                    inputPricePerMillion={model.input_price_per_million}
-                                    outputPricePerMillion={model.output_price_per_million}
-                                    freeTierKind={ftStatus?.free_tier}
-                                  />
-                                  {model.context_window > 0 && (
-                                    <Badge variant="secondary" className="text-xs whitespace-nowrap">
-                                      {model.context_window >= 1000000
-                                        ? `${(model.context_window / 1000000).toFixed(1)}M`
-                                        : model.context_window >= 1000
-                                        ? `${Math.round(model.context_window / 1000)}k`
-                                        : model.context_window} ctx
-                                    </Badge>
-                                  )}
-                                </div>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>Loading compatibility data...</span>
+                      </div>
+                    )}
                   </TabsContent>
 
                   <TabsContent value="settings">
@@ -865,16 +874,16 @@ export function ProvidersPanel({
                           </div>
                           <div className="flex items-center justify-between pt-4 border-t">
                             <div>
-                              <p className="text-sm font-medium">Delete this provider</p>
+                              <p className="text-sm font-medium">Remove this provider</p>
                               <p className="text-sm text-muted-foreground">
-                                Permanently delete "{selectedProvider.instance_name}" and its configuration
+                                Remove "{selectedProvider.instance_name}" from LocalRouter. This does not delete the provider account or its models.
                               </p>
                             </div>
                             <Button
                               variant="destructive"
                               onClick={() => setProviderToDelete(selectedProvider)}
                             >
-                              Delete Provider
+                              Remove Provider
                             </Button>
                           </div>
                         </CardContent>
@@ -1707,9 +1716,9 @@ export function ProvidersPanel({
       <AlertDialog open={!!providerToDelete} onOpenChange={(open) => !open && setProviderToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Provider</AlertDialogTitle>
+            <AlertDialogTitle>Remove Provider</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{providerToDelete?.instance_name}"? This action cannot be undone.
+              Are you sure you want to remove "{providerToDelete?.instance_name}" from LocalRouter? This only removes the configuration — your provider account and models are not affected.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1718,7 +1727,7 @@ export function ProvidersPanel({
               onClick={handleDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              Remove
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
