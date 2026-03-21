@@ -4703,11 +4703,7 @@ pub async fn memory_test_sample() -> Result<String, String> {
         ),
     ];
 
-    Ok(lr_memory::TranscriptWriter::build_transcript(
-        "demo-client",
-        "sample-session",
-        &exchanges,
-    ))
+    Ok(lr_memory::TranscriptWriter::build_transcript(&exchanges))
 }
 
 /// Test: index content into FTS5 for the Try It Out tab (in-memory only).
@@ -4915,4 +4911,116 @@ pub async fn open_client_memory_folder(
     std::fs::create_dir_all(&path).map_err(|e| format!("Failed to create directory: {}", e))?;
 
     open_path(path.to_string_lossy().to_string(), app).await
+}
+
+// ============================================================================
+// Memory Compaction commands
+// ============================================================================
+
+/// Compaction statistics for a client's memory
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CompactionStatsResult {
+    pub active_sessions: usize,
+    pub pending_compaction: usize,
+    pub archived_sessions: usize,
+    pub indexed_sources: usize,
+    pub total_lines: usize,
+}
+
+/// Result of a force-compact operation
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ForceCompactResult {
+    pub archived_count: usize,
+}
+
+/// Get compaction statistics for a client's memory
+#[tauri::command]
+pub async fn get_memory_compaction_stats(
+    client_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<CompactionStatsResult, String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    let stats = svc.get_compaction_stats(&client_id)?;
+    Ok(CompactionStatsResult {
+        active_sessions: stats.active_sessions,
+        pending_compaction: stats.pending_compaction,
+        archived_sessions: stats.archived_sessions,
+        indexed_sources: stats.indexed_sources,
+        total_lines: stats.total_lines,
+    })
+}
+
+/// Force-compact all expired sessions for a client (move to archive)
+#[tauri::command]
+pub async fn force_compact_memory(
+    client_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<ForceCompactResult, String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    let result = svc.force_compact(&client_id).await?;
+    Ok(ForceCompactResult {
+        archived_count: result.archived_count,
+    })
+}
+
+/// Rebuild the FTS5 index for a client from all session files on disk.
+/// Emits progress events: memory-reindex-progress, memory-reindex-complete, memory-reindex-failed
+#[tauri::command]
+pub async fn reindex_client_memory(
+    client_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    let cid = client_id.clone();
+    let app_handle = app.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let cid_ref = &cid;
+        let result = svc.reindex(cid_ref, |current, total| {
+            let _ = app_handle.emit(
+                "memory-reindex-progress",
+                serde_json::json!({
+                    "client_id": cid_ref,
+                    "current": current,
+                    "total": total,
+                }),
+            );
+        });
+
+        match result {
+            Ok(count) => {
+                let _ = app_handle.emit(
+                    "memory-reindex-complete",
+                    serde_json::json!({
+                        "client_id": cid_ref,
+                        "indexed_count": count,
+                    }),
+                );
+            }
+            Err(e) => {
+                let _ = app_handle.emit(
+                    "memory-reindex-failed",
+                    serde_json::json!({
+                        "client_id": cid_ref,
+                        "error": e,
+                    }),
+                );
+            }
+        }
+    });
+
+    Ok(())
 }

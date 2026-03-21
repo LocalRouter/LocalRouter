@@ -4,7 +4,6 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
@@ -22,24 +21,16 @@ impl TranscriptWriter {
         Self
     }
 
-    /// Create a new session file with YAML frontmatter.
+    /// Create an empty session file.
     /// Returns the path to the created file.
     pub async fn create_session_file(
         &self,
         sessions_dir: &Path,
         session_id: &str,
-        client_id: &str,
     ) -> Result<PathBuf, String> {
         let file_path = sessions_dir.join(format!("{}.md", session_id));
 
-        let frontmatter = format!(
-            "---\nclient_id: {}\nsession_id: {}\nstarted: {}\n---\n\n",
-            client_id,
-            session_id,
-            Utc::now().to_rfc3339(),
-        );
-
-        fs::write(&file_path, frontmatter)
+        fs::write(&file_path, "")
             .await
             .map_err(|e| format!("Failed to create session file: {}", e))?;
 
@@ -56,7 +47,7 @@ impl TranscriptWriter {
         timestamp: &str,
     ) -> Result<(), String> {
         let exchange = format!(
-            "<user timestamp=\"{}\">\n{}\n</user>\n\n<assistant>\n{}\n</assistant>\n\n",
+            "<user timestamp=\"{}\">\n{}\n</user>\n<assistant>\n{}\n</assistant>\n",
             timestamp, user_content, assistant_content
         );
         self.append_raw(path, &exchange).await
@@ -106,23 +97,16 @@ impl TranscriptWriter {
     /// Used by the Try It Out tab to generate realistic sample content
     /// that stays in sync with the real transcript format.
     pub fn build_transcript(
-        client_id: &str,
-        session_id: &str,
         exchanges: &[(&str, &str)], // (user_content, assistant_content)
     ) -> String {
-        let mut out = format!(
-            "---\nclient_id: {}\nsession_id: {}\nstarted: {}\n---\n\n",
-            client_id,
-            session_id,
-            chrono::Utc::now().to_rfc3339(),
-        );
+        let mut out = String::new();
 
         if !exchanges.is_empty() {
             let ts = chrono::Utc::now().to_rfc3339();
 
             for (user, assistant) in exchanges {
                 out.push_str(&format!(
-                    "<user timestamp=\"{}\">\n{}\n</user>\n\n<assistant>\n{}\n</assistant>\n\n",
+                    "<user timestamp=\"{}\">\n{}\n</user>\n<assistant>\n{}\n</assistant>\n",
                     ts, user, assistant
                 ));
             }

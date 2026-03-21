@@ -294,7 +294,7 @@ impl McpViaLlmManager {
                         if is_new {
                             if let Err(e) = svc
                                 .transcript
-                                .create_session_file(&sessions_dir, &session_id, &client.id)
+                                .create_session_file(&sessions_dir, &session_id)
                                 .await
                             {
                                 tracing::warn!("Failed to create memory transcript: {}", e);
@@ -463,7 +463,7 @@ impl McpViaLlmManager {
                         if is_new {
                             if let Err(e) = svc
                                 .transcript
-                                .create_session_file(&sessions_dir, &session_id, &client.id)
+                                .create_session_file(&sessions_dir, &session_id)
                                 .await
                             {
                                 tracing::warn!("Failed to create memory transcript: {}", e);

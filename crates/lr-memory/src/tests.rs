@@ -243,15 +243,10 @@ mod tests {
 
         // Create session file
         let path = writer
-            .create_session_file(&sessions_dir, "test-session", "test-client")
+            .create_session_file(&sessions_dir, "test-session")
             .await
             .unwrap();
         assert!(path.exists());
-
-        // Check frontmatter
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("client_id: test-client"));
-        assert!(content.contains("session_id: test-session"));
 
         // Append exchange
         let ts = "2026-03-20T01:08:39+00:00";
@@ -266,10 +261,9 @@ mod tests {
             .unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content
-            .contains("<user timestamp=\"2026-03-20T01:08:39+00:00\">\nWhat is Rust?\n</user>"));
-        assert!(
-            content.contains("<assistant>\nRust is a systems programming language.\n</assistant>")
+        assert_eq!(
+            content,
+            "<user timestamp=\"2026-03-20T01:08:39+00:00\">\nWhat is Rust?\n</user>\n<assistant>\nRust is a systems programming language.\n</assistant>\n"
         );
     }
 
@@ -281,7 +275,7 @@ mod tests {
 
         let writer = TranscriptWriter::new();
         let path = writer
-            .create_session_file(&sessions_dir, "87286ef5-abcd-1234", "e8dd2d9f-client")
+            .create_session_file(&sessions_dir, "87286ef5-abcd-1234")
             .await
             .unwrap();
 
@@ -305,47 +299,25 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
 
-        // Replace the dynamic `started:` timestamp so the snapshot is deterministic
-        let snapshot = content
-            .lines()
-            .map(|line| {
-                if line.starts_with("started: ") {
-                    "started: 2026-03-20T01:08:39.891052+00:00"
-                } else {
-                    line
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
         let expected = "\
----
-client_id: e8dd2d9f-client
-session_id: 87286ef5-abcd-1234
-started: 2026-03-20T01:08:39.891052+00:00
----
-
 <user timestamp=\"2026-03-20T01:08:39+00:00\">
 recall a past convo
 </user>
-
 <assistant>
 I'd be happy to help! Here's some **markdown**:
 
 ## Search Results
 - Result 1
 </assistant>
-
 <user timestamp=\"2026-03-20T01:09:15+00:00\">
 tell me more
 </user>
-
 <assistant>
 Sure! Here are the details...
 </assistant>
 ";
 
-        assert_eq!(snapshot, expected);
+        assert_eq!(content, expected);
     }
 
     #[tokio::test]
