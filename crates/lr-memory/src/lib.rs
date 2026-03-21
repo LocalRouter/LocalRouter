@@ -212,7 +212,12 @@ impl MemoryService {
 
         let store = self.get_or_create_store(client_id)?;
         let results = store
-            .search(&[query.to_string()], top_k, None)
+            .search(
+                &[query.to_string()],
+                top_k,
+                None,
+                &lr_context::DateRange::default(),
+            )
             .map_err(|e| format!("FTS5 search failed: {}", e))?;
 
         let mut out = Vec::new();
@@ -232,6 +237,7 @@ impl MemoryService {
 
     /// Search memories using ContentStore's native search (returns full SearchResult
     /// with line numbers for use with read). Supports combined query/queries.
+    #[allow(clippy::too_many_arguments)]
     pub fn search_combined(
         &self,
         client_id: &str,
@@ -239,6 +245,8 @@ impl MemoryService {
         queries: Option<&[String]>,
         limit: usize,
         source: Option<&str>,
+        after: Option<&str>,
+        before: Option<&str>,
     ) -> Result<Vec<lr_context::SearchResult>, String> {
         let client_dir = self.memory_dir.join(client_id);
         if !client_dir.exists() {
@@ -247,7 +255,7 @@ impl MemoryService {
 
         let store = self.get_or_create_store(client_id)?;
         store
-            .search_combined(query, queries, limit, source)
+            .search_combined(query, queries, limit, source, after, before)
             .map_err(|e| format!("Search failed: {}", e))
     }
 
@@ -265,8 +273,13 @@ impl MemoryService {
             .map_err(|e| format!("Read failed: {}", e))
     }
 
-    /// List all indexed sources for a client (for summary fallback).
-    pub fn list_sources(&self, client_id: &str) -> Result<Vec<lr_context::SourceInfo>, String> {
+    /// List all indexed sources for a client, optionally filtered by date range.
+    pub fn list_sources(
+        &self,
+        client_id: &str,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<Vec<lr_context::SourceInfo>, String> {
         let client_dir = self.memory_dir.join(client_id);
         if !client_dir.exists() {
             return Ok(Vec::new());
@@ -274,7 +287,7 @@ impl MemoryService {
 
         let store = self.get_or_create_store(client_id)?;
         store
-            .list_sources()
+            .list_sources(after, before)
             .map_err(|e| format!("List sources failed: {}", e))
     }
 
@@ -343,7 +356,7 @@ impl MemoryService {
         let pending_compaction = session_files.saturating_sub(active_sessions);
         let archived_sessions = count_md_files(&archive_dir);
 
-        let (indexed_sources, total_lines) = match self.list_sources(client_id) {
+        let (indexed_sources, total_lines) = match self.list_sources(client_id, None, None) {
             Ok(sources) => {
                 let lines: usize = sources.iter().map(|s| s.total_lines).sum();
                 (sources.len(), lines)

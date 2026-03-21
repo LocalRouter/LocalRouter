@@ -485,6 +485,8 @@ fn handle_ctx_search_blocking(
         queries.as_deref(),
         limit,
         source.as_deref(),
+        None,
+        None,
     ) {
         Ok(results) => results,
         Err(e) => {

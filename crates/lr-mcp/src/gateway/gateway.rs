@@ -2926,10 +2926,16 @@ impl McpGateway {
         // Run the blocking FTS5 search off the async executor
         let queries = vec![query.to_string()];
         let source_owned = source.map(|s| s.to_string());
-        let result =
-            tokio::task::spawn_blocking(move || store.search(&queries, 5, source_owned.as_deref()))
-                .await
-                .map_err(|e| format!("Search task panicked: {}", e))?;
+        let result = tokio::task::spawn_blocking(move || {
+            store.search(
+                &queries,
+                5,
+                source_owned.as_deref(),
+                &lr_context::DateRange::default(),
+            )
+        })
+        .await
+        .map_err(|e| format!("Search task panicked: {}", e))?;
 
         match result {
             Ok(results) => {

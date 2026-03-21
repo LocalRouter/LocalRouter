@@ -8,6 +8,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use serde_json::Value;
 
 use super::gateway_tools::FirewallDecisionResult;
@@ -109,6 +110,22 @@ impl VirtualMcpServer for MemoryVirtualServer {
                             "type": "string",
                             "description": "Filter to a specific source (e.g., \"session/abc123\")"
                         },
+                        "after": {
+                            "type": "string",
+                            "description": "Only include memories after this time. \
+                                Accepts ISO 8601 date (\"2026-03-20\"), \
+                                datetime (\"2026-03-20T14:00:00Z\"), \
+                                or relative offset from now \
+                                (\"2d\" = 2 days ago, \"6h\" = 6 hours ago, \
+                                \"1w\" = 1 week ago, \"30m\" = 30 minutes ago)."
+                        },
+                        "before": {
+                            "type": "string",
+                            "description": "Only include memories before this time. \
+                                Same formats as 'after'. \
+                                Example: to search yesterday, \
+                                use after=\"2026-03-20\" before=\"2026-03-21\"."
+                        },
                         "limit": {
                             "type": "number",
                             "description": "Max results per query (default: 3)"
@@ -200,6 +217,8 @@ impl VirtualMcpServer for MemoryVirtualServer {
                 "You have access to persistent memory from past conversations.\n\
                  Use {}(queries: [...]) to search memories. Results include source labels and line numbers.\n\
                  Use {}(label, offset, limit) to read full context around search hits.\n\
+                 Use after/before to filter by time: ISO dates (\"2026-03-20\"), \
+                 datetimes (\"2026-03-20T14:00:00Z\"), or relative offsets (\"2d\", \"6h\", \"1w\").\n\
                  If you have access to a subagent or forked context, prefer using {} \
                  within a subagent to avoid polluting the main conversation with search results.",
                 state.search_tool_name, state.read_tool_name, state.search_tool_name
@@ -270,6 +289,22 @@ impl MemoryVirtualServer {
             .map(|n| n as usize)
             .unwrap_or(DEFAULT_SEARCH_LIMIT);
 
+        // Resolve optional date range filters
+        let after = match arguments.get("after").and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() => match resolve_time(s) {
+                Ok(resolved) => Some(resolved),
+                Err(e) => return VirtualToolCallResult::ToolError(e),
+            },
+            _ => None,
+        };
+        let before = match arguments.get("before").and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() => match resolve_time(s) {
+                Ok(resolved) => Some(resolved),
+                Err(e) => return VirtualToolCallResult::ToolError(e),
+            },
+            _ => None,
+        };
+
         // Need at least one query
         if query.as_ref().is_none_or(|q| q.is_empty())
             && queries.as_ref().is_none_or(|qs| qs.is_empty())
@@ -285,6 +320,8 @@ impl MemoryVirtualServer {
             queries.as_deref(),
             limit,
             source.as_deref(),
+            after.as_deref(),
+            before.as_deref(),
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -304,7 +341,7 @@ impl MemoryVirtualServer {
             }))
         } else {
             // Fallback: return a summary of available memory sources
-            self.build_summary_fallback(client_id, &results)
+            self.build_summary_fallback(client_id, &results, after.as_deref(), before.as_deref())
         }
     }
 
@@ -347,6 +384,8 @@ impl MemoryVirtualServer {
         &self,
         client_id: &str,
         results: &[lr_context::SearchResult],
+        after: Option<&str>,
+        before: Option<&str>,
     ) -> VirtualToolCallResult {
         // Show "no results" for the queries
         let mut output = String::new();
@@ -355,7 +394,7 @@ impl MemoryVirtualServer {
         }
 
         // List available sources as a summary
-        match self.memory_service.list_sources(client_id) {
+        match self.memory_service.list_sources(client_id, after, before) {
             Ok(sources) if !sources.is_empty() => {
                 output.push_str("## Available memory sources\n\n");
                 let mut total_lines = 0usize;
@@ -403,5 +442,146 @@ fn derive_read_tool_name(search_name: &str) -> String {
         format!("{}Read", prefix)
     } else {
         format!("{}Read", search_name)
+    }
+}
+
+/// Resolve a user-supplied time string to a UTC datetime string for SQL comparison.
+///
+/// Accepts:
+/// - Relative offset: `"30m"`, `"6h"`, `"2d"`, `"1w"` → UTC datetime N units ago
+/// - ISO 8601 datetime: `"2026-03-20T14:00:00Z"` → `"2026-03-20 14:00:00"`
+/// - ISO 8601 date: `"2026-03-20"` → `"2026-03-20"` (returned as-is)
+fn resolve_time(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+
+    // Try relative offset: "30m", "6h", "2d", "1w"
+    if let Some(resolved) = parse_relative_offset(trimmed) {
+        return Ok(resolved);
+    }
+
+    // Try ISO 8601 datetime: "2026-03-20T14:00:00Z" or "2026-03-20T14:00:00"
+    if trimmed.len() > 10 {
+        let normalized = trimmed.trim_end_matches('Z').replace('T', " ");
+        if chrono::NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%d %H:%M:%S").is_ok() {
+            return Ok(normalized);
+        }
+    }
+
+    // Try ISO 8601 date: "2026-03-20"
+    if chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").is_ok() {
+        return Ok(trimmed.to_string());
+    }
+
+    Err(format!(
+        "Invalid time format \"{}\". Use ISO 8601 (\"2026-03-20\") or relative offset (\"2d\", \"6h\", \"30m\", \"1w\").",
+        trimmed
+    ))
+}
+
+/// Parse a relative offset like "2d", "6h", "30m", "1w" into an absolute UTC datetime string.
+fn parse_relative_offset(s: &str) -> Option<String> {
+    if s.len() < 2 {
+        return None;
+    }
+
+    let (num_str, unit) = s.split_at(s.len() - 1);
+    let num: i64 = num_str.parse().ok()?;
+
+    let duration = match unit {
+        "m" => chrono::TimeDelta::minutes(num),
+        "h" => chrono::TimeDelta::hours(num),
+        "d" => chrono::TimeDelta::days(num),
+        "w" => chrono::TimeDelta::weeks(num),
+        _ => return None,
+    };
+
+    let resolved = Utc::now() - duration;
+    Some(resolved.format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_iso_date() {
+        assert_eq!(resolve_time("2026-03-20").unwrap(), "2026-03-20");
+    }
+
+    #[test]
+    fn resolve_iso_datetime() {
+        assert_eq!(
+            resolve_time("2026-03-20T14:30:00Z").unwrap(),
+            "2026-03-20 14:30:00"
+        );
+    }
+
+    #[test]
+    fn resolve_iso_datetime_no_z() {
+        assert_eq!(
+            resolve_time("2026-03-20T14:30:00").unwrap(),
+            "2026-03-20 14:30:00"
+        );
+    }
+
+    #[test]
+    fn resolve_relative_days() {
+        let result = resolve_time("2d").unwrap();
+        // Should be approximately 2 days ago in YYYY-MM-DD HH:MM:SS format
+        assert_eq!(result.len(), 19);
+        assert!(result.contains('-'));
+        assert!(result.contains(':'));
+    }
+
+    #[test]
+    fn resolve_relative_hours() {
+        let result = resolve_time("6h").unwrap();
+        assert_eq!(result.len(), 19);
+    }
+
+    #[test]
+    fn resolve_relative_minutes() {
+        let result = resolve_time("30m").unwrap();
+        assert_eq!(result.len(), 19);
+    }
+
+    #[test]
+    fn resolve_relative_weeks() {
+        let result = resolve_time("1w").unwrap();
+        assert_eq!(result.len(), 19);
+    }
+
+    #[test]
+    fn resolve_zero_offset() {
+        // "0d" means "now" — should succeed
+        let result = resolve_time("0d").unwrap();
+        assert_eq!(result.len(), 19);
+    }
+
+    #[test]
+    fn resolve_invalid() {
+        assert!(resolve_time("invalid").is_err());
+        assert!(resolve_time("").is_err());
+        assert!(resolve_time("abc123").is_err());
+    }
+
+    #[test]
+    fn resolve_whitespace_trimmed() {
+        assert_eq!(resolve_time(" 2026-03-20 ").unwrap(), "2026-03-20");
+    }
+
+    #[test]
+    fn derive_read_name_from_search() {
+        assert_eq!(derive_read_tool_name("MemorySearch"), "MemoryRead");
+    }
+
+    #[test]
+    fn derive_read_name_from_recall() {
+        assert_eq!(derive_read_tool_name("MemoryRecall"), "MemoryRead");
+    }
+
+    #[test]
+    fn derive_read_name_custom() {
+        assert_eq!(derive_read_tool_name("CustomTool"), "CustomToolRead");
     }
 }

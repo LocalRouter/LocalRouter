@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection};
 
 use crate::fuzzy;
-use crate::types::{ContentType, MatchLayer, SearchHit, SearchResult};
+use crate::types::{ContentType, DateRange, MatchLayer, SearchHit, SearchResult};
 
 const SNIPPET_WINDOW: usize = 300; // chars radius per match
 pub(crate) const SNIPPET_MAX_LEN: usize = 1500; // default per-hit max
@@ -93,6 +93,7 @@ fn search_porter(
     limit: usize,
     source: Option<&str>,
     mode: JoinMode,
+    date_range: &DateRange,
 ) -> Vec<RawHit> {
     let sanitized = sanitize_fts_query(query, mode);
     if sanitized == "\"\"" {
@@ -109,11 +110,21 @@ fn search_porter(
              FROM chunks c
              JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
              WHERE chunks MATCH ?1 AND s.label LIKE ?2 ESCAPE '\\'
+               AND s.indexed_at > ?3 AND s.indexed_at < ?4
              ORDER BY rank
-             LIMIT ?3",
+             LIMIT ?5",
         )
         .and_then(|mut s| {
-            let rows = s.query_map(params![sanitized, filter, limit as i64], map_raw_hit)?;
+            let rows = s.query_map(
+                params![
+                    sanitized,
+                    filter,
+                    &date_range.after,
+                    &date_range.before,
+                    limit as i64
+                ],
+                map_raw_hit,
+            )?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         })
     } else {
@@ -125,11 +136,20 @@ fn search_porter(
              FROM chunks c
              JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
              WHERE chunks MATCH ?1
+               AND s.indexed_at > ?2 AND s.indexed_at < ?3
              ORDER BY rank
-             LIMIT ?2",
+             LIMIT ?4",
         )
         .and_then(|mut s| {
-            let rows = s.query_map(params![sanitized, limit as i64], map_raw_hit)?;
+            let rows = s.query_map(
+                params![
+                    sanitized,
+                    &date_range.after,
+                    &date_range.before,
+                    limit as i64
+                ],
+                map_raw_hit,
+            )?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         })
     };
@@ -149,6 +169,7 @@ fn search_trigram(
     limit: usize,
     source: Option<&str>,
     mode: JoinMode,
+    date_range: &DateRange,
 ) -> Vec<RawHit> {
     let sanitized = match sanitize_trigram_query(query, mode) {
         Some(q) => q,
@@ -165,11 +186,21 @@ fn search_trigram(
              FROM chunks_trigram c
              JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
              WHERE chunks_trigram MATCH ?1 AND s.label LIKE ?2 ESCAPE '\\'
+               AND s.indexed_at > ?3 AND s.indexed_at < ?4
              ORDER BY rank
-             LIMIT ?3",
+             LIMIT ?5",
         )
         .and_then(|mut s| {
-            let rows = s.query_map(params![sanitized, filter, limit as i64], map_raw_hit)?;
+            let rows = s.query_map(
+                params![
+                    sanitized,
+                    filter,
+                    &date_range.after,
+                    &date_range.before,
+                    limit as i64
+                ],
+                map_raw_hit,
+            )?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         })
     } else {
@@ -181,11 +212,20 @@ fn search_trigram(
              FROM chunks_trigram c
              JOIN sources s ON s.id = CAST(c.source_id AS INTEGER)
              WHERE chunks_trigram MATCH ?1
+               AND s.indexed_at > ?2 AND s.indexed_at < ?3
              ORDER BY rank
-             LIMIT ?2",
+             LIMIT ?4",
         )
         .and_then(|mut s| {
-            let rows = s.query_map(params![sanitized, limit as i64], map_raw_hit)?;
+            let rows = s.query_map(
+                params![
+                    sanitized,
+                    &date_range.after,
+                    &date_range.before,
+                    limit as i64
+                ],
+                map_raw_hit,
+            )?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         })
     };
@@ -488,9 +528,10 @@ pub(crate) fn search_with_fallback(
     limit: usize,
     source: Option<&str>,
     max_snippet_len: usize,
+    date_range: &DateRange,
 ) -> SearchResult {
     // Layer 1a: Porter AND
-    let hits = search_porter(conn, query, limit, source, JoinMode::And);
+    let hits = search_porter(conn, query, limit, source, JoinMode::And, date_range);
     if !hits.is_empty() {
         return SearchResult {
             query: query.to_string(),
@@ -500,7 +541,7 @@ pub(crate) fn search_with_fallback(
     }
 
     // Layer 1b: Porter OR
-    let hits = search_porter(conn, query, limit, source, JoinMode::Or);
+    let hits = search_porter(conn, query, limit, source, JoinMode::Or, date_range);
     if !hits.is_empty() {
         return SearchResult {
             query: query.to_string(),
@@ -510,7 +551,7 @@ pub(crate) fn search_with_fallback(
     }
 
     // Layer 2a: Trigram AND
-    let hits = search_trigram(conn, query, limit, source, JoinMode::And);
+    let hits = search_trigram(conn, query, limit, source, JoinMode::And, date_range);
     if !hits.is_empty() {
         return SearchResult {
             query: query.to_string(),
@@ -520,7 +561,7 @@ pub(crate) fn search_with_fallback(
     }
 
     // Layer 2b: Trigram OR
-    let hits = search_trigram(conn, query, limit, source, JoinMode::Or);
+    let hits = search_trigram(conn, query, limit, source, JoinMode::Or, date_range);
     if !hits.is_empty() {
         return SearchResult {
             query: query.to_string(),
@@ -531,7 +572,7 @@ pub(crate) fn search_with_fallback(
 
     // Layer 3: Fuzzy correction + re-search
     if let Some(corrected) = fuzzy_correct_query(conn, query) {
-        let hits = search_porter(conn, &corrected, limit, source, JoinMode::And);
+        let hits = search_porter(conn, &corrected, limit, source, JoinMode::And, date_range);
         if !hits.is_empty() {
             return SearchResult {
                 query: query.to_string(),
@@ -539,7 +580,7 @@ pub(crate) fn search_with_fallback(
                 corrected_query: Some(corrected),
             };
         }
-        let hits = search_porter(conn, &corrected, limit, source, JoinMode::Or);
+        let hits = search_porter(conn, &corrected, limit, source, JoinMode::Or, date_range);
         if !hits.is_empty() {
             return SearchResult {
                 query: query.to_string(),
@@ -548,7 +589,7 @@ pub(crate) fn search_with_fallback(
             };
         }
 
-        let hits = search_trigram(conn, &corrected, limit, source, JoinMode::And);
+        let hits = search_trigram(conn, &corrected, limit, source, JoinMode::And, date_range);
         if !hits.is_empty() {
             return SearchResult {
                 query: query.to_string(),
@@ -556,7 +597,7 @@ pub(crate) fn search_with_fallback(
                 corrected_query: Some(corrected),
             };
         }
-        let hits = search_trigram(conn, &corrected, limit, source, JoinMode::Or);
+        let hits = search_trigram(conn, &corrected, limit, source, JoinMode::Or, date_range);
         if !hits.is_empty() {
             return SearchResult {
                 query: query.to_string(),

@@ -17,8 +17,8 @@ pub use chunk::chunk_content;
 pub use types::format_search_results;
 pub use types::{
     BatchIndexResult, BatchItemSummary, BatchResult, Chunk, ChunkToc, ContentType, ContextError,
-    IndexResult, MatchLayer, ReadRequest, ReadResult, SearchHit, SearchResult, SourceInfo,
-    SEARCH_OUTPUT_CAP,
+    DateRange, IndexResult, MatchLayer, ReadRequest, ReadResult, SearchHit, SearchResult,
+    SourceInfo, SEARCH_OUTPUT_CAP,
 };
 
 use once_cell::sync::Lazy;
@@ -315,8 +315,9 @@ impl ContentStore {
         queries: &[String],
         limit: usize,
         source: Option<&str>,
+        date_range: &DateRange,
     ) -> Result<Vec<SearchResult>, ContextError> {
-        self.search_internal(queries, limit, source, SNIPPET_MAX_LEN)
+        self.search_internal(queries, limit, source, SNIPPET_MAX_LEN, date_range)
     }
 
     /// Search with combined query + queries entry point.
@@ -326,6 +327,8 @@ impl ContentStore {
         queries: Option<&[String]>,
         limit: usize,
         source: Option<&str>,
+        after: Option<&str>,
+        before: Option<&str>,
     ) -> Result<Vec<SearchResult>, ContextError> {
         let mut all_queries: Vec<String> = Vec::new();
         if let Some(q) = query {
@@ -341,7 +344,9 @@ impl ContentStore {
                 "at least one query is required".to_string(),
             ));
         }
-        self.search_internal(&all_queries, limit, source, SNIPPET_MAX_LEN)
+        let date_range =
+            DateRange::new(after.map(|s| s.to_string()), before.map(|s| s.to_string()));
+        self.search_internal(&all_queries, limit, source, SNIPPET_MAX_LEN, &date_range)
     }
 
     fn search_internal(
@@ -350,13 +355,21 @@ impl ContentStore {
         limit: usize,
         source: Option<&str>,
         max_snippet_len: usize,
+        date_range: &DateRange,
     ) -> Result<Vec<SearchResult>, ContextError> {
         let conn = self.conn.lock();
         let results: Vec<SearchResult> = queries
             .iter()
             .map(|q| {
                 #[allow(unused_mut)]
-                let mut sr = search::search_with_fallback(&conn, q, limit, source, max_snippet_len);
+                let mut sr = search::search_with_fallback(
+                    &conn,
+                    q,
+                    limit,
+                    source,
+                    max_snippet_len,
+                    date_range,
+                );
 
                 // Hybrid: merge vector search results via RRF (if available)
                 #[cfg(feature = "vector")]
@@ -521,11 +534,18 @@ impl ContentStore {
         reads: &[ReadRequest],
         search_limit: usize,
         source: Option<&str>,
+        date_range: &DateRange,
     ) -> Result<BatchResult, ContextError> {
         let search_results = if queries.is_empty() {
             Vec::new()
         } else {
-            self.search_internal(queries, search_limit, source, SNIPPET_BATCH_MAX_LEN)?
+            self.search_internal(
+                queries,
+                search_limit,
+                source,
+                SNIPPET_BATCH_MAX_LEN,
+                date_range,
+            )?
         };
 
         let mut read_results: Vec<ReadResult> = Vec::new();
@@ -575,14 +595,22 @@ impl ContentStore {
 
     // ── List sources ──
 
-    /// List all indexed sources with metadata.
-    pub fn list_sources(&self) -> Result<Vec<SourceInfo>, ContextError> {
+    /// List all indexed sources with metadata, optionally filtered by date range.
+    pub fn list_sources(
+        &self,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<Vec<SourceInfo>, ContextError> {
+        let date_range =
+            DateRange::new(after.map(|s| s.to_string()), before.map(|s| s.to_string()));
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT label, total_lines, chunk_count, code_chunk_count FROM sources ORDER BY id DESC",
+            "SELECT label, total_lines, chunk_count, code_chunk_count FROM sources \
+             WHERE indexed_at > ?1 AND indexed_at < ?2 \
+             ORDER BY id DESC",
         )?;
         let sources = stmt
-            .query_map([], |row| {
+            .query_map(params![&date_range.after, &date_range.before], |row| {
                 Ok(SourceInfo {
                     label: row.get(0)?,
                     total_lines: row.get::<_, i64>(1)? as usize,
@@ -957,7 +985,7 @@ mod tests {
         store.index("docs:api", "old content here").unwrap();
         store.index("docs:api", "new content here").unwrap();
 
-        let sources = store.list_sources().unwrap();
+        let sources = store.list_sources(None, None).unwrap();
         assert_eq!(sources.len(), 1);
 
         let read = store.read("docs:api", None, None).unwrap();
@@ -969,7 +997,9 @@ mod tests {
         let store = ContentStore::new().unwrap();
         store.index("docs:api", sample_markdown()).unwrap();
 
-        let results = store.search(&["OAuth flow".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["OAuth flow".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(
             !results[0].hits.is_empty(),
@@ -1003,11 +1033,16 @@ mod tests {
             )
             .unwrap();
 
-        let sources = store.list_sources().unwrap();
+        let sources = store.list_sources(None, None).unwrap();
         assert_eq!(sources.len(), 3);
 
         let results = store
-            .search(&["authentication".to_string()], 5, None)
+            .search(
+                &["authentication".to_string()],
+                5,
+                None,
+                &DateRange::default(),
+            )
             .unwrap();
         assert!(!results[0].hits.is_empty());
     }
@@ -1023,7 +1058,12 @@ mod tests {
             .unwrap();
 
         let results = store
-            .search(&["authentication".to_string()], 5, Some("docs:api"))
+            .search(
+                &["authentication".to_string()],
+                5,
+                Some("docs:api"),
+                &DateRange::default(),
+            )
             .unwrap();
         assert!(!results[0].hits.is_empty());
         for hit in &results[0].hits {
@@ -1041,10 +1081,12 @@ mod tests {
         assert!(store.delete("docs:api").unwrap());
         assert!(!store.delete("docs:api").unwrap());
 
-        let sources = store.list_sources().unwrap();
+        let sources = store.list_sources(None, None).unwrap();
         assert!(sources.is_empty());
 
-        let results = store.search(&["API".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["API".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         assert!(results[0].hits.is_empty());
     }
 
@@ -1054,10 +1096,132 @@ mod tests {
         store.index("src:main", "fn main() {}").unwrap();
         store.index("src:lib", "pub mod utils;").unwrap();
 
-        let sources = store.list_sources().unwrap();
+        let sources = store.list_sources(None, None).unwrap();
         assert_eq!(sources.len(), 2);
         assert!(sources.iter().any(|s| s.label == "src:main"));
         assert!(sources.iter().any(|s| s.label == "src:lib"));
+    }
+
+    // ── Date range filtering ──
+
+    #[test]
+    fn search_date_range_filters_old_sources() {
+        let store = ContentStore::new().unwrap();
+        store
+            .index("old", "# Old topic\n\nOld OAuth content")
+            .unwrap();
+        store
+            .index("new", "# New topic\n\nNew OAuth content")
+            .unwrap();
+
+        // Manually backdate "old" source's indexed_at
+        {
+            let conn = store.conn.lock();
+            conn.execute(
+                "UPDATE sources SET indexed_at = '2020-01-01 00:00:00' WHERE label = 'old'",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Search with after=2024: should only find "new"
+        let results = store
+            .search(
+                &["OAuth".to_string()],
+                5,
+                None,
+                &DateRange::new(Some("2024-01-01".to_string()), None),
+            )
+            .unwrap();
+        assert!(!results[0].hits.is_empty());
+        for hit in &results[0].hits {
+            assert_eq!(hit.source, "new", "Should only find 'new' source");
+        }
+
+        // Search with before=2021: should only find "old"
+        let results = store
+            .search(
+                &["OAuth".to_string()],
+                5,
+                None,
+                &DateRange::new(None, Some("2021-01-01".to_string())),
+            )
+            .unwrap();
+        assert!(!results[0].hits.is_empty());
+        for hit in &results[0].hits {
+            assert_eq!(hit.source, "old", "Should only find 'old' source");
+        }
+
+        // Unbounded (default) returns both
+        let results = store
+            .search(&["OAuth".to_string()], 5, None, &DateRange::default())
+            .unwrap();
+        assert!(results[0].hits.len() >= 2);
+    }
+
+    #[test]
+    fn list_sources_date_range() {
+        let store = ContentStore::new().unwrap();
+        store.index("old", "old content").unwrap();
+        store.index("new", "new content").unwrap();
+
+        {
+            let conn = store.conn.lock();
+            conn.execute(
+                "UPDATE sources SET indexed_at = '2020-01-01 00:00:00' WHERE label = 'old'",
+                [],
+            )
+            .unwrap();
+        }
+
+        // After 2024: only "new"
+        let sources = store.list_sources(Some("2024-01-01"), None).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].label, "new");
+
+        // Before 2021: only "old"
+        let sources = store.list_sources(None, Some("2021-01-01")).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].label, "old");
+
+        // No filter: both
+        let sources = store.list_sources(None, None).unwrap();
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn search_combined_date_range() {
+        let store = ContentStore::new().unwrap();
+        store
+            .index("old", "# Old\n\nOld authentication guide")
+            .unwrap();
+        store
+            .index("new", "# New\n\nNew authentication guide")
+            .unwrap();
+
+        {
+            let conn = store.conn.lock();
+            conn.execute(
+                "UPDATE sources SET indexed_at = '2020-01-01 00:00:00' WHERE label = 'old'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let results = store
+            .search_combined(
+                Some("authentication"),
+                None,
+                5,
+                None,
+                Some("2024-01-01"),
+                None,
+            )
+            .unwrap();
+        assert!(!results[0].hits.is_empty());
+        for hit in &results[0].hits {
+            assert_eq!(hit.source, "new");
+        }
     }
 
     #[test]
@@ -1089,7 +1253,12 @@ mod tests {
             .unwrap();
 
         let results = store
-            .search(&["quotes' AND (parens)".to_string()], 5, None)
+            .search(
+                &["quotes' AND (parens)".to_string()],
+                5,
+                None,
+                &DateRange::default(),
+            )
             .unwrap();
         assert_eq!(results.len(), 1);
     }
@@ -1121,7 +1290,9 @@ mod tests {
         assert!(result.total_chunks > 0);
         assert!(result.total_lines > 100);
 
-        let results = store.search(&["Section 250".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["Section 250".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -1130,7 +1301,9 @@ mod tests {
         let store = ContentStore::new().unwrap();
         store.index("docs:api", sample_markdown()).unwrap();
 
-        let results = store.search(&["OAuth".to_string()], 3, None).unwrap();
+        let results = store
+            .search(&["OAuth".to_string()], 3, None, &DateRange::default())
+            .unwrap();
         if !results[0].hits.is_empty() {
             let display = results[0].to_string();
             assert!(display.contains("### Results for"));
@@ -1163,7 +1336,9 @@ mod tests {
             )
             .unwrap();
 
-        let results = store.search(&["cached".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["cached".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         assert!(
             !results[0].hits.is_empty(),
             "Porter stemming should match 'cached' to 'caching'"
@@ -1180,7 +1355,9 @@ mod tests {
             )
             .unwrap();
 
-        let results = store.search(&["useEffect".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["useEffect".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         assert!(!results[0].hits.is_empty(), "Should find useEffect");
     }
 
@@ -1190,7 +1367,12 @@ mod tests {
         store.index("docs:api", sample_markdown()).unwrap();
 
         let results = store
-            .search(&["OAuth".to_string(), "endpoints".to_string()], 5, None)
+            .search(
+                &["OAuth".to_string(), "endpoints".to_string()],
+                5,
+                None,
+                &DateRange::default(),
+            )
             .unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -1205,7 +1387,9 @@ mod tests {
             )
             .unwrap();
 
-        let results = store.search(&["kuberntes".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["kuberntes".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         if !results[0].hits.is_empty() {
             assert_eq!(results[0].hits[0].match_layer, MatchLayer::Fuzzy);
             assert!(results[0].corrected_query.is_some());
@@ -1218,7 +1402,12 @@ mod tests {
         store.index("docs:api", sample_markdown()).unwrap();
 
         let results = store
-            .search(&["zzzznonexistentzzz".to_string()], 5, None)
+            .search(
+                &["zzzznonexistentzzz".to_string()],
+                5,
+                None,
+                &DateRange::default(),
+            )
             .unwrap();
         assert!(results[0].hits.is_empty());
     }
@@ -1391,7 +1580,9 @@ mod tests {
         let store = ContentStore::new().unwrap();
         store.index("docs:api", sample_markdown()).unwrap();
 
-        let results = store.search_combined(Some("OAuth"), None, 5, None).unwrap();
+        let results = store
+            .search_combined(Some("OAuth"), None, 5, None, None, None)
+            .unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -1406,6 +1597,8 @@ mod tests {
                 Some(&["OAuth".to_string(), "endpoints".to_string()]),
                 5,
                 None,
+                None,
+                None,
             )
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -1417,7 +1610,14 @@ mod tests {
         store.index("docs:api", sample_markdown()).unwrap();
 
         let results = store
-            .search_combined(Some("OAuth"), Some(&["endpoints".to_string()]), 5, None)
+            .search_combined(
+                Some("OAuth"),
+                Some(&["endpoints".to_string()]),
+                5,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -1427,7 +1627,9 @@ mod tests {
         let store = ContentStore::new().unwrap();
         store.index("docs:api", sample_markdown()).unwrap();
 
-        let err = store.search_combined(None, None, 5, None).unwrap_err();
+        let err = store
+            .search_combined(None, None, 5, None, None, None)
+            .unwrap_err();
         assert!(matches!(err, ContextError::InvalidParams(_)));
     }
 
@@ -1439,7 +1641,7 @@ mod tests {
         store.index("docs:api", sample_markdown()).unwrap();
 
         let result = store
-            .batch_search_read(&["OAuth".to_string()], &[], 5, None)
+            .batch_search_read(&["OAuth".to_string()], &[], 5, None, &DateRange::default())
             .unwrap();
         assert!(!result.search_results.is_empty());
         assert!(result.read_results.is_empty());
@@ -1460,6 +1662,7 @@ mod tests {
                 }],
                 5,
                 None,
+                &DateRange::default(),
             )
             .unwrap();
         assert!(result.search_results.is_empty());
@@ -1481,6 +1684,7 @@ mod tests {
                 }],
                 5,
                 None,
+                &DateRange::default(),
             )
             .unwrap();
         assert!(!result.search_results.is_empty());
@@ -1497,7 +1701,7 @@ mod tests {
 
         // Batch search should use SNIPPET_BATCH_MAX_LEN (3000)
         let result = store
-            .batch_search_read(&["OAuth".to_string()], &[], 5, None)
+            .batch_search_read(&["OAuth".to_string()], &[], 5, None, &DateRange::default())
             .unwrap();
         // Just verify it works — snippet length is internal
         assert!(!result.search_results.is_empty());
@@ -1510,7 +1714,9 @@ mod tests {
         let store = ContentStore::new().unwrap();
         store.index("docs:api", sample_markdown()).unwrap();
 
-        let results = store.search(&["OAuth".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["OAuth".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         assert!(!results[0].hits.is_empty());
 
         let hit = &results[0].hits[0];
@@ -1525,7 +1731,9 @@ mod tests {
         let store = ContentStore::new().unwrap();
         store.index("empty", "").unwrap();
 
-        let results = store.search(&["test".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["test".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         assert!(results[0].hits.is_empty());
 
         let read = store.read("empty", None, None).unwrap();
@@ -1539,7 +1747,12 @@ mod tests {
         store.index("cjk", content).unwrap();
 
         let results = store
-            .search(&["\u{4e2d}\u{6587}".to_string()], 5, None)
+            .search(
+                &["\u{4e2d}\u{6587}".to_string()],
+                5,
+                None,
+                &DateRange::default(),
+            )
             .unwrap();
         // May or may not find matches depending on tokenization
         assert_eq!(results.len(), 1);
@@ -1572,7 +1785,9 @@ mod tests {
         let display = result.to_string();
         assert!(display.contains("## Contents"));
 
-        let results = store.search(&["Section 250".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["Section 250".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         let output = format_search_results(&results, types::SEARCH_OUTPUT_CAP);
         assert!(output.len() <= types::SEARCH_OUTPUT_CAP + 500);
 
@@ -1591,7 +1806,9 @@ mod tests {
         assert!(read.content.contains("1-1\t"));
 
         // Search should work
-        let results = store.search(&["xxx".to_string()], 5, None).unwrap();
+        let results = store
+            .search(&["xxx".to_string()], 5, None, &DateRange::default())
+            .unwrap();
         assert_eq!(results.len(), 1);
 
         // Index should show TOC
@@ -1630,6 +1847,7 @@ mod tests {
                 ],
                 50,
                 None,
+                &DateRange::default(),
             )
             .unwrap();
         let output = format_search_results(&results, types::SEARCH_OUTPUT_CAP);
@@ -1751,6 +1969,7 @@ mod tests {
                 }],
                 5,
                 None,
+                &DateRange::default(),
             )
             .unwrap();
         assert_eq!(result.read_results.len(), 1);

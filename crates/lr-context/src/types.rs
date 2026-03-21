@@ -24,6 +24,42 @@ pub const SEARCH_OUTPUT_CAP: usize = 40 * 1024;
 pub(crate) const BATCH_OUTPUT_CAP: usize = 40 * 1024;
 
 // ─────────────────────────────────────────────────────────
+// Date range filter
+// ─────────────────────────────────────────────────────────
+
+/// Date range for filtering search results by `sources.indexed_at`.
+/// Both bounds use `>` / `<` (exclusive). Use `DateRange::default()` for unbounded.
+#[derive(Debug, Clone)]
+pub struct DateRange {
+    /// Lower bound (exclusive). Empty string matches everything.
+    pub after: String,
+    /// Upper bound (exclusive). Sentinel value matches everything.
+    pub before: String,
+}
+
+impl DateRange {
+    const SENTINEL_AFTER: &'static str = "";
+    const SENTINEL_BEFORE: &'static str = "9999-12-31 23:59:59";
+
+    /// Create a new DateRange. `None` values use sentinels that match everything.
+    pub fn new(after: Option<String>, before: Option<String>) -> Self {
+        Self {
+            after: after.unwrap_or_else(|| Self::SENTINEL_AFTER.to_string()),
+            before: before.unwrap_or_else(|| Self::SENTINEL_BEFORE.to_string()),
+        }
+    }
+}
+
+impl Default for DateRange {
+    fn default() -> Self {
+        Self {
+            after: Self::SENTINEL_AFTER.to_string(),
+            before: Self::SENTINEL_BEFORE.to_string(),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────
 // Enums
 // ─────────────────────────────────────────────────────────
 

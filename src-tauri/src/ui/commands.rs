@@ -1351,10 +1351,7 @@ pub fn detect_available_runtimes() -> AvailableRuntimes {
         for (k, v) in env {
             command.env(k, v);
         }
-        command
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        command.status().map(|s| s.success()).unwrap_or(false)
     }
 
     AvailableRuntimes {
@@ -2364,7 +2361,7 @@ pub async fn preview_rag_index(
             byte_size, label, preview, label
         );
 
-        let sources = store.list_sources().map_err(|e| e.to_string())?;
+        let sources = store.list_sources(None, None).map_err(|e| e.to_string())?;
         *rag_preview_store().lock() = Some(store);
 
         Ok(RagPreviewIndexResult {
@@ -2397,6 +2394,8 @@ pub async fn preview_rag_search(
                 queries.as_deref(),
                 limit,
                 source.as_deref(),
+                None,
+                None,
             )
             .map_err(|e| e.to_string())
     })
@@ -4778,7 +4777,12 @@ pub async fn memory_test_search(query: String, top_k: Option<usize>) -> Result<S
     };
 
     let results = store
-        .search(&[query], top_k.unwrap_or(5), None)
+        .search(
+            &[query],
+            top_k.unwrap_or(5),
+            None,
+            &lr_context::DateRange::default(),
+        )
         .map_err(|e| format!("FTS5 search failed: {}", e))?;
 
     let has_hits = results.iter().any(|r| !r.hits.is_empty());
@@ -4865,7 +4869,7 @@ pub async fn list_memory_clients(
         }
 
         let (source_count, total_lines) = match &memory_svc {
-            Some(svc) => match svc.list_sources(&client.id) {
+            Some(svc) => match svc.list_sources(&client.id, None, None) {
                 Ok(sources) => {
                     let lines: usize = sources.iter().map(|s| s.total_lines).sum();
                     (sources.len(), lines)
@@ -4899,7 +4903,15 @@ pub async fn search_client_memory(
         guard.clone().ok_or("Memory service not initialized")?
     };
 
-    svc.search_combined(&client_id, Some(&query), None, limit.unwrap_or(5), None)
+    svc.search_combined(
+        &client_id,
+        Some(&query),
+        None,
+        limit.unwrap_or(5),
+        None,
+        None,
+        None,
+    )
 }
 
 /// Read a specific source from a client's memory
