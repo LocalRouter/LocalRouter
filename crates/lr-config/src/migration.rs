@@ -3,7 +3,7 @@
 //! Handles migrating configuration files between versions.
 
 use super::{
-    AppConfig, CONFIG_VERSION, MCP_KEYRING_SERVICE, PROVIDER_KEYRING_SERVICE, SecretScanAction,
+    AppConfig, SecretScanAction, CONFIG_VERSION, MCP_KEYRING_SERVICE, PROVIDER_KEYRING_SERVICE,
 };
 use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
 use lr_types::AppResult;
