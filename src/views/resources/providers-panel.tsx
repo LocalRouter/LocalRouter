@@ -138,7 +138,7 @@ export function ProvidersPanel({
   onHealthInit,
   onRefreshHealth,
   initialAddProviderType,
-  onViewChange,
+  onViewChange: _onViewChange,
 }: ProvidersPanelProps) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
@@ -157,6 +157,7 @@ export function ProvidersPanel({
   // Detailed models for the Models tab
   const [detailedModels, setDetailedModels] = useState<DetailedModel[]>([])
   const [detailedModelsLoading, setDetailedModelsLoading] = useState(false)
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
 
   // Detail tab state
   const [detailTab, setDetailTab] = useState("info")
@@ -323,6 +324,7 @@ export function ProvidersPanel({
 
   const loadDetailedModels = useCallback(async (instanceName: string) => {
     setDetailedModelsLoading(true)
+    setSelectedModelId(null)
     try {
       const allModels = await invoke<DetailedModel[]>("list_all_models_detailed")
       setDetailedModels(allModels.filter(m => m.provider_instance === instanceName))
@@ -697,38 +699,129 @@ export function ProvidersPanel({
                             <div className="space-y-1">
                               {detailedModels.map((model) => {
                                 const ftStatus = freeTierStatus[selectedProvider.instance_name]
+                                const isExpanded = selectedModelId === model.model_id
                                 return (
-                                  <div
-                                    key={model.model_id}
-                                    className="flex items-center justify-between p-3 rounded-md hover:bg-muted cursor-pointer"
-                                    onClick={() => {
-                                      if (onViewChange) {
-                                        onViewChange("resources", `models/${model.provider_instance}/${model.model_id}`)
-                                      }
-                                    }}
-                                  >
-                                    <div className="min-w-0 flex-1">
-                                      <p className="font-medium text-sm truncate">{model.model_id}</p>
-                                      {model.parameter_count && (
-                                        <p className="text-xs text-muted-foreground">{model.parameter_count}</p>
+                                  <div key={model.model_id}>
+                                    <div
+                                      className={cn(
+                                        "flex items-center justify-between p-3 rounded-md hover:bg-muted cursor-pointer",
+                                        isExpanded && "bg-muted"
                                       )}
+                                      onClick={() => setSelectedModelId(isExpanded ? null : model.model_id)}
+                                    >
+                                      <div className="min-w-0 flex-1">
+                                        <p className="font-medium text-sm truncate">{model.model_id}</p>
+                                        {model.parameter_count && (
+                                          <p className="text-xs text-muted-foreground">{model.parameter_count}</p>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-3 ml-2">
+                                        <ModelPricingBadge
+                                          inputPricePerMillion={model.input_price_per_million}
+                                          outputPricePerMillion={model.output_price_per_million}
+                                          freeTierKind={ftStatus?.free_tier}
+                                        />
+                                        {model.context_window > 0 && (
+                                          <Badge variant="secondary" className="text-xs whitespace-nowrap">
+                                            {model.context_window >= 1000000
+                                              ? `${(model.context_window / 1000000).toFixed(1)}M`
+                                              : model.context_window >= 1000
+                                              ? `${Math.round(model.context_window / 1000)}k`
+                                              : model.context_window} ctx
+                                          </Badge>
+                                        )}
+                                      </div>
                                     </div>
-                                    <div className="flex items-center gap-3 ml-2">
-                                      <ModelPricingBadge
-                                        inputPricePerMillion={model.input_price_per_million}
-                                        outputPricePerMillion={model.output_price_per_million}
-                                        freeTierKind={ftStatus?.free_tier}
-                                      />
-                                      {model.context_window > 0 && (
-                                        <Badge variant="secondary" className="text-xs whitespace-nowrap">
-                                          {model.context_window >= 1000000
-                                            ? `${(model.context_window / 1000000).toFixed(1)}M`
-                                            : model.context_window >= 1000
-                                            ? `${Math.round(model.context_window / 1000)}k`
-                                            : model.context_window} ctx
-                                        </Badge>
-                                      )}
-                                    </div>
+                                    {isExpanded && (
+                                      <div className="px-3 pb-3 pt-1 space-y-3">
+                                        <div className="grid grid-cols-2 gap-3 text-sm">
+                                          <div>
+                                            <p className="text-muted-foreground text-xs">Context Window</p>
+                                            <p className="font-medium">
+                                              {model.context_window === 0
+                                                ? "N/A"
+                                                : model.context_window >= 1000000
+                                                ? `${(model.context_window / 1000000).toFixed(1)}M tokens`
+                                                : model.context_window >= 1000
+                                                ? `${(model.context_window / 1000).toFixed(0)}K tokens`
+                                                : `${model.context_window} tokens`}
+                                            </p>
+                                          </div>
+                                          <div>
+                                            <p className="text-muted-foreground text-xs">Streaming</p>
+                                            <p className="font-medium">
+                                              {model.supports_streaming ? "Supported" : "Not supported"}
+                                            </p>
+                                          </div>
+                                          {model.parameter_count && (
+                                            <div>
+                                              <p className="text-muted-foreground text-xs">Parameters</p>
+                                              <p className="font-medium">{model.parameter_count}</p>
+                                            </div>
+                                          )}
+                                          {model.pricing_source && (
+                                            <div>
+                                              <p className="text-muted-foreground text-xs">Pricing Source</p>
+                                              <p className="font-medium capitalize">{model.pricing_source}</p>
+                                            </div>
+                                          )}
+                                        </div>
+                                        <div>
+                                          <p className="text-muted-foreground text-xs mb-1">Pricing</p>
+                                          <ModelPricingBadge
+                                            inputPricePerMillion={model.input_price_per_million}
+                                            outputPricePerMillion={model.output_price_per_million}
+                                            freeTierKind={ftStatus?.free_tier}
+                                            variant="full"
+                                          />
+                                        </div>
+                                        {model.capabilities.length > 0 && (
+                                          <div>
+                                            <p className="text-muted-foreground text-xs mb-1">Capabilities</p>
+                                            <div className="flex flex-wrap gap-1">
+                                              {model.capabilities.map((cap) => (
+                                                <Badge key={cap} variant="secondary" className="text-xs">
+                                                  {cap}
+                                                </Badge>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {ftStatus && ftStatus.free_tier.kind !== "none" && (
+                                          <div>
+                                            <p className="text-muted-foreground text-xs mb-1">Free Tier</p>
+                                            <div className="text-sm space-y-1">
+                                              <div className="flex items-center gap-2">
+                                                <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+                                                <span className="font-medium text-xs">{FREE_TIER_LABELS[ftStatus.free_tier.kind]}</span>
+                                              </div>
+                                              {ftStatus.free_tier.kind === "rate_limited_free" && (
+                                                <div className="flex gap-3 text-xs">
+                                                  {ftStatus.rate_rpm_limit != null && (
+                                                    <span>
+                                                      <span className="text-muted-foreground">RPM: </span>
+                                                      {ftStatus.rate_rpm_used ?? 0}/{ftStatus.rate_rpm_limit}
+                                                    </span>
+                                                  )}
+                                                  {ftStatus.rate_rpd_limit != null && (
+                                                    <span>
+                                                      <span className="text-muted-foreground">RPD: </span>
+                                                      {ftStatus.rate_rpd_used ?? 0}/{ftStatus.rate_rpd_limit}
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              )}
+                                              {ftStatus.free_tier.kind === "credit_based" && ftStatus.credit_budget_usd != null && (
+                                                <div className="text-xs">
+                                                  <span className="text-muted-foreground">Credits: </span>
+                                                  ${(ftStatus.credit_remaining_usd ?? 0).toFixed(2)} / ${ftStatus.credit_budget_usd.toFixed(2)} remaining
+                                                </div>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
                                   </div>
                                 )
                               })}
