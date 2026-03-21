@@ -103,12 +103,50 @@ export function IndexingView({ activeSubTab, onTabChange }: IndexingViewProps) {
               </CardContent>
             </Card>
 
-            {/* Semantic Search */}
+            {/* Feature Cards */}
+            {INDEXING_CHILDREN.map((key) => {
+              const feature = FEATURES[key]
+              const Icon = feature.icon
+              return (
+                <Card key={key} className="group">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Icon className={`h-4 w-4 ${feature.color}`} />
+                      {feature.name}
+                      {feature.experimental && <ExperimentalBadge />}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    <FeatureStatus
+                      featureKey={key}
+                      ctxConfig={ctxConfig}
+                      memConfig={memConfig}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="gap-1 -ml-2 text-xs"
+                      onClick={() => navigateTo(feature.viewId)}
+                    >
+                      Configure
+                      <ChevronRight className="h-3 w-3" />
+                    </Button>
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+        </TabsContent>
+
+        {/* Settings Tab */}
+        <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+          <div className="space-y-4 max-w-2xl">
+            {/* Embedding Model */}
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Semantic Search (Optional)</CardTitle>
+                <CardTitle className="text-sm">Embedding Model</CardTitle>
                 <CardDescription>
-                  Download a small local embedding model (~80MB) to enable hybrid search across all three features.
+                  Local sentence embedding model for semantic vector search.
                   FTS5 keyword search works without it.
                 </CardDescription>
               </CardHeader>
@@ -132,8 +170,6 @@ export function IndexingView({ activeSubTab, onTabChange }: IndexingViewProps) {
                   </Button>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  Enables semantic search: &ldquo;SQL database for login&rdquo; finds
-                  &ldquo;We chose PostgreSQL for authentication.&rdquo;
                   Runs locally via Metal/CUDA/CPU &mdash; no external API calls.
                 </p>
 
@@ -183,47 +219,8 @@ export function IndexingView({ activeSubTab, onTabChange }: IndexingViewProps) {
               </CardContent>
             </Card>
 
-            {/* Feature Cards */}
-            {INDEXING_CHILDREN.map((key) => {
-              const feature = FEATURES[key]
-              const Icon = feature.icon
-              return (
-                <Card key={key} className="group">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <Icon className={`h-4 w-4 ${feature.color}`} />
-                      {feature.name}
-                      {feature.experimental && <ExperimentalBadge />}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    <FeatureStatus
-                      featureKey={key}
-                      ctxConfig={ctxConfig}
-                      memConfig={memConfig}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="gap-1 -ml-2 text-xs"
-                      onClick={() => navigateTo(feature.viewId)}
-                    >
-                      Configure
-                      <ChevronRight className="h-3 w-3" />
-                    </Button>
-                  </CardContent>
-                </Card>
-              )
-            })}
-          </div>
-        </TabsContent>
-
-        {/* Settings Tab */}
-        <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
-          {ctxConfig && (
-            <div className="space-y-4 max-w-2xl">
-              {/* Vector Search */}
-              <Card>
+            {/* Vector Search */}
+            {ctxConfig && <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-sm">Semantic Vector Search</CardTitle>
                   <CardDescription>
@@ -255,9 +252,8 @@ export function IndexingView({ activeSubTab, onTabChange }: IndexingViewProps) {
                     )}
                   </div>
                 </CardContent>
-              </Card>
-            </div>
-          )}
+              </Card>}
+          </div>
         </TabsContent>
       </Tabs>
     </div>
