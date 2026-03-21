@@ -18,10 +18,10 @@ import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
 import {listenSafe} from "@/hooks/useTauriListener"
 import {toast} from "sonner"
-import {Bot, Brain, Download, ExternalLink, Info, Loader2, MessageSquareWarning} from "lucide-react"
+import {Bot, Brain, Download, ExternalLink, Info, List, Loader2, MessageSquareWarning} from "lucide-react"
 import {useIncrementalModels} from "@/hooks/useIncrementalModels"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
-import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/Select"
+
 import {Switch} from "@/components/ui/Toggle"
 import {Input} from "@/components/ui/Input"
 import {Button} from "@/components/ui/Button"
@@ -486,35 +486,48 @@ export function StrategyModelConfiguration({
                         Choose how clients see and select models
                     </CardDescription>
                 </CardHeader>
-                <CardContent>
-                    <Select
-                        value={routingMode}
-                        onValueChange={(value) => handleModeChange(value as RoutingMode)}
-                        disabled={readOnly || saving}
-                    >
-                        <SelectTrigger className="w-full sm:w-[280px]">
-                            <SelectValue placeholder="Select model mode" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="allowed">
-                                <div className="flex items-center gap-2">
-                                    <span>Allowed Models</span>
-                                </div>
-                            </SelectItem>
-                            <SelectItem value="auto">
-                                <div className="flex items-center gap-2">
-                                    <Bot className="h-4 w-4" />
-                                    <span>Auto Route</span>
-                                </div>
-                            </SelectItem>
-                        </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground mt-2">
-                        {routingMode === 'allowed'
-                            ? "Clients can choose from the models you select below."
-                            : "Clients see only the auto router model. LocalRouter selects the best model automatically."}
-                    </p>
-                    <div className="border-t pt-3 mt-3 flex items-center justify-between">
+                <CardContent className="space-y-3">
+                    <div className="grid gap-2">
+                        <button
+                            type="button"
+                            onClick={() => handleModeChange('allowed')}
+                            disabled={readOnly || saving}
+                            className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-colors
+                                ${routingMode === 'allowed' ? "border-primary bg-accent" : "border-muted hover:border-primary/50"}
+                                ${readOnly || saving ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
+                                focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2`}
+                        >
+                            <div className={`shrink-0 ${routingMode === 'allowed' ? "text-primary" : "text-muted-foreground"}`}>
+                                <List className="h-5 w-5" />
+                            </div>
+                            <div className="min-w-0">
+                                <p className="text-sm font-medium">Allowed Models</p>
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                    Client chooses from a curated list of models you select
+                                </p>
+                            </div>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleModeChange('auto')}
+                            disabled={readOnly || saving}
+                            className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-colors
+                                ${routingMode === 'auto' ? "border-primary bg-accent" : "border-muted hover:border-primary/50"}
+                                ${readOnly || saving ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
+                                focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2`}
+                        >
+                            <div className={`shrink-0 ${routingMode === 'auto' ? "text-primary" : "text-muted-foreground"}`}>
+                                <Bot className="h-5 w-5" />
+                            </div>
+                            <div className="min-w-0">
+                                <p className="text-sm font-medium">Auto Route</p>
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                    LocalRouter automatically selects the best model for each request
+                                </p>
+                            </div>
+                        </button>
+                    </div>
+                    <div className="border-t pt-3 flex items-center justify-between">
                         <div>
                             <span className="text-sm font-medium">Approval Popup Preview</span>
                             <p className="text-xs text-muted-foreground mt-0.5">
