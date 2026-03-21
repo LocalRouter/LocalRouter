@@ -273,8 +273,94 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("<!-- conversation conv-1 2026-03-20T01:08:39+00:00 -->"));
-        assert!(content.contains("<user timestamp=\"2026-03-20T01:08:39+00:00\">\nWhat is Rust?\n</user>"));
-        assert!(content.contains("<assistant>\nRust is a systems programming language.\n</assistant>"));
+        assert!(content
+            .contains("<user timestamp=\"2026-03-20T01:08:39+00:00\">\nWhat is Rust?\n</user>"));
+        assert!(
+            content.contains("<assistant>\nRust is a systems programming language.\n</assistant>")
+        );
+    }
+
+    #[tokio::test]
+    async fn transcript_format_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        let writer = TranscriptWriter::new();
+        let path = writer
+            .create_session_file(&sessions_dir, "87286ef5-abcd-1234", "e8dd2d9f-client")
+            .await
+            .unwrap();
+
+        let ts1 = "2026-03-20T01:08:39+00:00";
+        let ts2 = "2026-03-20T01:09:15+00:00";
+
+        writer
+            .append_conversation_header(&path, "2f7a1e9e", ts1)
+            .await
+            .unwrap();
+
+        writer
+            .append_exchange(
+                &path,
+                "recall a past convo",
+                "I'd be happy to help! Here's some **markdown**:\n\n## Search Results\n- Result 1",
+                ts1,
+            )
+            .await
+            .unwrap();
+
+        writer
+            .append_exchange(&path, "tell me more", "Sure! Here are the details...", ts2)
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        // Replace the dynamic `started:` timestamp so the snapshot is deterministic
+        let snapshot = content
+            .lines()
+            .map(|line| {
+                if line.starts_with("started: ") {
+                    "started: 2026-03-20T01:08:39.891052+00:00"
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let expected = "\
+---
+client_id: e8dd2d9f-client
+session_id: 87286ef5-abcd-1234
+started: 2026-03-20T01:08:39.891052+00:00
+---
+
+\n\
+<!-- conversation 2f7a1e9e 2026-03-20T01:08:39+00:00 -->
+
+<user timestamp=\"2026-03-20T01:08:39+00:00\">
+recall a past convo
+</user>
+
+<assistant>
+I'd be happy to help! Here's some **markdown**:
+
+## Search Results
+- Result 1
+</assistant>
+
+<user timestamp=\"2026-03-20T01:09:15+00:00\">
+tell me more
+</user>
+
+<assistant>
+Sure! Here are the details...
+</assistant>
+";
+
+        assert_eq!(snapshot, expected);
     }
 
     #[tokio::test]
