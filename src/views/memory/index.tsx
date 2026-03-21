@@ -330,6 +330,9 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm">Tool Configuration</CardTitle>
+                <CardDescription className="text-xs">
+                  Rename tools to resolve conflicts with other tools the LLM client already uses.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
@@ -348,7 +351,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     </p>
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="search-top-k" className="text-xs">Search results (top-k)</Label>
+                    <Label htmlFor="search-top-k" className="text-xs">Search results limit</Label>
                     <Input
                       id="search-top-k"
                       type="number"
@@ -360,7 +363,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                       className="h-8 text-sm"
                     />
                     <p className="text-[10px] text-muted-foreground">
-                      Number of memory chunks returned per search
+                      Maximum number of results returned per search
                     </p>
                   </div>
                 </div>

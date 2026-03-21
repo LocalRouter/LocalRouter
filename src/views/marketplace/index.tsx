@@ -983,7 +983,7 @@ export function MarketplaceView({ activeSubTab, onTabChange }: MarketplaceViewPr
               <CardHeader>
                 <CardTitle>Tool Names</CardTitle>
                 <CardDescription>
-                  Configurable names for the marketplace tools exposed to LLM clients. Changes apply to new sessions only.
+                  Rename tools to resolve conflicts with other tools the LLM client already uses. Changes apply to new sessions only.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">

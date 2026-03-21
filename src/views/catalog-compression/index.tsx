@@ -559,8 +559,7 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
                 <CardHeader>
                   <CardTitle className="text-base">Tool Names</CardTitle>
                   <CardDescription>
-                    Configurable names for the injected context management tools.
-                    Change to avoid clashing with client tools (e.g. Claude Code&apos;s Read).
+                    Rename tools to resolve conflicts with other tools the LLM client already uses (e.g. Claude Code&apos;s Read).
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
