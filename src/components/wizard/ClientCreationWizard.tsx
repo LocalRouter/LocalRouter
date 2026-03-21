@@ -15,7 +15,7 @@
  * rest of the app.
  */
 
-import { useState, useMemo, useEffect, useCallback } from "react"
+import { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react"
@@ -95,6 +95,17 @@ const INITIAL_STATE: WizardState = {
   clientName: "",
 }
 
+/** Generate a suggested name, appending (2), (3) etc. if the base name already exists */
+function generateSuggestedName(baseName: string, existingNames: string[]): string {
+  if (!existingNames.includes(baseName)) return baseName
+  let n = 2
+  while (true) {
+    const candidate = `${baseName} (${n})`
+    if (!existingNames.includes(candidate)) return candidate
+    n++
+  }
+}
+
 export function ClientCreationWizard({
   open,
   onOpenChange,
@@ -105,23 +116,33 @@ export function ClientCreationWizard({
   const [currentStep, setCurrentStep] = useState(0)
   const [creating, setCreating] = useState(false)
   const [state, setState] = useState<WizardState>(INITIAL_STATE)
+  const existingNamesRef = useRef<string[]>([])
 
-  // Pre-select template when wizard opens with initialTemplateId
+  // Load existing client names and pre-select template when wizard opens
   useEffect(() => {
-    if (open && initialTemplateId) {
-      const template = CLIENT_TEMPLATES.find(t => t.id === initialTemplateId)
-      if (template) {
-        const isCustom = template.id === "custom"
-        setState(prev => ({
-          ...prev,
-          selectedTemplate: template,
-          clientMode: isCustom ? "both" : template.defaultMode,
-          clientName: prev.clientName || (isCustom ? "" : template.name),
-        }))
-        // Skip to name+mode step (offset by welcome step if present)
-        setCurrentStep(showWelcome ? 2 : 1)
-      }
-    }
+    if (!open) return
+    invoke<ClientInfo[]>("list_clients")
+      .then((clients) => {
+        existingNamesRef.current = clients.map(c => c.name)
+      })
+      .catch(() => {
+        existingNamesRef.current = []
+      })
+      .finally(() => {
+        if (initialTemplateId) {
+          const template = CLIENT_TEMPLATES.find(t => t.id === initialTemplateId)
+          if (template) {
+            const isCustom = template.id === "custom"
+            setState(prev => ({
+              ...prev,
+              selectedTemplate: template,
+              clientMode: isCustom ? "both" : template.defaultMode,
+              clientName: prev.clientName || (isCustom ? "" : generateSuggestedName(template.name, existingNamesRef.current)),
+            }))
+            setCurrentStep(showWelcome ? 2 : 1)
+          }
+        }
+      })
   }, [open, initialTemplateId])
 
   // Build visible steps dynamically based on state
@@ -195,7 +216,7 @@ export function ClientCreationWizard({
       ...prev,
       selectedTemplate: template,
       clientMode: isCustom ? "both" : template.defaultMode,
-      clientName: prev.clientName || (isCustom ? "" : template.name),
+      clientName: prev.clientName || (isCustom ? "" : generateSuggestedName(template.name, existingNamesRef.current)),
     }))
     // Auto-advance to next step
     setCurrentStep((prev) => prev + 1)
