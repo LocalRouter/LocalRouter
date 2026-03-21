@@ -1,11 +1,12 @@
 import { useState } from "react"
-import { Plus } from "lucide-react"
+import { Plus, Loader2 } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
+import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -42,6 +43,7 @@ import type {
 interface GuardrailsPanelProps {
   models: SafetyModelConfig[]
   loadErrors: Record<string, string>
+  pullProgress?: Record<string, { progress: number; status: string }>
   onPickerSelect: (selection: PickerSelection) => void
   onRemoveModel: (modelId: string) => void
   onToggleModel: (modelId: string, enabled: boolean) => void
@@ -50,6 +52,7 @@ interface GuardrailsPanelProps {
 export function GuardrailsPanel({
   models,
   loadErrors,
+  pullProgress = {},
   onPickerSelect,
   onRemoveModel,
   onToggleModel,
@@ -102,6 +105,8 @@ export function GuardrailsPanel({
               ) : (
                 filteredModels.map((model) => {
                   const hasError = !!loadErrors[model.id]
+                  const pullKey = `${model.provider_id}:${model.model_name}`
+                  const pulling = pullProgress[pullKey]
                   return (
                     <div
                       key={model.id}
@@ -110,22 +115,35 @@ export function GuardrailsPanel({
                         setDetailTab("info")
                       }}
                       className={cn(
-                        "flex items-center gap-3 p-3 rounded-md cursor-pointer",
+                        "flex flex-col gap-1 p-3 rounded-md cursor-pointer",
                         selectedModelId === model.id ? "bg-accent" : "hover:bg-muted",
-                        !model.enabled && "opacity-50"
+                        !model.enabled && !pulling && "opacity-50"
                       )}
                     >
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium truncate">{model.label}</p>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {model.provider_id}/{model.model_name}
-                        </p>
+                      <div className="flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium truncate">{model.label}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {model.provider_id}/{model.model_name}
+                          </p>
+                        </div>
+                        {pulling ? (
+                          <Badge variant="default" className="text-[10px] shrink-0 gap-1">
+                            <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                            Pulling
+                          </Badge>
+                        ) : !model.enabled ? (
+                          <Badge variant="secondary" className="text-[10px] shrink-0">Disabled</Badge>
+                        ) : null}
+                        {hasError && (
+                          <Badge variant="destructive" className="text-[10px] shrink-0">Error</Badge>
+                        )}
                       </div>
-                      {!model.enabled && (
-                        <Badge variant="secondary" className="text-[10px] shrink-0">Disabled</Badge>
-                      )}
-                      {hasError && (
-                        <Badge variant="destructive" className="text-[10px] shrink-0">Error</Badge>
+                      {pulling && (
+                        <div className="space-y-1">
+                          <Progress value={pulling.progress >= 0 ? pulling.progress : undefined} className="h-1" />
+                          <p className="text-[10px] text-muted-foreground truncate">{pulling.status}</p>
+                        </div>
                       )}
                     </div>
                   )

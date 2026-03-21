@@ -59,6 +59,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
   const [categories, setCategories] = useState<SafetyCategoryInfo[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({})
+  const [pullProgress, setPullProgress] = useState<Record<string, { progress: number; status: string }>>({})
   const [showExtraCategories, setShowExtraCategories] = useState(false)
 
   const { tab, initClientId } = parseInitPath(activeSubTab)
@@ -102,27 +103,70 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
     }
   }, [])
 
-  // Listen for model pull completion/failure events
+  // Listen for model pull progress/completion/failure events
   useEffect(() => {
+    const onProgress = listenSafe<{ provider_id: string; model_name: string; status: string; total: number | null; completed: number | null }>(
+      "provider-model-pull-progress",
+      (event) => {
+        const { provider_id, model_name, status, total, completed } = event.payload
+        const key = `${provider_id}:${model_name}`
+        const progress = total && total > 0 && completed != null ? (completed / total) * 100 : -1
+        setPullProgress(prev => ({ ...prev, [key]: { progress, status } }))
+      },
+    )
     const onComplete = listenSafe<{ provider_id: string; model_name: string }>(
       "provider-model-pull-complete",
-      (event) => {
-        toast.success(`Pulled "${event.payload.model_name}" successfully`)
+      async (event) => {
+        const { provider_id, model_name } = event.payload
+        const key = `${provider_id}:${model_name}`
+        setPullProgress(prev => {
+          const next = { ...prev }
+          delete next[key]
+          return next
+        })
+        toast.success(`Pulled "${model_name}" successfully`)
+
+        // Enable the model that was waiting for the pull
+        try {
+          const freshConfig = await invoke<GuardrailsConfig>("get_guardrails_config")
+          const model = freshConfig.safety_models.find(
+            m => m.provider_id === provider_id && m.model_name === model_name && !m.enabled
+          )
+          if (model) {
+            await invoke("toggle_safety_model", {
+              modelId: model.id,
+              enabled: true,
+            } satisfies ToggleSafetyModelParams as Record<string, unknown>)
+          }
+        } catch (err) {
+          console.error("Failed to auto-enable model after pull:", err)
+        }
+
+        await loadConfig()
         rebuildEngine()
       },
     )
     const onFailed = listenSafe<{ provider_id: string; model_name: string; error: string }>(
       "provider-model-pull-failed",
       (event) => {
-        toast.error(`Failed to pull "${event.payload.model_name}": ${event.payload.error}`)
+        const { provider_id, model_name, error } = event.payload
+        const key = `${provider_id}:${model_name}`
+        setPullProgress(prev => {
+          const next = { ...prev }
+          delete next[key]
+          return next
+        })
+        setLoadErrors(prev => ({ ...prev, [key]: error }))
+        toast.error(`Failed to pull "${model_name}": ${error}`)
       },
     )
 
     return () => {
+      onProgress.cleanup()
       onComplete.cleanup()
       onFailed.cleanup()
     }
-  }, [rebuildEngine])
+  }, [rebuildEngine, loadConfig])
 
   const saveConfig = async (newConfig: GuardrailsConfig) => {
     try {
@@ -170,7 +214,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
       id: "",
       label: selection.label,
       model_type: selection.modelType,
-      enabled: true,
+      enabled: !selection.needsPull,  // Start disabled if it needs pulling
       provider_id: selection.providerId,
       model_name: selection.modelName,
       confidence_threshold: null,
@@ -189,11 +233,18 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
       rebuildEngine()
 
       if (selection.needsPull) {
+        const key = `${selection.providerId}:${selection.modelName}`
+        setPullProgress(prev => ({ ...prev, [key]: { progress: 0, status: "starting" } }))
         toast.info(`Pulling "${selection.modelName}" from ${selection.providerId}...`)
         invoke("pull_provider_model", {
           providerId: selection.providerId,
           modelName: selection.modelName,
         } satisfies PullProviderModelParams as Record<string, unknown>).catch((err) => {
+          setPullProgress(prev => {
+            const next = { ...prev }
+            delete next[key]
+            return next
+          })
           toast.error(`Failed to start pull: ${err}`)
         })
       } else {
@@ -208,14 +259,20 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
     onTabChange("guardrails", newTab)
   }
 
-  // Build category tree nodes (grouped by model type)
+  // Build category tree nodes (grouped by model type), filtered to only enabled models
   const categoryTreeNodes = useMemo((): TreeNode[] => {
     if (categories.length === 0) return []
+
+    // Only show categories for model types that have at least one enabled safety model
+    const enabledModelTypes = new Set(
+      config.safety_models.filter(m => m.enabled).map(m => m.model_type)
+    )
 
     const modelTypeGroups: Record<string, TreeNode[]> = {}
 
     for (const cat of categories) {
       for (const modelType of cat.supported_by) {
+        if (!enabledModelTypes.has(modelType)) continue
         if (!modelTypeGroups[modelType]) {
           modelTypeGroups[modelType] = []
         }
@@ -240,7 +297,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
       label: MODEL_TYPE_LABELS[modelType] || modelType,
       children,
     }))
-  }, [categories])
+  }, [categories, config.safety_models])
 
   // Build permissions map from category_actions
   const categoryPermissionsMap = useMemo((): Record<string, CategoryActionState> => {
@@ -371,6 +428,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
           <GuardrailsPanel
             models={config.safety_models}
             loadErrors={loadErrors}
+            pullProgress={pullProgress}
             onPickerSelect={handlePickerSelect}
             onRemoveModel={handleRemoveModel}
             onToggleModel={handleToggleModel}

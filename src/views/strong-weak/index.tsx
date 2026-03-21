@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { Download, FolderOpen, Trash2, Loader2 } from "lucide-react"
+import { FolderOpen, Trash2, Loader2 } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -10,8 +9,9 @@ import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
+import { ModelDownloadCard } from "@/components/shared/ModelDownloadCard"
+import { useModelDownload } from "@/hooks/useModelDownload"
 import { Label } from "@/components/ui/label"
-import { Progress } from "@/components/ui/progress"
 import {
   Select,
   SelectContent,
@@ -43,43 +43,10 @@ interface StrongWeakViewProps {
 export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProps) {
   const [status, setStatus] = useState<RouteLLMStatus | null>(null)
   const [idleTimeout, setIdleTimeout] = useState(600)
-  const [isDownloading, setIsDownloading] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [downloadProgress, setDownloadProgress] = useState(0)
   const [testThreshold, setTestThreshold] = useState(0.3)
 
   const tab = activeSubTab || "model"
-
-  useEffect(() => {
-    loadStatus()
-
-    const lProgress = listenSafe("routellm-download-progress", (event: any) => {
-      const { progress } = event.payload
-      setDownloadProgress(progress * 100)
-    })
-
-    const lComplete = listenSafe("routellm-download-complete", () => {
-      setIsDownloading(false)
-      setDownloadProgress(100)
-      loadStatus()
-      toast.success("Strong/Weak models downloaded successfully!")
-    })
-
-    const lFailed = listenSafe("routellm-download-failed", (event: any) => {
-      setIsDownloading(false)
-      toast.error(`Download failed: ${event.payload.error}`)
-    })
-
-    // Poll status to detect state changes (model loaded/unloaded)
-    const interval = setInterval(loadStatus, 3000)
-
-    return () => {
-      lProgress.cleanup()
-      lComplete.cleanup()
-      lFailed.cleanup()
-      clearInterval(interval)
-    }
-  }, [])
 
   const loadStatus = async () => {
     try {
@@ -90,18 +57,25 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
     }
   }
 
-  const handleDownload = async () => {
-    setIsDownloading(true)
-    setDownloadProgress(0)
+  useEffect(() => {
+    loadStatus()
+    // Poll status to detect state changes (model loaded/unloaded)
+    const interval = setInterval(loadStatus, 3000)
+    return () => clearInterval(interval)
+  }, [])
 
-    try {
-      await invoke("routellm_download_models")
-    } catch (error: any) {
-      console.error("Failed to start download:", error)
-      toast.error(`Download failed: ${error.message || error}`)
-      setIsDownloading(false)
-    }
-  }
+  const routellmDownload = useModelDownload({
+    isDownloaded: status?.state !== "not_downloaded" && status?.state !== undefined,
+    downloadCommand: "routellm_download_models",
+    progressEvent: "routellm-download-progress",
+    completeEvent: "routellm-download-complete",
+    failedEvent: "routellm-download-failed",
+    onComplete: () => {
+      toast.success("Strong/Weak models downloaded successfully!")
+      loadStatus()
+    },
+    onFailed: (err) => toast.error(`Download failed: ${err}`),
+  })
 
   const updateSettings = async (newTimeout: number) => {
     try {
@@ -153,7 +127,7 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
   }
 
   const isReady =
-    status?.state !== "not_downloaded" && status?.state !== "downloading"
+    status?.state !== "not_downloaded" && status?.state !== "downloading" && routellmDownload.status !== "downloading"
 
   const handleTabChange = (newTab: string) => {
     onTabChange("strong-weak", newTab)
@@ -213,8 +187,20 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
               </CardContent>
             </Card>
 
-            {/* Status */}
-            {status && (
+            {/* Model Download / Status */}
+            {status?.state === "not_downloaded" || routellmDownload.status === "downloading" || routellmDownload.status === "failed" ? (
+              <ModelDownloadCard
+                title="Strong/Weak Model"
+                description="Analyzes each request's complexity to route simple queries to faster, cheaper models and complex ones to stronger models"
+                modelName={status?.model_name}
+                status={routellmDownload.status}
+                progress={routellmDownload.progress}
+                error={routellmDownload.error}
+                onDownload={routellmDownload.startDownload}
+                onRetry={routellmDownload.retry}
+                downloadLabel={`Download (${ROUTELLM_REQUIREMENTS.DISK_GB} GB)`}
+              />
+            ) : status && (
               <Card>
                 <CardHeader className="pb-3">
                   <CardDescription>
@@ -231,33 +217,10 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
                         {status.model_name}
                       </span>
                     </div>
-                    <div className="flex gap-2">
-                      {status.state === "not_downloaded" && !isDownloading && (
-                        <Button variant="outline" size="sm" onClick={handleDownload}>
-                          <Download className="h-3 w-3 mr-1" />
-                          Download
-                        </Button>
-                      )}
-                      <Button variant="ghost" size="sm" onClick={openFolder}>
-                        <FolderOpen className="h-3 w-3 mr-1" />
-                        Open Folder
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Download Progress */}
-            {isDownloading && (
-              <Card>
-                <CardContent className="pt-6">
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span>Downloading Strong/Weak Models...</span>
-                      <span>{downloadProgress.toFixed(0)}%</span>
-                    </div>
-                    <Progress value={downloadProgress} />
+                    <Button variant="ghost" size="sm" onClick={openFolder}>
+                      <FolderOpen className="h-3 w-3 mr-1" />
+                      Open Folder
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
@@ -343,7 +306,7 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
                     <Button
                       variant="destructive"
                       size="sm"
-                      disabled={isDeleting || status?.state === "not_downloaded" || isDownloading}
+                      disabled={isDeleting || status?.state === "not_downloaded" || routellmDownload.status === "downloading"}
                     >
                       {isDeleting ? (
                         <><Loader2 className="h-3 w-3 mr-1 animate-spin" />Deleting...</>

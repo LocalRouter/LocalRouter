@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { RefreshCw, CheckCircle2, XCircle, Loader2, Download } from "lucide-react"
+import { RefreshCw, CheckCircle2, XCircle, Loader2 } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Badge } from "@/components/ui/Badge"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
+import { ModelDownloadCard } from "@/components/shared/ModelDownloadCard"
+import { useModelDownload } from "@/hooks/useModelDownload"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
@@ -37,7 +39,6 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
   const [config, setConfig] = useState<PromptCompressionConfig | null>(null)
   const [status, setStatus] = useState<CompressionStatus | null>(null)
   const [statusLoading, setStatusLoading] = useState(true)
-  const [installing, setInstalling] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testInput, setTestInput] = useState(DEFAULT_TEST_TEXT)
   const [testRate, setTestRate] = useState(0.8)
@@ -80,6 +81,18 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
     loadConfig()
     loadStatus()
   }, [loadConfig, loadStatus])
+
+  const compressionDownload = useModelDownload({
+    isDownloaded: status?.model_downloaded ?? false,
+    downloadCommand: "install_compression",
+    progressEvent: "compression-download-progress",
+    completeEvent: "compression-download-complete",
+    onComplete: () => {
+      toast.success("Compression model downloaded")
+      loadStatus()
+    },
+    onFailed: (err) => toast.error(`Download failed: ${err}`),
+  })
 
   const updateConfig = async (updates: Partial<PromptCompressionConfig>) => {
     if (!config) return
@@ -242,13 +255,27 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                           ? "BERT model is loaded into memory and ready for compression requests."
                           : status.model_downloaded
                             ? "Model is downloaded but not loaded into memory. It will be loaded automatically on the first compression request."
-                            : "Model is not downloaded yet. Go to Settings to download it."}
+                            : "Model is not downloaded yet. Download it below."}
                       </p>
                     </div>
                   </div>
                 ) : null}
               </CardContent>
             </Card>
+
+            {/* Model Download */}
+            {status && !status.model_downloaded && (
+              <ModelDownloadCard
+                title="Download Model"
+                description="LLMLingua-2 runs natively via Candle (pure-Rust ML framework). No external dependencies required."
+                status={compressionDownload.status}
+                progress={compressionDownload.progress}
+                error={compressionDownload.error}
+                onDownload={compressionDownload.startDownload}
+                onRetry={compressionDownload.retry}
+                downloadLabel={`Download (${COMPRESSION_REQUIREMENTS[config?.model_size as keyof typeof COMPRESSION_REQUIREMENTS]?.DISK_GB ?? "?"} GB)`}
+              />
+            )}
 
             {/* Global Enable Compression */}
             {config && (
@@ -504,9 +531,11 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
 
                   {/* Model Downloaded Status */}
                   {status && (
-                    <div className={cn("flex items-center gap-2.5 pt-2 border-t", !status.model_downloaded && "opacity-45")}>
+                    <div className={cn("flex items-center gap-2.5 pt-2 border-t", !status.model_downloaded && compressionDownload.status !== "downloading" && "opacity-45")}>
                       {status.model_downloaded ? (
                         <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+                      ) : compressionDownload.status === "downloading" ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground shrink-0" />
                       ) : (
                         <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
                       )}
@@ -517,6 +546,10 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                             <Badge variant="success" className="text-[10px] px-1 py-0">
                               {status.model_size_bytes ? `${(status.model_size_bytes / 1024 / 1024).toFixed(0)} MB` : "ready"}
                             </Badge>
+                          ) : compressionDownload.status === "downloading" ? (
+                            <Badge variant="default" className="text-[10px] px-1 py-0">
+                              {compressionDownload.progress.toFixed(0)}%
+                            </Badge>
                           ) : (
                             <Badge variant="secondary" className="text-[10px] px-1 py-0">not downloaded</Badge>
                           )}
@@ -525,33 +558,6 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                           {status.model_repo}
                         </p>
                       </div>
-                      {!status.model_downloaded && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="shrink-0 ml-2"
-                          disabled={installing}
-                          onClick={async () => {
-                            setInstalling(true)
-                            try {
-                              await invoke("install_compression")
-                              toast.success("Compression model downloaded")
-                              await loadStatus()
-                            } catch (err) {
-                              toast.error(`Download failed: ${err}`)
-                            } finally {
-                              setInstalling(false)
-                            }
-                          }}
-                        >
-                          {installing ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
-                          ) : (
-                            <Download className="h-3.5 w-3.5 mr-1.5" />
-                          )}
-                          {installing ? "Downloading..." : "Download"}
-                        </Button>
-                      )}
                     </div>
                   )}
 

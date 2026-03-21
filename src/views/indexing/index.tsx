@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { CheckCircle2, ChevronRight, Download, Loader2 } from "lucide-react"
+import { ChevronRight } from "lucide-react"
 import { FEATURES, INDEXING_CHILDREN } from "@/constants/features"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
+import { ModelDownloadCard } from "@/components/shared/ModelDownloadCard"
+import { useModelDownload } from "@/hooks/useModelDownload"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -17,32 +19,34 @@ interface IndexingViewProps {
 
 export function IndexingView({ activeSubTab, onTabChange }: IndexingViewProps) {
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null)
-  const [isDownloading, setIsDownloading] = useState(false)
   const [ctxConfig, setCtxConfig] = useState<ContextManagementConfig | null>(null)
   const [memConfig, setMemConfig] = useState<MemoryConfig | null>(null)
 
   const tab = activeSubTab || "info"
   const handleTabChange = (newTab: string) => onTabChange?.("indexing", newTab)
 
+  const loadEmbeddingStatus = async () => {
+    const status = await invoke<EmbeddingStatus>("get_embedding_status")
+    setEmbeddingStatus(status)
+  }
+
   useEffect(() => {
-    invoke<EmbeddingStatus>("get_embedding_status").then(setEmbeddingStatus).catch(() => {})
+    loadEmbeddingStatus().catch(() => {})
     invoke<ContextManagementConfig>("get_context_management_config").then(setCtxConfig).catch(() => {})
     invoke<MemoryConfig>("get_memory_config").then(setMemConfig).catch(() => {})
   }, [])
 
-  const downloadEmbeddingModel = async () => {
-    setIsDownloading(true)
-    try {
-      await invoke("install_embedding_model")
+  const embeddingDownload = useModelDownload({
+    isDownloaded: embeddingStatus?.downloaded ?? false,
+    downloadCommand: "install_embedding_model",
+    progressEvent: "embedding-download-progress",
+    completeEvent: "embedding-download-complete",
+    onComplete: () => {
       toast.success("Embedding model downloaded and loaded")
-      const status = await invoke<EmbeddingStatus>("get_embedding_status")
-      setEmbeddingStatus(status)
-    } catch (error: any) {
-      toast.error(`Download failed: ${error.message || error}`)
-    } finally {
-      setIsDownloading(false)
-    }
-  }
+      loadEmbeddingStatus()
+    },
+    onFailed: (err) => toast.error(`Download failed: ${err}`),
+  })
 
   const updateField = async (field: string, value: unknown) => {
     try {
@@ -103,6 +107,79 @@ export function IndexingView({ activeSubTab, onTabChange }: IndexingViewProps) {
               </CardContent>
             </Card>
 
+            {/* Semantic Search Model */}
+            <ModelDownloadCard
+              title="Semantic Search (Optional)"
+              description="Download a small local embedding model (~80MB) to enable hybrid search across all three features. FTS5 keyword search works without it."
+              modelName={embeddingStatus?.model_name}
+              modelInfo={embeddingStatus?.model_size_mb != null ? `${embeddingStatus.model_size_mb.toFixed(0)} MB` : undefined}
+              status={embeddingDownload.status}
+              progress={embeddingDownload.progress}
+              error={embeddingDownload.error}
+              onDownload={embeddingDownload.startDownload}
+              onRetry={embeddingDownload.retry}
+              downloadLabel="Download all-MiniLM-L6-v2 (~80MB)"
+            >
+              {embeddingDownload.status === "downloaded" && (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    Enables semantic search: &ldquo;SQL database for login&rdquo; finds
+                    &ldquo;We chose PostgreSQL for authentication.&rdquo;
+                    Runs locally via Metal/CUDA/CPU &mdash; no external API calls.
+                  </p>
+                  <div className="pt-2 border-t space-y-2">
+                    <p className="text-xs font-medium text-foreground">Performance (Apple Silicon, all-MiniLM-L6-v2)</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-[11px] font-medium text-muted-foreground mb-1">Index Latency</p>
+                        <table className="text-[11px] text-muted-foreground w-full">
+                          <thead>
+                            <tr className="border-b">
+                              <th className="text-left font-medium pb-0.5">Size</th>
+                              <th className="text-right font-medium pb-0.5">FTS5</th>
+                              <th className="text-right font-medium pb-0.5">+ Vector</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr><td>1 KB</td><td className="text-right">0.6 ms</td><td className="text-right">29 ms</td></tr>
+                            <tr><td>10 KB</td><td className="text-right">1.5 ms</td><td className="text-right">237 ms</td></tr>
+                            <tr><td>100 KB</td><td className="text-right">11 ms</td><td className="text-right">2.3 s</td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-medium text-muted-foreground mb-1">Search Latency</p>
+                        <table className="text-[11px] text-muted-foreground w-full">
+                          <thead>
+                            <tr className="border-b">
+                              <th className="text-left font-medium pb-0.5">Size</th>
+                              <th className="text-right font-medium pb-0.5">FTS5</th>
+                              <th className="text-right font-medium pb-0.5">+ Vector</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr><td>1 KB</td><td className="text-right">44 µs</td><td className="text-right">7.1 ms</td></tr>
+                            <tr><td>10 KB</td><td className="text-right">97 µs</td><td className="text-right">7.3 ms</td></tr>
+                            <tr><td>100 KB</td><td className="text-right">465 µs</td><td className="text-right">7.8 ms</td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground italic">
+                      Search adds a fixed ~7 ms for query embedding. Model cold start: 32 ms (memory-mapped).
+                    </p>
+                  </div>
+                </>
+              )}
+              {embeddingDownload.status !== "downloaded" && (
+                <p className="text-xs text-muted-foreground">
+                  Enables semantic search: &ldquo;SQL database for login&rdquo; finds
+                  &ldquo;We chose PostgreSQL for authentication.&rdquo;
+                  Runs locally via Metal/CUDA/CPU &mdash; no external API calls.
+                </p>
+              )}
+            </ModelDownloadCard>
+
             {/* Feature Cards */}
             {INDEXING_CHILDREN.map((key) => {
               const feature = FEATURES[key]
@@ -142,82 +219,22 @@ export function IndexingView({ activeSubTab, onTabChange }: IndexingViewProps) {
         <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
           <div className="space-y-4 max-w-2xl">
             {/* Embedding Model */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Embedding Model</CardTitle>
-                <CardDescription>
-                  Local sentence embedding model for semantic vector search.
-                  FTS5 keyword search works without it.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {embeddingStatus?.downloaded ? (
-                  <div className="flex items-center gap-2 text-sm">
-                    <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
-                    <span className="font-medium">{embeddingStatus.model_name}</span>
-                    <span className="text-muted-foreground text-xs">
-                      {embeddingStatus.model_size_mb != null && `(${embeddingStatus.model_size_mb.toFixed(0)} MB)`}
-                      {embeddingStatus.loaded ? " — loaded" : " — downloaded"}
-                    </span>
-                  </div>
-                ) : (
-                  <Button size="sm" onClick={downloadEmbeddingModel} disabled={isDownloading}>
-                    {isDownloading ? (
-                      <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Downloading...</>
-                    ) : (
-                      <><Download className="h-3.5 w-3.5 mr-1.5" />Download all-MiniLM-L6-v2 (~80MB)</>
-                    )}
-                  </Button>
-                )}
-                <p className="text-xs text-muted-foreground">
-                  Runs locally via Metal/CUDA/CPU &mdash; no external API calls.
-                </p>
-
-                {/* Latency benchmarks — shown when model is downloaded */}
-                {embeddingStatus?.downloaded && <div className="pt-2 border-t space-y-2">
-                  <p className="text-xs font-medium text-foreground">Performance (Apple Silicon, all-MiniLM-L6-v2)</p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <p className="text-[11px] font-medium text-muted-foreground mb-1">Index Latency</p>
-                      <table className="text-[11px] text-muted-foreground w-full">
-                        <thead>
-                          <tr className="border-b">
-                            <th className="text-left font-medium pb-0.5">Size</th>
-                            <th className="text-right font-medium pb-0.5">FTS5</th>
-                            <th className="text-right font-medium pb-0.5">+ Vector</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr><td>1 KB</td><td className="text-right">0.6 ms</td><td className="text-right">29 ms</td></tr>
-                          <tr><td>10 KB</td><td className="text-right">1.5 ms</td><td className="text-right">237 ms</td></tr>
-                          <tr><td>100 KB</td><td className="text-right">11 ms</td><td className="text-right">2.3 s</td></tr>
-                        </tbody>
-                      </table>
-                    </div>
-                    <div>
-                      <p className="text-[11px] font-medium text-muted-foreground mb-1">Search Latency</p>
-                      <table className="text-[11px] text-muted-foreground w-full">
-                        <thead>
-                          <tr className="border-b">
-                            <th className="text-left font-medium pb-0.5">Size</th>
-                            <th className="text-right font-medium pb-0.5">FTS5</th>
-                            <th className="text-right font-medium pb-0.5">+ Vector</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr><td>1 KB</td><td className="text-right">44 µs</td><td className="text-right">7.1 ms</td></tr>
-                          <tr><td>10 KB</td><td className="text-right">97 µs</td><td className="text-right">7.3 ms</td></tr>
-                          <tr><td>100 KB</td><td className="text-right">465 µs</td><td className="text-right">7.8 ms</td></tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground italic">
-                    Search adds a fixed ~7 ms for query embedding. Model cold start: 32 ms (memory-mapped).
-                  </p>
-                </div>}
-              </CardContent>
-            </Card>
+            <ModelDownloadCard
+              title="Embedding Model"
+              description="Local sentence embedding model for semantic vector search. FTS5 keyword search works without it."
+              modelName={embeddingStatus?.model_name}
+              modelInfo={embeddingStatus?.model_size_mb != null ? `${embeddingStatus.model_size_mb.toFixed(0)} MB` : undefined}
+              status={embeddingDownload.status}
+              progress={embeddingDownload.progress}
+              error={embeddingDownload.error}
+              onDownload={embeddingDownload.startDownload}
+              onRetry={embeddingDownload.retry}
+              downloadLabel="Download all-MiniLM-L6-v2 (~80MB)"
+            >
+              <p className="text-xs text-muted-foreground">
+                Runs locally via Metal/CUDA/CPU &mdash; no external API calls.
+              </p>
+            </ModelDownloadCard>
 
             {/* Vector Search */}
             {ctxConfig && <Card>
