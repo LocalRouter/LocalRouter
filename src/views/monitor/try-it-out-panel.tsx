@@ -41,8 +41,7 @@ export function TryItOutPanel({ onClose }: TryItOutPanelProps) {
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <div className="flex items-center justify-between p-2 border-b">
-        <span className="text-xs font-medium">Try It Out</span>
+      <div className="flex items-center justify-end p-2 border-b">
         <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={onClose}>
           <X className="h-3 w-3" />
         </Button>

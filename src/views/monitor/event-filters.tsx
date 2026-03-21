@@ -46,7 +46,7 @@ export function EventFilters({ filter, onFilterChange, onClear }: EventFiltersPr
     : 'all'
 
   return (
-    <div className="flex items-center gap-2 p-2 border-b">
+    <div className="flex items-center gap-2 p-2">
       <Select
         value={activeGroup}
         onValueChange={(value) => {

@@ -34,7 +34,7 @@ export function MonitorView() {
   } = useMonitorEvents(activeFilter)
 
   const filterBar = (
-    <div className="flex items-center">
+    <div className="flex items-center border-b">
       <div className="flex-1">
         <EventFilters
           filter={filter}
@@ -42,7 +42,7 @@ export function MonitorView() {
           onClear={clearEvents}
         />
       </div>
-      <div className="pr-2 border-b flex items-center">
+      <div className="pr-2 flex items-center">
         <Button
           variant={tryItOutOpen ? 'secondary' : 'ghost'}
           size="sm"
