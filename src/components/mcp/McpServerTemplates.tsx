@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { AlertTriangle } from 'lucide-react'
 import ServiceIcon from '../ServiceIcon'
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '../ui/tooltip'
+import { cn } from '@/lib/utils'
 import type { AvailableRuntimes } from '@/types/tauri-commands'
 
 export type McpTemplateCategory = 'version_control' | 'productivity' | 'files_data' | 'databases' | 'search_web' | 'cloud_infra' | 'utilities' | 'development'
@@ -445,39 +446,55 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
     return runtimes[required]
   }
 
-  // Collect missing runtimes that affect visible templates
-  const missingRuntimes = runtimes
-    ? (Object.keys(RUNTIME_LABELS) as (keyof AvailableRuntimes)[]).filter(
-        rt => !runtimes[rt] && visibleTemplates.some(t => getRequiredRuntime(t) === rt)
-      )
-    : []
-
-  // Filter out templates with unavailable runtimes
-  const availableTemplates = visibleTemplates.filter(t => isRuntimeAvailable(t))
-
-  // Group templates by category
+  // Group templates by category (show all, disabled ones handled per-button)
   const templatesByCategory = CATEGORY_ORDER.reduce((acc, category) => {
-    const templates = availableTemplates.filter(t => t.category === category)
+    const templates = visibleTemplates.filter(t => t.category === category)
     if (templates.length > 0) {
       acc[category] = templates
     }
     return acc
   }, {} as Record<McpTemplateCategory, McpServerTemplate[]>)
 
-  const TemplateButton = ({ template }: { template: McpServerTemplate }) => (
-    <button
-      onClick={() => handleSelectTemplate(template)}
-      className="flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-muted hover:border-primary hover:bg-accent transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-    >
-      <ServiceIcon service={template.id} size={40} fallbackToServerIcon />
-      <div className="text-center">
-        <p className="font-medium text-sm">{template.name}</p>
-        <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
-          {template.description}
-        </p>
-      </div>
-    </button>
-  )
+  const TemplateButton = ({ template }: { template: McpServerTemplate }) => {
+    const available = isRuntimeAvailable(template)
+    const requiredRuntime = getRequiredRuntime(template)
+    const runtimeInfo = requiredRuntime ? RUNTIME_LABELS[requiredRuntime] : null
+
+    const button = (
+      <button
+        onClick={() => available && handleSelectTemplate(template)}
+        disabled={!available}
+        className={cn(
+          "flex flex-col items-center gap-2 p-4 rounded-lg border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+          available
+            ? "border-muted hover:border-primary hover:bg-accent"
+            : "border-muted opacity-50 cursor-not-allowed"
+        )}
+      >
+        <ServiceIcon service={template.id} size={40} fallbackToServerIcon />
+        <div className="text-center">
+          <p className="font-medium text-sm">{template.name}</p>
+          <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+            {template.description}
+          </p>
+        </div>
+      </button>
+    )
+
+    if (!available && runtimeInfo) {
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>{button}</TooltipTrigger>
+          <TooltipContent side="top" className="max-w-64">
+            <p>Requires {runtimeInfo.name}</p>
+            <p className="text-xs text-muted-foreground">{runtimeInfo.install}</p>
+          </TooltipContent>
+        </Tooltip>
+      )
+    }
+
+    return button
+  }
 
   const TemplateSection = ({ category, templates }: {
     category: McpTemplateCategory
@@ -500,30 +517,14 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
   }
 
   return (
-    <div className="space-y-6">
-      {missingRuntimes.length > 0 && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
-          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-500" />
-          <div>
-            <p className="font-medium text-amber-600 dark:text-amber-400">
-              Some templates are hidden due to missing runtimes
-            </p>
-            <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
-              {missingRuntimes.map(rt => (
-                <li key={rt}>
-                  <span className="font-medium">{RUNTIME_LABELS[rt].name}</span>
-                  {' — '}{RUNTIME_LABELS[rt].install}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
-      {CATEGORY_ORDER.map(category => {
-        const templates = templatesByCategory[category]
-        if (!templates) return null
-        return <TemplateSection key={category} category={category} templates={templates} />
-      })}
-    </div>
+    <TooltipProvider delayDuration={300}>
+      <div className="space-y-6">
+        {CATEGORY_ORDER.map(category => {
+          const templates = templatesByCategory[category]
+          if (!templates) return null
+          return <TemplateSection key={category} category={category} templates={templates} />
+        })}
+      </div>
+    </TooltipProvider>
   )
 }
