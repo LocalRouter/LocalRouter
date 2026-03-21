@@ -2,7 +2,9 @@
 //!
 //! Handles migrating configuration files between versions.
 
-use super::{AppConfig, CONFIG_VERSION, MCP_KEYRING_SERVICE, PROVIDER_KEYRING_SERVICE};
+use super::{
+    AppConfig, CONFIG_VERSION, MCP_KEYRING_SERVICE, PROVIDER_KEYRING_SERVICE, SecretScanAction,
+};
 use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
 use lr_types::AppResult;
 use tracing::{info, warn};
@@ -142,6 +144,12 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
     // Migrate to v23: Move secrets from config to keychain
     if config.version < 23 {
         config = migrate_to_v23(config)?;
+    }
+
+    // Migrate to v24: Secret scanning default changed from Off to Notify
+    // Preserve Off for existing configs that never explicitly set it
+    if config.version < 24 {
+        config = migrate_to_v24(config)?;
     }
 
     // Update version to current
@@ -838,6 +846,23 @@ fn migrate_to_v23(mut config: AppConfig) -> AppResult<AppConfig> {
 /// have serde defaults (action: Off), so this is a no-op migration.
 fn migrate_to_v22(config: AppConfig) -> AppResult<AppConfig> {
     info!("Migrating to version 22: Secret scanning configuration");
+    Ok(config)
+}
+
+/// Migrate to version 24: Secret scanning default changed from Off to Notify
+///
+/// The default for new installations is now Notify. For existing configs,
+/// preserve the previous Off default so users aren't surprised by new notifications.
+fn migrate_to_v24(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 24: Preserve secret scanning Off for existing configs");
+
+    // If the global action is Notify (the new default from deserialization),
+    // set it back to Off to preserve existing behavior
+    if config.secret_scanning.action == SecretScanAction::Notify {
+        config.secret_scanning.action = SecretScanAction::Off;
+    }
+
+    config.version = 24;
     Ok(config)
 }
 

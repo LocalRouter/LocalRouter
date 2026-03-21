@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 23;
+pub(crate) const CONFIG_VERSION: u32 = 24;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -2311,9 +2311,9 @@ pub enum SecretScanAction {
     /// Block the request and show a popup for user decision
     Ask,
     /// Allow the request but show a notification
+    #[default]
     Notify,
     /// No scanning
-    #[default]
     Off,
 }
 
@@ -2340,7 +2340,7 @@ pub struct SecretScanningConfig {
 impl Default for SecretScanningConfig {
     fn default() -> Self {
         Self {
-            action: SecretScanAction::Off,
+            action: SecretScanAction::Notify,
             entropy_threshold: default_entropy_threshold(),
             scan_system_messages: false,
             allowlist: Vec::new(),
