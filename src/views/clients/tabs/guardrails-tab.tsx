@@ -94,14 +94,20 @@ export function ClientGuardrailsTab({ client, onUpdate }: ClientGuardrailsTabPro
   const displayActions = guardrailsConfig.category_actions
     ?? (globalConfig?.category_actions ?? [])
 
-  // Build category tree nodes (grouped by model type)
+  // Build category tree nodes (grouped by model type), filtered to only enabled models
   const categoryTreeNodes = useMemo((): TreeNode[] => {
     if (!globalConfig || categories.length === 0) return []
+
+    // Only show categories for model types that have at least one enabled safety model
+    const enabledModelTypes = new Set(
+      globalConfig.safety_models.filter(m => m.enabled).map(m => m.model_type)
+    )
 
     const modelTypeGroups: Record<string, TreeNode[]> = {}
 
     for (const cat of categories) {
       for (const modelType of cat.supported_by) {
+        if (!enabledModelTypes.has(modelType)) continue
         if (!modelTypeGroups[modelType]) {
           modelTypeGroups[modelType] = []
         }
