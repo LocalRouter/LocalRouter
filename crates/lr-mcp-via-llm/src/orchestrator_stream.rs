@@ -729,10 +729,11 @@ async fn streaming_loop(
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_default();
                     let exchange = format!("{}\n\n{}", user_text, assistant_text);
+                    let timestamp = chrono::Utc::now().to_rfc3339();
                     tokio::spawn(async move {
                         if let Err(e) = svc
                             .transcript
-                            .append_exchange(&path, &user_text, &assistant_text)
+                            .append_exchange(&path, &user_text, &assistant_text, &timestamp)
                             .await
                         {
                             tracing::warn!("Memory: failed to write streaming transcript: {}", e);

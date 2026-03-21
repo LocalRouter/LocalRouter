@@ -254,8 +254,9 @@ mod tests {
         assert!(content.contains("session_id: test-session"));
 
         // Append conversation header
+        let ts = "2026-03-20T01:08:39+00:00";
         writer
-            .append_conversation_header(&path, "conv-1", "10:30")
+            .append_conversation_header(&path, "conv-1", ts)
             .await
             .unwrap();
 
@@ -265,14 +266,15 @@ mod tests {
                 &path,
                 "What is Rust?",
                 "Rust is a systems programming language.",
+                ts,
             )
             .await
             .unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("# Conversation conv-1 (10:30)"));
-        assert!(content.contains("## User\nWhat is Rust?"));
-        assert!(content.contains("## Assistant\nRust is a systems programming language."));
+        assert!(content.contains("<!-- conversation conv-1 2026-03-20T01:08:39+00:00 -->"));
+        assert!(content.contains("<user timestamp=\"2026-03-20T01:08:39+00:00\">\nWhat is Rust?\n</user>"));
+        assert!(content.contains("<assistant>\nRust is a systems programming language.\n</assistant>"));
     }
 
     #[tokio::test]
@@ -432,5 +434,160 @@ mod tests {
         let expired = mgr.close_expired_sessions();
         // The new session also expires instantly (0s TTL), so it gets collected too
         assert!(expired.len() <= 1);
+    }
+
+    // ========================================================================
+    // Compaction visibility tests
+    // ========================================================================
+
+    #[test]
+    fn active_session_path_returns_none_for_unknown_client() {
+        let mgr = SessionManager::new(make_config(3600, 28800));
+        assert!(mgr.active_session_path("unknown").is_none());
+    }
+
+    #[test]
+    fn active_session_path_returns_path_for_active_session() {
+        let mgr = SessionManager::new(make_config(3600, 28800));
+        let dir = std::path::PathBuf::from("/tmp/test-sessions");
+        let (_, path, _) = mgr.get_or_create_session("client-1", &dir);
+        assert_eq!(mgr.active_session_path("client-1"), Some(path));
+    }
+
+    #[test]
+    fn compaction_stats_empty_client() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        let stats = svc.get_compaction_stats("no-such-client").unwrap();
+        assert_eq!(stats.active_sessions, 0);
+        assert_eq!(stats.pending_compaction, 0);
+        assert_eq!(stats.archived_sessions, 0);
+        assert_eq!(stats.indexed_sources, 0);
+        assert_eq!(stats.total_lines, 0);
+    }
+
+    #[test]
+    fn compaction_stats_counts_session_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        let client_dir = svc.ensure_client_dir("test-client").unwrap();
+
+        // Create session files (simulating expired sessions)
+        std::fs::write(client_dir.join("sessions/aaa.md"), "content a").unwrap();
+        std::fs::write(client_dir.join("sessions/bbb.md"), "content b").unwrap();
+
+        // Create archive files
+        std::fs::write(client_dir.join("archive/ccc.md"), "content c").unwrap();
+
+        let stats = svc.get_compaction_stats("test-client").unwrap();
+        assert_eq!(stats.active_sessions, 0);
+        assert_eq!(stats.pending_compaction, 2); // 2 session files, 0 active
+        assert_eq!(stats.archived_sessions, 1);
+    }
+
+    #[test]
+    fn compaction_stats_excludes_active_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        let client_dir = svc.ensure_client_dir("test-client").unwrap();
+
+        // Create an active session via session manager
+        let (_, active_path, _) = svc
+            .session_manager
+            .get_or_create_session("test-client", &client_dir.join("sessions"));
+
+        // Write the active session file to disk
+        std::fs::write(&active_path, "active session").unwrap();
+
+        // Also create an expired (non-active) session file
+        std::fs::write(client_dir.join("sessions/expired.md"), "expired").unwrap();
+
+        let stats = svc.get_compaction_stats("test-client").unwrap();
+        assert_eq!(stats.active_sessions, 1);
+        assert_eq!(stats.pending_compaction, 1); // only the expired one
+    }
+
+    #[tokio::test]
+    async fn force_compact_moves_expired_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        let client_dir = svc.ensure_client_dir("test-client").unwrap();
+        let sessions_dir = client_dir.join("sessions");
+
+        // Create an active session
+        let (_, active_path, _) = svc
+            .session_manager
+            .get_or_create_session("test-client", &sessions_dir);
+        std::fs::write(&active_path, "active content").unwrap();
+
+        // Create expired session files
+        std::fs::write(sessions_dir.join("expired1.md"), "expired 1").unwrap();
+        std::fs::write(sessions_dir.join("expired2.md"), "expired 2").unwrap();
+
+        let result = svc.force_compact("test-client").await.unwrap();
+        assert_eq!(result.archived_count, 2);
+
+        // Active session should still be in sessions/
+        assert!(active_path.exists());
+
+        // Expired sessions should be in archive/
+        assert!(client_dir.join("archive/expired1.md").exists());
+        assert!(client_dir.join("archive/expired2.md").exists());
+
+        // Verify updated stats
+        let stats = svc.get_compaction_stats("test-client").unwrap();
+        assert_eq!(stats.active_sessions, 1);
+        assert_eq!(stats.pending_compaction, 0);
+        assert_eq!(stats.archived_sessions, 2);
+    }
+
+    #[test]
+    fn reindex_rebuilds_fts5_from_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        let client_dir = svc.ensure_client_dir("test-client").unwrap();
+
+        // Create session and archive files with content
+        std::fs::write(
+            client_dir.join("sessions/s1.md"),
+            "PostgreSQL is the database we chose for auth.",
+        )
+        .unwrap();
+        std::fs::write(
+            client_dir.join("archive/a1.md"),
+            "Redis is used for caching session tokens.",
+        )
+        .unwrap();
+
+        // Reindex from files
+        let mut progress_calls = Vec::new();
+        let count = svc
+            .reindex("test-client", |current, total| {
+                progress_calls.push((current, total));
+            })
+            .unwrap();
+
+        assert_eq!(count, 2);
+        // Should have initial (0, 2) + one per file
+        assert_eq!(progress_calls.len(), 3);
+        assert_eq!(progress_calls[0], (0, 2));
+        assert_eq!(progress_calls[2], (2, 2));
+
+        // Search should find content from both dirs
+        let results = svc.search("test-client", "PostgreSQL", 5).unwrap();
+        assert!(!results.is_empty());
+
+        let results = svc.search("test-client", "Redis caching", 5).unwrap();
+        assert!(!results.is_empty());
     }
 }

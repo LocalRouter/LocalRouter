@@ -301,7 +301,7 @@ impl McpViaLlmManager {
                                 tracing::warn!("Failed to create memory transcript: {}", e);
                             }
                             // Write initial conversation header
-                            let timestamp = chrono::Utc::now().format("%H:%M").to_string();
+                            let timestamp = chrono::Utc::now().to_rfc3339();
                             let _ = svc
                                 .transcript
                                 .append_conversation_header(
@@ -480,7 +480,7 @@ impl McpViaLlmManager {
                             {
                                 tracing::warn!("Failed to create memory transcript: {}", e);
                             }
-                            let timestamp = chrono::Utc::now().format("%H:%M").to_string();
+                            let timestamp = chrono::Utc::now().to_rfc3339();
                             let _ = svc
                                 .transcript
                                 .append_conversation_header(

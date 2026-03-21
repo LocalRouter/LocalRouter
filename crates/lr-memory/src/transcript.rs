@@ -54,7 +54,7 @@ impl TranscriptWriter {
         conversation_id: &str,
         timestamp: &str,
     ) -> Result<(), String> {
-        let header = format!("\n# Conversation {} ({})\n\n", conversation_id, timestamp);
+        let header = format!("\n<!-- conversation {} {} -->\n\n", conversation_id, timestamp);
         self.append_raw(path, &header).await
     }
 
@@ -64,10 +64,11 @@ impl TranscriptWriter {
         path: &Path,
         user_content: &str,
         assistant_content: &str,
+        timestamp: &str,
     ) -> Result<(), String> {
         let exchange = format!(
-            "## User\n{}\n\n## Assistant\n{}\n\n",
-            user_content, assistant_content
+            "<user timestamp=\"{}\">\n{}\n</user>\n\n<assistant>\n{}\n</assistant>\n\n",
+            timestamp, user_content, assistant_content
         );
         self.append_raw(path, &exchange).await
     }
@@ -128,13 +129,13 @@ impl TranscriptWriter {
         );
 
         if !exchanges.is_empty() {
-            let ts = chrono::Utc::now().format("%H:%M");
-            out.push_str(&format!("\n# Conversation 1 ({})\n\n", ts));
+            let ts = chrono::Utc::now().to_rfc3339();
+            out.push_str(&format!("\n<!-- conversation 1 {} -->\n\n", ts));
 
             for (user, assistant) in exchanges {
                 out.push_str(&format!(
-                    "## User\n{}\n\n## Assistant\n{}\n\n",
-                    user, assistant
+                    "<user timestamp=\"{}\">\n{}\n</user>\n\n<assistant>\n{}\n</assistant>\n\n",
+                    ts, user, assistant
                 ));
             }
         }
