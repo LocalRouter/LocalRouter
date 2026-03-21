@@ -71,11 +71,11 @@ function forceProductionForApp(): Plugin {
   }
 }
 
-// Serve icons from the single source of truth (dist/icons/) instead of
-// maintaining a duplicate copy in website/public/icons/.
+// Serve provider icons from the main app's public/icons/ directory so the
+// website shares the same icon set without duplicating files.
 // Dev: middleware serves files directly. Build: copies into output.
 function sharedIcons(): Plugin {
-  const iconsDir = path.resolve(__dirname, '../dist/icons')
+  const iconsDir = path.resolve(__dirname, '../public/icons')
 
   return {
     name: 'shared-icons',
