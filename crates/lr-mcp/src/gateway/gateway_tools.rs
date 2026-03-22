@@ -544,8 +544,16 @@ impl McpGateway {
         let client_id = session_read.client_id.clone();
         drop(session_read);
 
-        self.apply_firewall_result(session, result, &client_id, tool_name, server_id, request)
-            .await
+        self.apply_firewall_result(
+            session,
+            result,
+            &client_id,
+            tool_name,
+            server_id,
+            request,
+            firewall::InterceptCategory::Mcp,
+        )
+        .await
     }
 
     /// Apply a unified FirewallCheckResult, returning a FirewallDecisionResult.
@@ -560,7 +568,24 @@ impl McpGateway {
         tool_name: &str,
         server_or_skill_name: &str,
         request: &JsonRpcRequest,
+        intercept_category: firewall::InterceptCategory,
     ) -> AppResult<FirewallDecisionResult> {
+        // Monitor intercept: override Allow → Ask if intercept rule matches
+        let result = if result == FirewallCheckResult::Allow
+            && self
+                .firewall_manager
+                .should_intercept(client_id, intercept_category)
+        {
+            tracing::info!(
+                "Monitor intercept: overriding Allow → Ask for tool {} (client={})",
+                tool_name,
+                client_id
+            );
+            FirewallCheckResult::Ask
+        } else {
+            result
+        };
+
         match result {
             FirewallCheckResult::Allow => Ok(FirewallDecisionResult::Proceed),
             FirewallCheckResult::Deny => {
@@ -829,6 +854,12 @@ impl McpGateway {
         };
 
         // 2. Apply firewall
+        let vs_intercept_category = match vs.id() {
+            "_skills" => firewall::InterceptCategory::Skill,
+            "_marketplace" => firewall::InterceptCategory::Marketplace,
+            "_coding_agents" => firewall::InterceptCategory::CodingAgent,
+            _ => firewall::InterceptCategory::Mcp,
+        };
         let decision = match firewall_result {
             VirtualFirewallResult::Standard(check) => {
                 self.apply_firewall_result(
@@ -838,6 +869,7 @@ impl McpGateway {
                     tool_name,
                     vs.id(),
                     &request,
+                    vs_intercept_category,
                 )
                 .await?
             }

@@ -198,6 +198,41 @@ pub struct PendingApprovalInfo {
     pub secret_scan_details: Option<SecretScanApprovalDetails>,
 }
 
+/// Category of requests to intercept from the monitor page
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InterceptCategory {
+    /// LLM model permission + auto-router
+    Llm,
+    /// MCP tool calls (non-virtual servers)
+    Mcp,
+    /// Skill tool calls
+    Skill,
+    /// Marketplace install
+    Marketplace,
+    /// Coding agent start
+    CodingAgent,
+    /// Guardrail scan
+    Guardrails,
+    /// Secret scan
+    SecretScan,
+    /// MCP sampling
+    Sampling,
+    /// MCP elicitation
+    Elicitation,
+}
+
+/// Active intercept rule for the monitor page.
+/// Transient — not persisted to config, cleared when the monitor page unmounts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterceptRule {
+    /// Which categories of requests to intercept (multi-select)
+    pub categories: Vec<InterceptCategory>,
+    /// Client IDs to intercept (empty = all clients)
+    #[serde(default)]
+    pub client_ids: Vec<String>,
+}
+
 /// Manages firewall approval lifecycle for MCP gateway
 pub struct FirewallManager {
     /// Pending approval sessions (request_id -> session)
@@ -209,6 +244,9 @@ pub struct FirewallManager {
     /// Broadcast sender for SSE notifications (optional)
     notification_broadcast:
         Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
+
+    /// Active monitor intercept rule (transient, set from UI)
+    intercept_rule: parking_lot::RwLock<Option<InterceptRule>>,
 }
 
 impl FirewallManager {
@@ -218,6 +256,7 @@ impl FirewallManager {
             pending: Arc::new(DashMap::new()),
             default_timeout_secs,
             notification_broadcast: None,
+            intercept_rule: parking_lot::RwLock::new(None),
         }
     }
 
@@ -230,6 +269,7 @@ impl FirewallManager {
             pending: Arc::new(DashMap::new()),
             default_timeout_secs,
             notification_broadcast: Some(notification_broadcast),
+            intercept_rule: parking_lot::RwLock::new(None),
         }
     }
 
@@ -685,6 +725,7 @@ impl Default for FirewallManager {
             pending: Arc::new(DashMap::new()),
             default_timeout_secs: 86400, // 24 hours — effectively indefinite
             notification_broadcast: None,
+            intercept_rule: parking_lot::RwLock::new(None),
         }
     }
 }
@@ -695,7 +736,48 @@ impl Clone for FirewallManager {
             pending: self.pending.clone(),
             default_timeout_secs: self.default_timeout_secs,
             notification_broadcast: self.notification_broadcast.clone(),
+            intercept_rule: parking_lot::RwLock::new(self.intercept_rule.read().clone()),
         }
+    }
+}
+
+// ============================================================================
+// Monitor Intercept
+// ============================================================================
+
+impl FirewallManager {
+    /// Set the active monitor intercept rule (or clear with `None`).
+    pub fn set_intercept_rule(&self, rule: Option<InterceptRule>) {
+        *self.intercept_rule.write() = rule;
+    }
+
+    /// Get the current monitor intercept rule.
+    pub fn get_intercept_rule(&self) -> Option<InterceptRule> {
+        self.intercept_rule.read().clone()
+    }
+
+    /// Check if a request should be intercepted by the monitor intercept rule.
+    ///
+    /// Returns `true` if the active rule matches, meaning the caller should
+    /// override `Allow` → `Ask` to force a firewall popup.
+    pub fn should_intercept(&self, client_id: &str, request_category: InterceptCategory) -> bool {
+        // Never intercept the internal test client (Try It Out UI)
+        if client_id == "internal-test" {
+            return false;
+        }
+
+        let guard = self.intercept_rule.read();
+        let Some(rule) = guard.as_ref() else {
+            return false;
+        };
+
+        // Client filter: empty = all clients
+        if !rule.client_ids.is_empty() && !rule.client_ids.iter().any(|id| id == client_id) {
+            return false;
+        }
+
+        // Category filter
+        rule.categories.contains(&request_category)
     }
 }
 
@@ -1196,5 +1278,105 @@ mod tests {
 
         // Clean up
         manager.cancel_request(&info.request_id).unwrap();
+    }
+
+    // ========================================================================
+    // Monitor intercept tests
+    // ========================================================================
+
+    #[test]
+    fn test_should_intercept_no_rule() {
+        let manager = FirewallManager::new(300);
+        assert!(!manager.should_intercept("client-1", InterceptCategory::Llm));
+        assert!(!manager.should_intercept("client-1", InterceptCategory::Mcp));
+    }
+
+    #[test]
+    fn test_should_intercept_all_categories_all_clients() {
+        let manager = FirewallManager::new(300);
+        manager.set_intercept_rule(Some(InterceptRule {
+            categories: vec![
+                InterceptCategory::Llm,
+                InterceptCategory::Mcp,
+                InterceptCategory::Guardrails,
+            ],
+            client_ids: vec![],
+        }));
+        assert!(manager.should_intercept("client-1", InterceptCategory::Llm));
+        assert!(manager.should_intercept("client-1", InterceptCategory::Mcp));
+        assert!(manager.should_intercept("client-1", InterceptCategory::Guardrails));
+        assert!(!manager.should_intercept("client-1", InterceptCategory::Skill));
+        assert!(manager.should_intercept("client-2", InterceptCategory::Llm));
+    }
+
+    #[test]
+    fn test_should_intercept_single_category() {
+        let manager = FirewallManager::new(300);
+        manager.set_intercept_rule(Some(InterceptRule {
+            categories: vec![InterceptCategory::Llm],
+            client_ids: vec![],
+        }));
+        assert!(manager.should_intercept("client-1", InterceptCategory::Llm));
+        assert!(!manager.should_intercept("client-1", InterceptCategory::Mcp));
+        assert!(!manager.should_intercept("client-1", InterceptCategory::Guardrails));
+    }
+
+    #[test]
+    fn test_should_intercept_specific_clients() {
+        let manager = FirewallManager::new(300);
+        manager.set_intercept_rule(Some(InterceptRule {
+            categories: vec![InterceptCategory::Llm, InterceptCategory::Mcp],
+            client_ids: vec!["client-1".to_string(), "client-3".to_string()],
+        }));
+        assert!(manager.should_intercept("client-1", InterceptCategory::Llm));
+        assert!(manager.should_intercept("client-1", InterceptCategory::Mcp));
+        assert!(manager.should_intercept("client-3", InterceptCategory::Llm));
+        assert!(!manager.should_intercept("client-2", InterceptCategory::Llm));
+        assert!(!manager.should_intercept("client-2", InterceptCategory::Mcp));
+    }
+
+    #[test]
+    fn test_should_intercept_internal_test_always_skipped() {
+        let manager = FirewallManager::new(300);
+        manager.set_intercept_rule(Some(InterceptRule {
+            categories: vec![
+                InterceptCategory::Llm,
+                InterceptCategory::Mcp,
+                InterceptCategory::Skill,
+            ],
+            client_ids: vec![],
+        }));
+        assert!(!manager.should_intercept("internal-test", InterceptCategory::Llm));
+        assert!(!manager.should_intercept("internal-test", InterceptCategory::Mcp));
+    }
+
+    #[test]
+    fn test_should_intercept_empty_categories_matches_nothing() {
+        let manager = FirewallManager::new(300);
+        manager.set_intercept_rule(Some(InterceptRule {
+            categories: vec![],
+            client_ids: vec![],
+        }));
+        assert!(!manager.should_intercept("client-1", InterceptCategory::Llm));
+        assert!(!manager.should_intercept("client-1", InterceptCategory::Mcp));
+    }
+
+    #[test]
+    fn test_set_and_clear_intercept_rule() {
+        let manager = FirewallManager::new(300);
+        assert!(manager.get_intercept_rule().is_none());
+
+        manager.set_intercept_rule(Some(InterceptRule {
+            categories: vec![InterceptCategory::Llm, InterceptCategory::SecretScan],
+            client_ids: vec!["c1".to_string()],
+        }));
+        let rule = manager.get_intercept_rule().unwrap();
+        assert!(rule.categories.contains(&InterceptCategory::Llm));
+        assert!(rule.categories.contains(&InterceptCategory::SecretScan));
+        assert_eq!(rule.client_ids, vec!["c1"]);
+
+        manager.set_intercept_rule(None);
+        assert!(manager.get_intercept_rule().is_none());
+        assert!(!manager.should_intercept("c1", InterceptCategory::Llm));
     }
 }

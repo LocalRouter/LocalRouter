@@ -999,6 +999,7 @@ impl McpGateway {
             // Share Arc references so callbacks always read current settings
             let live_sampling = self.live_sampling.clone();
             let live_elicitation_mode = self.live_elicitation_mode.clone();
+            let firewall_manager = self.firewall_manager.clone();
 
             self.server_manager.set_request_callback(
                 server_id,
@@ -1011,6 +1012,7 @@ impl McpGateway {
                     let client_id = client_id.clone();
                     let session_key = session_key.clone();
                     let client_mode = client_mode.clone();
+                    let firewall_mgr = firewall_manager.clone();
                     // Read live settings inside callback for instant effect
                     let sampling_behavior = live_sampling.read().clone();
                     let elicitation_mode = live_elicitation_mode.read().clone();
@@ -1056,6 +1058,22 @@ impl McpGateway {
                                         lr_config::ElicitationMode::Direct
                                     }
                                     (mode, _) => mode.clone(),
+                                };
+
+                                // Monitor intercept: override Off → Direct to force elicitation popup
+                                let effective_mode = if matches!(effective_mode, lr_config::ElicitationMode::Off)
+                                    && firewall_mgr.should_intercept(
+                                        &client_id,
+                                        super::firewall::InterceptCategory::Elicitation,
+                                    )
+                                {
+                                    tracing::info!(
+                                        "Monitor intercept: overriding Off → Direct for elicitation (client={})",
+                                        client_id
+                                    );
+                                    lr_config::ElicitationMode::Direct
+                                } else {
+                                    effective_mode
                                 };
 
                                 tracing::info!(
@@ -1163,6 +1181,22 @@ impl McpGateway {
                                         lr_config::SamplingBehavior::Passthrough
                                     }
                                     (b, _) => b.clone(),
+                                };
+
+                                // Monitor intercept: override DirectAllow → DirectAsk to force popup
+                                let effective = if matches!(effective, lr_config::SamplingBehavior::DirectAllow)
+                                    && firewall_mgr.should_intercept(
+                                        &client_id,
+                                        super::firewall::InterceptCategory::Sampling,
+                                    )
+                                {
+                                    tracing::info!(
+                                        "Monitor intercept: overriding DirectAllow → DirectAsk for sampling (client={})",
+                                        client_id
+                                    );
+                                    lr_config::SamplingBehavior::DirectAsk
+                                } else {
+                                    effective
                                 };
 
                                 // If DirectAsk, request user approval first
