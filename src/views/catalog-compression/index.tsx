@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { RefreshCw, Loader2, Search, AlertTriangle } from "lucide-react"
+import { RefreshCw, Loader2, Search, AlertTriangle, ExternalLink } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { FEATURES } from "@/constants/features"
 import { Badge } from "@/components/ui/Badge"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
+import { ModelDownloadCard } from "@/components/shared/ModelDownloadCard"
+import { useModelDownload } from "@/hooks/useModelDownload"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
@@ -18,10 +20,11 @@ import {
 } from "@/components/ui/resizable"
 import { Switch } from "@/components/ui/Toggle"
 import { cn } from "@/lib/utils"
+import { listenSafe } from "@/hooks/useTauriListener"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
-import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
-import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo } from "@/types/tauri-commands"
+import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo, ClientFeatureStatus, GetFeatureClientsStatusParams, EmbeddingStatus } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
 const DEFAULT_CATALOG_THRESHOLD_BYTES = 1000
@@ -43,6 +46,8 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<string | null>(null)
   const [searchLoading, setSearchLoading] = useState(false)
+  const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null)
 
   const tab = activeSubTab || "info"
 
@@ -50,12 +55,44 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
     onTabChange?.("catalog-compression", newTab)
   }
 
+  const loadEmbeddingStatus = async () => {
+    try {
+      const status = await invoke<EmbeddingStatus>("get_embedding_status")
+      setEmbeddingStatus(status)
+    } catch (err) {
+      console.error("Failed to load embedding status:", err)
+    }
+  }
+
+  const embeddingDownload = useModelDownload({
+    isDownloaded: embeddingStatus?.downloaded ?? false,
+    downloadCommand: "install_embedding_model",
+    progressEvent: "embedding-download-progress",
+    completeEvent: "embedding-download-complete",
+    onComplete: () => {
+      toast.success("Embedding model downloaded and loaded")
+      loadEmbeddingStatus()
+    },
+    onFailed: (err: string) => toast.error(`Download failed: ${err}`),
+  })
+
   const loadSessions = useCallback(async () => {
     try {
       const data = await invoke<ActiveSessionInfo[]>("list_active_sessions")
       setSessions(data)
     } catch (err) {
       console.error("Failed to load sessions:", err)
+    }
+  }, [])
+
+  const loadClientStatuses = useCallback(async () => {
+    try {
+      const data = await invoke<ClientFeatureStatus[]>("get_feature_clients_status", {
+        feature: "catalog_compression",
+      } satisfies GetFeatureClientsStatusParams)
+      setClientStatuses(data)
+    } catch (err) {
+      console.error("Failed to load client statuses:", err)
     }
   }, [])
 
@@ -112,13 +149,23 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
       .then((cfg) => { if (!ignore) setConfig(cfg) })
       .catch((err) => console.error("Failed to load context management config:", err))
     loadSessions()
+    loadClientStatuses()
+    loadEmbeddingStatus()
 
     const interval = setInterval(loadSessions, 5000)
     return () => {
       ignore = true
       clearInterval(interval)
     }
-  }, [loadSessions])
+  }, [loadSessions, loadClientStatuses])
+
+  useEffect(() => {
+    const listeners = [
+      listenSafe("clients-changed", loadClientStatuses),
+      listenSafe("config-changed", loadClientStatuses),
+    ]
+    return () => { listeners.forEach(l => l.cleanup()) }
+  }, [loadClientStatuses])
 
   // Clear selected session if it disappears
   useEffect(() => {
@@ -189,11 +236,13 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
                 <Card>
                   <CardHeader>
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-base">Default: Catalog Compression</CardTitle>
-                      <Switch
-                        checked={config.catalog_compression}
-                        onCheckedChange={(value) => updateField("catalogCompression", value)}
-                      />
+                      <CardTitle className="text-base">Catalog Compression (Default)</CardTitle>
+                      <InfoTooltip content="When enabled, MCP tool catalogs are deferred behind FTS5 search indexing to reduce context window usage for clients with many servers.">
+                        <Switch
+                          checked={config.catalog_compression}
+                          onCheckedChange={(value) => updateField("catalogCompression", value)}
+                        />
+                      </InfoTooltip>
                     </div>
                     <CardDescription>
                       When enabled, tools, prompts, and resources are deferred from the initial catalog
@@ -201,7 +250,78 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
                       usage for clients with many MCP servers.
                     </CardDescription>
                   </CardHeader>
+                  {clientStatuses.length > 0 && (
+                    <CardContent className="pt-0">
+                      <div className="border-t pt-3 space-y-1.5">
+                        {clientStatuses.map((s) => (
+                          <div
+                            key={s.client_id}
+                            className="flex items-center justify-between py-1 px-2 rounded-md hover:bg-muted/50 group"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              {onTabChange ? (
+                                <button
+                                  onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                                  className="text-sm font-medium truncate hover:underline text-left"
+                                >
+                                  {s.client_name}
+                                </button>
+                              ) : (
+                                <span className="text-sm font-medium truncate">{s.client_name}</span>
+                              )}
+                              {s.source === "override" && (
+                                <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">
+                                  Override
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  "text-[10px] px-1.5 py-0",
+                                  s.active
+                                    ? "border-emerald-500/50 text-emerald-600"
+                                    : "border-red-500/50 text-red-600",
+                                )}
+                              >
+                                {s.active ? "Enabled" : "Disabled"}
+                              </Badge>
+                              {onTabChange && (
+                                <button
+                                  onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity"
+                                  title="Go to client settings"
+                                >
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  )}
                 </Card>
+
+                {/* Embedding Model Download */}
+                <ModelDownloadCard
+                  title="Semantic Search (Optional)"
+                  description="Download a small local embedding model (~80MB) to enable hybrid FTS5 + vector search. Keyword search works without it."
+                  modelName={embeddingStatus?.model_name}
+                  modelInfo={embeddingStatus?.model_size_mb != null ? `${embeddingStatus.model_size_mb.toFixed(0)} MB` : undefined}
+                  status={embeddingDownload.status}
+                  progress={embeddingDownload.progress}
+                  error={embeddingDownload.error}
+                  onDownload={embeddingDownload.startDownload}
+                  onRetry={embeddingDownload.retry}
+                  downloadLabel="Download all-MiniLM-L6-v2 (~80MB)"
+                >
+                  <p className="text-xs text-muted-foreground">
+                    Enables semantic search: "SQL database for login" finds "We chose PostgreSQL for authentication."
+                    Runs locally via Metal/CUDA/CPU — no external API calls.
+                  </p>
+                </ModelDownloadCard>
 
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <span>Exposed tool names:</span>
@@ -210,8 +330,6 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
                 </div>
               </>
             )}
-
-            <FeatureClientsCard feature="catalog_compression" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 

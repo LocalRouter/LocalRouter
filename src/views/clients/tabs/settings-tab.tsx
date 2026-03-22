@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Input } from "@/components/ui/Input"
 import { Switch } from "@/components/ui/Toggle"
 import { Button } from "@/components/ui/Button"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -230,10 +231,12 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
                 When disabled, this client's API key will be rejected
               </p>
             </div>
-            <Switch
-              checked={client.enabled}
-              onCheckedChange={handleToggleEnabled}
-            />
+            <InfoTooltip content="When disabled, all API requests using this client's key are rejected. Existing streaming responses are not interrupted.">
+              <Switch
+                checked={client.enabled}
+                onCheckedChange={handleToggleEnabled}
+              />
+            </InfoTooltip>
           </div>
           <div className="flex items-center justify-between pt-4 border-t">
             <div>

@@ -7,7 +7,7 @@ import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ClientInfoTab } from "./tabs/info-tab"
 import { ClientConfigTab } from "./tabs/config-tab"
-import { ClientModelsTab } from "./tabs/models-tab"
+import { UnifiedModelsTab } from "./tabs/unified-models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientContextTab } from "./tabs/context-tab"
 import { ClientLlmOptimizeTab } from "./tabs/llm-optimize-tab"
@@ -36,6 +36,7 @@ interface Client {
   template_id?: string | null
   sync_config: boolean
   guardrails_active: boolean
+  json_repair_active: boolean
   created_at: string
   last_used: string | null
 }
@@ -53,7 +54,7 @@ export function ClientDetail({
   clientId,
   client: initialClient,
   initialTab,
-  initialMode,
+  initialMode: _initialMode,
   onDeselect,
   onViewChange,
 }: ClientDetailProps) {
@@ -227,10 +228,9 @@ export function ClientDetail({
 
           {showModelsTab && (
             <TabsContent value="models">
-              <ClientModelsTab
+              <UnifiedModelsTab
                 client={client}
                 onUpdate={loadClient}
-                initialMode={initialMode}
                 onViewChange={onViewChange}
               />
             </TabsContent>

@@ -11,6 +11,8 @@ export { UnifiedModelsSelector } from "./UnifiedModelsSelector"
 
 export { PrioritizedModelSelector } from "./PrioritizedModelSelector"
 
+export { ThreeZoneModelSelector } from "./ThreeZoneModelSelector"
+
 export { StrategyModelConfiguration } from "./StrategyModelConfiguration"
 export type {
   AutoModelConfig,

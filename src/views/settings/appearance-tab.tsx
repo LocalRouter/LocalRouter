@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import type { TrayGraphSettings } from "@/types/tauri-commands"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
 
 /** Static tray icon preview — LocalRouter logo in a rounded frame */
 function StaticIconPreview() {
@@ -152,7 +153,10 @@ export function AppearanceTab() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-3">
-            <Label>Icon Mode</Label>
+            <Label className="flex items-center gap-1">
+              Icon Mode
+              <InfoTooltip content="Choose between a static tray icon or a live activity graph showing request throughput." />
+            </Label>
             <RadioGroup
               value={settings.enabled ? "graph" : "static"}
               onValueChange={(value) =>
@@ -188,7 +192,10 @@ export function AppearanceTab() {
 
           {settings.enabled && (
             <div className="space-y-2 pl-6 border-l-2 border-muted">
-              <Label>Graph Refresh Rate</Label>
+              <Label className="flex items-center gap-1">
+                Graph Refresh Rate
+                <InfoTooltip content="How often the activity graph redraws. Faster rates show more detail but use slightly more CPU." />
+              </Label>
               <Select
                 value={settings.refresh_rate_secs.toString()}
                 onValueChange={(value) =>

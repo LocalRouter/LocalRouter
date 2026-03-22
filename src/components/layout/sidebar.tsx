@@ -13,7 +13,7 @@ import {
   Zap,
   Activity,
 } from "lucide-react"
-import { FEATURES, INDEXING_CHILDREN, type FeatureKey } from "@/constants/features"
+import { FEATURES, type FeatureKey } from "@/constants/features"
 import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
 import ServiceIcon from "@/components/ServiceIcon"
 import { Logo } from "@/components/Logo"
@@ -49,7 +49,7 @@ interface HealthCacheState {
 
 export type View = 'dashboard' | 'monitor' | 'clients' | 'resources' | 'mcp-servers' | 'catalog-compression' | 'response-rag' | 'skills'
   | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair'
-  | 'secret-scanning' | 'memory' | 'indexing' | 'optimize-overview' | 'settings' | 'debug'
+  | 'secret-scanning' | 'memory' | 'optimize-overview' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -110,31 +110,20 @@ const MAX_SIDEBAR_CHILDREN = 10
 const mcpStaticChildren: NavStaticChild[] = [
   { view: 'skills', icon: SkillsIcon, label: 'Skills' },
   { view: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents' },
+  { view: 'memory', icon: FEATURES.memory.icon, label: 'Memory' },
   { view: 'marketplace', icon: StoreIcon, label: 'Marketplace' },
 ]
 
-const NON_INDEXING_FEATURES: FeatureKey[] = ['guardrails', 'secretScanning', 'jsonRepair', 'compression', 'routing']
+const OPTIMIZE_FEATURES: FeatureKey[] = ['guardrails', 'secretScanning', 'jsonRepair', 'compression', 'routing', 'catalogCompression', 'responseRag']
 
 const resourceNavEntries: NavEntry[] = [
   {
     id: 'optimize-overview', icon: Zap, label: 'Optimize', shortcut: '⌘5',
-    children: [
-      ...NON_INDEXING_FEATURES.map((key) => ({
-        id: FEATURES[key].viewId as View,
-        icon: FEATURES[key].icon,
-        label: FEATURES[key].shortName,
-      })),
-      {
-        id: 'indexing' as View,
-        icon: FEATURES.indexing.icon,
-        label: FEATURES.indexing.shortName,
-        subItems: INDEXING_CHILDREN.map((key) => ({
-          id: FEATURES[key].viewId as View,
-          icon: FEATURES[key].icon,
-          label: FEATURES[key].shortName,
-        })),
-      },
-    ],
+    children: OPTIMIZE_FEATURES.map((key) => ({
+      id: FEATURES[key].viewId as View,
+      icon: FEATURES[key].icon,
+      label: FEATURES[key].shortName,
+    })),
   },
 ]
 

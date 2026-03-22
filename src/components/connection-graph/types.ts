@@ -6,7 +6,7 @@ import type { CodingAgentType } from '@/types/tauri-commands'
 export type ItemHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'ready' | 'pending' | 'disabled'
 
 // Graph node types
-export type GraphNodeType = 'accessKey' | 'provider' | 'mcpServer' | 'skill' | 'marketplace' | 'codingAgent'
+export type GraphNodeType = 'accessKey' | 'provider' | 'mcpServer' | 'skill' | 'marketplace' | 'codingAgent' | 'endpoint' | 'routerGroup'
 
 // Base node data shared by all node types
 export interface BaseNodeData {
@@ -54,8 +54,19 @@ export interface MarketplaceNodeData extends BaseNodeData {
   type: 'marketplace'
 }
 
+// Endpoint node data (intermediary routing node)
+export interface EndpointNodeData extends BaseNodeData {
+  type: 'endpoint'
+  variant: 'llm' | 'mcp'
+}
+
+// Router group node data (container for endpoint nodes)
+export interface RouterGroupNodeData extends BaseNodeData {
+  type: 'routerGroup'
+}
+
 // Union type for all node data
-export type GraphNodeData = AccessKeyNodeData | ProviderNodeData | McpServerNodeData | SkillNodeData | CodingAgentNodeData | MarketplaceNodeData
+export type GraphNodeData = AccessKeyNodeData | ProviderNodeData | McpServerNodeData | SkillNodeData | CodingAgentNodeData | MarketplaceNodeData | EndpointNodeData | RouterGroupNodeData
 
 // Typed nodes
 export type AccessKeyNode = Node<AccessKeyNodeData, 'accessKey'>
@@ -64,10 +75,11 @@ export type McpServerNode = Node<McpServerNodeData, 'mcpServer'>
 export type SkillNode = Node<SkillNodeData, 'skill'>
 export type CodingAgentNode = Node<CodingAgentNodeData, 'codingAgent'>
 export type MarketplaceNode = Node<MarketplaceNodeData, 'marketplace'>
+export type EndpointNode = Node<EndpointNodeData, 'endpoint'>
 export type GraphNode = Node<GraphNodeData>
 
 // Edge type (use React Flow's Edge type directly)
-export type GraphEdge = Edge<{ isActive?: boolean }>
+export type GraphEdge = Edge<{ isActive?: boolean; phantom?: boolean; visualOnly?: boolean }>
 
 // Client info from backend
 export interface Client {

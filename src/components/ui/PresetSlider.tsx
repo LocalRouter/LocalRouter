@@ -10,7 +10,7 @@ export interface SliderPreset {
 }
 
 interface PresetSliderProps {
-  label: string
+  label: React.ReactNode
   value: number
   onChange: (value: number) => void
   onCommit?: (value: number) => void

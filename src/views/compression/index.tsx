@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { RefreshCw, CheckCircle2, XCircle, Loader2 } from "lucide-react"
+import { RefreshCw, CheckCircle2, XCircle, Loader2, ExternalLink } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Badge } from "@/components/ui/Badge"
@@ -16,8 +16,9 @@ import { PresetSlider } from "@/components/ui/PresetSlider"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
-import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
-import type { PromptCompressionConfig, CompressionStatus, CompressionTestResult, TestCompressionParams } from "@/types/tauri-commands"
+import { listenSafe } from "@/hooks/useTauriListener"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
+import type { PromptCompressionConfig, CompressionStatus, CompressionTestResult, TestCompressionParams, ClientFeatureStatus, GetFeatureClientsStatusParams } from "@/types/tauri-commands"
 import { COMPRESSION_PRESETS, COMPRESSION_REQUIREMENTS } from "@/components/compression/types"
 
 const DEFAULT_TEST_TEXT = `The user reported an error described as "a persistent connection timeout occurring on the main authentication service endpoint" when trying to log in. Here is the relevant code that handles the authentication flow:
@@ -47,6 +48,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
   const [preserveQuoted, setPreserveQuoted] = useState(true)
   const [compressionNotice, setCompressionNotice] = useState(true)
   const [showAnnotated, setShowAnnotated] = useState(true)
+  const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
 
   const tab = activeSubTab || "info"
 
@@ -77,10 +79,30 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
     }
   }, [])
 
+  const loadClientStatuses = useCallback(async () => {
+    try {
+      const data = await invoke<ClientFeatureStatus[]>("get_feature_clients_status", {
+        feature: "prompt_compression",
+      } satisfies GetFeatureClientsStatusParams)
+      setClientStatuses(data)
+    } catch (err) {
+      console.error("Failed to load client statuses:", err)
+    }
+  }, [])
+
   useEffect(() => {
     loadConfig()
     loadStatus()
-  }, [loadConfig, loadStatus])
+    loadClientStatuses()
+  }, [loadConfig, loadStatus, loadClientStatuses])
+
+  useEffect(() => {
+    const listeners = [
+      listenSafe("clients-changed", loadClientStatuses),
+      listenSafe("config-changed", loadClientStatuses),
+    ]
+    return () => { listeners.forEach(l => l.cleanup()) }
+  }, [loadClientStatuses])
 
   const compressionDownload = useModelDownload({
     isDownloaded: status?.model_downloaded ?? false,
@@ -282,12 +304,14 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Default: Prompt Compression</CardTitle>
-                    <Switch
-                      checked={config.enabled}
-                      onCheckedChange={(enabled) => updateConfig({ enabled })}
-                      disabled={saving}
-                    />
+                    <CardTitle className="text-base">Prompt Compression (Default)</CardTitle>
+                    <InfoTooltip content="When enabled, older messages in conversations are compressed using LLMLingua-2 before reaching the LLM. Recent messages are always preserved intact.">
+                      <Switch
+                        checked={config.enabled}
+                        onCheckedChange={(enabled) => updateConfig({ enabled })}
+                        disabled={saving}
+                      />
+                    </InfoTooltip>
                   </div>
                   <CardDescription>
                     Uses{" "}
@@ -301,10 +325,40 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                     Only applies to the OpenAI-compatible proxy (MCP gateway uses Context Management).
                   </p>
                 </CardHeader>
+                {clientStatuses.length > 0 && (
+                  <CardContent className="pt-0">
+                    <div className="border-t pt-3 space-y-1.5">
+                      {clientStatuses.map((s) => (
+                        <div key={s.client_id} className="flex items-center justify-between py-1 px-2 rounded-md hover:bg-muted/50 group">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {onTabChange ? (
+                              <button onClick={() => onTabChange("clients", `${s.client_id}|optimize`)} className="text-sm font-medium truncate hover:underline text-left">
+                                {s.client_name}
+                              </button>
+                            ) : (
+                              <span className="text-sm font-medium truncate">{s.client_name}</span>
+                            )}
+                            {s.source === "override" && (
+                              <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">Override</Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", s.active ? "border-emerald-500/50 text-emerald-600" : "border-red-500/50 text-red-600")}>
+                              {s.active ? "Enabled" : "Disabled"}
+                            </Badge>
+                            {onTabChange && (
+                              <button onClick={() => onTabChange("clients", `${s.client_id}|optimize`)} className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity" title="Go to client settings">
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                )}
               </Card>
             )}
-
-            <FeatureClientsCard feature="prompt_compression" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 
@@ -337,7 +391,7 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
               </CardHeader>
               <CardContent className="space-y-4">
                 <PresetSlider
-                  label="Compression Rate"
+                  label={<span className="flex items-center gap-1">Compression Rate<InfoTooltip content="Target compression ratio for the test panel. Higher values remove more tokens but may lose important content." /></span>}
                   value={testRate}
                   onChange={setTestRate}
                   presets={COMPRESSION_PRESETS}
@@ -350,20 +404,24 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                 />
 
                 <div className="flex items-center gap-6">
-                  <div className="flex items-center gap-2">
-                    <Switch
-                      checked={preserveQuoted}
-                      onCheckedChange={setPreserveQuoted}
-                    />
-                    <label className="text-sm">Preserve quoted content</label>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Switch
-                      checked={compressionNotice}
-                      onCheckedChange={setCompressionNotice}
-                    />
-                    <label className="text-sm">Show compression notice</label>
-                  </div>
+                  <InfoTooltip content="Protects text inside quotation marks and code blocks from being compressed.">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={preserveQuoted}
+                        onCheckedChange={setPreserveQuoted}
+                      />
+                      <label className="text-sm">Preserve quoted content</label>
+                    </div>
+                  </InfoTooltip>
+                  <InfoTooltip content="Appends a system message noting that earlier messages were compressed, so the model is aware of potential context loss.">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={compressionNotice}
+                        onCheckedChange={setCompressionNotice}
+                      />
+                      <label className="text-sm">Show compression notice</label>
+                    </div>
+                  </InfoTooltip>
                 </div>
               </CardContent>
             </Card>
@@ -488,7 +546,10 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
               {/* Model Selection */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Model</CardTitle>
+                  <CardTitle className="text-base flex items-center gap-1">
+                    Model
+                    <InfoTooltip content="BERT Base is faster with lower memory usage. XLM-RoBERTa Large is more accurate, especially for non-English text, but uses more memory." />
+                  </CardTitle>
                   <CardDescription>
                     LLMLingua-2 uses a BERT encoder for token classification. The model runs natively
                     via Candle (pure-Rust ML) with Metal acceleration on macOS. Changing the model
@@ -591,7 +652,10 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
               {/* Compression Rate */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Default Compression Rate</CardTitle>
+                  <CardTitle className="text-base flex items-center gap-1">
+                    Default Compression Rate
+                    <InfoTooltip content="Target compression ratio applied to conversations by default. Higher values save more tokens but risk losing important details." />
+                  </CardTitle>
                   <CardDescription>
                     Controls how aggressively tokens are removed. Lower values mean more compression
                     (fewer tokens kept). Clients can override this per-client.
@@ -629,7 +693,10 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Minimum messages</label>
+                      <label className="text-sm font-medium flex items-center gap-1">
+                        Minimum messages
+                        <InfoTooltip content="Conversations shorter than this are never compressed. Prevents compression from kicking in on short exchanges." />
+                      </label>
                       <div className="flex gap-2 items-center">
                         <Input
                           type="number"
@@ -651,7 +718,10 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                       </div>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Preserve recent</label>
+                      <label className="text-sm font-medium flex items-center gap-1">
+                        Preserve recent
+                        <InfoTooltip content="Number of most recent messages always kept uncompressed. Ensures the model has full context for the latest turns." />
+                      </label>
                       <div className="flex gap-2 items-center">
                         <Input
                           type="number"
@@ -674,7 +744,10 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Min message size</label>
+                    <label className="text-sm font-medium flex items-center gap-1">
+                      Min message size
+                      <InfoTooltip content="Messages with fewer words than this are skipped during compression. Short messages are unlikely to benefit from compression." />
+                    </label>
                     <div className="flex gap-2 items-center">
                       <Input
                         type="number"
@@ -703,11 +776,13 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base">Compress System Prompts</CardTitle>
-                    <Switch
-                      checked={config.compress_system_prompt}
-                      onCheckedChange={(v) => updateConfig({ compress_system_prompt: v })}
-                      disabled={saving}
-                    />
+                    <InfoTooltip content="Includes system prompts in compression. Disable to keep system instructions at full fidelity.">
+                      <Switch
+                        checked={config.compress_system_prompt}
+                        onCheckedChange={(v) => updateConfig({ compress_system_prompt: v })}
+                        disabled={saving}
+                      />
+                    </InfoTooltip>
                   </div>
                   <CardDescription>
                     Also compress system prompt messages. Disabled by default since system prompts
@@ -721,11 +796,13 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base">Preserve Quoted & Code Content</CardTitle>
-                    <Switch
-                      checked={config.preserve_quoted_text}
-                      onCheckedChange={(v) => updateConfig({ preserve_quoted_text: v })}
-                      disabled={saving}
-                    />
+                    <InfoTooltip content="Protects quoted text and code blocks from compression across all conversations (global default).">
+                      <Switch
+                        checked={config.preserve_quoted_text}
+                        onCheckedChange={(v) => updateConfig({ preserve_quoted_text: v })}
+                        disabled={saving}
+                      />
+                    </InfoTooltip>
                   </div>
                   <CardDescription>
                     Force-keep words inside quoted strings, inline code, and fenced code blocks during
@@ -740,11 +817,13 @@ export function CompressionView({ activeSubTab, onTabChange }: CompressionViewPr
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base">Compression Notice</CardTitle>
-                    <Switch
-                      checked={config.compression_notice}
-                      onCheckedChange={(v) => updateConfig({ compression_notice: v })}
-                      disabled={saving}
-                    />
+                    <InfoTooltip content="Appends a notice to compressed conversations so the model knows earlier context was summarized (global default).">
+                      <Switch
+                        checked={config.compression_notice}
+                        onCheckedChange={(v) => updateConfig({ compression_notice: v })}
+                        disabled={saving}
+                      />
+                    </InfoTooltip>
                   </div>
                   <CardDescription>
                     Prepend <code className="px-1 py-0.5 rounded bg-muted text-xs">[abridged]</code> to

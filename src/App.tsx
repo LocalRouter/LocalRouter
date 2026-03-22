@@ -17,7 +17,6 @@ import { CodingAgentsView } from './views/coding-agents'
 import { CatalogCompressionView } from './views/catalog-compression'
 import { ResponseRagView } from './views/response-rag'
 import { MemoryView } from './views/memory'
-import { IndexingView } from './views/indexing'
 import { CompressionView } from './views/compression'
 import { JsonRepairView } from './views/json-repair'
 import { SecretScanningView } from './views/secret-scanning'
@@ -285,13 +284,6 @@ function App() {
       case 'response-rag':
         return (
           <ResponseRagView
-            activeSubTab={activeSubTab}
-            onTabChange={handleChildViewChange}
-          />
-        )
-      case 'indexing':
-        return (
-          <IndexingView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

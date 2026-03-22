@@ -2,20 +2,22 @@ import { useState, useEffect, useCallback, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { Globe, ChevronDown, ChevronUp } from "lucide-react"
+import { Globe, ChevronDown, ChevronUp, ExternalLink } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
+import { Badge } from "@/components/ui/Badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { type PickerSelection } from "@/components/guardrails/SafetyModelPicker"
 import { GuardrailsTab as GuardrailsTryItOut } from "@/views/try-it-out/guardrails-tab"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { CategoryActionButton, type CategoryActionState } from "@/components/permissions/CategoryActionButton"
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
 import type { TreeNode } from "@/components/permissions/types"
-import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import { GuardrailsPanel } from "./guardrails-panel"
 import type {
   GuardrailsConfig,
@@ -26,6 +28,8 @@ import type {
   RemoveSafetyModelParams,
   ToggleSafetyModelParams,
   PullProviderModelParams,
+  ClientFeatureStatus,
+  GetFeatureClientsStatusParams,
 } from "@/types/tauri-commands"
 
 interface GuardrailsViewProps {
@@ -61,6 +65,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({})
   const [pullProgress, setPullProgress] = useState<Record<string, { progress: number; status: string }>>({})
   const [showExtraCategories, setShowExtraCategories] = useState(false)
+  const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
 
   const { tab, initClientId } = parseInitPath(activeSubTab)
 
@@ -80,9 +85,29 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
     }
   }, [])
 
+  const loadClientStatuses = useCallback(async () => {
+    try {
+      const data = await invoke<ClientFeatureStatus[]>("get_feature_clients_status", {
+        feature: "guardrails",
+      } satisfies GetFeatureClientsStatusParams)
+      setClientStatuses(data)
+    } catch (err) {
+      console.error("Failed to load client statuses:", err)
+    }
+  }, [])
+
   useEffect(() => {
     loadConfig()
-  }, [loadConfig])
+    loadClientStatuses()
+  }, [loadConfig, loadClientStatuses])
+
+  useEffect(() => {
+    const listeners = [
+      listenSafe("clients-changed", loadClientStatuses),
+      listenSafe("config-changed", loadClientStatuses),
+    ]
+    return () => { listeners.forEach(l => l.cleanup()) }
+  }, [loadClientStatuses])
 
   // Listen for load error events
   useEffect(() => {
@@ -400,7 +425,7 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
             {/* Default GuardRails */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Default: GuardRails</CardTitle>
+                <CardTitle className="text-base">GuardRails (Default)</CardTitle>
                 <CardDescription>
                   Default actions for each safety category. These apply to all clients unless overridden per-client.
                   GuardRails are active when any category has a non-Allow action.
@@ -418,9 +443,59 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
                   emptyMessage="No categories available. Add safety models in the Models tab first."
                 />
               </CardContent>
+              {clientStatuses.length > 0 && (
+                <CardContent className="pt-0">
+                  <div className="border-t pt-3 space-y-1.5">
+                    {clientStatuses.map((s) => (
+                      <div
+                        key={s.client_id}
+                        className="flex items-center justify-between py-1 px-2 rounded-md hover:bg-muted/50 group"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {onTabChange ? (
+                            <button
+                              onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                              className="text-sm font-medium truncate hover:underline text-left"
+                            >
+                              {s.client_name}
+                            </button>
+                          ) : (
+                            <span className="text-sm font-medium truncate">{s.client_name}</span>
+                          )}
+                          {s.source === "override" && (
+                            <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">
+                              Override
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "text-[10px] px-1.5 py-0",
+                              s.active
+                                ? "border-emerald-500/50 text-emerald-600"
+                                : "border-red-500/50 text-red-600",
+                            )}
+                          >
+                            {s.effective_value || (s.active ? "Active" : "Inactive")}
+                          </Badge>
+                          {onTabChange && (
+                            <button
+                              onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity"
+                              title="Go to client settings"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              )}
             </Card>
-
-            <FeatureClientsCard feature="guardrails" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 
@@ -462,10 +537,12 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
                       Run safety checks alongside the LLM request for lower latency. Automatically falls back to sequential scanning for requests with side effects (e.g. Perplexity Sonar, non-function tools). For MCP via LLM, guardrails run in parallel but must complete before any tool execution.
                     </p>
                   </div>
-                  <Switch
-                    checked={config.parallel_guardrails}
-                    onCheckedChange={(checked) => saveConfig({ ...config, parallel_guardrails: checked })}
-                  />
+                  <InfoTooltip content="Runs safety checks in parallel with the LLM request instead of before it. Reduces latency but may allow unsafe content through briefly before being caught.">
+                    <Switch
+                      checked={config.parallel_guardrails}
+                      onCheckedChange={(checked) => saveConfig({ ...config, parallel_guardrails: checked })}
+                    />
+                  </InfoTooltip>
                 </div>
               </CardContent>
             </Card>
@@ -491,10 +568,12 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
                         : "Endpoint returns 503 Service Unavailable."}
                     </p>
                   </div>
-                  <Switch
-                    checked={config.moderation_api_enabled}
-                    onCheckedChange={(checked) => saveConfig({ ...config, moderation_api_enabled: checked })}
-                  />
+                  <InfoTooltip content="Exposes safety models via a /v1/moderations endpoint, allowing external clients to run content moderation checks directly.">
+                    <Switch
+                      checked={config.moderation_api_enabled}
+                      onCheckedChange={(checked) => saveConfig({ ...config, moderation_api_enabled: checked })}
+                    />
+                  </InfoTooltip>
                 </div>
 
                 {/* Category Mapping Table */}

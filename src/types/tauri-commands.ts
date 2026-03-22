@@ -210,6 +210,7 @@ export interface ClientInfo {
   template_id: string | null
   sync_config: boolean
   guardrails_active: boolean
+  json_repair_active: boolean
 }
 
 /**
@@ -222,6 +223,8 @@ export interface ClientEffectiveConfig {
   context_management_source: 'client' | 'global'
   catalog_compression_effective: boolean
   catalog_compression_source: 'client' | 'global'
+  json_repair_effective: boolean
+  json_repair_source: 'client' | 'global'
 }
 
 /**
@@ -308,6 +311,7 @@ export interface Strategy {
   name: string
   parent?: string | null
   allowed_models: AvailableModelsSelection
+  /** Always present after config v25 migration (unified model selection) */
   auto_config?: AutoModelConfig | null
   rate_limits: StrategyRateLimit[]
   free_tier_only?: boolean
@@ -1729,11 +1733,13 @@ export interface ClientFeatureStatus {
   active: boolean
   /** "override" if per-client setting exists, "global" if inherited */
   source: 'override' | 'global'
+  /** Feature-specific effective value (e.g. "ask", "notify", "off" for secret_scanning) */
+  effective_value?: string
 }
 
 /** Params for get_feature_clients_status */
 export interface GetFeatureClientsStatusParams {
-  feature: 'json_repair' | 'prompt_compression' | 'guardrails' | 'secret_scanning' | 'catalog_compression' | 'context_management' | 'memory' | 'strong_weak'
+  feature: 'json_repair' | 'prompt_compression' | 'guardrails' | 'secret_scanning' | 'catalog_compression' | 'context_management' | 'memory' | 'strong_weak' | 'coding_agents'
 }
 
 // =============================================================================
@@ -2987,6 +2993,17 @@ export interface ClientJsonRepairConfig {
   schema_coercion: boolean | null
 }
 
+/** Params for get_client_json_repair_config */
+export interface GetClientJsonRepairConfigParams {
+  clientId: string
+}
+
+/** Params for update_client_json_repair_config */
+export interface UpdateClientJsonRepairConfigParams {
+  clientId: string
+  configJson: string
+}
+
 /** JSON repair test result */
 export interface JsonRepairTestResult {
   original: string
@@ -3224,13 +3241,9 @@ export interface CompactionStatsResult {
   active_sessions: number
   pending_compaction: number
   archived_sessions: number
+  summarized_sessions: number
   indexed_sources: number
   total_lines: number
-}
-
-/** Rust: src-tauri/src/ui/commands.rs - ForceCompactResult */
-export interface ForceCompactResult {
-  archived_count: number
 }
 
 /** Params for get_memory_compaction_stats */
@@ -3243,9 +3256,41 @@ export interface ForceCompactMemoryParams {
   clientId: string
 }
 
+/** Params for recompact_memory */
+export interface RecompactMemoryParams {
+  clientId: string
+}
+
 /** Params for reindex_client_memory */
 export interface ReindexClientMemoryParams {
   clientId: string
+}
+
+/** Event payload for memory-compact-progress */
+export interface MemoryCompactProgress {
+  client_id: string
+  current: number
+  total: number
+}
+
+/** Event payload for memory-compact-complete */
+export interface MemoryCompactComplete {
+  client_id: string
+  archived_count: number
+  summarized_count: number
+}
+
+/** Event payload for memory-recompact-progress */
+export interface MemoryRecompactProgress {
+  client_id: string
+  current: number
+  total: number
+}
+
+/** Event payload for memory-recompact-complete */
+export interface MemoryRecompactComplete {
+  client_id: string
+  recompacted_count: number
 }
 
 /** Event payload for memory-reindex-progress */
@@ -3347,4 +3392,29 @@ export interface GetMonitorEventDetailParams {
 /** Params for set_monitor_max_capacity */
 export interface SetMonitorMaxCapacityParams {
   capacity: number
+}
+
+/** Category of requests to intercept from the monitor page */
+/** Rust: crates/lr-mcp/src/gateway/firewall.rs - InterceptCategory enum */
+export type InterceptCategory =
+  | 'llm'
+  | 'mcp'
+  | 'skill'
+  | 'marketplace'
+  | 'coding_agent'
+  | 'guardrails'
+  | 'secret_scan'
+  | 'sampling'
+  | 'elicitation'
+
+/** Active intercept rule for the monitor page (transient, not persisted) */
+/** Rust: crates/lr-mcp/src/gateway/firewall.rs - InterceptRule struct */
+export interface InterceptRule {
+  categories: InterceptCategory[]
+  client_ids: string[]
+}
+
+/** Params for set_monitor_intercept_rule */
+export interface SetMonitorInterceptRuleParams {
+  rule: InterceptRule | null
 }

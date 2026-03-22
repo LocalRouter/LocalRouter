@@ -24,6 +24,8 @@ import { McpServerNode } from "@/components/connection-graph/nodes/McpServerNode
 import { SkillNode } from "@/components/connection-graph/nodes/SkillNode"
 import { CodingAgentNode } from "@/components/connection-graph/nodes/CodingAgentNode"
 import { MarketplaceNode } from "@/components/connection-graph/nodes/MarketplaceNode"
+import { EndpointNode } from "@/components/connection-graph/nodes/EndpointNode"
+import { RouterGroupNode } from "@/components/connection-graph/nodes/RouterGroupNode"
 import type { GraphNodeData } from "@/components/connection-graph/types"
 import type {
   ClientMode, CodingAgentType, ClientEffectiveConfig,
@@ -38,6 +40,8 @@ const nodeTypes: NodeTypes = {
   skill: SkillNode,
   codingAgent: CodingAgentNode,
   marketplace: MarketplaceNode,
+  endpoint: EndpointNode,
+  routerGroup: RouterGroupNode,
 }
 
 interface Client {
@@ -57,6 +61,7 @@ interface Client {
   template_id?: string | null
   sync_config: boolean
   guardrails_active: boolean
+  json_repair_active: boolean
   created_at: string
   last_used: string | null
 }
@@ -123,9 +128,10 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
       healthState,
       activeConnections,
       strategies,
+      clientMode,
     )
     return { graphNodes: nodes as Node<GraphNodeData>[], graphEdges: edges as Edge[], graphBounds: bounds }
-  }, [allClients, client.id, providers, mcpServers, skills, codingAgents, healthState, activeConnections])
+  }, [allClients, client.id, clientMode, providers, mcpServers, skills, codingAgents, healthState, activeConnections])
 
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNodeData>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
@@ -165,6 +171,9 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
     }
     if (client.guardrails_active) {
       pills.push({ label: "GuardRails" })
+    }
+    if (client.json_repair_active) {
+      pills.push({ label: "JSON Repair" })
     }
   }
 

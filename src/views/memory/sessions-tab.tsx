@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { Search, BookOpen, Loader2, FolderOpen, RefreshCw, Trash2, Archive, RotateCcw } from "lucide-react"
+import { Search, BookOpen, Loader2, FolderOpen, RefreshCw, Trash2, Archive, RotateCcw, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
@@ -25,12 +25,16 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
 import type {
   MemoryClientInfo,
   RagSearchResult,
   RagReadResult,
   CompactionStatsResult,
-  ForceCompactResult,
+  MemoryCompactProgress,
+  MemoryCompactComplete,
+  MemoryRecompactProgress,
+  MemoryRecompactComplete,
   MemoryReindexProgress,
   MemoryReindexComplete,
 } from "@/types/tauri-commands"
@@ -46,6 +50,9 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
   const [compactionStats, setCompactionStats] = useState<CompactionStatsResult | null>(null)
   const [loadingStats, setLoadingStats] = useState(false)
   const [compacting, setCompacting] = useState(false)
+  const [compactProgress, setCompactProgress] = useState<{ current: number; total: number } | null>(null)
+  const [recompacting, setRecompacting] = useState(false)
+  const [recompactProgress, setRecompactProgress] = useState<{ current: number; total: number } | null>(null)
   const [reindexing, setReindexing] = useState(false)
   const [reindexProgress, setReindexProgress] = useState<{ current: number; total: number } | null>(null)
 
@@ -84,14 +91,65 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
     }
   }, [selectedClientId])
 
-  // Listen for reindex progress events
+  // Listen for compact progress events
   useEffect(() => {
-    const progressListener = listenSafe<MemoryReindexProgress>("memory-reindex-progress", (e) => {
+    const compactProgressListener = listenSafe<MemoryCompactProgress>("memory-compact-progress", (e) => {
+      if (e.payload.client_id === selectedClientId) {
+        setCompactProgress({ current: e.payload.current, total: e.payload.total })
+      }
+    })
+    const compactCompleteListener = listenSafe<MemoryCompactComplete>("memory-compact-complete", (e) => {
+      if (e.payload.client_id === selectedClientId) {
+        setCompacting(false)
+        setCompactProgress(null)
+        const { archived_count, summarized_count } = e.payload
+        if (summarized_count > 0) {
+          toast.success(`Compacted ${archived_count} session${archived_count !== 1 ? "s" : ""} (${summarized_count} summarized)`)
+        } else {
+          toast.success(`Archived ${archived_count} session${archived_count !== 1 ? "s" : ""}`)
+        }
+        loadCompactionStats(e.payload.client_id)
+        loadClients()
+      }
+    })
+    const compactFailedListener = listenSafe<{ client_id: string; error: string }>("memory-compact-failed", (e) => {
+      if (e.payload.client_id === selectedClientId) {
+        setCompacting(false)
+        setCompactProgress(null)
+        toast.error(`Compaction failed: ${e.payload.error}`)
+      }
+    })
+
+    // Listen for recompact progress events
+    const recompactProgressListener = listenSafe<MemoryRecompactProgress>("memory-recompact-progress", (e) => {
+      if (e.payload.client_id === selectedClientId) {
+        setRecompactProgress({ current: e.payload.current, total: e.payload.total })
+      }
+    })
+    const recompactCompleteListener = listenSafe<MemoryRecompactComplete>("memory-recompact-complete", (e) => {
+      if (e.payload.client_id === selectedClientId) {
+        setRecompacting(false)
+        setRecompactProgress(null)
+        toast.success(`Re-compacted ${e.payload.recompacted_count} session${e.payload.recompacted_count !== 1 ? "s" : ""}`)
+        loadCompactionStats(e.payload.client_id)
+        loadClients()
+      }
+    })
+    const recompactFailedListener = listenSafe<{ client_id: string; error: string }>("memory-recompact-failed", (e) => {
+      if (e.payload.client_id === selectedClientId) {
+        setRecompacting(false)
+        setRecompactProgress(null)
+        toast.error(`Re-compaction failed: ${e.payload.error}`)
+      }
+    })
+
+    // Listen for reindex progress events
+    const reindexProgressListener = listenSafe<MemoryReindexProgress>("memory-reindex-progress", (e) => {
       if (e.payload.client_id === selectedClientId) {
         setReindexProgress({ current: e.payload.current, total: e.payload.total })
       }
     })
-    const completeListener = listenSafe<MemoryReindexComplete>("memory-reindex-complete", (e) => {
+    const reindexCompleteListener = listenSafe<MemoryReindexComplete>("memory-reindex-complete", (e) => {
       if (e.payload.client_id === selectedClientId) {
         setReindexing(false)
         setReindexProgress(null)
@@ -100,7 +158,7 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
         loadClients()
       }
     })
-    const failedListener = listenSafe<{ client_id: string; error: string }>("memory-reindex-failed", (e) => {
+    const reindexFailedListener = listenSafe<{ client_id: string; error: string }>("memory-reindex-failed", (e) => {
       if (e.payload.client_id === selectedClientId) {
         setReindexing(false)
         setReindexProgress(null)
@@ -109,9 +167,15 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
     })
 
     return () => {
-      progressListener.cleanup()
-      completeListener.cleanup()
-      failedListener.cleanup()
+      compactProgressListener.cleanup()
+      compactCompleteListener.cleanup()
+      compactFailedListener.cleanup()
+      recompactProgressListener.cleanup()
+      recompactCompleteListener.cleanup()
+      recompactFailedListener.cleanup()
+      reindexProgressListener.cleanup()
+      reindexCompleteListener.cleanup()
+      reindexFailedListener.cleanup()
     }
   }, [selectedClientId])
 
@@ -151,15 +215,26 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
   const handleForceCompact = async () => {
     if (!selectedClientId) return
     setCompacting(true)
+    setCompactProgress(null)
     try {
-      const result = await invoke<ForceCompactResult>("force_compact_memory", { clientId: selectedClientId })
-      toast.success(`Compacted ${result.archived_count} session${result.archived_count !== 1 ? "s" : ""}`)
-      await loadCompactionStats(selectedClientId)
-      await loadClients()
+      await invoke("force_compact_memory", { clientId: selectedClientId })
     } catch (error: any) {
-      toast.error(`Compaction failed: ${error.message || error}`)
-    } finally {
       setCompacting(false)
+      setCompactProgress(null)
+      toast.error(`Compaction failed: ${error.message || error}`)
+    }
+  }
+
+  const handleRecompact = async () => {
+    if (!selectedClientId) return
+    setRecompacting(true)
+    setRecompactProgress(null)
+    try {
+      await invoke("recompact_memory", { clientId: selectedClientId })
+    } catch (error: any) {
+      setRecompacting(false)
+      setRecompactProgress(null)
+      toast.error(`Re-compaction failed: ${error.message || error}`)
     }
   }
 
@@ -319,6 +394,7 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                   <CardTitle className="text-base flex items-center gap-2">
                     <Archive className="h-4 w-4" />
                     Compaction Status
+                    <InfoTooltip content="Session lifecycle management. Active sessions are recording, pending sessions await compaction, archived sessions have been processed, and summarized sessions have LLM-generated summaries." />
                   </CardTitle>
                   <CardDescription>
                     Session lifecycle and index statistics
@@ -332,7 +408,7 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                     </div>
                   ) : compactionStats ? (
                     <>
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
                         <div className="rounded-md border p-3">
                           <p className="text-xs text-muted-foreground">Active</p>
                           <p className="text-lg font-semibold text-green-600 dark:text-green-400">
@@ -354,6 +430,17 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                           <p className="text-xs text-muted-foreground">Archived</p>
                           <p className="text-lg font-semibold text-blue-600 dark:text-blue-400">
                             {compactionStats.archived_sessions}
+                          </p>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <p className="text-xs text-muted-foreground">Summarized</p>
+                          <p className={cn(
+                            "text-lg font-semibold",
+                            compactionStats.summarized_sessions > 0
+                              ? "text-purple-600 dark:text-purple-400"
+                              : "text-muted-foreground"
+                          )}>
+                            {compactionStats.summarized_sessions}
                           </p>
                         </div>
                         <div className="rounded-md border p-3">
@@ -387,14 +474,46 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                             <AlertDialogHeader>
                               <AlertDialogTitle>Compact sessions?</AlertDialogTitle>
                               <AlertDialogDescription>
-                                This will archive {compactionStats.pending_compaction} expired session{compactionStats.pending_compaction !== 1 ? "s" : ""} by
-                                moving them from the sessions directory to the archive directory.
+                                This will archive and summarize {compactionStats.pending_compaction} expired session{compactionStats.pending_compaction !== 1 ? "s" : ""} using
+                                the configured compaction model. Raw transcripts are preserved for re-compaction.
                               </AlertDialogDescription>
                             </AlertDialogHeader>
                             <AlertDialogFooter>
                               <AlertDialogCancel>Cancel</AlertDialogCancel>
                               <AlertDialogAction onClick={handleForceCompact}>
                                 Compact
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={recompacting || compactionStats.archived_sessions === 0}
+                            >
+                              {recompacting ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                              ) : (
+                                <Sparkles className="h-3.5 w-3.5 mr-1" />
+                              )}
+                              Re-compact
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Re-compact archived sessions?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This will re-run LLM summarization on {compactionStats.archived_sessions} archived session{compactionStats.archived_sessions !== 1 ? "s" : ""} using
+                                the current compaction model. Existing summaries will be overwritten.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction onClick={handleRecompact}>
+                                Re-compact
                               </AlertDialogAction>
                             </AlertDialogFooter>
                           </AlertDialogContent>
@@ -420,7 +539,8 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                               <AlertDialogTitle>Rebuild FTS5 index?</AlertDialogTitle>
                               <AlertDialogDescription>
                                 This will delete and rebuild the search index from all session and
-                                archive files on disk. The existing index will be replaced.
+                                archive files on disk. Summaries will be indexed instead of raw transcripts
+                                where available.
                               </AlertDialogDescription>
                             </AlertDialogHeader>
                             <AlertDialogFooter>
@@ -432,6 +552,30 @@ export function MemorySessionsTab({}: MemorySessionsTabProps) {
                           </AlertDialogContent>
                         </AlertDialog>
                       </div>
+
+                      {compacting && compactProgress && (
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>Compacting...</span>
+                            <span>{compactProgress.current}/{compactProgress.total} sessions</span>
+                          </div>
+                          <Progress
+                            value={compactProgress.total > 0 ? (compactProgress.current / compactProgress.total) * 100 : 0}
+                          />
+                        </div>
+                      )}
+
+                      {recompacting && recompactProgress && (
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>Re-compacting...</span>
+                            <span>{recompactProgress.current}/{recompactProgress.total} sessions</span>
+                          </div>
+                          <Progress
+                            value={recompactProgress.total > 0 ? (recompactProgress.current / recompactProgress.total) * 100 : 0}
+                          />
+                        </div>
+                      )}
 
                       {reindexing && reindexProgress && (
                         <div className="space-y-1.5">

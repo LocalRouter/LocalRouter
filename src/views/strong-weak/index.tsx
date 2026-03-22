@@ -1,13 +1,14 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { FolderOpen, Trash2, Loader2 } from "lucide-react"
+import { FolderOpen, Trash2, Loader2, ExternalLink } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { ModelDownloadCard } from "@/components/shared/ModelDownloadCard"
 import { useModelDownload } from "@/hooks/useModelDownload"
@@ -30,10 +31,11 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import { cn } from "@/lib/utils"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
-import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
-import type { RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
+import type { RouteLLMStatus, RouteLLMState, ClientFeatureStatus, GetFeatureClientsStatusParams } from "@/types/tauri-commands"
 
 interface StrongWeakViewProps {
   activeSubTab: string | null
@@ -45,6 +47,7 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
   const [idleTimeout, setIdleTimeout] = useState(600)
   const [isDeleting, setIsDeleting] = useState(false)
   const [testThreshold, setTestThreshold] = useState(0.3)
+  const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
 
   const tab = activeSubTab || "model"
 
@@ -57,12 +60,32 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
     }
   }
 
+  const loadClientStatuses = useCallback(async () => {
+    try {
+      const data = await invoke<ClientFeatureStatus[]>("get_feature_clients_status", {
+        feature: "strong_weak",
+      } satisfies GetFeatureClientsStatusParams)
+      setClientStatuses(data)
+    } catch (err) {
+      console.error("Failed to load client statuses:", err)
+    }
+  }, [])
+
   useEffect(() => {
     loadStatus()
+    loadClientStatuses()
     // Poll status to detect state changes (model loaded/unloaded)
     const interval = setInterval(loadStatus, 3000)
     return () => clearInterval(interval)
-  }, [])
+  }, [loadClientStatuses])
+
+  useEffect(() => {
+    const listeners = [
+      listenSafe("clients-changed", loadClientStatuses),
+      listenSafe("config-changed", loadClientStatuses),
+    ]
+    return () => { listeners.forEach(l => l.cleanup()) }
+  }, [loadClientStatuses])
 
   const routellmDownload = useModelDownload({
     isDownloaded: status?.state !== "not_downloaded" && status?.state !== undefined,
@@ -226,7 +249,43 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
               </Card>
             )}
 
-            <FeatureClientsCard feature="strong_weak" onNavigateToClient={onTabChange} />
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Strong/Weak Routing (Per-Client)</CardTitle>
+                <CardDescription>
+                  Strong/Weak routing is enabled per-client in each client&apos;s strategy settings.
+                </CardDescription>
+              </CardHeader>
+              {clientStatuses.length > 0 && (
+                <CardContent className="pt-0">
+                  <div className="border-t pt-3 space-y-1.5">
+                    {clientStatuses.map((s) => (
+                      <div key={s.client_id} className="flex items-center justify-between py-1 px-2 rounded-md hover:bg-muted/50 group">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {onTabChange ? (
+                            <button onClick={() => onTabChange("clients", `${s.client_id}|routing`)} className="text-sm font-medium truncate hover:underline text-left">
+                              {s.client_name}
+                            </button>
+                          ) : (
+                            <span className="text-sm font-medium truncate">{s.client_name}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", s.active ? "border-emerald-500/50 text-emerald-600" : "border-red-500/50 text-red-600")}>
+                            {s.active ? "Enabled" : "Disabled"}
+                          </Badge>
+                          {onTabChange && (
+                            <button onClick={() => onTabChange("clients", `${s.client_id}|routing`)} className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity" title="Go to client settings">
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              )}
+            </Card>
           </div>
         </TabsContent>
 
@@ -265,7 +324,10 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label>Auto-Unload After Idle</Label>
+                  <Label className="flex items-center gap-1">
+                    Auto-Unload After Idle
+                    <InfoTooltip content="How long the RouteLLM classifier model stays loaded in memory after the last request. Unloading frees RAM but adds latency on the next request." />
+                  </Label>
                   <Select
                     value={idleTimeout.toString()}
                     onValueChange={(value) => {

@@ -1,21 +1,26 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { FolderOpen, Loader2 } from "lucide-react"
+import { FolderOpen, Loader2, ExternalLink } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
+import { ModelDownloadCard } from "@/components/shared/ModelDownloadCard"
+import { useModelDownload } from "@/hooks/useModelDownload"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
+import { Badge } from "@/components/ui/Badge"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/Input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
+import { cn } from "@/lib/utils"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
-import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import { ContentStorePreview } from "@/components/shared/ContentStorePreview"
 import { MemorySessionsTab } from "./sessions-tab"
-import type { MemoryConfig, UpdateMemoryConfigParams } from "@/types/tauri-commands"
+import type { MemoryConfig, UpdateMemoryConfigParams, ClientFeatureStatus, GetFeatureClientsStatusParams, EmbeddingStatus } from "@/types/tauri-commands"
 
 const defaultConfig: MemoryConfig = {
   compaction_model: null,
@@ -33,6 +38,8 @@ interface MemoryViewProps {
 export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
   const [config, setConfig] = useState<MemoryConfig>(defaultConfig)
   const [isLoading, setIsLoading] = useState(true)
+  const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null)
 
   // Live models for compaction model picker
   const { models: liveModels } = useIncrementalModels({ refreshOnMount: true })
@@ -52,9 +59,51 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
       ? config.recall_tool_name.replace(/Recall$/, "Read")
       : `${config.recall_tool_name}Read`
 
+  const loadClientStatuses = useCallback(async () => {
+    try {
+      const data = await invoke<ClientFeatureStatus[]>("get_feature_clients_status", {
+        feature: "memory",
+      } satisfies GetFeatureClientsStatusParams)
+      setClientStatuses(data)
+    } catch (err) {
+      console.error("Failed to load client statuses:", err)
+    }
+  }, [])
+
+  const loadEmbeddingStatus = async () => {
+    try {
+      const status = await invoke<EmbeddingStatus>("get_embedding_status")
+      setEmbeddingStatus(status)
+    } catch (err) {
+      console.error("Failed to load embedding status:", err)
+    }
+  }
+
+  const embeddingDownload = useModelDownload({
+    isDownloaded: embeddingStatus?.downloaded ?? false,
+    downloadCommand: "install_embedding_model",
+    progressEvent: "embedding-download-progress",
+    completeEvent: "embedding-download-complete",
+    onComplete: () => {
+      toast.success("Embedding model downloaded and loaded")
+      loadEmbeddingStatus()
+    },
+    onFailed: (err: string) => toast.error(`Download failed: ${err}`),
+  })
+
   useEffect(() => {
     loadConfig()
-  }, [])
+    loadClientStatuses()
+    loadEmbeddingStatus()
+  }, [loadClientStatuses])
+
+  useEffect(() => {
+    const listeners = [
+      listenSafe("clients-changed", loadClientStatuses),
+      listenSafe("config-changed", loadClientStatuses),
+    ]
+    return () => { listeners.forEach(l => l.cleanup()) }
+  }, [loadClientStatuses])
 
   const loadConfig = async () => {
     try {
@@ -152,17 +201,24 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               </CardContent>
             </Card>
 
-            {/* Semantic Search — configured on Indexing page */}
-            <Card>
-              <CardContent className="py-3">
-                <p className="text-sm text-muted-foreground">
-                  Semantic search (hybrid FTS5 + embeddings) is configured on the{' '}
-                  <button onClick={() => onTabChange?.('indexing', null)} className="text-primary hover:underline">
-                    Indexing page
-                  </button>.
-                </p>
-              </CardContent>
-            </Card>
+            {/* Embedding Model Download */}
+            <ModelDownloadCard
+              title="Semantic Search (Optional)"
+              description="Download a small local embedding model (~80MB) to enable hybrid FTS5 + vector search. Keyword search works without it."
+              modelName={embeddingStatus?.model_name}
+              modelInfo={embeddingStatus?.model_size_mb != null ? `${embeddingStatus.model_size_mb.toFixed(0)} MB` : undefined}
+              status={embeddingDownload.status}
+              progress={embeddingDownload.progress}
+              error={embeddingDownload.error}
+              onDownload={embeddingDownload.startDownload}
+              onRetry={embeddingDownload.retry}
+              downloadLabel="Download all-MiniLM-L6-v2 (~80MB)"
+            >
+              <p className="text-xs text-muted-foreground">
+                Enables semantic search: "SQL database for login" finds "We chose PostgreSQL for authentication."
+                Runs locally via Metal/CUDA/CPU — no external API calls.
+              </p>
+            </ModelDownloadCard>
 
             {/* Tool Preview */}
             <Card>
@@ -231,7 +287,66 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               </CardContent>
             </Card>
 
-            <FeatureClientsCard feature="memory" clientTab="optimize" onNavigateToClient={onTabChange} />
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Conversation Memory (Per-Client)</CardTitle>
+                <CardDescription>
+                  Memory is enabled per-client in each client&apos;s Optimize tab. Each client&apos;s memories are isolated.
+                </CardDescription>
+              </CardHeader>
+              {clientStatuses.length > 0 && (
+                <CardContent className="pt-0">
+                  <div className="border-t pt-3 space-y-1.5">
+                    {clientStatuses.map((s) => (
+                      <div
+                        key={s.client_id}
+                        className="flex items-center justify-between py-1 px-2 rounded-md hover:bg-muted/50 group"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {onTabChange ? (
+                            <button
+                              onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                              className="text-sm font-medium truncate hover:underline text-left"
+                            >
+                              {s.client_name}
+                            </button>
+                          ) : (
+                            <span className="text-sm font-medium truncate">{s.client_name}</span>
+                          )}
+                          {s.source === "override" && (
+                            <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">
+                              Override
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "text-[10px] px-1.5 py-0",
+                              s.active
+                                ? "border-emerald-500/50 text-emerald-600"
+                                : "border-red-500/50 text-red-600",
+                            )}
+                          >
+                            {s.active ? "Enabled" : "Disabled"}
+                          </Badge>
+                          {onTabChange && (
+                            <button
+                              onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity"
+                              title="Go to client settings"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              )}
+            </Card>
           </div>
         </TabsContent>
 
@@ -274,7 +389,10 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Provider</Label>
+                    <Label className="text-xs flex items-center gap-1">
+                      Provider
+                      <InfoTooltip content="The LLM provider used to generate conversation summaries when sessions are compacted." />
+                    </Label>
                     <Select
                       value={config.compaction_model?.split("/")[0] || "none"}
                       onValueChange={(value) => {
@@ -301,7 +419,10 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     </Select>
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Model</Label>
+                    <Label className="text-xs flex items-center gap-1">
+                      Model
+                      <InfoTooltip content="The specific model used for summarization. Smaller models are faster and cheaper; larger models produce better summaries." />
+                    </Label>
                     <Select
                       value={config.compaction_model?.split("/").slice(1).join("/") || ""}
                       disabled={!config.compaction_model}
@@ -337,7 +458,10 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="recall-tool-name" className="text-xs">Search tool name</Label>
+                    <Label htmlFor="recall-tool-name" className="text-xs flex items-center gap-1">
+                      Search tool name
+                      <InfoTooltip content="The tool name exposed to clients for memory search. Change this if it conflicts with another tool name in the client's tool set." />
+                    </Label>
                     <Input
                       id="recall-tool-name"
                       value={config.recall_tool_name}
@@ -351,7 +475,10 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     </p>
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="search-top-k" className="text-xs">Search results limit</Label>
+                    <Label htmlFor="search-top-k" className="text-xs flex items-center gap-1">
+                      Search results limit
+                      <InfoTooltip content="Maximum number of memory excerpts returned per search query. Higher values provide more context but consume more tokens." />
+                    </Label>
                     <Input
                       id="search-top-k"
                       type="number"
@@ -382,7 +509,10 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="inactivity" className="text-xs">Inactivity timeout (minutes)</Label>
+                    <Label htmlFor="inactivity" className="text-xs flex items-center gap-1">
+                      Inactivity timeout (minutes)
+                      <InfoTooltip content="Minutes of inactivity before a session is automatically closed. Closed sessions become eligible for compaction." />
+                    </Label>
                     <Input
                       id="inactivity"
                       type="number"
@@ -397,7 +527,10 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     </p>
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="max-session" className="text-xs">Max session duration (minutes)</Label>
+                    <Label htmlFor="max-session" className="text-xs flex items-center gap-1">
+                      Max session duration (minutes)
+                      <InfoTooltip content="Maximum session length in minutes regardless of activity. Prevents unbounded sessions from accumulating too much context." />
+                    </Label>
                     <Input
                       id="max-session"
                       type="number"

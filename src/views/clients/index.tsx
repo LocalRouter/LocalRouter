@@ -40,6 +40,7 @@ interface Client {
   marketplace_permission: PermissionState
   sync_config: boolean
   guardrails_active: boolean
+  json_repair_active: boolean
   created_at: string
   last_used: string | null
 }

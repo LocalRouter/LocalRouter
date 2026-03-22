@@ -138,11 +138,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Clients
   // ============================================================================
   'list_clients': () => mockData.clients,
-  'get_feature_clients_status': () => mockData.clients.map((c: { client_id: string; name: string }) => ({
+  'get_feature_clients_status': (args) => mockData.clients.map((c: { client_id: string; name: string }) => ({
     client_id: c.client_id,
     client_name: c.name,
     active: true,
     source: 'global' as const,
+    ...(args?.feature === 'secret_scanning' ? { effective_value: 'ask' } : {}),
   })),
   'get_client': (args) => mockData.clients.find(c => c.id === args?.id || c.client_id === args?.clientId),
   'create_client': (args) => {
@@ -168,6 +169,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       template_id: null,
       sync_config: false,
       guardrails_active: false,
+      json_repair_active: true,
     }
     mockData.clients.push(newClient)
     toast.success(`Client "${args?.name}" created (demo)`)
@@ -218,6 +220,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       context_management_source: client?.context_management_enabled !== null && client?.context_management_enabled !== undefined ? 'client' : 'global',
       catalog_compression_effective: true,
       catalog_compression_source: 'global' as const,
+      json_repair_effective: true,
+      json_repair_source: 'global' as const,
     }
   },
   'delete_client': (args) => {
@@ -1429,7 +1433,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       name: args?.name || 'New Strategy',
       parent: args?.parent || null,
       allowed_models: args?.allowedModels || { mode: 'all' as const, models: [] },
-      auto_config: args?.autoConfig || null,
+      auto_config: args?.autoConfig || {
+        permission: 'allow',
+        model_name: 'localrouter/auto',
+        prioritized_models: [],
+        available_models: [],
+        routellm_config: null,
+      },
       rate_limits: args?.rateLimits || [],
     }
     mockData.strategies.push(newStrategy)
@@ -2782,12 +2792,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     active_sessions: 1,
     pending_compaction: 2,
     archived_sessions: 5,
+    summarized_sessions: 3,
     indexed_sources: 8,
     total_lines: 342,
   }),
-  'force_compact_memory': () => ({
-    archived_count: 2,
-  }),
+  'force_compact_memory': () => null,
+  'recompact_memory': () => null,
   'reindex_client_memory': () => null,
 
   // ============================================================================
@@ -3047,6 +3057,15 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('JSON repair configuration saved (demo)')
     return null
   },
+  'get_client_json_repair_config': () => ({
+    enabled: null,
+    syntax_repair: null,
+    schema_coercion: null,
+  }),
+  'update_client_json_repair_config': () => {
+    toast.success('Client JSON repair configuration saved (demo)')
+    return null
+  },
   'test_json_repair': (args) => {
     const content = args?.content || ''
     // Simple demo: just try to fix trailing commas
@@ -3266,6 +3285,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     events_by_type: {},
   }),
   'set_monitor_max_capacity': () => null,
+  'set_monitor_intercept_rule': () => null,
+  'get_monitor_intercept_rule': () => null,
 
   // ============================================================================
   // App Info & System

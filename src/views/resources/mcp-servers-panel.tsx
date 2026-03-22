@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Grid, Store, ArrowLeft, Settings2, Copy, Trash2 } from "lucide-react"
+import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Grid, Store, ArrowLeft, Settings2, Copy, Trash2, Brain } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import McpServerIcon from "@/components/McpServerIcon"
 import { SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
@@ -1036,6 +1036,7 @@ export function McpServersPanel({
               const builtInItems = [
                 { id: 'skills' as const, name: 'Skills', icon: SkillsIcon, view: 'skills' },
                 { id: 'coding-agents' as const, name: 'Coding Agents', icon: CodingAgentsIcon, view: 'coding-agents' },
+                { id: 'memory' as const, name: 'Memory', icon: Brain, view: 'memory' },
                 { id: 'marketplace' as const, name: 'Marketplace', icon: StoreIcon, view: 'marketplace' },
               ].filter(item =>
                 !search || item.name.toLowerCase().includes(search.toLowerCase())

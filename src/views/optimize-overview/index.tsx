@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Switch } from "@/components/ui/Toggle"
 import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { OptimizeDiagram } from "./OptimizeDiagram"
 import { FEATURES } from "@/constants/features"
 
@@ -192,11 +193,13 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
                 <CardTitle className="text-base">Default: Enable JSON Repair</CardTitle>
               </div>
               {jsonRepairConfig && (
-                <Switch
-                  checked={jsonRepairConfig.enabled}
-                  onCheckedChange={updateJsonRepairEnabled}
-                  disabled={savingJsonRepair}
-                />
+                <InfoTooltip content="Enables JSON repair globally for all clients that haven't overridden this setting.">
+                  <Switch
+                    checked={jsonRepairConfig.enabled}
+                    onCheckedChange={updateJsonRepairEnabled}
+                    disabled={savingJsonRepair}
+                  />
+                </InfoTooltip>
               )}
             </div>
             <CardDescription>
@@ -221,11 +224,13 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
                 <CardTitle className="text-base">Default: Enable Prompt Compression</CardTitle>
               </div>
               {compressionConfig && (
-                <Switch
-                  checked={compressionConfig.enabled}
-                  onCheckedChange={updateCompressionEnabled}
-                  disabled={savingCompression}
-                />
+                <InfoTooltip content="Enables prompt compression globally for all clients that haven't overridden this setting.">
+                  <Switch
+                    checked={compressionConfig.enabled}
+                    onCheckedChange={updateCompressionEnabled}
+                    disabled={savingCompression}
+                  />
+                </InfoTooltip>
               )}
             </div>
             <CardDescription>
@@ -295,39 +300,6 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           </CardContent>
         </Card>
 
-        {/* Indexing Section (Catalog + Responses + Memory) */}
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <FEATURES.indexing.icon className={`h-4 w-4 ${FEATURES.indexing.color}`} />
-              <CardTitle className="text-base">Indexing</CardTitle>
-            </div>
-            <CardDescription>
-              FTS5 search indexing engine with optional semantic vector search.
-              Powers catalog indexing, tool response compression, and conversation memory.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2 pt-0">
-            <ul className="text-sm text-muted-foreground space-y-1 ml-1">
-              <li className="flex items-center gap-2">
-                <FEATURES.catalogCompression.icon className={`h-3.5 w-3.5 ${FEATURES.catalogCompression.color} shrink-0`} />
-                {FEATURES.catalogCompression.name}
-              </li>
-              <li className="flex items-center gap-2">
-                <FEATURES.responseRag.icon className={`h-3.5 w-3.5 ${FEATURES.responseRag.color} shrink-0`} />
-                {FEATURES.responseRag.name}
-              </li>
-              <li className="flex items-center gap-2">
-                <FEATURES.memory.icon className={`h-3.5 w-3.5 ${FEATURES.memory.color} shrink-0`} />
-                {FEATURES.memory.name}
-              </li>
-            </ul>
-            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("indexing")}>
-              Configure
-              <ArrowRight className="h-3 w-3" />
-            </Button>
-          </CardContent>
-        </Card>
       </div>
     </div>
   )

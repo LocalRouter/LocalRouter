@@ -21,6 +21,8 @@ import { McpServerNode } from './nodes/McpServerNode'
 import { SkillNode } from './nodes/SkillNode'
 import { CodingAgentNode } from './nodes/CodingAgentNode'
 import { MarketplaceNode } from './nodes/MarketplaceNode'
+import { EndpointNode } from './nodes/EndpointNode'
+import { RouterGroupNode } from './nodes/RouterGroupNode'
 import type { GraphNodeData } from './types'
 
 // Register custom node types
@@ -31,6 +33,8 @@ const nodeTypes: NodeTypes = {
   skill: SkillNode,
   codingAgent: CodingAgentNode,
   marketplace: MarketplaceNode,
+  endpoint: EndpointNode,
+  routerGroup: RouterGroupNode,
 }
 
 // Props for the ConnectionGraph component

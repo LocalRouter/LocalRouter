@@ -52,6 +52,7 @@ export const mockData = {
       template_id: "cursor",
       sync_config: false,
       guardrails_active: true,
+      json_repair_active: true,
     },
     {
       id: "client-2",
@@ -76,6 +77,7 @@ export const mockData = {
       template_id: "claude-code",
       sync_config: true,
       guardrails_active: false,
+      json_repair_active: true,
     },
     {
       id: "client-4",
@@ -100,6 +102,7 @@ export const mockData = {
       template_id: "cline",
       sync_config: false,
       guardrails_active: false,
+      json_repair_active: true,
     },
   ] as Client[],
 
@@ -451,7 +454,13 @@ export const mockData = {
         mode: "all" as const,
         models: [],
       },
-      auto_config: null,
+      auto_config: {
+        permission: "allow" as const,
+        model_name: "localrouter/auto",
+        prioritized_models: [] as [string, string][],
+        available_models: [] as [string, string][],
+        routellm_config: null,
+      },
       rate_limits: [
         { limit_type: 'requests' as const, value: 100, time_window_seconds: 3600, enabled: true },
         { limit_type: 'cost' as const, value: 5.00, time_window_seconds: 86400, enabled: false },
@@ -470,7 +479,17 @@ export const mockData = {
           ["groq-fast", "llama-3.2-3b-instruct"],
         ] as [string, string][],
       },
-      auto_config: null,
+      auto_config: {
+        permission: "allow" as const,
+        model_name: "localrouter/auto",
+        prioritized_models: [
+          ["openai-primary", "gpt-4o-mini"],
+          ["anthropic-main", "claude-3-5-haiku-20241022"],
+          ["groq-fast", "llama-3.2-3b-instruct"],
+        ] as [string, string][],
+        available_models: [] as [string, string][],
+        routellm_config: null,
+      },
       rate_limits: [],
       free_tier_only: true,
     },
@@ -519,7 +538,17 @@ export const mockData = {
           ["ollama-local", "mistral:latest"],
         ] as [string, string][],
       },
-      auto_config: null,
+      auto_config: {
+        permission: "allow" as const,
+        model_name: "localrouter/auto",
+        prioritized_models: [
+          ["ollama-local", "llama3.2:latest"],
+          ["ollama-local", "codellama:latest"],
+          ["ollama-local", "mistral:latest"],
+        ] as [string, string][],
+        available_models: [] as [string, string][],
+        routellm_config: null,
+      },
       rate_limits: [],
       free_tier_only: false,
     },

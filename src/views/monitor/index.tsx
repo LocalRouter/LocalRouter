@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/Button'
 import { PanelRight } from 'lucide-react'
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
@@ -7,7 +8,7 @@ import { EventList } from './event-list'
 import { EventDetail } from './event-detail'
 import { EventFilters } from './event-filters'
 import { TryItOutPanel } from './try-it-out-panel'
-import type { MonitorEventFilter } from '@/types/tauri-commands'
+import type { MonitorEventFilter, InterceptRule } from '@/types/tauri-commands'
 
 export function MonitorView() {
   const [filter, setFilter] = useState<MonitorEventFilter>({
@@ -18,6 +19,19 @@ export function MonitorView() {
     search: null,
   })
   const [tryItOutOpen, setTryItOutOpen] = useState(false)
+  const [interceptRule, setInterceptRule] = useState<InterceptRule | null>(null)
+
+  // Sync intercept rule to backend
+  useEffect(() => {
+    invoke('set_monitor_intercept_rule', { rule: interceptRule }).catch(console.error)
+  }, [interceptRule])
+
+  // Clear intercept rule on unmount (navigating away from monitor page)
+  useEffect(() => {
+    return () => {
+      invoke('set_monitor_intercept_rule', { rule: null }).catch(console.error)
+    }
+  }, [])
 
   // Only pass filter to backend if it has actual values
   const activeFilter = useMemo(() => {
@@ -40,6 +54,8 @@ export function MonitorView() {
           filter={filter}
           onFilterChange={setFilter}
           onClear={clearEvents}
+          interceptRule={interceptRule}
+          onInterceptRuleChange={setInterceptRule}
         />
       </div>
       <div className="pr-2 flex items-center">

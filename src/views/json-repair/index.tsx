@@ -1,14 +1,22 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Loader2 } from "lucide-react"
+import { Loader2, ExternalLink } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
+import { Badge } from "@/components/ui/Badge"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
-import type { JsonRepairConfig, JsonRepairTestResult } from "@/types/tauri-commands"
+import { listenSafe } from "@/hooks/useTauriListener"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
+import type {
+  JsonRepairConfig,
+  JsonRepairTestResult,
+  ClientFeatureStatus,
+  GetFeatureClientsStatusParams,
+} from "@/types/tauri-commands"
 
 const REPAIR_LABELS: Record<string, string> = {
   stripped_markdown_fences: "Stripped markdown fences",
@@ -56,6 +64,7 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
   }, null, 2))
   const [testResult, setTestResult] = useState<JsonRepairTestResult | null>(null)
   const [testLoading, setTestLoading] = useState(false)
+  const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
 
   const tab = activeSubTab || "info"
 
@@ -72,9 +81,29 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
     }
   }, [])
 
+  const loadClientStatuses = useCallback(async () => {
+    try {
+      const data = await invoke<ClientFeatureStatus[]>("get_feature_clients_status", {
+        feature: "json_repair",
+      } satisfies GetFeatureClientsStatusParams)
+      setClientStatuses(data)
+    } catch (err) {
+      console.error("Failed to load client statuses:", err)
+    }
+  }, [])
+
   useEffect(() => {
     loadConfig()
-  }, [loadConfig])
+    loadClientStatuses()
+  }, [loadConfig, loadClientStatuses])
+
+  useEffect(() => {
+    const listeners = [
+      listenSafe("clients-changed", loadClientStatuses),
+      listenSafe("config-changed", loadClientStatuses),
+    ]
+    return () => { listeners.forEach(l => l.cleanup()) }
+  }, [loadClientStatuses])
 
   const updateConfig = async (updates: Partial<JsonRepairConfig>) => {
     if (!config) return
@@ -185,19 +214,73 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <CardTitle className="text-base">Default: JSON Repair</CardTitle>
+                      <CardTitle className="text-base">JSON Repair (Default)</CardTitle>
                       <CardDescription>
                         Automatically repair JSON responses for requests with <code className="text-xs bg-muted px-1 py-0.5 rounded">response_format: json_object</code> or <code className="text-xs bg-muted px-1 py-0.5 rounded">json_schema</code>.
                         Works inline during streaming with near-zero latency. Individual clients can override this in their settings.
                       </CardDescription>
                     </div>
-                    <Switch
-                      checked={config.enabled}
-                      onCheckedChange={(enabled) => updateConfig({ enabled })}
-                      disabled={saving}
-                    />
+                    <InfoTooltip content="When enabled, malformed JSON responses are automatically repaired before reaching your application. Works with response_format: json_object and json_schema.">
+                      <Switch
+                        checked={config.enabled}
+                        onCheckedChange={(enabled) => updateConfig({ enabled })}
+                        disabled={saving}
+                      />
+                    </InfoTooltip>
                   </div>
                 </CardHeader>
+                {clientStatuses.length > 0 && (
+                  <CardContent className="pt-0">
+                    <div className="border-t pt-3 space-y-1.5">
+                      {clientStatuses.map((s) => (
+                        <div
+                          key={s.client_id}
+                          className="flex items-center justify-between py-1 px-2 rounded-md hover:bg-muted/50 group"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            {onTabChange ? (
+                              <button
+                                onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                                className="text-sm font-medium truncate hover:underline text-left"
+                              >
+                                {s.client_name}
+                              </button>
+                            ) : (
+                              <span className="text-sm font-medium truncate">{s.client_name}</span>
+                            )}
+                            {s.source === "override" && (
+                              <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">
+                                Override
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "text-[10px] px-1.5 py-0",
+                                s.active
+                                  ? "border-emerald-500/50 text-emerald-600"
+                                  : "border-red-500/50 text-red-600",
+                              )}
+                            >
+                              {s.active ? "Enabled" : "Disabled"}
+                            </Badge>
+                            {onTabChange && (
+                              <button
+                                onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity"
+                                title="Go to client settings"
+                              >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                )}
               </Card>
             )}
 
@@ -268,7 +351,6 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
               </CardContent>
             </Card>
 
-            <FeatureClientsCard feature="json_repair" clientTab="optimize" onNavigateToClient={onTabChange} />
           </div>
         </TabsContent>
 
@@ -353,11 +435,13 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                         <span className="text-sm font-medium">Fix malformed JSON</span>
                         <p className="text-xs text-muted-foreground mt-0.5">Trailing commas, missing brackets, unquoted keys, single quotes, markdown fences, missing commas, Python keywords</p>
                       </div>
-                      <Switch
-                        checked={config.syntax_repair}
-                        onCheckedChange={(syntax_repair) => updateConfig({ syntax_repair })}
-                        disabled={saving || !config.enabled}
-                      />
+                      <InfoTooltip content="Repairs common syntax errors like trailing commas, unquoted keys, and mismatched brackets.">
+                        <Switch
+                          checked={config.syntax_repair}
+                          onCheckedChange={(syntax_repair) => updateConfig({ syntax_repair })}
+                          disabled={saving || !config.enabled}
+                        />
+                      </InfoTooltip>
                     </div>
                   </CardContent>
                 </Card>
@@ -373,44 +457,52 @@ export function JsonRepairView({ activeSubTab, onTabChange }: JsonRepairViewProp
                         <span className="text-sm font-medium">Type coercion</span>
                         <p className="text-xs text-muted-foreground mt-0.5">Convert values to match schema types: <code className="text-xs bg-muted px-0.5 rounded">"42"</code> &rarr; <code className="text-xs bg-muted px-0.5 rounded">42</code>, <code className="text-xs bg-muted px-0.5 rounded">"true"</code> &rarr; <code className="text-xs bg-muted px-0.5 rounded">true</code>, <code className="text-xs bg-muted px-0.5 rounded">42</code> &rarr; <code className="text-xs bg-muted px-0.5 rounded">"42"</code></p>
                       </div>
-                      <Switch
-                        checked={config.schema_coercion}
-                        onCheckedChange={(schema_coercion) => updateConfig({ schema_coercion })}
-                        disabled={saving || !config.enabled}
-                      />
+                      <InfoTooltip content='Converts values to match the schema type — e.g., string "42" to number 42, or "true" to boolean true.'>
+                        <Switch
+                          checked={config.schema_coercion}
+                          onCheckedChange={(schema_coercion) => updateConfig({ schema_coercion })}
+                          disabled={saving || !config.enabled}
+                        />
+                      </InfoTooltip>
                     </div>
                     <div className="flex items-center justify-between">
                       <div>
                         <span className="text-sm font-medium">Normalize enum values</span>
                         <p className="text-xs text-muted-foreground mt-0.5">Case-insensitive matching against schema enum: <code className="text-xs bg-muted px-0.5 rounded">"active"</code> &rarr; <code className="text-xs bg-muted px-0.5 rounded">"Active"</code></p>
                       </div>
-                      <Switch
-                        checked={config.normalize_enums}
-                        onCheckedChange={(normalize_enums) => updateConfig({ normalize_enums })}
-                        disabled={saving || !config.enabled}
-                      />
+                      <InfoTooltip content="Matches enum values case-insensitively and fixes minor formatting differences like extra whitespace or dashes vs underscores.">
+                        <Switch
+                          checked={config.normalize_enums}
+                          onCheckedChange={(normalize_enums) => updateConfig({ normalize_enums })}
+                          disabled={saving || !config.enabled}
+                        />
+                      </InfoTooltip>
                     </div>
                     <div className="flex items-center justify-between">
                       <div>
                         <span className="text-sm font-medium">Add default values</span>
                         <p className="text-xs text-muted-foreground mt-0.5">Insert <code className="text-xs bg-muted px-0.5 rounded">default</code> values for missing required fields defined in schema</p>
                       </div>
-                      <Switch
-                        checked={config.add_defaults}
-                        onCheckedChange={(add_defaults) => updateConfig({ add_defaults })}
-                        disabled={saving || !config.enabled}
-                      />
+                      <InfoTooltip content="Inserts schema-defined default values for required fields that are missing from the response.">
+                        <Switch
+                          checked={config.add_defaults}
+                          onCheckedChange={(add_defaults) => updateConfig({ add_defaults })}
+                          disabled={saving || !config.enabled}
+                        />
+                      </InfoTooltip>
                     </div>
                     <div className="flex items-center justify-between">
                       <div>
                         <span className="text-sm font-medium">Strip extra fields</span>
                         <p className="text-xs text-muted-foreground mt-0.5">Remove fields not in schema when <code className="text-xs bg-muted px-0.5 rounded">additionalProperties: false</code></p>
                       </div>
-                      <Switch
-                        checked={config.strip_extra_fields}
-                        onCheckedChange={(strip_extra_fields) => updateConfig({ strip_extra_fields })}
-                        disabled={saving || !config.enabled}
-                      />
+                      <InfoTooltip content="Removes fields not defined in the schema. Only applies when the schema disallows additional properties.">
+                        <Switch
+                          checked={config.strip_extra_fields}
+                          onCheckedChange={(strip_extra_fields) => updateConfig({ strip_extra_fields })}
+                          disabled={saving || !config.enabled}
+                        />
+                      </InfoTooltip>
                     </div>
                   </CardContent>
                 </Card>

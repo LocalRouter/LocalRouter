@@ -1,16 +1,21 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Wrench } from "lucide-react"
+import { Wrench, ExternalLink } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { FEATURES } from "@/constants/features"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
+import { ModelDownloadCard } from "@/components/shared/ModelDownloadCard"
+import { useModelDownload } from "@/hooks/useModelDownload"
+import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
+import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { cn } from "@/lib/utils"
+import { listenSafe } from "@/hooks/useTauriListener"
 import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
-import { FeatureClientsCard } from "@/components/shared/FeatureClientsCard"
 import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import { ContentStorePreview } from "@/components/shared/ContentStorePreview"
 import { VirtualMcpIndexingTree } from "@/components/permissions/VirtualMcpIndexingTree"
@@ -20,6 +25,9 @@ import type {
   ContextManagementConfig,
   IndexingState,
   ToolDefinition,
+  ClientFeatureStatus,
+  GetFeatureClientsStatusParams,
+  EmbeddingStatus,
 } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
@@ -144,12 +152,46 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
   const [config, setConfig] = useState<ContextManagementConfig | null>(null)
   const [, setSaving] = useState(false)
   const [contextTools, setContextTools] = useState<McpToolDisplayItem[]>([])
+  const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null)
 
   const tab = activeSubTab || "info"
 
   const handleTabChange = (newTab: string) => {
     onTabChange?.("response-rag", newTab)
   }
+
+  const loadEmbeddingStatus = async () => {
+    try {
+      const status = await invoke<EmbeddingStatus>("get_embedding_status")
+      setEmbeddingStatus(status)
+    } catch (err) {
+      console.error("Failed to load embedding status:", err)
+    }
+  }
+
+  const embeddingDownload = useModelDownload({
+    isDownloaded: embeddingStatus?.downloaded ?? false,
+    downloadCommand: "install_embedding_model",
+    progressEvent: "embedding-download-progress",
+    completeEvent: "embedding-download-complete",
+    onComplete: () => {
+      toast.success("Embedding model downloaded and loaded")
+      loadEmbeddingStatus()
+    },
+    onFailed: (err: string) => toast.error(`Download failed: ${err}`),
+  })
+
+  const loadClientStatuses = useCallback(async () => {
+    try {
+      const data = await invoke<ClientFeatureStatus[]>("get_feature_clients_status", {
+        feature: "context_management",
+      } satisfies GetFeatureClientsStatusParams)
+      setClientStatuses(data)
+    } catch (err) {
+      console.error("Failed to load client statuses:", err)
+    }
+  }, [])
 
   useEffect(() => {
     let ignore = false
@@ -168,10 +210,21 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
       })
       .catch(() => {})
 
+    loadClientStatuses()
+    loadEmbeddingStatus()
+
     return () => {
       ignore = true
     }
-  }, [])
+  }, [loadClientStatuses])
+
+  useEffect(() => {
+    const listeners = [
+      listenSafe("clients-changed", loadClientStatuses),
+      listenSafe("config-changed", loadClientStatuses),
+    ]
+    return () => { listeners.forEach(l => l.cleanup()) }
+  }, [loadClientStatuses])
 
   const updateField = async (field: string, value: unknown) => {
     try {
@@ -250,6 +303,25 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
                 </p>
               </CardContent>
             </Card>
+
+            {/* Embedding Model Download */}
+            <ModelDownloadCard
+              title="Semantic Search (Optional)"
+              description="Download a small local embedding model (~80MB) to enable hybrid FTS5 + vector search. Keyword search works without it."
+              modelName={embeddingStatus?.model_name}
+              modelInfo={embeddingStatus?.model_size_mb != null ? `${embeddingStatus.model_size_mb.toFixed(0)} MB` : undefined}
+              status={embeddingDownload.status}
+              progress={embeddingDownload.progress}
+              error={embeddingDownload.error}
+              onDownload={embeddingDownload.startDownload}
+              onRetry={embeddingDownload.retry}
+              downloadLabel="Download all-MiniLM-L6-v2 (~80MB)"
+            >
+              <p className="text-xs text-muted-foreground">
+                Enables semantic search: "SQL database for login" finds "We chose PostgreSQL for authentication."
+                Runs locally via Metal/CUDA/CPU — no external API calls.
+              </p>
+            </ModelDownloadCard>
 
             {/* MCP Tools exposed to the LLM */}
             {contextTools.length > 0 && (
@@ -335,7 +407,66 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
               </Card>
             )}
 
-            <FeatureClientsCard feature="context_management" clientTab="optimize" onNavigateToClient={onTabChange} />
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">MCP Response RAG (Per-Client)</CardTitle>
+                <CardDescription>
+                  Response RAG is controlled per-client in each client&apos;s Optimize tab.
+                </CardDescription>
+              </CardHeader>
+              {clientStatuses.length > 0 && (
+                <CardContent className="pt-0">
+                  <div className="border-t pt-3 space-y-1.5">
+                    {clientStatuses.map((s) => (
+                      <div
+                        key={s.client_id}
+                        className="flex items-center justify-between py-1 px-2 rounded-md hover:bg-muted/50 group"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {onTabChange ? (
+                            <button
+                              onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                              className="text-sm font-medium truncate hover:underline text-left"
+                            >
+                              {s.client_name}
+                            </button>
+                          ) : (
+                            <span className="text-sm font-medium truncate">{s.client_name}</span>
+                          )}
+                          {s.source === "override" && (
+                            <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">
+                              Override
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "text-[10px] px-1.5 py-0",
+                              s.active
+                                ? "border-emerald-500/50 text-emerald-600"
+                                : "border-red-500/50 text-red-600",
+                            )}
+                          >
+                            {s.active ? "Enabled" : "Disabled"}
+                          </Badge>
+                          {onTabChange && (
+                            <button
+                              onClick={() => onTabChange("clients", `${s.client_id}|optimize`)}
+                              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity"
+                              title="Go to client settings"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              )}
+            </Card>
           </div>
         </TabsContent>
 
@@ -346,7 +477,10 @@ export function ResponseRagView({ activeSubTab, onTabChange }: ResponseRagViewPr
               {/* Response Threshold */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Response Compression Threshold</CardTitle>
+                  <CardTitle className="text-base flex items-center gap-1">
+                    Response Compression Threshold
+                    <InfoTooltip content="Minimum response size in bytes before compression is applied. Responses smaller than this are passed through unchanged." />
+                  </CardTitle>
                   <CardDescription>
                     Tool responses larger than this threshold are indexed and replaced with a
                     truncated preview and a search hint.

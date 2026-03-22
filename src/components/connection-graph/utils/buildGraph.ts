@@ -16,8 +16,11 @@ import type {
   SkillNodeData,
   CodingAgentNodeData,
   MarketplaceNodeData,
+  EndpointNodeData,
+  RouterGroupNodeData,
   ItemHealthStatus,
 } from '../types'
+import type { ClientMode } from '@/types/tauri-commands'
 
 // Node dimensions for layout calculation
 const NODE_WIDTH = 140
@@ -440,8 +443,12 @@ function calculateBounds(nodes: Node[]): { width: number; height: number } {
   let maxY = -Infinity
 
   nodes.forEach((node) => {
-    maxX = Math.max(maxX, node.position.x + NODE_WIDTH)
-    maxY = Math.max(maxY, node.position.y + NODE_HEIGHT)
+    // Skip child nodes — their parent accounts for their space
+    if ((node as any).parentNode) return
+    const w = (typeof node.style?.width === 'number' ? node.style.width : null) ?? NODE_WIDTH
+    const h = (typeof node.style?.height === 'number' ? node.style.height : null) ?? NODE_HEIGHT
+    maxX = Math.max(maxX, node.position.x + w)
+    maxY = Math.max(maxY, node.position.y + h)
   })
 
   // Add padding for controls and breathing room
@@ -450,6 +457,311 @@ function calculateBounds(nodes: Node[]): { width: number; height: number } {
     width: maxX + padding,
     height: maxY + padding,
   }
+}
+
+// MCP-related node types: mcpServer, skill, codingAgent, marketplace
+const MCP_RELATED_TYPES = new Set(['mcpServer', 'skill', 'codingAgent', 'marketplace'])
+
+// Apply client mode filtering and endpoint node insertion.
+// All modes route edges through endpoint nodes.
+// Coding agents and marketplace are MCP-related.
+function applyClientMode(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  clientMode: ClientMode,
+  clientId: string,
+  isConnected: boolean,
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const clientNodeId = `client-${clientId}`
+
+  switch (clientMode) {
+    case 'llm_only': {
+      // LLM endpoint only, remove all MCP-related nodes
+      const newEdges: GraphEdge[] = []
+      let hasLlm = false
+
+      for (const edge of edges) {
+        if (edge.source !== clientNodeId) { newEdges.push(edge); continue }
+        const targetNode = nodes.find(n => n.id === edge.target)
+        if (targetNode && MCP_RELATED_TYPES.has(targetNode.type!)) continue
+        if (targetNode?.type === 'provider') {
+          if (!hasLlm) {
+            newEdges.push({
+              id: `edge-${clientId}-endpoint-llm`,
+              source: clientNodeId,
+              target: 'endpoint-llm',
+              animated: isConnected,
+              style: { stroke: isConnected ? '#3b82f6' : '#64748b', strokeWidth: isConnected ? 2 : 1 },
+              data: { isActive: isConnected },
+            })
+            hasLlm = true
+          }
+          newEdges.push({ ...edge, id: `edge-ep-llm-${edge.target}`, source: 'endpoint-llm' })
+        } else {
+          newEdges.push(edge)
+        }
+      }
+
+      const newNodes = nodes.filter(n => !MCP_RELATED_TYPES.has(n.type!))
+      if (hasLlm) {
+        newNodes.push({
+          id: 'endpoint-llm',
+          type: 'endpoint',
+          data: { id: 'endpoint-llm', name: 'LLM', type: 'endpoint', variant: 'llm' } as EndpointNodeData,
+          position: { x: 0, y: 0 },
+        })
+      }
+
+      return { nodes: newNodes, edges: newEdges }
+    }
+    case 'mcp_only': {
+      // MCP endpoint only, remove all providers
+      const newEdges: GraphEdge[] = []
+      let hasMcp = false
+
+      for (const edge of edges) {
+        if (edge.source !== clientNodeId) { newEdges.push(edge); continue }
+        const targetNode = nodes.find(n => n.id === edge.target)
+        if (targetNode?.type === 'provider') continue
+        if (targetNode && MCP_RELATED_TYPES.has(targetNode.type!)) {
+          if (!hasMcp) {
+            newEdges.push({
+              id: `edge-${clientId}-endpoint-mcp`,
+              source: clientNodeId,
+              target: 'endpoint-mcp',
+              animated: isConnected,
+              style: { stroke: isConnected ? '#10b981' : '#64748b', strokeWidth: isConnected ? 2 : 1 },
+              data: { isActive: isConnected },
+            })
+            hasMcp = true
+          }
+          newEdges.push({ ...edge, id: `edge-ep-mcp-${edge.target}`, source: 'endpoint-mcp' })
+        } else {
+          newEdges.push(edge)
+        }
+      }
+
+      const newNodes = nodes.filter(n => n.type !== 'provider')
+      if (hasMcp) {
+        newNodes.push({
+          id: 'endpoint-mcp',
+          type: 'endpoint',
+          data: { id: 'endpoint-mcp', name: 'MCP', type: 'endpoint', variant: 'mcp' } as EndpointNodeData,
+          position: { x: 0, y: 0 },
+        })
+      }
+
+      return { nodes: newNodes, edges: newEdges }
+    }
+    case 'both': {
+      // Two endpoints: LLM for providers, MCP for MCP-related
+      const newEdges: GraphEdge[] = []
+      let hasLlm = false
+      let hasMcp = false
+
+      for (const edge of edges) {
+        if (edge.source !== clientNodeId) { newEdges.push(edge); continue }
+        const targetNode = nodes.find(n => n.id === edge.target)
+        if (targetNode?.type === 'provider') {
+          if (!hasLlm) {
+            newEdges.push({
+              id: `edge-${clientId}-endpoint-llm`,
+              source: clientNodeId,
+              target: 'endpoint-llm',
+              animated: isConnected,
+              style: { stroke: isConnected ? '#3b82f6' : '#64748b', strokeWidth: isConnected ? 2 : 1 },
+              data: { isActive: isConnected },
+            })
+            hasLlm = true
+          }
+          newEdges.push({ ...edge, id: `edge-ep-llm-${edge.target}`, source: 'endpoint-llm' })
+        } else if (targetNode && MCP_RELATED_TYPES.has(targetNode.type!)) {
+          if (!hasMcp) {
+            newEdges.push({
+              id: `edge-${clientId}-endpoint-mcp`,
+              source: clientNodeId,
+              target: 'endpoint-mcp',
+              animated: isConnected,
+              style: { stroke: isConnected ? '#10b981' : '#64748b', strokeWidth: isConnected ? 2 : 1 },
+              data: { isActive: isConnected },
+            })
+            hasMcp = true
+          }
+          newEdges.push({ ...edge, id: `edge-ep-mcp-${edge.target}`, source: 'endpoint-mcp' })
+        } else {
+          newEdges.push(edge)
+        }
+      }
+
+      const newNodes = [...nodes]
+      if (hasLlm) {
+        newNodes.push({
+          id: 'endpoint-llm',
+          type: 'endpoint',
+          data: { id: 'endpoint-llm', name: 'LLM', type: 'endpoint', variant: 'llm' } as EndpointNodeData,
+          position: { x: 0, y: 0 },
+        })
+      }
+      if (hasMcp) {
+        newNodes.push({
+          id: 'endpoint-mcp',
+          type: 'endpoint',
+          data: { id: 'endpoint-mcp', name: 'MCP', type: 'endpoint', variant: 'mcp' } as EndpointNodeData,
+          position: { x: 0, y: 0 },
+        })
+      }
+
+      return { nodes: newNodes, edges: newEdges }
+    }
+    case 'mcp_via_llm': {
+      // Two endpoints like 'both', but client→LLM only, LLM→MCP visual link.
+      // A phantom client→MCP edge is used for dagre layout (same rank) but not rendered.
+      // The visual LLM→MCP edge is excluded from dagre to avoid rank shift.
+      const newEdges: GraphEdge[] = []
+      let hasLlm = false
+      let hasMcp = false
+
+      for (const edge of edges) {
+        if (edge.source !== clientNodeId) { newEdges.push(edge); continue }
+        const targetNode = nodes.find(n => n.id === edge.target)
+        if (targetNode?.type === 'provider') {
+          if (!hasLlm) {
+            newEdges.push({
+              id: `edge-${clientId}-endpoint-llm`,
+              source: clientNodeId,
+              target: 'endpoint-llm',
+              animated: isConnected,
+              style: { stroke: isConnected ? '#3b82f6' : '#64748b', strokeWidth: isConnected ? 2 : 1 },
+              data: { isActive: isConnected },
+            })
+            hasLlm = true
+          }
+          newEdges.push({ ...edge, id: `edge-ep-llm-${edge.target}`, source: 'endpoint-llm' })
+        } else if (targetNode && MCP_RELATED_TYPES.has(targetNode.type!)) {
+          if (!hasMcp) {
+            // Phantom edge: keeps MCP at same dagre rank as LLM, filtered before render
+            newEdges.push({
+              id: `edge-${clientId}-endpoint-mcp-phantom`,
+              source: clientNodeId,
+              target: 'endpoint-mcp',
+              data: { phantom: true },
+            })
+            hasMcp = true
+          }
+          newEdges.push({ ...edge, id: `edge-ep-mcp-${edge.target}`, source: 'endpoint-mcp' })
+        } else {
+          newEdges.push(edge)
+        }
+      }
+
+      // Visual-only LLM→MCP edge (excluded from dagre, added after layout)
+      if (hasLlm && hasMcp) {
+        newEdges.push({
+          id: 'edge-llm-to-mcp',
+          source: 'endpoint-llm',
+          target: 'endpoint-mcp',
+          animated: isConnected,
+          style: { stroke: isConnected ? '#8b5cf6' : '#94a3b8', strokeWidth: isConnected ? 2 : 1, strokeDasharray: '4,3' },
+          data: { isActive: isConnected, visualOnly: true },
+        })
+      }
+
+      const newNodes = [...nodes]
+      if (hasLlm) {
+        newNodes.push({
+          id: 'endpoint-llm',
+          type: 'endpoint',
+          data: { id: 'endpoint-llm', name: 'LLM', type: 'endpoint', variant: 'llm' } as EndpointNodeData,
+          position: { x: 0, y: 0 },
+        })
+      }
+      if (hasMcp) {
+        newNodes.push({
+          id: 'endpoint-mcp',
+          type: 'endpoint',
+          data: { id: 'endpoint-mcp', name: 'MCP', type: 'endpoint', variant: 'mcp' } as EndpointNodeData,
+          position: { x: 0, y: 0 },
+        })
+      }
+
+      return { nodes: newNodes, edges: newEdges }
+    }
+    default:
+      return { nodes, edges }
+  }
+}
+
+// Wrap endpoint nodes in a LocalRouter group node after dagre layout
+function wrapEndpointsInGroup(nodes: GraphNode[]): GraphNode[] {
+  const endpointNodes = nodes.filter(n => n.type === 'endpoint')
+  if (endpointNodes.length === 0) return nodes
+
+  const paddingX = 24
+  const paddingY = 14
+  const labelHeight = 22
+  // Endpoint nodes are visually narrow; use half of dagre's NODE_WIDTH for tighter group sizing
+  const endpointVisualWidth = NODE_WIDTH / 2
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const node of endpointNodes) {
+    minX = Math.min(minX, node.position.x)
+    minY = Math.min(minY, node.position.y)
+    maxX = Math.max(maxX, node.position.x + endpointVisualWidth)
+    maxY = Math.max(maxY, node.position.y + NODE_HEIGHT)
+  }
+
+  const groupX = minX - paddingX
+  const groupY = minY - paddingY - labelHeight
+  const groupWidth = maxX - minX + 2 * paddingX
+  const groupHeight = maxY - minY + 2 * paddingY + labelHeight
+
+  const groupNode: GraphNode = {
+    id: 'localrouter-group',
+    type: 'routerGroup',
+    data: { id: 'localrouter-group', name: 'LocalRouter', type: 'routerGroup' } as RouterGroupNodeData,
+    position: { x: groupX, y: groupY },
+    style: { width: groupWidth, height: groupHeight },
+  }
+
+  // Group node must come before children in the array
+  const result: GraphNode[] = [groupNode]
+  for (const node of nodes) {
+    if (node.type === 'endpoint') {
+      result.push({
+        ...node,
+        position: {
+          x: node.position.x - groupX,
+          y: node.position.y - groupY,
+        },
+        parentNode: 'localrouter-group',
+        extent: 'parent' as const,
+      } as GraphNode)
+    } else {
+      result.push(node)
+    }
+  }
+
+  return result
+}
+
+// Ensure no root node has a negative position (group nodes can extend left/above dagre margins)
+function normalizePositions(nodes: GraphNode[]): GraphNode[] {
+  const margin = 10
+  let minX = Infinity, minY = Infinity
+  for (const node of nodes) {
+    if ((node as any).parentNode) continue
+    minX = Math.min(minX, node.position.x)
+    minY = Math.min(minY, node.position.y)
+  }
+
+  const offsetX = minX < margin ? margin - minX : 0
+  const offsetY = minY < margin ? margin - minY : 0
+  if (offsetX === 0 && offsetY === 0) return nodes
+
+  return nodes.map(node => {
+    if ((node as any).parentNode) return node
+    return { ...node, position: { x: node.position.x + offsetX, y: node.position.y + offsetY } }
+  })
 }
 
 // Main function to build the complete graph
@@ -462,17 +774,37 @@ export function buildGraph(
   healthState: HealthCacheState | null,
   activeConnections: string[],
   strategies: GraphStrategy[] = [],
+  clientMode?: ClientMode,
 ): { nodes: GraphNode[]; edges: GraphEdge[]; bounds: { width: number; height: number } } {
   // Build edges first to determine which targets are connected to clients
-  const edges = buildEdges(clients, providers, mcpServers, skills, codingAgents, strategies, activeConnections)
-  const connectedTargetIds = new Set(edges.map(e => e.target))
-  const nodes = buildNodes(clients, providers, mcpServers, skills, codingAgents, healthState, activeConnections, connectedTargetIds)
-  const layoutedNodes = applyDagreLayout(nodes, edges)
-  const bounds = calculateBounds(layoutedNodes)
+  const allEdges = buildEdges(clients, providers, mcpServers, skills, codingAgents, strategies, activeConnections)
+  const connectedTargetIds = new Set(allEdges.map(e => e.target))
+  const allNodes = buildNodes(clients, providers, mcpServers, skills, codingAgents, healthState, activeConnections, connectedTargetIds)
+
+  // Apply client mode transformation (filtering + endpoint nodes) for single-client views
+  let finalNodes = allNodes
+  let finalEdges = allEdges
+  if (clientMode && clients.length === 1) {
+    const isConnected = activeConnections.includes(clients[0].id)
+    const result = applyClientMode(allNodes, allEdges, clientMode, clients[0].id, isConnected)
+    finalNodes = result.nodes
+    finalEdges = result.edges
+  }
+
+  // Separate visual-only edges (excluded from dagre) and phantom edges (dagre-only, not rendered)
+  const visualOnlyEdges = finalEdges.filter(e => (e.data as any)?.visualOnly)
+  const layoutEdges = finalEdges.filter(e => !(e.data as any)?.visualOnly)
+  const renderedEdges = layoutEdges
+    .filter(e => !(e.data as any)?.phantom)
+    .concat(visualOnlyEdges)
+
+  const layoutedNodes = applyDagreLayout(finalNodes, layoutEdges)
+  const wrappedNodes = normalizePositions(wrapEndpointsInGroup(layoutedNodes))
+  const bounds = calculateBounds(wrappedNodes)
 
   return {
-    nodes: layoutedNodes as GraphNode[],
-    edges,
+    nodes: wrappedNodes as GraphNode[],
+    edges: renderedEdges,
     bounds,
   }
 }

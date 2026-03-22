@@ -32,6 +32,7 @@ import type {
   GetCodingAgentToolDefinitionsParams,
   GetCodingSessionDetailParams,
   OpenPathParams,
+  ClientInfo,
 } from "@/types/tauri-commands"
 
 interface CodingAgentsViewProps {
@@ -97,6 +98,9 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
   const [versionLoading, setVersionLoading] = useState(false)
   const lastLimitRef = useRef(5)
 
+  // Client list state
+  const [clients, setClients] = useState<ClientInfo[]>([])
+
   // Tool prefix state
   const [toolPrefix, setToolPrefix] = useState("")
 
@@ -160,6 +164,15 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     }
   }, [])
 
+  const loadClients = useCallback(async () => {
+    try {
+      const data = await invoke<ClientInfo[]>("list_clients")
+      setClients(data)
+    } catch (err) {
+      console.error("Failed to load clients:", err)
+    }
+  }, [])
+
   const loadSessionDetail = useCallback(async (sessionId: string) => {
     setSessionDetailLoading(true)
     try {
@@ -180,16 +193,20 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     loadSessions()
     loadMaxSessions()
     loadToolPrefix()
+    loadClients()
 
-    const l = listenSafe("coding-agents-changed", () => {
-      loadAgents()
-      loadSessions()
-    })
+    const listeners = [
+      listenSafe("coding-agents-changed", () => {
+        loadAgents()
+        loadSessions()
+      }),
+      listenSafe("clients-changed", loadClients),
+    ]
 
     return () => {
-      l.cleanup()
+      listeners.forEach(l => l.cleanup())
     }
-  }, [loadAgents, loadSessions, loadMaxSessions, loadToolPrefix])
+  }, [loadAgents, loadSessions, loadMaxSessions, loadToolPrefix, loadClients])
 
   useEffect(() => {
     if (agentId) {
@@ -437,6 +454,73 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                   </CardContent>
                 </Card>
               )}
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Coding Agents (All Clients)</CardTitle>
+                  <CardDescription>
+                    Coding agents are available to all clients through the MCP gateway.
+                  </CardDescription>
+                </CardHeader>
+                {clients.length > 0 && (
+                  <CardContent className="pt-0">
+                    <div className="border-t pt-3 space-y-1.5">
+                      {clients.map((c) => (
+                        <div
+                          key={c.client_id}
+                          className="flex items-center justify-between py-1 px-2 rounded-md hover:bg-muted/50 group"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            {onTabChange ? (
+                              <button
+                                onClick={() => onTabChange("clients", `${c.client_id}|mcp`)}
+                                className="text-sm font-medium truncate hover:underline text-left"
+                              >
+                                {c.name}
+                              </button>
+                            ) : (
+                              <span className="text-sm font-medium truncate">{c.name}</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "text-[10px] px-1.5 py-0",
+                                c.coding_agent_permission === "allow"
+                                  ? "border-emerald-500/50 text-emerald-600"
+                                  : c.coding_agent_permission === "ask"
+                                    ? "border-amber-500/50 text-amber-600"
+                                    : "border-red-500/50 text-red-600",
+                              )}
+                            >
+                              {c.coding_agent_permission === "allow"
+                                ? "Allow"
+                                : c.coding_agent_permission === "ask"
+                                  ? "Ask"
+                                  : "Off"}
+                            </Badge>
+                            {c.coding_agent_type && (
+                              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                {c.coding_agent_type}
+                              </Badge>
+                            )}
+                            {onTabChange && (
+                              <button
+                                onClick={() => onTabChange("clients", `${c.client_id}|mcp`)}
+                                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-opacity"
+                                title="Go to client settings"
+                              >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                )}
+              </Card>
             </div>
           </ScrollArea>
         </TabsContent>

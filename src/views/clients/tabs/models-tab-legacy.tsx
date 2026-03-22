@@ -1,4 +1,8 @@
+// DEPRECATED: Legacy LLM tab — kept for reference. Replaced by unified-models-tab.tsx
+
 /**
+ * @deprecated Use UnifiedModelsTab from unified-models-tab.tsx instead.
+ *
  * ClientModelsTab Component
  *
  * Models configuration tab for a client.
