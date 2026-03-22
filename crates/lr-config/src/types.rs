@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 24;
+pub(crate) const CONFIG_VERSION: u32 = 25;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -310,7 +310,10 @@ impl Strategy {
             name,
             parent: None,
             allowed_models: AvailableModelsSelection::default(),
-            auto_config: None,
+            auto_config: Some(AutoModelConfig {
+                permission: PermissionState::Allow,
+                ..Default::default()
+            }),
             rate_limits: vec![],
             free_tier_only: false,
             free_tier_fallback: FreeTierFallback::default(),
@@ -324,7 +327,10 @@ impl Strategy {
             name: client_strategy_name(&client_name),
             parent: Some(client_id),
             allowed_models: AvailableModelsSelection::all(),
-            auto_config: None,
+            auto_config: Some(AutoModelConfig {
+                permission: PermissionState::Allow,
+                ..Default::default()
+            }),
             rate_limits: vec![],
             free_tier_only: false,
             free_tier_fallback: FreeTierFallback::default(),

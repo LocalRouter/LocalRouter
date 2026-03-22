@@ -371,6 +371,10 @@ async fn run_guardrails_scan(
     if state
         .guardrail_approval_tracker
         .has_valid_bypass(&client.id)
+        && !state.mcp_gateway.firewall_manager.should_intercept(
+            &client.id,
+            lr_mcp::gateway::firewall::InterceptCategory::Guardrails,
+        )
     {
         return Ok(None);
     }
@@ -556,6 +560,10 @@ async fn run_secret_scan_check(
     if state
         .secret_scan_approval_tracker
         .has_valid_bypass(&client_ctx.client_id)
+        && !state.mcp_gateway.firewall_manager.should_intercept(
+            &client_ctx.client_id,
+            lr_mcp::gateway::firewall::InterceptCategory::SecretScan,
+        )
     {
         return Ok(());
     }

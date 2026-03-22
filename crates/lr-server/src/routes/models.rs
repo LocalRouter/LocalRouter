@@ -42,34 +42,32 @@ pub async fn list_models<B>(
     let (client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
     check_llm_access_with_state(&state, &client)?;
 
-    // If auto-routing is enabled, return ONLY the auto router model
-    // This simplifies the client experience - they see one model to use
+    // If auto-routing is configured with prioritized models and permission is enabled,
+    // prepend the virtual localrouter/auto model to the list
+    let mut auto_model: Option<ModelData> = None;
     if let Some(auto_config) = &strategy.auto_config {
-        if auto_config.permission.is_enabled() {
-            return Ok(Json(ModelsResponse {
-                object: "list".to_string(),
-                data: vec![ModelData {
-                    id: auto_config.model_name.clone(),
-                    object: "model".to_string(),
-                    owned_by: "localrouter".to_string(),
-                    created: Some(0),
-                    provider: "localrouter".to_string(),
-                    parameter_count: None,
-                    context_window: 0, // Virtual model, delegates to actual models
-                    supports_streaming: true,
-                    capabilities: vec!["chat".to_string(), "completion".to_string()],
-                    pricing: None,
-                    detailed_capabilities: None,
-                    features: None,
-                    supported_parameters: None,
-                    performance: None,
-                    catalog_info: None,
-                }],
-            }));
+        if auto_config.permission.is_enabled() && !auto_config.prioritized_models.is_empty() {
+            auto_model = Some(ModelData {
+                id: auto_config.model_name.clone(),
+                object: "model".to_string(),
+                owned_by: "localrouter".to_string(),
+                created: Some(0),
+                provider: "localrouter".to_string(),
+                parameter_count: None,
+                context_window: 0, // Virtual model, delegates to actual models
+                supports_streaming: true,
+                capabilities: vec!["chat".to_string(), "completion".to_string()],
+                pricing: None,
+                detailed_capabilities: None,
+                features: None,
+                supported_parameters: None,
+                performance: None,
+                catalog_info: None,
+            });
         }
     }
 
-    // Auto-routing disabled: return allowed models filtered by strategy
+    // Always return allowed models filtered by strategy
     let all_models = state
         .provider_registry
         .list_all_models()
@@ -103,6 +101,11 @@ pub async fn list_models<B>(
         }
 
         model_data_vec.push(model_data);
+    }
+
+    // Prepend the virtual auto model if applicable
+    if let Some(auto_model_data) = auto_model {
+        model_data_vec.insert(0, auto_model_data);
     }
 
     Ok(Json(ModelsResponse {
@@ -148,7 +151,7 @@ pub async fn get_model<B>(
 
     // Special handling for auto router virtual model
     if let Some(auto_config) = &strategy.auto_config {
-        if auto_config.permission.is_enabled() && model_id == auto_config.model_name {
+        if !auto_config.prioritized_models.is_empty() && model_id == auto_config.model_name {
             return Ok(Json(ModelData {
                 id: auto_config.model_name.clone(),
                 object: "model".to_string(),
@@ -169,7 +172,7 @@ pub async fn get_model<B>(
         }
     }
 
-    // Check if requesting auto router model but it's not enabled
+    // Check if requesting auto router model but it's not configured
     if model_id == "localrouter/auto"
         || model_id.starts_with("localrouter/")
         || (strategy
@@ -179,7 +182,7 @@ pub async fn get_model<B>(
             .unwrap_or(false))
     {
         return Err(ApiErrorResponse::not_found(
-            "Auto router model is not enabled for this client".to_string(),
+            "Auto router model is not configured for this client".to_string(),
         ));
     }
 

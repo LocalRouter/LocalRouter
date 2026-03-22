@@ -152,6 +152,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v24(config)?;
     }
 
+    // Migrate to v25: Ensure all strategies have auto_config for unified model selection
+    if config.version < 25 {
+        config = migrate_to_v25(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -863,6 +868,38 @@ fn migrate_to_v24(mut config: AppConfig) -> AppResult<AppConfig> {
     }
 
     config.version = 24;
+    Ok(config)
+}
+
+/// Migrate to version 25: Unified model selection
+///
+/// Ensure all strategies have auto_config present with permission set to Allow.
+/// This enables the unified model selection where both allowed models and auto
+/// routing are always active simultaneously.
+fn migrate_to_v25(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!(
+        "Migrating to version 25: Unified model selection - ensure all strategies have auto_config"
+    );
+
+    for strategy in &mut config.strategies {
+        match &mut strategy.auto_config {
+            None => {
+                // Create default auto_config with permission Allow
+                strategy.auto_config = Some(super::types::AutoModelConfig {
+                    permission: super::types::PermissionState::Allow,
+                    ..Default::default()
+                });
+            }
+            Some(auto_config) => {
+                // Ensure permission is not Off (upgrade to Allow)
+                if auto_config.permission == super::types::PermissionState::Off {
+                    auto_config.permission = super::types::PermissionState::Allow;
+                }
+            }
+        }
+    }
+
+    config.version = 25;
     Ok(config)
 }
 

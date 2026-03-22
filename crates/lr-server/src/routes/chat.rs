@@ -92,38 +92,24 @@ pub async fn chat_completions(
         return Err(e);
     }
 
-    // Check auto-routing permission for this client's strategy
-    if let Ok((client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        if let Some(auto_config) = &strategy.auto_config {
-            use lr_mcp::gateway::access_control::{
-                check_needs_approval, FirewallCheckContext, FirewallCheckResult,
-            };
-
-            let ctx = FirewallCheckContext::AutoRouter {
-                permission: &auto_config.permission,
-                has_time_based_approval: state
-                    .auto_router_approval_tracker
-                    .has_valid_approval(&client.id),
-            };
-
-            match check_needs_approval(&ctx) {
-                FirewallCheckResult::Allow => {
-                    tracing::info!(
-                        "Auto-routing allowed: overriding '{}' with '{}'",
-                        request.model,
-                        auto_config.model_name
-                    );
-                    request.model = "localrouter/auto".to_string();
+    // Auto-routing firewall check — only for explicit localrouter/auto requests
+    if request.model == "localrouter/auto" {
+        if let Ok((client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+            if let Some(auto_config) = &strategy.auto_config {
+                if auto_config.prioritized_models.is_empty() {
+                    return Err(ApiErrorResponse::bad_request(
+                        "Auto routing has no prioritized models configured".to_string(),
+                    ));
                 }
-                FirewallCheckResult::Ask => {
-                    // Build a preview of prioritized models for the popup
-                    let models_preview = auto_config
-                        .prioritized_models
-                        .iter()
-                        .take(5)
-                        .map(|(p, m)| format!("{}/{}", p, m))
-                        .collect::<Vec<_>>()
-                        .join(", ");
+
+                // Monitor intercept: override Allow → Ask if intercept rule matches
+                if auto_config.permission.is_enabled()
+                    && state.mcp_gateway.firewall_manager.should_intercept(
+                        &client.id,
+                        lr_mcp::gateway::firewall::InterceptCategory::Llm,
+                    )
+                {
+                    use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
                     // Check if this is an MCP via LLM client
                     let is_mcp_via_llm = client.client_mode == lr_config::ClientMode::McpViaLlm;
@@ -156,23 +142,12 @@ pub async fn chat_completions(
                                 .cloned()
                                 .collect()
                         };
-                        tracing::info!(
-                            "Auto-router firewall: MCP via LLM client {}, {} configured servers, {} allowed",
-                            &client.id[..8.min(client.id.len())],
-                            all_ids.len(),
-                            allowed.len(),
-                        );
                         match state
                             .mcp_via_llm_manager
                             .list_tools_for_preview(state.mcp_gateway.clone(), &client, allowed)
                             .await
                         {
                             Ok(tools) => {
-                                let count = tools.as_array().map_or(0, |a| a.len());
-                                tracing::info!(
-                                    "Auto-router firewall: pre-fetched {} MCP tools for popup",
-                                    count,
-                                );
                                 if let Some(obj) = request_json.as_object_mut() {
                                     obj.insert("tools".to_string(), tools);
                                 }
@@ -184,13 +159,16 @@ pub async fn chat_completions(
                                 );
                             }
                         }
-                    } else {
-                        tracing::debug!(
-                            "Auto-router firewall: client {} is not MCP via LLM (mode: {:?})",
-                            &client.id[..8.min(client.id.len())],
-                            client.client_mode,
-                        );
                     }
+
+                    // Build models preview for the popup
+                    let models_preview = auto_config
+                        .prioritized_models
+                        .iter()
+                        .take(5)
+                        .map(|(p, m)| format!("{}/{}", p, m))
+                        .collect::<Vec<_>>()
+                        .join(", ");
 
                     // Capture full request + candidate models for edit mode
                     let auto_full_args = serde_json::json!({
@@ -217,8 +195,6 @@ pub async fn chat_completions(
                                 e
                             ))
                         })?;
-
-                    use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
                     // Emit firewall decision for auto-router popup
                     let ar_action_str = format!("{:?}", response.action);
@@ -253,20 +229,8 @@ pub async fn chat_completions(
                                             model
                                         );
                                         request.model = model.to_string();
-                                    } else {
-                                        request.model = "localrouter/auto".to_string();
                                     }
-                                } else {
-                                    request.model = "localrouter/auto".to_string();
                                 }
-                            } else {
-                                tracing::info!(
-                                    "Auto-routing approved ({:?}): overriding '{}' with '{}'",
-                                    response.action,
-                                    request.model,
-                                    auto_config.model_name
-                                );
-                                request.model = "localrouter/auto".to_string();
                             }
                         }
                         _ => {
@@ -283,9 +247,11 @@ pub async fn chat_completions(
                         }
                     }
                 }
-                FirewallCheckResult::Deny => {
-                    // Off — skip auto-routing, use client's requested model
-                }
+            } else {
+                // No auto_config at all — reject localrouter/auto request
+                return Err(ApiErrorResponse::not_found(
+                    "Auto routing is not configured for this client".to_string(),
+                ));
             }
         }
     }
@@ -1151,7 +1117,27 @@ async fn check_model_firewall_permission(
             .has_valid_approval(&client.id, &provider, &model_id),
     };
 
-    match access_control::check_needs_approval(&ctx) {
+    // Monitor intercept: override Allow → Ask if intercept rule matches
+    let result = {
+        let r = access_control::check_needs_approval(&ctx);
+        if r == FirewallCheckResult::Allow
+            && state.mcp_gateway.firewall_manager.should_intercept(
+                &client.id,
+                lr_mcp::gateway::firewall::InterceptCategory::Llm,
+            )
+        {
+            tracing::info!(
+                "Monitor intercept: overriding Allow → Ask for model {} (client={})",
+                request.model,
+                client.id
+            );
+            FirewallCheckResult::Ask
+        } else {
+            r
+        }
+    };
+
+    match result {
         FirewallCheckResult::Allow => {
             tracing::debug!(
                 "Model firewall: {} allowed for client {}",
@@ -1413,10 +1399,14 @@ async fn run_guardrails_scan(
         return Ok(None);
     }
 
-    // Check for time-based guardrail bypass
+    // Check for time-based guardrail bypass (unless monitor intercept overrides)
     if state
         .guardrail_approval_tracker
         .has_valid_bypass(&client.id)
+        && !state.mcp_gateway.firewall_manager.should_intercept(
+            &client.id,
+            lr_mcp::gateway::firewall::InterceptCategory::Guardrails,
+        )
     {
         tracing::debug!(
             "Guardrail check skipped: client {} has active bypass",
@@ -1571,7 +1561,26 @@ async fn handle_guardrail_approval(
             .unwrap_or(true),
     };
 
-    match lr_mcp::gateway::access_control::check_needs_approval(&ctx) {
+    // Monitor intercept: override Allow → Ask for guardrails
+    let guardrail_result = {
+        let r = lr_mcp::gateway::access_control::check_needs_approval(&ctx);
+        if r == FirewallCheckResult::Allow
+            && state.mcp_gateway.firewall_manager.should_intercept(
+                client_id,
+                lr_mcp::gateway::firewall::InterceptCategory::Guardrails,
+            )
+        {
+            tracing::info!(
+                "Monitor intercept: overriding Allow → Ask for guardrails (client={})",
+                client_id
+            );
+            FirewallCheckResult::Ask
+        } else {
+            r
+        }
+    };
+
+    match guardrail_result {
         FirewallCheckResult::Allow => {
             tracing::debug!(
                 "Guardrail: bypassed for client {} (time-based or empty categories)",
@@ -1742,10 +1751,14 @@ async fn run_secret_scan_check(
         return Ok(());
     }
 
-    // Check time-based bypass (from "Allow for 1 hour")
+    // Check time-based bypass (unless monitor intercept overrides)
     if state
         .secret_scan_approval_tracker
         .has_valid_bypass(&client_ctx.client_id)
+        && !state.mcp_gateway.firewall_manager.should_intercept(
+            &client_ctx.client_id,
+            lr_mcp::gateway::firewall::InterceptCategory::SecretScan,
+        )
     {
         return Ok(());
     }
