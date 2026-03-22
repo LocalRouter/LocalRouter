@@ -465,6 +465,35 @@ async fn streaming_loop(
                     .map(|(p, _)| p.to_string())
                     .unwrap_or_else(|| resolved.clone());
                 let model = resolved;
+                // Build synthetic response body so tool calls are visible in the monitor UI
+                let synthetic_response_body = {
+                    let content_val = if accumulated_content.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::String(accumulated_content.clone())
+                    };
+                    let tool_calls_val = tool_calls
+                        .as_ref()
+                        .map(|tcs| serde_json::to_value(tcs).unwrap_or_default());
+                    let mut message_obj = serde_json::json!({
+                        "role": "assistant",
+                        "content": content_val,
+                    });
+                    if let Some(tc_val) = tool_calls_val {
+                        message_obj["tool_calls"] = tc_val;
+                    }
+                    serde_json::json!({
+                        "object": "chat.completion",
+                        "model": &model,
+                        "choices": [{
+                            "index": 0,
+                            "message": message_obj,
+                            "finish_reason": finish.as_deref().unwrap_or("stop"),
+                        }],
+                        "_streaming": true,
+                        "_note": "Reconstructed from streaming response chunks",
+                    })
+                };
                 update_fn(
                     &iter_event_id,
                     Box::new(move |event| {
@@ -478,6 +507,7 @@ async fn streaming_loop(
                             finish_reason: ref mut fr,
                             content_preview: ref mut cp,
                             streamed: ref mut st,
+                            response_body: ref mut rb,
                             ..
                         } = &mut event.data
                         {
@@ -488,6 +518,7 @@ async fn streaming_loop(
                             *fr = finish;
                             *cp = Some(content);
                             *st = Some(true);
+                            *rb = Some(synthetic_response_body);
                         }
                     }),
                 );
