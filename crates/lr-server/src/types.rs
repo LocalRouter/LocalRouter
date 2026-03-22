@@ -782,6 +782,10 @@ pub struct CostDetails {
 
     pub completion_cost: f64,
 
+    /// Cost of reasoning tokens (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_cost: Option<f64>,
+
     pub total_cost: f64,
 
     #[schema(example = "USD")]

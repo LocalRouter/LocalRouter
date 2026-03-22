@@ -196,6 +196,8 @@ pub enum MonitorEventData {
         #[serde(skip_serializing_if = "Option::is_none")]
         total_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         cost_usd: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         latency_ms: Option<u64>,
@@ -205,6 +207,9 @@ pub enum MonitorEventData {
         content_preview: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         streamed: Option<bool>,
+        /// Full response body JSON (may be truncated for very large responses)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_body: Option<serde_json::Value>,
 
         // Error field (filled only on error)
         #[serde(skip_serializing_if = "Option::is_none")]

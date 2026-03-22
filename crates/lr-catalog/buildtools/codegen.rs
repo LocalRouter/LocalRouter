@@ -113,6 +113,7 @@ impl CatalogCodeGenerator {
              \x20           completion_per_token: {},\n\
              \x20           cache_read_per_token: {},\n\
              \x20           cache_write_per_token: {},\n\
+             \x20           reasoning_per_token: {},\n\
              \x20           currency: \"USD\",\n\
              \x20       }},\n\
              \x20       knowledge_cutoff: {},\n\
@@ -143,6 +144,11 @@ impl CatalogCodeGenerator {
             model
                 .model
                 .cache_write_cost_per_token()
+                .map(|v| format!("Some({})", self.format_f64(v)))
+                .unwrap_or_else(|| "None".to_string()),
+            model
+                .model
+                .reasoning_cost_per_token()
                 .map(|v| format!("Some({})", self.format_f64(v)))
                 .unwrap_or_else(|| "None".to_string()),
             model

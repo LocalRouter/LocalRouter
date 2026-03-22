@@ -153,6 +153,11 @@ impl ModelsDevModel {
         self.cost.cache_write.map(|c| c / 1_000_000.0)
     }
 
+    /// Get reasoning cost per token (converted from per-million)
+    pub fn reasoning_cost_per_token(&self) -> Option<f64> {
+        self.cost.reasoning.map(|c| c / 1_000_000.0)
+    }
+
     /// Determine if the model supports vision (image input)
     pub fn supports_vision(&self) -> bool {
         self.modalities.input.iter().any(|m| m == "image")

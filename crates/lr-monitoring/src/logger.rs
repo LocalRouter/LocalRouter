@@ -46,6 +46,10 @@ pub struct AccessLogEntry {
     /// Total tokens (input + output)
     pub total_tokens: u64,
 
+    /// Number of reasoning tokens (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+
     /// Cost in USD
     pub cost_usd: f64,
 
@@ -83,6 +87,7 @@ impl AccessLogEntry {
             input_tokens,
             output_tokens,
             total_tokens: input_tokens + output_tokens,
+            reasoning_tokens: None,
             cost_usd,
             latency_ms,
             request_id: request_id.into(),
@@ -109,6 +114,7 @@ impl AccessLogEntry {
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            reasoning_tokens: None,
             cost_usd: 0.0,
             latency_ms,
             request_id: request_id.into(),

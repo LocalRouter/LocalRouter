@@ -971,6 +971,9 @@ pub struct PricingInfo {
     pub input_cost_per_1k: f64,
     /// Cost per 1K output tokens
     pub output_cost_per_1k: f64,
+    /// Cost per 1K reasoning tokens (if different from output tokens)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_cost_per_1k: Option<f64>,
     /// Currency (e.g., "USD")
     pub currency: String,
 }
@@ -981,6 +984,7 @@ impl PricingInfo {
         Self {
             input_cost_per_1k: 0.0,
             output_cost_per_1k: 0.0,
+            reasoning_cost_per_1k: None,
             currency: "USD".to_string(),
         }
     }
@@ -1152,6 +1156,13 @@ pub enum ToolChoice {
         tool_type: String,
         function: FunctionName,
     },
+}
+
+impl ToolChoice {
+    /// Returns true if this represents `tool_choice: "none"` (disable tool use).
+    pub fn is_none_mode(&self) -> bool {
+        matches!(self, ToolChoice::Auto(s) if s == "none")
+    }
 }
 
 /// Tool call in the assistant's response
