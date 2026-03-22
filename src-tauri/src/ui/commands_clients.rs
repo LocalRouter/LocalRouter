@@ -1955,14 +1955,88 @@ async fn update_auto_router_permission(
     Ok(())
 }
 
+/// Apply a permanent permission update to a client for an MCP/skill tool.
+///
+/// Dispatches based on virtual server ID:
+/// - `_skills`: extracts skill name from arguments, updates `skills_permissions.tools`
+/// - `_marketplace`: updates `marketplace_permission` directly
+/// - `_coding_agents`: updates `coding_agent_permission` directly
+/// - other: treats as MCP tool, updates `mcp_permissions.tools`
+fn apply_tool_permission_to_client(
+    client: &mut lr_config::Client,
+    info: &lr_mcp::gateway::firewall::PendingApprovalInfo,
+    permission: PermissionState,
+) {
+    if info.server_name == "_skills" {
+        // Extract skill name from the full_arguments JSON.
+        // For skills, info.server_name is "_skills" and info.tool_name is
+        // the meta-tool name (e.g. "SkillRead"). The actual skill name
+        // must be extracted from full_arguments (the "name" parameter).
+        let skill_name = info
+            .full_arguments
+            .as_ref()
+            .and_then(|args_str| serde_json::from_str::<serde_json::Value>(args_str).ok())
+            .and_then(|args| {
+                args.get("name")
+                    .or_else(|| args.get("skill"))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+            });
+
+        if let Some(skill_name) = skill_name {
+            let key = format!("{}__{}", skill_name, info.tool_name);
+            client
+                .skills_permissions
+                .tools
+                .insert(key, permission.clone());
+            tracing::info!(
+                "Set skill tool permission to {:?}: skill={}, tool={}",
+                permission,
+                skill_name,
+                info.tool_name
+            );
+        } else {
+            tracing::warn!(
+                "Could not extract skill name from arguments: tool={}, args={:?}",
+                info.tool_name,
+                info.full_arguments
+            );
+        }
+    } else if info.server_name == "_marketplace" {
+        // Marketplace uses a single PermissionState field, not per-tool
+        client.marketplace_permission = permission.clone();
+        tracing::info!(
+            "Set marketplace permission to {:?} for client {}",
+            permission,
+            info.client_id
+        );
+    } else if info.server_name == "_coding_agents" {
+        // Coding agents uses a single PermissionState field, not per-tool
+        client.coding_agent_permission = permission.clone();
+        tracing::info!(
+            "Set coding agent permission to {:?} for client {}",
+            permission,
+            info.client_id
+        );
+    } else {
+        // MCP tool — info.server_name is the server UUID,
+        // info.tool_name is the namespaced name (slug__original_name).
+        // Permission key must be UUID__original_name to match resolve_tool() and UI.
+        let original_name = info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
+        let key = format!("{}__{}", info.server_name, original_name);
+        client
+            .mcp_permissions
+            .tools
+            .insert(key.clone(), permission.clone());
+        tracing::info!("Set MCP tool permission to {:?}: {}", permission, key);
+    }
+}
+
 /// Helper to update client permissions when AllowPermanent is selected for MCP/skill tools
 async fn update_permission_for_allow_permanent(
     app: &tauri::AppHandle,
     config_manager: &ConfigManager,
     info: &lr_mcp::gateway::firewall::PendingApprovalInfo,
 ) -> Result<(), String> {
-    use lr_config::PermissionState;
-
     tracing::info!(
         "Updating permissions for AllowPermanent: client={}, tool={}, server={}",
         info.client_id,
@@ -1973,67 +2047,7 @@ async fn update_permission_for_allow_permanent(
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == info.client_id) {
-                // Detect skill tools by virtual server ID "_skills".
-                // For skills, info.server_name is "_skills" and info.tool_name is
-                // the meta-tool name (e.g. "SkillRead"). The actual skill name
-                // must be extracted from full_arguments (the "name" parameter).
-                if info.server_name == "_skills" {
-                    // Extract skill name from the full_arguments JSON
-                    let skill_name = info
-                        .full_arguments
-                        .as_ref()
-                        .and_then(|args_str| serde_json::from_str::<serde_json::Value>(args_str).ok())
-                        .and_then(|args| {
-                            args.get("name")
-                                .or_else(|| args.get("skill"))
-                                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                        });
-
-                    if let Some(skill_name) = skill_name {
-                        let key = format!("{}__{}", skill_name, info.tool_name);
-                        client
-                            .skills_permissions
-                            .tools
-                            .insert(key, PermissionState::Allow);
-                        tracing::info!(
-                            "Set skill tool permission to Allow: skill={}, tool={}",
-                            skill_name,
-                            info.tool_name
-                        );
-                    } else {
-                        tracing::warn!(
-                            "Could not extract skill name from arguments for AllowPermanent: tool={}, args={:?}",
-                            info.tool_name,
-                            info.full_arguments
-                        );
-                    }
-                } else if info.server_name == "_marketplace" {
-                    // Marketplace uses a single PermissionState field, not per-tool
-                    client.marketplace_permission = PermissionState::Allow;
-                    tracing::info!(
-                        "Set marketplace permission to Allow for client {}",
-                        info.client_id
-                    );
-                } else if info.server_name == "_coding_agents" {
-                    // Coding agents uses a single PermissionState field, not per-tool
-                    client.coding_agent_permission = PermissionState::Allow;
-                    tracing::info!(
-                        "Set coding agent permission to Allow for client {}",
-                        info.client_id
-                    );
-                } else {
-                    // MCP tool — info.server_name is the server UUID,
-                    // info.tool_name is the namespaced name (slug__original_name).
-                    // Permission key must be UUID__original_name to match resolve_tool() and UI.
-                    let original_name =
-                        info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
-                    let key = format!("{}__{}", info.server_name, original_name);
-                    client
-                        .mcp_permissions
-                        .tools
-                        .insert(key.clone(), PermissionState::Allow);
-                    tracing::info!("Set MCP tool permission to Allow: {}", key);
-                }
+                apply_tool_permission_to_client(client, info, PermissionState::Allow);
             } else {
                 tracing::warn!(
                     "Client {} not found for AllowPermanent update",
@@ -2110,8 +2124,6 @@ async fn update_permission_for_deny_permanent(
     config_manager: &ConfigManager,
     info: &lr_mcp::gateway::firewall::PendingApprovalInfo,
 ) -> Result<(), String> {
-    use lr_config::PermissionState;
-
     tracing::info!(
         "Updating permissions for DenyAlways: client={}, tool={}, server={}",
         info.client_id,
@@ -2122,64 +2134,7 @@ async fn update_permission_for_deny_permanent(
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == info.client_id) {
-                // Detect skill tools by virtual server ID "_skills".
-                if info.server_name == "_skills" {
-                    // Extract skill name from the full_arguments JSON
-                    let skill_name = info
-                        .full_arguments
-                        .as_ref()
-                        .and_then(|args_str| serde_json::from_str::<serde_json::Value>(args_str).ok())
-                        .and_then(|args| {
-                            args.get("name")
-                                .or_else(|| args.get("skill"))
-                                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                        });
-
-                    if let Some(skill_name) = skill_name {
-                        let key = format!("{}__{}", skill_name, info.tool_name);
-                        client
-                            .skills_permissions
-                            .tools
-                            .insert(key, PermissionState::Off);
-                        tracing::info!(
-                            "Set skill tool permission to Off: skill={}, tool={}",
-                            skill_name,
-                            info.tool_name
-                        );
-                    } else {
-                        tracing::warn!(
-                            "Could not extract skill name from arguments for DenyAlways: tool={}, args={:?}",
-                            info.tool_name,
-                            info.full_arguments
-                        );
-                    }
-                } else if info.server_name == "_marketplace" {
-                    // Marketplace uses a single PermissionState field, not per-tool
-                    client.marketplace_permission = PermissionState::Off;
-                    tracing::info!(
-                        "Set marketplace permission to Off for client {}",
-                        info.client_id
-                    );
-                } else if info.server_name == "_coding_agents" {
-                    // Coding agents uses a single PermissionState field, not per-tool
-                    client.coding_agent_permission = PermissionState::Off;
-                    tracing::info!(
-                        "Set coding agent permission to Off for client {}",
-                        info.client_id
-                    );
-                } else {
-                    // MCP tool — info.server_name is the server UUID,
-                    // info.tool_name is the namespaced name (slug__original_name).
-                    // Permission key must be UUID__original_name to match resolve_tool() and UI.
-                    let original_name =
-                        info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
-                    let key = format!("{}__{}", info.server_name, original_name);
-                    client
-                        .mcp_permissions
-                        .tools
-                        .insert(key.clone(), PermissionState::Off);
-                    tracing::info!("Set MCP tool permission to Off: {}", key);
-                }
+                apply_tool_permission_to_client(client, info, PermissionState::Off);
             } else {
                 tracing::warn!("Client {} not found for DenyAlways update", info.client_id);
             }
@@ -3392,4 +3347,304 @@ pub async fn update_client_json_repair_config(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lr_mcp::gateway::firewall::PendingApprovalInfo;
+
+    /// Create a test client with a known ID
+    fn test_client(id: &str) -> lr_config::Client {
+        let mut client =
+            lr_config::Client::new_with_strategy("test".to_string(), "strat".to_string());
+        client.id = id.to_string();
+        client
+    }
+
+    /// Build a PendingApprovalInfo for testing
+    fn make_info(
+        client_id: &str,
+        tool_name: &str,
+        server_name: &str,
+        full_arguments: Option<&str>,
+    ) -> PendingApprovalInfo {
+        PendingApprovalInfo {
+            request_id: "req-1".to_string(),
+            client_id: client_id.to_string(),
+            client_name: "test-client".to_string(),
+            tool_name: tool_name.to_string(),
+            server_name: server_name.to_string(),
+            arguments_preview: "{}".to_string(),
+            full_arguments: full_arguments.map(|s| s.to_string()),
+            created_at_secs_ago: 0,
+            timeout_seconds: 30,
+            is_model_request: false,
+            is_guardrail_request: false,
+            is_free_tier_fallback: false,
+            is_auto_router_request: false,
+            is_mcp_via_llm_request: false,
+            is_secret_scan_request: false,
+            guardrail_details: None,
+            secret_scan_details: None,
+        }
+    }
+
+    // =========================================================================
+    // Skill tool permission tests
+    // =========================================================================
+
+    #[test]
+    fn test_skill_allow_permanent_stores_correct_key() {
+        let mut client = test_client("c1");
+        let info = make_info(
+            "c1",
+            "SkillRead",
+            "_skills",
+            Some(r#"{"name": "weather"}"#),
+        );
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        assert_eq!(
+            client.skills_permissions.tools.get("weather__SkillRead"),
+            Some(&PermissionState::Allow),
+            "Should store permission under 'weather__SkillRead' in skills_permissions.tools"
+        );
+        assert!(
+            client.mcp_permissions.tools.is_empty(),
+            "Should NOT write to mcp_permissions"
+        );
+    }
+
+    #[test]
+    fn test_skill_deny_permanent_stores_correct_key() {
+        let mut client = test_client("c1");
+        let info = make_info(
+            "c1",
+            "SkillRead",
+            "_skills",
+            Some(r#"{"name": "weather"}"#),
+        );
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Off);
+
+        assert_eq!(
+            client.skills_permissions.tools.get("weather__SkillRead"),
+            Some(&PermissionState::Off),
+        );
+    }
+
+    #[test]
+    fn test_skill_uses_skill_argument_key() {
+        let mut client = test_client("c1");
+        let info = make_info(
+            "c1",
+            "SkillRead",
+            "_skills",
+            Some(r#"{"skill": "sysinfo"}"#),
+        );
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        assert_eq!(
+            client.skills_permissions.tools.get("sysinfo__SkillRead"),
+            Some(&PermissionState::Allow),
+            "Should fall back to 'skill' argument when 'name' is absent"
+        );
+    }
+
+    #[test]
+    fn test_skill_no_arguments_does_not_crash() {
+        let mut client = test_client("c1");
+        let info = make_info("c1", "SkillRead", "_skills", None);
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        assert!(
+            client.skills_permissions.tools.is_empty(),
+            "Should not insert anything when skill name cannot be extracted"
+        );
+    }
+
+    #[test]
+    fn test_skill_empty_arguments_does_not_crash() {
+        let mut client = test_client("c1");
+        let info = make_info("c1", "SkillRead", "_skills", Some(r#"{}"#));
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        assert!(
+            client.skills_permissions.tools.is_empty(),
+            "Should not insert anything when skill name is missing from arguments"
+        );
+    }
+
+    #[test]
+    fn test_skill_permission_resolves_correctly() {
+        let mut client = test_client("c1");
+        client.skills_permissions.global = PermissionState::Ask;
+        let info = make_info(
+            "c1",
+            "SkillRead",
+            "_skills",
+            Some(r#"{"name": "weather"}"#),
+        );
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        // Verify the stored permission is found by the same resolution logic
+        // used during access control checks
+        assert_eq!(
+            client
+                .skills_permissions
+                .resolve_tool("weather", "SkillRead"),
+            PermissionState::Allow,
+            "resolve_tool should find the permission set by apply_tool_permission_to_client"
+        );
+        // Other skills should still fall through to global
+        assert_eq!(
+            client
+                .skills_permissions
+                .resolve_tool("sysinfo", "SkillRead"),
+            PermissionState::Ask,
+        );
+    }
+
+    // =========================================================================
+    // Marketplace permission tests
+    // =========================================================================
+
+    #[test]
+    fn test_marketplace_allow_permanent() {
+        let mut client = test_client("c1");
+        assert_eq!(client.marketplace_permission, PermissionState::Off);
+
+        let info = make_info("c1", "marketplace_search", "_marketplace", None);
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        assert_eq!(client.marketplace_permission, PermissionState::Allow);
+        assert!(
+            client.mcp_permissions.tools.is_empty(),
+            "Should NOT write to mcp_permissions"
+        );
+    }
+
+    #[test]
+    fn test_marketplace_deny_permanent() {
+        let mut client = test_client("c1");
+        client.marketplace_permission = PermissionState::Allow;
+
+        let info = make_info("c1", "marketplace_search", "_marketplace", None);
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Off);
+
+        assert_eq!(client.marketplace_permission, PermissionState::Off);
+    }
+
+    // =========================================================================
+    // Coding agent permission tests
+    // =========================================================================
+
+    #[test]
+    fn test_coding_agent_allow_permanent() {
+        let mut client = test_client("c1");
+        assert_eq!(client.coding_agent_permission, PermissionState::Off);
+
+        let info = make_info("c1", "claude_code__start", "_coding_agents", None);
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        assert_eq!(client.coding_agent_permission, PermissionState::Allow);
+        assert!(
+            client.mcp_permissions.tools.is_empty(),
+            "Should NOT write to mcp_permissions"
+        );
+    }
+
+    #[test]
+    fn test_coding_agent_deny_permanent() {
+        let mut client = test_client("c1");
+        client.coding_agent_permission = PermissionState::Allow;
+
+        let info = make_info("c1", "claude_code__start", "_coding_agents", None);
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Off);
+
+        assert_eq!(client.coding_agent_permission, PermissionState::Off);
+    }
+
+    // =========================================================================
+    // MCP tool permission tests
+    // =========================================================================
+
+    #[test]
+    fn test_mcp_tool_allow_permanent() {
+        let mut client = test_client("c1");
+        let info = make_info("c1", "fs-slug__read_file", "srv-uuid-123", None);
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        assert_eq!(
+            client
+                .mcp_permissions
+                .tools
+                .get("srv-uuid-123__read_file"),
+            Some(&PermissionState::Allow),
+            "Should use server UUID and original tool name (after __) as key"
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_deny_permanent() {
+        let mut client = test_client("c1");
+        let info = make_info("c1", "fs-slug__write_file", "srv-uuid-123", None);
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Off);
+
+        assert_eq!(
+            client
+                .mcp_permissions
+                .tools
+                .get("srv-uuid-123__write_file"),
+            Some(&PermissionState::Off),
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_no_namespace_uses_full_name() {
+        let mut client = test_client("c1");
+        let info = make_info("c1", "simple_tool", "srv-uuid", None);
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        assert_eq!(
+            client.mcp_permissions.tools.get("srv-uuid__simple_tool"),
+            Some(&PermissionState::Allow),
+            "When tool_name has no __, should use the full name as the original"
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_permission_resolves_correctly() {
+        let mut client = test_client("c1");
+        client.mcp_permissions.global = PermissionState::Ask;
+        let info = make_info("c1", "fs__read_file", "srv-uuid", None);
+
+        apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
+
+        assert_eq!(
+            client.mcp_permissions.resolve_tool("srv-uuid", "read_file"),
+            PermissionState::Allow,
+            "resolve_tool should find the permission set by apply_tool_permission_to_client"
+        );
+        // Other tools on same server should fall through to global
+        assert_eq!(
+            client
+                .mcp_permissions
+                .resolve_tool("srv-uuid", "write_file"),
+            PermissionState::Ask,
+        );
+    }
 }
