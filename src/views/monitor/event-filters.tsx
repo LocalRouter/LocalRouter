@@ -2,11 +2,10 @@ import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Separator } from '@/components/ui/separator'
-import { Trash2, Search, Crosshair } from 'lucide-react'
+import { Trash2, Search, Crosshair, Filter } from 'lucide-react'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import type { MonitorEventFilter, MonitorEventType, InterceptCategory, InterceptRule, ClientInfo } from '@/types/tauri-commands'
 
@@ -18,32 +17,23 @@ interface EventFiltersProps {
   onInterceptRuleChange: (rule: InterceptRule | null) => void
 }
 
-const typeGroups = [
-  { label: 'All Events', value: 'all' },
-  { label: 'LLM', value: 'llm' },
-  { label: 'MCP', value: 'mcp' },
-  { label: 'Auth & Access', value: 'auth' },
-  { label: 'Security', value: 'security' },
-  { label: 'Routing', value: 'routing' },
-  { label: 'Errors', value: 'errors' },
-  { label: 'Other', value: 'other' },
-]
-
-const typeGroupMap: Record<string, MonitorEventType[]> = {
-  llm: ['llm_call'],
-  mcp: [
+const TYPE_GROUPS: { key: string; label: string; types: MonitorEventType[] }[] = [
+  { key: 'llm', label: 'LLM', types: ['llm_call'] },
+  { key: 'mcp', label: 'MCP', types: [
     'mcp_tool_call', 'mcp_resource_read', 'mcp_prompt_get',
     'mcp_elicitation', 'mcp_sampling', 'mcp_server_event',
-  ],
-  auth: ['auth_error', 'access_denied', 'oauth_event'],
-  security: ['guardrail_scan', 'guardrail_response_scan', 'secret_scan'],
-  routing: ['route_llm_classify', 'routing_decision'],
-  errors: [
+  ]},
+  { key: 'auth', label: 'Auth & Access', types: ['auth_error', 'access_denied', 'oauth_event'] },
+  { key: 'security', label: 'Security', types: ['guardrail_scan', 'guardrail_response_scan', 'secret_scan'] },
+  { key: 'routing', label: 'Routing', types: ['route_llm_classify', 'routing_decision'] },
+  { key: 'errors', label: 'Errors', types: [
     'rate_limit_event', 'validation_error', 'internal_error',
     'moderation_event', 'connection_error',
-  ],
-  other: ['prompt_compression', 'firewall_decision', 'sse_connection'],
-}
+  ]},
+  { key: 'other', label: 'Other', types: ['prompt_compression', 'firewall_decision', 'sse_connection'] },
+]
+
+const ALL_TYPE_GROUP_KEYS = TYPE_GROUPS.map(g => g.key)
 
 const ALL_INTERCEPT_CATEGORIES: { label: string; value: InterceptCategory }[] = [
   { label: 'LLM', value: 'llm' },
@@ -60,19 +50,24 @@ const ALL_INTERCEPT_CATEGORIES: { label: string; value: InterceptCategory }[] = 
 const ALL_CATEGORY_VALUES = ALL_INTERCEPT_CATEGORIES.map(c => c.value)
 
 export function EventFilters({ filter, onFilterChange, onClear, interceptRule, onInterceptRuleChange }: EventFiltersProps) {
+  // Type filter state
+  const [selectedGroups, setSelectedGroups] = useState<string[]>(ALL_TYPE_GROUP_KEYS)
+  const [typeFilterOpen, setTypeFilterOpen] = useState(false)
+
+  // Intercept state
   const [categories, setCategories] = useState<InterceptCategory[]>(ALL_CATEGORY_VALUES)
   const [clientIds, setClientIds] = useState<string[]>([])
   const [clients, setClients] = useState<ClientInfo[]>([])
-  const [popoverOpen, setPopoverOpen] = useState(false)
+  const [interceptPopoverOpen, setInterceptPopoverOpen] = useState(false)
 
-  // Load clients when popover opens
+  // Load clients when intercept popover opens
   useEffect(() => {
-    if (popoverOpen) {
+    if (interceptPopoverOpen) {
       invoke<ClientInfo[]>('list_clients')
         .then(setClients)
         .catch(() => setClients([]))
     }
-  }, [popoverOpen])
+  }, [interceptPopoverOpen])
 
   // Sync local state when rule changes externally
   useEffect(() => {
@@ -82,12 +77,38 @@ export function EventFilters({ filter, onFilterChange, onClear, interceptRule, o
     }
   }, [interceptRule])
 
-  const activeGroup = filter.event_types
-    ? Object.entries(typeGroupMap).find(([, types]) =>
-        types.length === filter.event_types!.length &&
-        types.every(t => filter.event_types!.includes(t))
-      )?.[0] ?? 'custom'
-    : 'all'
+  // Apply type filter when selected groups change
+  useEffect(() => {
+    const allSelected = selectedGroups.length === ALL_TYPE_GROUP_KEYS.length
+    if (allSelected) {
+      onFilterChange({ ...filter, event_types: null })
+    } else if (selectedGroups.length === 0) {
+      onFilterChange({ ...filter, event_types: [] })
+    } else {
+      const types = TYPE_GROUPS
+        .filter(g => selectedGroups.includes(g.key))
+        .flatMap(g => g.types)
+      onFilterChange({ ...filter, event_types: types })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGroups])
+
+  const toggleGroup = (key: string) => {
+    setSelectedGroups(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    )
+  }
+
+  const allGroupsSelected = selectedGroups.length === ALL_TYPE_GROUP_KEYS.length
+  const someGroupsSelected = selectedGroups.length > 0 && !allGroupsSelected
+
+  const typeFilterLabel = allGroupsSelected
+    ? 'All Events'
+    : selectedGroups.length === 0
+      ? 'No Events'
+      : selectedGroups.length === 1
+        ? TYPE_GROUPS.find(g => g.key === selectedGroups[0])!.label
+        : `${selectedGroups.length} types`
 
   const toggleCategory = (value: InterceptCategory) => {
     setCategories(prev =>
@@ -111,12 +132,12 @@ export function EventFilters({ filter, onFilterChange, onClear, interceptRule, o
   const handleStartIntercept = () => {
     if (categories.length === 0) return
     onInterceptRuleChange({ categories, client_ids: clientIds })
-    setPopoverOpen(false)
+    setInterceptPopoverOpen(false)
   }
 
   const handleStopIntercept = () => {
     onInterceptRuleChange(null)
-    setPopoverOpen(false)
+    setInterceptPopoverOpen(false)
   }
 
   const interceptLabel = interceptRule
@@ -125,27 +146,44 @@ export function EventFilters({ filter, onFilterChange, onClear, interceptRule, o
 
   return (
     <div className="flex items-center gap-2 p-2">
-      <Select
-        value={activeGroup}
-        onValueChange={(value) => {
-          if (value === 'all') {
-            onFilterChange({ ...filter, event_types: null })
-          } else if (value in typeGroupMap) {
-            onFilterChange({ ...filter, event_types: typeGroupMap[value] })
-          }
-        }}
-      >
-        <SelectTrigger className="w-[130px] h-7 text-xs">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {typeGroups.map(g => (
-            <SelectItem key={g.value} value={g.value} className="text-xs">
-              {g.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <Popover open={typeFilterOpen} onOpenChange={setTypeFilterOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant={allGroupsSelected ? 'ghost' : 'secondary'}
+            size="sm"
+            className="h-7 text-xs gap-1"
+          >
+            <Filter className="h-3 w-3" />
+            {typeFilterLabel}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-48 p-3" align="start">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 py-0.5">
+              <Checkbox
+                id="type-all"
+                checked={allGroupsSelected ? true : someGroupsSelected ? 'indeterminate' : false}
+                onCheckedChange={(checked) => {
+                  setSelectedGroups(checked ? [...ALL_TYPE_GROUP_KEYS] : [])
+                }}
+                className="h-3.5 w-3.5"
+              />
+              <label htmlFor="type-all" className="text-xs cursor-pointer">All Events</label>
+            </div>
+            {TYPE_GROUPS.map(g => (
+              <div key={g.key} className="flex items-center gap-2 py-0.5 pl-2">
+                <Checkbox
+                  id={`type-${g.key}`}
+                  checked={selectedGroups.includes(g.key)}
+                  onCheckedChange={() => toggleGroup(g.key)}
+                  className="h-3.5 w-3.5"
+                />
+                <label htmlFor={`type-${g.key}`} className="text-xs cursor-pointer">{g.label}</label>
+              </div>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
 
       <div className="relative flex-1 max-w-[200px]">
         <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
@@ -159,7 +197,7 @@ export function EventFilters({ filter, onFilterChange, onClear, interceptRule, o
 
       <div className="flex-1" />
 
-      <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+      <Popover open={interceptPopoverOpen} onOpenChange={setInterceptPopoverOpen}>
         <PopoverTrigger asChild>
           <Button
             variant={interceptRule ? 'destructive' : 'ghost'}
