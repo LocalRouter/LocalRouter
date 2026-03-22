@@ -327,6 +327,31 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
         } => {
             format!("compression: {:.1}% reduction", reduction_percent)
         }
+        MonitorEventData::MemoryCompaction {
+            session_id,
+            model,
+            transcript_bytes,
+            summary_bytes,
+            compression_ratio,
+            error,
+            ..
+        } => match event.status {
+            EventStatus::Pending => {
+                format!("compacting session {} via {}", session_id, model)
+            }
+            EventStatus::Complete => {
+                let summary_b = summary_bytes.unwrap_or(0);
+                let ratio = compression_ratio.unwrap_or(0.0);
+                format!(
+                    "compacted {}: {}B \u{2192} {}B ({:.0}% reduction)",
+                    session_id, transcript_bytes, summary_b, ratio
+                )
+            }
+            EventStatus::Error => {
+                let err = error.as_deref().unwrap_or("unknown error");
+                format!("compaction failed for {}: {}", session_id, truncate(err, 40))
+            }
+        },
         MonitorEventData::FirewallDecision {
             firewall_type,
             item_name,

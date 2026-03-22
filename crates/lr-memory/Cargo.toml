@@ -12,6 +12,7 @@ lr-types = { workspace = true }
 lr-config = { workspace = true }
 lr-context = { workspace = true, features = ["vector"] }
 lr-embeddings = { workspace = true }
+lr-monitor = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

@@ -391,14 +391,26 @@ impl fmt::Display for SearchResult {
         writeln!(f)?;
 
         for (i, hit) in self.hits.iter().enumerate() {
+            // Annotate memory session sources so the LLM knows if it's
+            // reading a raw transcript or a compacted summary
+            let source_annotation = if hit.source.starts_with("session/") {
+                if hit.source.ends_with("-summary") {
+                    " `[compacted summary]`"
+                } else {
+                    " `[transcript]`"
+                }
+            } else {
+                ""
+            };
             writeln!(
                 f,
-                "**[{}] {} \u{2014} {}** (lines {}-{})",
+                "**[{}] {} \u{2014} {}** (lines {}-{}){}",
                 i + 1,
                 hit.source,
                 hit.title,
                 hit.line_start,
                 hit.line_end,
+                source_annotation,
             )?;
 
             // Content already has line numbers from search extraction

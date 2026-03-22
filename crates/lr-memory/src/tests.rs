@@ -880,8 +880,9 @@ Sure! Here are the details...
         let llm = std::sync::Arc::new(MockLlm::new("# API Design Summary"));
         svc.set_compaction_llm(llm);
 
-        // Set compaction model in config
+        // Enable compaction with a model
         let mut config = svc.config();
+        config.compaction_enabled = true;
         config.compaction_model = Some("test/model".to_string());
         svc.update_config(config);
 

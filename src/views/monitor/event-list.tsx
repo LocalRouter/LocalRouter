@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2 } from 'lucide-react'
+import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2, Database } from 'lucide-react'
 import { ProvidersIcon } from '@/components/icons/category-icons'
 import type { MonitorEventSummary, MonitorEventType, EventStatus } from '@/types/tauri-commands'
 
@@ -17,6 +17,7 @@ const categoryConfig: Record<string, { icon: React.ComponentType<{ className?: s
   secret_scan: { icon: KeyRound, color: 'text-orange-500' },
   routing: { icon: GitBranch, color: 'text-purple-500' },
   optimization: { icon: Minimize2, color: 'text-blue-500' },
+  memory: { icon: Database, color: 'text-amber-500' },
   firewall: { icon: Shield, color: 'text-red-500' },
   connection: { icon: Link, color: 'text-gray-500' },
   auth: { icon: KeyRound, color: 'text-red-500' },
@@ -34,6 +35,7 @@ function getCategory(type: MonitorEventType): string {
   if (type === 'secret_scan') return 'secret_scan'
   if (type === 'route_llm_classify' || type === 'routing_decision') return 'routing'
   if (type === 'prompt_compression') return 'optimization'
+  if (type === 'memory_compaction') return 'memory'
   if (type === 'firewall_decision') return 'firewall'
   if (type === 'sse_connection' || type === 'connection_error') return 'connection'
   if (type === 'auth_error' || type === 'access_denied' || type === 'oauth_event') return 'auth'

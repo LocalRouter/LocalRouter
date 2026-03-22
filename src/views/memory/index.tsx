@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/Input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
+import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
@@ -23,6 +24,7 @@ import { MemorySessionsTab } from "./sessions-tab"
 import type { MemoryConfig, UpdateMemoryConfigParams, ClientFeatureStatus, GetFeatureClientsStatusParams, EmbeddingStatus } from "@/types/tauri-commands"
 
 const defaultConfig: MemoryConfig = {
+  compaction_enabled: false,
   compaction_model: null,
   search_top_k: 5,
   session_inactivity_minutes: 180,
@@ -380,14 +382,22 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
             {/* Compaction Model */}
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Compaction Model</CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm">LLM Compaction</CardTitle>
+                  <Switch
+                    checked={config.compaction_enabled}
+                    onCheckedChange={(checked) =>
+                      saveConfig({ ...config, compaction_enabled: checked })
+                    }
+                  />
+                </div>
                 <CardDescription>
-                  LLM used to summarize session transcripts when they expire.
-                  Leave disabled to keep raw transcripts.
+                  Summarize session transcripts with an LLM when they expire.
+                  When disabled, raw transcripts are archived as-is.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
+                <div className={cn("grid grid-cols-2 gap-3", !config.compaction_enabled && "opacity-50 pointer-events-none")}>
                   <div className="space-y-1.5">
                     <Label className="text-xs flex items-center gap-1">
                       Provider
@@ -395,6 +405,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     </Label>
                     <Select
                       value={config.compaction_model?.split("/")[0] || "none"}
+                      disabled={!config.compaction_enabled}
                       onValueChange={(value) => {
                         if (value === "none") {
                           saveConfig({ ...config, compaction_model: null })
@@ -411,7 +422,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                         <SelectValue placeholder="Select provider" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">Disabled</SelectItem>
+                        <SelectItem value="none">None</SelectItem>
                         {Object.keys(modelsByProvider).map((provider) => (
                           <SelectItem key={provider} value={provider}>{provider}</SelectItem>
                         ))}
@@ -425,7 +436,7 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                     </Label>
                     <Select
                       value={config.compaction_model?.split("/").slice(1).join("/") || ""}
-                      disabled={!config.compaction_model}
+                      disabled={!config.compaction_enabled || !config.compaction_model}
                       onValueChange={(modelId) => {
                         const provider = config.compaction_model?.split("/")[0]
                         if (provider) {

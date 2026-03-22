@@ -101,6 +101,7 @@ pub enum MonitorEventType {
     ModerationEvent,
     ConnectionError,
     PromptCompression,
+    MemoryCompaction,
     FirewallDecision,
     SseConnection,
 }
@@ -130,6 +131,7 @@ impl MonitorEventType {
             Self::ModerationEvent => "Moderation Event",
             Self::ConnectionError => "Connection Error",
             Self::PromptCompression => "Prompt Compression",
+            Self::MemoryCompaction => "Memory Compaction",
             Self::FirewallDecision => "Firewall Decision",
             Self::SseConnection => "SSE Connection",
         }
@@ -154,6 +156,7 @@ impl MonitorEventType {
             Self::ModerationEvent => "moderation",
             Self::ConnectionError | Self::SseConnection => "connection",
             Self::PromptCompression => "optimization",
+            Self::MemoryCompaction => "memory",
             Self::FirewallDecision => "firewall",
         }
     }
@@ -486,6 +489,24 @@ pub enum MonitorEventData {
         reduction_percent: f64,
         duration_ms: u64,
         method: String,
+    },
+    MemoryCompaction {
+        // Request fields (populated at creation)
+        /// Short session ID (first 8 chars of UUID)
+        session_id: String,
+        model: String,
+        transcript_bytes: u64,
+        // Response fields (filled on completion)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary_bytes: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        compression_ratio: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_body: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_body: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     FirewallDecision {
         /// "tool", "model", "auto_router"

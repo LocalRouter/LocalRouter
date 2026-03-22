@@ -30,6 +30,7 @@ const TYPE_GROUPS: { key: string; label: string; types: MonitorEventType[] }[] =
     'rate_limit_event', 'validation_error', 'internal_error',
     'moderation_event', 'connection_error',
   ]},
+  { key: 'memory', label: 'Memory', types: ['memory_compaction'] },
   { key: 'other', label: 'Other', types: ['prompt_compression', 'firewall_decision', 'sse_connection'] },
 ]
 

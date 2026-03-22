@@ -2735,6 +2735,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Memory - Persistent Conversation Memory
   // ============================================================================
   'get_memory_config': () => ({
+    compaction_enabled: false,
     compaction_model: null,
     search_top_k: 5,
     session_inactivity_minutes: 180,

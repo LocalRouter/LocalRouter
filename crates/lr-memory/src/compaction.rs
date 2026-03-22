@@ -29,10 +29,31 @@ pub enum CompactionOutcome {
 }
 
 const COMPACTION_SYSTEM_PROMPT: &str = "\
-You are a memory compaction assistant. Summarize this conversation transcript \
-preserving: decisions made, technical details, action items, code snippets, \
-and key context. Include specific terms and names for searchability. \
-Format as structured markdown with topic headers.";
+You are a memory compaction assistant. Your task is to compress a conversation \
+transcript into a structured summary that preserves all important information \
+while being significantly shorter than the original.\n\
+\n\
+## Instructions\n\
+\n\
+1. **Preserve completely**: decisions made, technical details, code snippets, \
+action items, configuration changes, error messages, and their resolutions.\n\
+\n\
+2. **Use structured markdown**: organize by topic with `##` headers and bullet points. \
+Group related items together rather than preserving chronological order.\n\
+\n\
+3. **Optimize for searchability**: include specific names, function/file names, \
+model identifiers, error codes, and domain terms. A future search should be able \
+to find any important detail mentioned in the original conversation.\n\
+\n\
+4. **Compress aggressively**: remove greetings, filler, repeated context, \
+and conversational back-and-forth. Keep only the information payload. \
+Target 20-30% of the original length.\n\
+\n\
+5. **Preserve code snippets**: include short code examples, commands, and \
+configuration values verbatim \u{2014} do not paraphrase technical content.\n\
+\n\
+6. **Note unresolved items**: if the conversation ended with open questions \
+or incomplete work, add a `## Open Items` section at the end.";
 
 /// Archive an expired session transcript and optionally summarize it with an LLM.
 ///

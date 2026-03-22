@@ -736,6 +736,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 router: app_router.clone(),
                             }));
 
+                            // Wire up monitor store for compaction events
+                            service
+                                .set_monitor_store(app_state.monitor_store.clone());
+
                             // Start session monitor (checks for expired sessions → triggers compaction)
                             service.start_session_monitor();
 

@@ -2367,6 +2367,11 @@ pub struct ClientSecretScanningConfig {
 /// Transcripts are indexed automatically and searchable immediately.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryConfig {
+    /// Whether LLM-based compaction is enabled (default: false).
+    /// When false, expired sessions are archived without summarization.
+    #[serde(default)]
+    pub compaction_enabled: bool,
+
     /// Compaction LLM model for session summarization, routed through LocalRouter.
     /// Format: "provider/model" (e.g., "anthropic/claude-haiku-4-5-20251001").
     /// None = compaction disabled (raw transcripts kept).
@@ -2406,6 +2411,7 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
+            compaction_enabled: false,
             compaction_model: None,
             search_top_k: default_memory_top_k(),
             session_inactivity_minutes: default_session_inactivity_minutes(),

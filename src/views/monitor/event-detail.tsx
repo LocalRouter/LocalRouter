@@ -92,6 +92,7 @@ export function EventDetail({ event }: EventDetailProps) {
         {type === 'moderation_event' && <ModerationEventDetail data={data} />}
         {type === 'connection_error' && <ConnectionErrorDetail data={data} />}
         {type === 'prompt_compression' && <PromptCompressionDetail data={data} />}
+        {type === 'memory_compaction' && <MemoryCompactionDetail data={data} />}
         {type === 'firewall_decision' && <FirewallDecisionDetail data={data} />}
         {type === 'sse_connection' && <SseConnectionDetail data={data} />}
       </div>
@@ -1139,6 +1140,36 @@ function PromptCompressionDetail({ data }: { data: EventData }) {
       <Field label="Original Tokens" value={String(data.original_tokens)} />
       <Field label="Compressed Tokens" value={String(data.compressed_tokens)} />
       <Field label="Duration" value={`${data.duration_ms}ms`} />
+    </div>
+  )
+}
+
+function MemoryCompactionDetail({ data }: { data: EventData }) {
+  const summaryBytes = data.summary_bytes as number | undefined
+  const ratio = data.compression_ratio as number | undefined
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Field label="Session" value={data.session_id as string} />
+        <Field label="Model" value={data.model as string} />
+        <Field label="Transcript Size" value={`${data.transcript_bytes} bytes`} />
+        {summaryBytes != null && <Field label="Summary Size" value={`${summaryBytes} bytes`} />}
+        {ratio != null && <Field label="Compression" value={`${ratio.toFixed(1)}% reduction`} />}
+      </div>
+      {data.error && (
+        <div className="text-xs">
+          <span className="font-medium text-destructive">Error: </span>
+          <span className="text-muted-foreground">{data.error as string}</span>
+        </div>
+      )}
+      {data.response_body && (
+        <div>
+          <div className="text-xs font-medium mb-1">Summary</div>
+          <pre className="text-xs whitespace-pre-wrap font-mono bg-muted/50 p-2 rounded max-h-64 overflow-y-auto">
+            {data.response_body as string}
+          </pre>
+        </div>
+      )}
     </div>
   )
 }

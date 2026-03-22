@@ -3213,6 +3213,8 @@ export interface GetProviderFeatureSupportParams {
 
 /** Rust: crates/lr-config/src/types.rs - MemoryConfig struct */
 export interface MemoryConfig {
+  /** Whether LLM-based compaction is enabled (default: false) */
+  compaction_enabled: boolean
   /** Compaction LLM model routed through LocalRouter (e.g., "anthropic/claude-haiku-4-5-20251001") */
   compaction_model: string | null
   search_top_k: number
@@ -3319,8 +3321,8 @@ export type MonitorEventType =
   | 'routing_decision' | 'auth_error' | 'access_denied'
   | 'rate_limit_event' | 'validation_error' | 'mcp_server_event'
   | 'oauth_event' | 'internal_error' | 'moderation_event'
-  | 'connection_error' | 'prompt_compression' | 'firewall_decision'
-  | 'sse_connection'
+  | 'connection_error' | 'prompt_compression' | 'memory_compaction'
+  | 'firewall_decision' | 'sse_connection'
 
 export type EventStatus = 'pending' | 'complete' | 'error'
 

@@ -20,6 +20,7 @@ use tokio::task::JoinHandle;
 
 use lr_config::MemoryConfig;
 use lr_context::ContentStore;
+use lr_monitor::MonitorEventStore;
 
 pub use compaction::CompactionLlm;
 pub use session_manager::SessionManager;
@@ -48,6 +49,8 @@ pub struct MemoryService {
     embedding_service: Option<Arc<lr_embeddings::EmbeddingService>>,
     /// Optional LLM for compaction summarization
     compaction_llm: RwLock<Option<Arc<dyn CompactionLlm>>>,
+    /// Optional monitor store for emitting compaction events
+    monitor_store: RwLock<Option<Arc<MonitorEventStore>>>,
 }
 
 impl MemoryService {
@@ -66,6 +69,7 @@ impl MemoryService {
             stores: DashMap::new(),
             embedding_service: None,
             compaction_llm: RwLock::new(None),
+            monitor_store: RwLock::new(None),
         }
     }
 
@@ -83,6 +87,11 @@ impl MemoryService {
     /// Set the compaction LLM (enables LLM-based summarization during compaction).
     pub fn set_compaction_llm(&self, llm: Arc<dyn CompactionLlm>) {
         *self.compaction_llm.write() = Some(llm);
+    }
+
+    /// Set the monitor event store (enables compaction events in monitor).
+    pub fn set_monitor_store(&self, store: Arc<MonitorEventStore>) {
+        *self.monitor_store.write() = Some(store);
     }
 
     /// Set or replace the embedding service (enables hybrid search for new stores).
@@ -315,61 +324,120 @@ impl MemoryService {
                 let expired = service.session_manager.close_expired_sessions();
                 for (client_id, session) in expired {
                     let config = service.config.read().clone();
-                    if config.compaction_model.is_some() {
-                        let client_dir = service.memory_dir.join(&client_id);
-                        let archive_dir = client_dir.join("archive");
+                    let client_dir = service.memory_dir.join(&client_id);
+                    let archive_dir = client_dir.join("archive");
 
-                        // Clone the Arc to avoid holding the RwLock across await
-                        let llm_arc = service.compaction_llm.read().clone();
-                        let model = config.compaction_model.as_deref();
+                    // Only provide LLM when compaction is explicitly enabled + model configured
+                    let (llm_arc, model) =
+                        if config.compaction_enabled && config.compaction_model.is_some() {
+                            (
+                                service.compaction_llm.read().clone(),
+                                config.compaction_model.clone(),
+                            )
+                        } else {
+                            (None, None)
+                        };
 
-                        let session_id = session
-                            .file_path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
+                    let session_id = session
+                        .file_path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let short_id = &session_id[..8.min(session_id.len())];
 
-                        match compaction::compact_session(
-                            &session.file_path,
-                            &archive_dir,
-                            llm_arc.as_deref(),
-                            model,
-                        )
+                    // Read transcript size for monitor event (before archiving moves the file)
+                    let transcript_bytes = tokio::fs::metadata(&session.file_path)
                         .await
-                        {
-                            Ok(outcome) => {
-                                // Update FTS5 index based on outcome
-                                if let Ok(store) = service.get_or_create_store(&client_id) {
-                                    match outcome {
-                                        compaction::CompactionOutcome::ArchivedAndSummarized => {
-                                            // Read summary and index it
-                                            let summary_path = archive_dir
-                                                .join(format!("{}-summary.md", session_id));
-                                            if let Ok(summary) =
-                                                std::fs::read_to_string(&summary_path)
-                                            {
-                                                let summary_label =
-                                                    format!("session/{}-summary", session_id);
-                                                let _ = store.index(&summary_label, &summary);
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+
+                    // Emit monitor event if LLM compaction will happen
+                    let monitor_event_id = if model.is_some() {
+                        emit_compaction_event(
+                            &service.monitor_store,
+                            short_id,
+                            model.as_deref().unwrap_or(""),
+                            transcript_bytes,
+                            &client_id,
+                        )
+                    } else {
+                        None
+                    };
+
+                    let started = std::time::Instant::now();
+
+                    // Always archive, optionally summarize with LLM
+                    match compaction::compact_session(
+                        &session.file_path,
+                        &archive_dir,
+                        llm_arc.as_deref(),
+                        model.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(outcome) => {
+                            // Update FTS5 index based on outcome
+                            if let Ok(store) = service.get_or_create_store(&client_id) {
+                                match outcome {
+                                    compaction::CompactionOutcome::ArchivedAndSummarized => {
+                                        // Read summary and index it
+                                        let summary_path = archive_dir
+                                            .join(format!("{}-summary.md", session_id));
+                                        if let Ok(summary) =
+                                            std::fs::read_to_string(&summary_path)
+                                        {
+                                            let summary_label =
+                                                format!("session/{}-summary", session_id);
+                                            let _ = store.index(&summary_label, &summary);
+
+                                            // Complete monitor event
+                                            if let Some(event_id) = &monitor_event_id {
+                                                complete_compaction_event(
+                                                    &service.monitor_store,
+                                                    event_id,
+                                                    summary.len() as u64,
+                                                    transcript_bytes,
+                                                    Some(&summary),
+                                                    started.elapsed().as_millis() as u64,
+                                                );
                                             }
-                                            // Remove raw transcript from index
-                                            let raw_label = format!("session/{}", session_id);
-                                            let _ = store.delete(&raw_label);
                                         }
-                                        compaction::CompactionOutcome::ArchivedOnly => {
-                                            // Raw transcript stays indexed as-is
+                                        // Remove raw transcript from index
+                                        let raw_label = format!("session/{}", session_id);
+                                        let _ = store.delete(&raw_label);
+                                    }
+                                    compaction::CompactionOutcome::ArchivedOnly => {
+                                        // Raw transcript stays indexed as-is.
+                                        // If we expected summarization, mark as error
+                                        // (LLM failed gracefully inside compact_session)
+                                        if let Some(event_id) = &monitor_event_id {
+                                            error_compaction_event(
+                                                &service.monitor_store,
+                                                event_id,
+                                                "LLM summarization failed (archived without summary)",
+                                                started.elapsed().as_millis() as u64,
+                                            );
                                         }
                                     }
                                 }
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Memory compaction failed for client {}: {}",
-                                    &client_id[..8.min(client_id.len())],
-                                    e
+                        }
+                        Err(e) => {
+                            // Error monitor event
+                            if let Some(event_id) = &monitor_event_id {
+                                error_compaction_event(
+                                    &service.monitor_store,
+                                    event_id,
+                                    &e,
+                                    started.elapsed().as_millis() as u64,
                                 );
                             }
+                            tracing::warn!(
+                                "Memory compaction failed for client {}: {}",
+                                &client_id[..8.min(client_id.len())],
+                                e
+                            );
                         }
                     }
                 }
@@ -464,8 +532,15 @@ impl MemoryService {
 
         // Clone Arc to avoid holding RwLock across await
         let config = self.config.read().clone();
-        let llm_arc = self.compaction_llm.read().clone();
-        let model = config.compaction_model.as_deref();
+        let (llm_arc, model) =
+            if config.compaction_enabled && config.compaction_model.is_some() {
+                (
+                    self.compaction_llm.read().clone(),
+                    config.compaction_model.clone(),
+                )
+            } else {
+                (None, None)
+            };
 
         let mut archived_count = 0;
         let mut summarized_count = 0;
@@ -476,8 +551,30 @@ impl MemoryService {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
+            let short_id = &session_id[..8.min(session_id.len())];
 
-            match compaction::compact_session(path, &archive_dir, llm_arc.as_deref(), model).await {
+            // Read transcript size for monitor event
+            let transcript_bytes = tokio::fs::metadata(path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            // Emit monitor event if LLM compaction will happen
+            let monitor_event_id = if model.is_some() {
+                emit_compaction_event(
+                    &self.monitor_store,
+                    short_id,
+                    model.as_deref().unwrap_or(""),
+                    transcript_bytes,
+                    client_id,
+                )
+            } else {
+                None
+            };
+
+            let started = std::time::Instant::now();
+
+            match compaction::compact_session(path, &archive_dir, llm_arc.as_deref(), model.as_deref()).await {
                 Ok(outcome) => {
                     archived_count += 1;
 
@@ -492,18 +589,48 @@ impl MemoryService {
                                 if let Ok(summary) = std::fs::read_to_string(&summary_path) {
                                     let summary_label = format!("session/{}-summary", session_id);
                                     let _ = store.index(&summary_label, &summary);
+
+                                    // Complete monitor event
+                                    if let Some(event_id) = &monitor_event_id {
+                                        complete_compaction_event(
+                                            &self.monitor_store,
+                                            event_id,
+                                            summary.len() as u64,
+                                            transcript_bytes,
+                                            Some(&summary),
+                                            started.elapsed().as_millis() as u64,
+                                        );
+                                    }
                                 }
                                 // Remove raw transcript from index
                                 let raw_label = format!("session/{}", session_id);
                                 let _ = store.delete(&raw_label);
                             }
                             compaction::CompactionOutcome::ArchivedOnly => {
-                                // Raw transcript stays indexed as-is
+                                // Raw transcript stays indexed as-is.
+                                // If we expected summarization, mark as error
+                                if let Some(event_id) = &monitor_event_id {
+                                    error_compaction_event(
+                                        &self.monitor_store,
+                                        event_id,
+                                        "LLM summarization failed (archived without summary)",
+                                        started.elapsed().as_millis() as u64,
+                                    );
+                                }
                             }
                         }
                     }
                 }
                 Err(e) => {
+                    // Error monitor event
+                    if let Some(event_id) = &monitor_event_id {
+                        error_compaction_event(
+                            &self.monitor_store,
+                            event_id,
+                            &e,
+                            started.elapsed().as_millis() as u64,
+                        );
+                    }
                     tracing::warn!("Force compact failed for {:?}: {}", path, e);
                 }
             }
@@ -526,6 +653,9 @@ impl MemoryService {
         mut progress_fn: impl FnMut(usize, usize),
     ) -> Result<RecompactResult, String> {
         let config = self.config.read().clone();
+        if !config.compaction_enabled {
+            return Err("Compaction is not enabled".to_string());
+        }
         let model_str = config
             .compaction_model
             .clone()
@@ -744,6 +874,99 @@ pub struct CompactResult {
 pub struct RecompactResult {
     pub recompacted_count: usize,
     pub failed_count: usize,
+}
+
+// ─────────────────────────────────────────────────────────
+// Monitor event helpers
+// ─────────────────────────────────────────────────────────
+
+/// Emit a Pending MemoryCompaction monitor event. Returns the event ID if emitted.
+fn emit_compaction_event(
+    monitor_store: &RwLock<Option<Arc<MonitorEventStore>>>,
+    short_session_id: &str,
+    model: &str,
+    transcript_bytes: u64,
+    client_id: &str,
+) -> Option<String> {
+    let store = monitor_store.read().clone()?;
+    Some(store.push(
+        lr_monitor::MonitorEventType::MemoryCompaction,
+        Some(client_id.to_string()),
+        None,
+        None,
+        lr_monitor::MonitorEventData::MemoryCompaction {
+            session_id: short_session_id.to_string(),
+            model: model.to_string(),
+            transcript_bytes,
+            summary_bytes: None,
+            compression_ratio: None,
+            request_body: None,
+            response_body: None,
+            error: None,
+        },
+        lr_monitor::EventStatus::Pending,
+        None,
+    ))
+}
+
+/// Update a MemoryCompaction monitor event to Complete.
+fn complete_compaction_event(
+    monitor_store: &RwLock<Option<Arc<MonitorEventStore>>>,
+    event_id: &str,
+    summary_bytes: u64,
+    transcript_bytes: u64,
+    summary_preview: Option<&str>,
+    duration_ms: u64,
+) {
+    let Some(store) = monitor_store.read().clone() else {
+        return;
+    };
+    let ratio = if transcript_bytes > 0 {
+        (1.0 - (summary_bytes as f64 / transcript_bytes as f64)) * 100.0
+    } else {
+        0.0
+    };
+    let preview = summary_preview.map(|s| {
+        if s.len() > 10_000 {
+            format!("{}...", &s[..10_000])
+        } else {
+            s.to_string()
+        }
+    });
+    store.update(event_id, |event| {
+        event.status = lr_monitor::EventStatus::Complete;
+        event.duration_ms = Some(duration_ms);
+        if let lr_monitor::MonitorEventData::MemoryCompaction {
+            summary_bytes: sb,
+            compression_ratio: cr,
+            response_body: rb,
+            ..
+        } = &mut event.data
+        {
+            *sb = Some(summary_bytes);
+            *cr = Some(ratio);
+            *rb = preview.clone();
+        }
+    });
+}
+
+/// Update a MemoryCompaction monitor event to Error.
+fn error_compaction_event(
+    monitor_store: &RwLock<Option<Arc<MonitorEventStore>>>,
+    event_id: &str,
+    error_msg: &str,
+    duration_ms: u64,
+) {
+    let Some(store) = monitor_store.read().clone() else {
+        return;
+    };
+    store.update(event_id, |event| {
+        event.status = lr_monitor::EventStatus::Error;
+        event.duration_ms = Some(duration_ms);
+        if let lr_monitor::MonitorEventData::MemoryCompaction { error, .. } = &mut event.data {
+            *error = Some(error_msg.to_string());
+        }
+    });
 }
 
 /// Count `.md` files in a directory (all markdown files).
