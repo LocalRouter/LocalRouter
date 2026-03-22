@@ -1003,35 +1003,34 @@ async fn execute_resource_read_background(
     let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
 
     // Helper to send a resources/read request
-    let read_resource = |resource_name: String,
-                         servers: Vec<String>,
-                         rts: Vec<lr_mcp::protocol::Root>| {
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some(json!(1)),
-            method: "resources/read".to_string(),
-            params: Some(json!({ "name": resource_name })),
+    let read_resource =
+        |resource_name: String, servers: Vec<String>, rts: Vec<lr_mcp::protocol::Root>| {
+            let request = JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(json!(1)),
+                method: "resources/read".to_string(),
+                params: Some(json!({ "name": resource_name })),
+            };
+            gateway.handle_request_with_skills(
+                client_id,
+                Some(&permissions.session_key),
+                servers,
+                rts,
+                permissions.mcp_permissions.clone(),
+                permissions.skills_permissions.clone(),
+                permissions.client_name.clone(),
+                permissions.marketplace_permission.clone(),
+                permissions.coding_agent_permission.clone(),
+                permissions.coding_agent_type,
+                permissions.context_management_overrides.clone(),
+                permissions.mcp_sampling_permission.clone(),
+                permissions.mcp_elicitation_permission.clone(),
+                permissions.memory_enabled,
+                permissions.client_mode.clone(),
+                request,
+                None,
+            )
         };
-        gateway.handle_request_with_skills(
-            client_id,
-            Some(&permissions.session_key),
-            servers,
-            rts,
-            permissions.mcp_permissions.clone(),
-            permissions.skills_permissions.clone(),
-            permissions.client_name.clone(),
-            permissions.marketplace_permission.clone(),
-            permissions.coding_agent_permission.clone(),
-            permissions.coding_agent_type,
-            permissions.context_management_overrides.clone(),
-            permissions.mcp_sampling_permission.clone(),
-            permissions.mcp_elicitation_permission.clone(),
-            permissions.memory_enabled,
-            permissions.client_mode.clone(),
-            request,
-            None,
-        )
-    };
 
     // Try exact read first
     let response = match tokio::time::timeout(

@@ -126,7 +126,11 @@ pub fn find_best_match(query: &str, candidates: &[(usize, &str)]) -> Option<(usi
 /// candidate is close enough. This is a convenience wrapper around
 /// [`find_best_match`] for use cases that only need the corrected string.
 pub fn find_best_correction(word: &str, candidates: &[String]) -> Option<String> {
-    let indexed: Vec<(usize, &str)> = candidates.iter().enumerate().map(|(i, s)| (i, s.as_str())).collect();
+    let indexed: Vec<(usize, &str)> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (i, s.as_str()))
+        .collect();
 
     match find_best_match(word, &indexed) {
         Some((_, MatchKind::Exact)) => None, // exact match — no correction needed

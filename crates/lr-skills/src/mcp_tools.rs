@@ -505,10 +505,7 @@ fn not_found_error(
 /// Build the response for a skill_read tool call.
 ///
 /// Shows skill file paths with SkillRead(name, path) syntax.
-fn build_skill_read_response(
-    skill: &SkillDefinition,
-    tool_name: &str,
-) -> serde_json::Value {
+fn build_skill_read_response(skill: &SkillDefinition, tool_name: &str) -> serde_json::Value {
     let mut text = String::new();
     let skill_name = &skill.metadata.name;
 

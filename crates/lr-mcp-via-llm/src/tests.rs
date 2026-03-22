@@ -518,9 +518,7 @@ mod tool_classification_tests {
 
     #[test]
     fn prompt_read_classified_as_mcp() {
-        let mcp: HashSet<String> = [PROMPT_READ_TOOL_NAME.to_string()]
-            .into_iter()
-            .collect();
+        let mcp: HashSet<String> = [PROMPT_READ_TOOL_NAME.to_string()].into_iter().collect();
         let calls = [tc("1", PROMPT_READ_TOOL_NAME)];
         let (m, _): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 1);

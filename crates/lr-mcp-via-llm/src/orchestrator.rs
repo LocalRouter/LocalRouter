@@ -1253,11 +1253,11 @@ async fn execute_resource_read(gw_client: &GatewayClient<'_>, name: &str) -> Str
             let resource_names = match gw_client.list_resources().await {
                 Ok(names) => names,
                 Err(e) => {
-                    tracing::warn!("MCP via LLM: failed to list resources for fuzzy match: {}", e);
-                    return format!(
-                        "Resource '{}' not found.",
-                        name
+                    tracing::warn!(
+                        "MCP via LLM: failed to list resources for fuzzy match: {}",
+                        e
                     );
+                    return format!("Resource '{}' not found.", name);
                 }
             };
 
@@ -1394,15 +1394,14 @@ async fn execute_prompt_read(
     let resolved_name = &prompt.name;
 
     // Build correction note for fuzzy matches
-    let correction_note =
-        if !matches!(match_kind, lr_types::fuzzy::MatchKind::Exact) {
-            Some(format!(
-                "Note: No prompt named '{}' was found. Showing prompt '{}' instead.\n\n",
-                name, resolved_name
-            ))
-        } else {
-            None
-        };
+    let correction_note = if !matches!(match_kind, lr_types::fuzzy::MatchKind::Exact) {
+        Some(format!(
+            "Note: No prompt named '{}' was found. Showing prompt '{}' instead.\n\n",
+            name, resolved_name
+        ))
+    } else {
+        None
+    };
 
     // If prompt has arguments, validate them locally before making network call
     if !prompt.arguments.is_empty() {
@@ -1425,10 +1424,7 @@ async fn execute_prompt_read(
             let mut doc = format!("Prompt '{}' requires arguments:\n", resolved_name);
             for arg in &prompt.arguments {
                 let req = if arg.required { " (required)" } else { "" };
-                let desc = arg
-                    .description
-                    .as_deref()
-                    .unwrap_or("No description");
+                let desc = arg.description.as_deref().unwrap_or("No description");
                 doc.push_str(&format!("- {}{}: {}\n", arg.name, req, desc));
             }
             doc.push_str(&format!(
@@ -1470,10 +1466,7 @@ fn format_prompt_messages(messages: &[Value]) -> String {
     messages
         .iter()
         .filter_map(|m| {
-            let role = m
-                .get("role")
-                .and_then(|r| r.as_str())
-                .unwrap_or("system");
+            let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("system");
             let text = m
                 .get("content")
                 .and_then(|c| {
