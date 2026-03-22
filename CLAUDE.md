@@ -154,19 +154,15 @@ Plans in `./plan/` directory (223 documents). Key files:
 
 Every implementation plan **must** be saved to `./plan/` and every plan **must** include the mandatory final steps below.
 
-#### First Step: Save the Plan (BEFORE any code)
+#### First Steps (BEFORE any code)
 
-The **very first step** of any implementation task is saving the plan to `./plan/`:
-- **Filename**: `plan/YYYY-MM-DD-SHORT_DESCRIPTION.md` (use today's date)
-- **Content**: The full plan including goals, approach, files to modify, and any architectural decisions
-- **When**: Save the plan file **before** writing any code, immediately after the plan is approved
-- **How**: Use the `copy-plan.sh` script to copy from Claude's plan storage:
+The **very first part** of every plan must use the **todo list to keep track of progress**. Create tasks for each step of the plan so progress is visible and trackable throughout implementation.
+
+Then, **save the plan** before writing any code using `copy-plan.sh`:
   ```bash
   ./copy-plan.sh <claude-plan-name> <SHORT_DESCRIPTION>
   ```
   Example: `./copy-plan.sh iridescent-stargazing-whale MONITOR_EVENT_REDESIGN`
-- This applies to all plans created via Claude Code's plan mode or any multi-step implementation task
-- Update `plan/2026-01-14-PROGRESS.md` if the plan adds or completes a tracked feature
 
 #### Final Steps: Review, Test, Bug Hunt (AFTER implementation)
 
@@ -175,6 +171,7 @@ Every plan **must** include these mandatory final steps after all implementation
 1. **Plan Review**: Review the plan against the implementation — identify any missed changes, behaviors, or edge cases that were specified in the plan but not yet implemented, and implement them
 2. **Test Coverage Review**: Review code coverage for all new/modified code — add tests for any uncovered paths, edge cases, or error handling
 3. **Bug Hunt**: Re-read the implementation code with fresh eyes specifically looking for bugs — off-by-one errors, race conditions, missing error handling, incorrect state transitions, etc.
+4. **Commit**: Commit all changes — only stage files you modified, never unrelated changes (do not push unless the user explicitly asks)
 
 ### OpenAPI Requirements
 When modifying endpoints:
