@@ -131,10 +131,7 @@ pub async fn recompact_session(
     let raw_path = archive_dir.join(format!("{}.md", session_id));
 
     if !raw_path.exists() {
-        return Err(format!(
-            "Raw transcript not found: {}",
-            raw_path.display()
-        ));
+        return Err(format!("Raw transcript not found: {}", raw_path.display()));
     }
 
     let content = tokio::fs::read_to_string(&raw_path)

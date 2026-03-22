@@ -690,7 +690,10 @@ Sure! Here are the details...
         .await
         .unwrap();
 
-        assert_eq!(outcome, crate::compaction::CompactionOutcome::ArchivedAndSummarized);
+        assert_eq!(
+            outcome,
+            crate::compaction::CompactionOutcome::ArchivedAndSummarized
+        );
         // Raw file moved to archive
         assert!(!session_path.exists());
         assert!(archive_dir.join("test-session.md").exists());
@@ -711,14 +714,9 @@ Sure! Here are the details...
         let session_path = sessions_dir.join("test-session.md");
         std::fs::write(&session_path, "conversation content").unwrap();
 
-        let outcome = crate::compaction::compact_session(
-            &session_path,
-            &archive_dir,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        let outcome = crate::compaction::compact_session(&session_path, &archive_dir, None, None)
+            .await
+            .unwrap();
 
         assert_eq!(outcome, crate::compaction::CompactionOutcome::ArchivedOnly);
         assert!(archive_dir.join("test-session.md").exists());
@@ -847,12 +845,19 @@ Sure! Here are the details...
         assert!(!results.is_empty());
 
         // Search for content in raw-only file (should find)
-        let results = svc.search("test-client", "Redis session caching", 5).unwrap();
+        let results = svc
+            .search("test-client", "Redis session caching", 5)
+            .unwrap();
         assert!(!results.is_empty());
 
         // Search for content only in raw file that has a summary (should NOT find)
-        let results = svc.search("test-client", "authentication storage", 5).unwrap();
-        assert!(results.is_empty(), "Raw file should not be indexed when summary exists");
+        let results = svc
+            .search("test-client", "authentication storage", 5)
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "Raw file should not be indexed when summary exists"
+        );
     }
 
     #[tokio::test]
@@ -865,7 +870,11 @@ Sure! Here are the details...
         let sessions_dir = client_dir.join("sessions");
 
         // Create expired session
-        std::fs::write(sessions_dir.join("expired1.md"), "conversation about API design").unwrap();
+        std::fs::write(
+            sessions_dir.join("expired1.md"),
+            "conversation about API design",
+        )
+        .unwrap();
 
         // Set up compaction LLM
         let llm = std::sync::Arc::new(MockLlm::new("# API Design Summary"));

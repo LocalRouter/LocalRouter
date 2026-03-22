@@ -78,10 +78,7 @@ impl ModelMatcher {
         // that share pricing/metadata with the base model (e.g., gpt-4.1).
         if let Some(base) = strip_date_suffix(&norm_model) {
             let base = base.to_string();
-            if let Some(model) = self
-                .by_provider
-                .get(&(norm_provider.clone(), base.clone()))
-            {
+            if let Some(model) = self.by_provider.get(&(norm_provider.clone(), base.clone())) {
                 return Some(model);
             }
             let base_id = format!("{}/{}", norm_provider, base);
@@ -393,14 +390,8 @@ mod tests {
     #[test]
     fn test_strip_date_suffix() {
         // Valid ISO date suffixes
-        assert_eq!(
-            strip_date_suffix("gpt-4.1-2025-04-14"),
-            Some("gpt-4.1")
-        );
-        assert_eq!(
-            strip_date_suffix("o1-2024-12-17"),
-            Some("o1")
-        );
+        assert_eq!(strip_date_suffix("gpt-4.1-2025-04-14"), Some("gpt-4.1"));
+        assert_eq!(strip_date_suffix("o1-2024-12-17"), Some("o1"));
         assert_eq!(
             strip_date_suffix("gpt-4o-audio-preview-2024-12-17"),
             Some("gpt-4o-audio-preview")
@@ -432,7 +423,10 @@ mod tests {
 
         // gpt-4-2024-06-01 should resolve to gpt-4 via date suffix stripping
         let result = matcher.find_model("openai", "gpt-4-2024-06-01");
-        assert!(result.is_some(), "Should find gpt-4 via date suffix stripping");
+        assert!(
+            result.is_some(),
+            "Should find gpt-4 via date suffix stripping"
+        );
         assert_eq!(result.unwrap().id, "openai/gpt-4");
     }
 
@@ -444,7 +438,10 @@ mod tests {
 
         // gpt-4-2024-06-01 should resolve to gpt-4 by name
         let result = matcher.find_model_by_name("gpt-4-2024-06-01");
-        assert!(result.is_some(), "Should find gpt-4 by name via date suffix stripping");
+        assert!(
+            result.is_some(),
+            "Should find gpt-4 by name via date suffix stripping"
+        );
         assert_eq!(result.unwrap().id, "openai/gpt-4");
     }
 

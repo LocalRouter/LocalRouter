@@ -349,15 +349,12 @@ impl MemoryService {
                                             if let Ok(summary) =
                                                 std::fs::read_to_string(&summary_path)
                                             {
-                                                let summary_label = format!(
-                                                    "session/{}-summary",
-                                                    session_id
-                                                );
+                                                let summary_label =
+                                                    format!("session/{}-summary", session_id);
                                                 let _ = store.index(&summary_label, &summary);
                                             }
                                             // Remove raw transcript from index
-                                            let raw_label =
-                                                format!("session/{}", session_id);
+                                            let raw_label = format!("session/{}", session_id);
                                             let _ = store.delete(&raw_label);
                                         }
                                         compaction::CompactionOutcome::ArchivedOnly => {
@@ -493,8 +490,7 @@ impl MemoryService {
                                 let summary_path =
                                     archive_dir.join(format!("{}-summary.md", session_id));
                                 if let Ok(summary) = std::fs::read_to_string(&summary_path) {
-                                    let summary_label =
-                                        format!("session/{}-summary", session_id);
+                                    let summary_label = format!("session/{}-summary", session_id);
                                     let _ = store.index(&summary_label, &summary);
                                 }
                                 // Remove raw transcript from index
@@ -537,9 +533,7 @@ impl MemoryService {
 
         // Clone Arc to avoid holding RwLock across await
         let llm_arc = self.compaction_llm.read().clone();
-        let llm = llm_arc
-            .as_deref()
-            .ok_or("Compaction LLM not available")?;
+        let llm = llm_arc.as_deref().ok_or("Compaction LLM not available")?;
 
         let client_dir = self.memory_dir.join(client_id);
         let archive_dir = client_dir.join("archive");
@@ -560,11 +554,9 @@ impl MemoryService {
 
                     // Update FTS5 index: index summary, delete raw
                     if let Ok(store) = self.get_or_create_store(client_id) {
-                        let summary_path =
-                            archive_dir.join(format!("{}-summary.md", session_id));
+                        let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
                         if let Ok(summary) = std::fs::read_to_string(&summary_path) {
-                            let summary_label =
-                                format!("session/{}-summary", session_id);
+                            let summary_label = format!("session/{}-summary", session_id);
                             let _ = store.index(&summary_label, &summary);
                         }
                         // Remove raw transcript from index (if it was indexed)
@@ -808,8 +800,8 @@ fn count_summary_files(dir: &Path) -> usize {
 
 /// Collect session IDs of raw archive files (excluding summary files).
 fn collect_raw_archive_files(archive_dir: &Path) -> Result<Vec<String>, String> {
-    let entries = std::fs::read_dir(archive_dir)
-        .map_err(|e| format!("Failed to read archive dir: {}", e))?;
+    let entries =
+        std::fs::read_dir(archive_dir).map_err(|e| format!("Failed to read archive dir: {}", e))?;
 
     let mut session_ids = Vec::new();
     for entry in entries.flatten() {
