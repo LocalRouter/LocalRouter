@@ -855,6 +855,54 @@ impl ProviderRegistry {
             .collect()
     }
 
+    /// Get the provider type for a given instance name (e.g., "openai", "anthropic")
+    pub fn get_provider_type_for_instance(&self, instance_name: &str) -> Option<String> {
+        self.instances
+            .read()
+            .get(instance_name)
+            .map(|i| i.provider_type.clone())
+    }
+
+    /// Check if any enabled provider's cache is expired or missing
+    fn has_any_expired_or_missing_cache(&self) -> bool {
+        let cache = self.model_cache.read();
+        let instances = self.instances.read();
+        for inst in instances.values() {
+            if !inst.enabled {
+                continue;
+            }
+            match cache.get(&inst.instance_name) {
+                None => return true,
+                Some(cached) if cached.is_expired() => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// List all models instantly from cache, triggering background refresh if stale.
+    ///
+    /// Returns cached models immediately (even if expired) and spawns a background
+    /// refresh task when the cache is stale. This is the preferred method for REST
+    /// API endpoints — never blocks on network I/O.
+    ///
+    /// Returns empty list if cache has never been populated (e.g., during startup).
+    pub fn list_all_models_instant(self: &Arc<Self>) -> Vec<ModelInfo> {
+        let models = self.get_all_cached_models_instant();
+
+        if self.has_any_expired_or_missing_cache() && self.try_start_refresh() {
+            let registry = Arc::clone(self);
+            tokio::spawn(async move {
+                if let Err(e) = registry.refresh_model_cache().await {
+                    tracing::warn!("Background model cache refresh failed: {}", e);
+                }
+                registry.finish_refresh();
+            });
+        }
+
+        models
+    }
+
     /// Try to acquire the refresh lock. Returns true if acquired.
     pub fn try_start_refresh(&self) -> bool {
         self.refresh_in_progress

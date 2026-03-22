@@ -67,12 +67,8 @@ pub async fn list_models<B>(
         }
     }
 
-    // Always return allowed models filtered by strategy
-    let all_models = state
-        .provider_registry
-        .list_all_models()
-        .await
-        .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
+    // Always return allowed models filtered by strategy (instant, no network I/O)
+    let all_models = state.provider_registry.list_all_models_instant();
 
     // Filter models by strategy's allowed models
     let filtered_models: Vec<_> = all_models
@@ -83,21 +79,27 @@ pub async fn list_models<B>(
         })
         .collect();
 
-    // Convert to API response format with pricing information
+    // Convert to API response format with catalog pricing (no network calls)
     let mut model_data_vec = Vec::new();
 
     for model_info in filtered_models {
         let mut model_data: ModelData = (&model_info).into();
 
-        // Fetch pricing information
-        if let Some(provider) = state.provider_registry.get_provider(&model_info.provider) {
-            if let Ok(pricing_info) = provider.get_pricing(&model_info.id).await {
-                model_data.pricing = Some(ModelPricing {
-                    input_cost_per_1k: pricing_info.input_cost_per_1k,
-                    output_cost_per_1k: pricing_info.output_cost_per_1k,
-                    currency: pricing_info.currency,
-                });
-            }
+        // Use embedded catalog for instant pricing lookup
+        let provider_type = state
+            .provider_registry
+            .get_provider_type_for_instance(&model_info.provider)
+            .unwrap_or_else(|| model_info.provider.clone());
+
+        let catalog_model = lr_catalog::find_model(&provider_type, &model_info.id)
+            .or_else(|| lr_catalog::find_model_by_name(&model_info.id));
+
+        if let Some(cm) = catalog_model {
+            model_data.pricing = Some(ModelPricing {
+                input_cost_per_1k: cm.pricing.prompt_cost_per_1k(),
+                output_cost_per_1k: cm.pricing.completion_cost_per_1k(),
+                currency: cm.pricing.currency.to_string(),
+            });
         }
 
         model_data_vec.push(model_data);
@@ -186,12 +188,8 @@ pub async fn get_model<B>(
         ));
     }
 
-    // Get all models from provider registry
-    let all_models = state
-        .provider_registry
-        .list_all_models()
-        .await
-        .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
+    // Get all models from provider registry (instant, no network I/O)
+    let all_models = state.provider_registry.list_all_models_instant();
 
     // Find the requested model (case-insensitive comparison for consistency with chat endpoint)
     let model_info = all_models
@@ -227,18 +225,24 @@ pub async fn get_model<B>(
         )));
     }
 
-    // Convert to API response format with enhanced details
+    // Convert to API response format with catalog pricing (no network calls)
     let mut model_data: ModelData = model_info.into();
 
-    // Fetch pricing information
-    if let Some(provider) = state.provider_registry.get_provider(&model_info.provider) {
-        if let Ok(pricing_info) = provider.get_pricing(&model_info.id).await {
-            model_data.pricing = Some(ModelPricing {
-                input_cost_per_1k: pricing_info.input_cost_per_1k,
-                output_cost_per_1k: pricing_info.output_cost_per_1k,
-                currency: pricing_info.currency,
-            });
-        }
+    // Use embedded catalog for instant pricing lookup
+    let provider_type = state
+        .provider_registry
+        .get_provider_type_for_instance(&model_info.provider)
+        .unwrap_or_else(|| model_info.provider.clone());
+
+    let catalog_model = lr_catalog::find_model(&provider_type, &model_info.id)
+        .or_else(|| lr_catalog::find_model_by_name(&model_info.id));
+
+    if let Some(cm) = catalog_model {
+        model_data.pricing = Some(ModelPricing {
+            input_cost_per_1k: cm.pricing.prompt_cost_per_1k(),
+            output_cost_per_1k: cm.pricing.completion_cost_per_1k(),
+            currency: cm.pricing.currency.to_string(),
+        });
     }
 
     Ok(Json(model_data))

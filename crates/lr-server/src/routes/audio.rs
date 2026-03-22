@@ -1145,13 +1145,7 @@ async fn validate_client_provider_access(
         (prov.to_string(), m.to_string())
     } else {
         // No provider specified — find which provider has this model
-        let all_models = state
-            .provider_registry
-            .list_all_models()
-            .await
-            .map_err(|e| {
-                ApiErrorResponse::internal_error(format!("Failed to list models: {}", e))
-            })?;
+        let all_models = state.provider_registry.list_all_models_instant();
 
         let matching_models: Vec<_> = all_models
             .iter()
