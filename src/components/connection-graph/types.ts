@@ -22,6 +22,8 @@ export interface AccessKeyNodeData extends BaseNodeData {
   enabled: boolean
   allowedProviders: string[]
   mcpServers: string[]
+  /** Optional icon URL to show instead of the default Key icon */
+  iconUrl?: string
 }
 
 // Provider node data

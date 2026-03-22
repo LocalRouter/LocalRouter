@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 import type { AccessKeyNodeData } from '../types'
 
 function AccessKeyNodeComponent({ data }: NodeProps<AccessKeyNodeData>) {
-  const { name, isConnected } = data
+  const { name, isConnected, iconUrl } = data
 
   return (
     <div
@@ -20,14 +20,18 @@ function AccessKeyNodeComponent({ data }: NodeProps<AccessKeyNodeData>) {
     >
       {/* Node content */}
       <div className="flex items-center gap-2">
-        <div className={cn(
-          'flex items-center justify-center w-6 h-6 rounded-full',
-          isConnected
-            ? 'bg-blue-500 text-white'
-            : 'bg-blue-200 text-blue-600 dark:bg-blue-800 dark:text-blue-300'
-        )}>
-          <Key className="w-3 h-3" />
-        </div>
+        {iconUrl ? (
+          <img src={iconUrl} alt={name} className="w-6 h-6 rounded-full object-contain" />
+        ) : (
+          <div className={cn(
+            'flex items-center justify-center w-6 h-6 rounded-full',
+            isConnected
+              ? 'bg-blue-500 text-white'
+              : 'bg-blue-200 text-blue-600 dark:bg-blue-800 dark:text-blue-300'
+          )}>
+            <Key className="w-3 h-3" />
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-blue-900 dark:text-blue-100 truncate">
             {name}
