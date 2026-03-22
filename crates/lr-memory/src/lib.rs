@@ -384,23 +384,34 @@ impl MemoryService {
                                         // Read summary and index it
                                         let summary_path = archive_dir
                                             .join(format!("{}-summary.md", session_id));
-                                        if let Ok(summary) =
-                                            std::fs::read_to_string(&summary_path)
-                                        {
-                                            let summary_label =
-                                                format!("session/{}-summary", session_id);
-                                            let _ = store.index(&summary_label, &summary);
+                                        match std::fs::read_to_string(&summary_path) {
+                                            Ok(summary) => {
+                                                let summary_label =
+                                                    format!("session/{}-summary", session_id);
+                                                let _ =
+                                                    store.index(&summary_label, &summary);
 
-                                            // Complete monitor event
-                                            if let Some(event_id) = &monitor_event_id {
-                                                complete_compaction_event(
-                                                    &service.monitor_store,
-                                                    event_id,
-                                                    summary.len() as u64,
-                                                    transcript_bytes,
-                                                    Some(&summary),
-                                                    started.elapsed().as_millis() as u64,
-                                                );
+                                                // Complete monitor event
+                                                if let Some(event_id) = &monitor_event_id {
+                                                    complete_compaction_event(
+                                                        &service.monitor_store,
+                                                        event_id,
+                                                        summary.len() as u64,
+                                                        transcript_bytes,
+                                                        Some(&summary),
+                                                        started.elapsed().as_millis() as u64,
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => {
+                                                if let Some(event_id) = &monitor_event_id {
+                                                    error_compaction_event(
+                                                        &service.monitor_store,
+                                                        event_id,
+                                                        &format!("Failed to read summary: {}", e),
+                                                        started.elapsed().as_millis() as u64,
+                                                    );
+                                                }
                                             }
                                         }
                                         // Remove raw transcript from index
@@ -586,20 +597,33 @@ impl MemoryService {
                                 // Read summary and index it
                                 let summary_path =
                                     archive_dir.join(format!("{}-summary.md", session_id));
-                                if let Ok(summary) = std::fs::read_to_string(&summary_path) {
-                                    let summary_label = format!("session/{}-summary", session_id);
-                                    let _ = store.index(&summary_label, &summary);
+                                match std::fs::read_to_string(&summary_path) {
+                                    Ok(summary) => {
+                                        let summary_label =
+                                            format!("session/{}-summary", session_id);
+                                        let _ = store.index(&summary_label, &summary);
 
-                                    // Complete monitor event
-                                    if let Some(event_id) = &monitor_event_id {
-                                        complete_compaction_event(
-                                            &self.monitor_store,
-                                            event_id,
-                                            summary.len() as u64,
-                                            transcript_bytes,
-                                            Some(&summary),
-                                            started.elapsed().as_millis() as u64,
-                                        );
+                                        // Complete monitor event
+                                        if let Some(event_id) = &monitor_event_id {
+                                            complete_compaction_event(
+                                                &self.monitor_store,
+                                                event_id,
+                                                summary.len() as u64,
+                                                transcript_bytes,
+                                                Some(&summary),
+                                                started.elapsed().as_millis() as u64,
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        if let Some(event_id) = &monitor_event_id {
+                                            error_compaction_event(
+                                                &self.monitor_store,
+                                                event_id,
+                                                &format!("Failed to read summary: {}", e),
+                                                started.elapsed().as_millis() as u64,
+                                            );
+                                        }
                                     }
                                 }
                                 // Remove raw transcript from index
@@ -678,6 +702,24 @@ impl MemoryService {
         let mut failed_count = 0;
 
         for (i, session_id) in raw_files.iter().enumerate() {
+            let short_id = &session_id[..8.min(session_id.len())];
+
+            // Read transcript size for monitor event
+            let raw_path = archive_dir.join(format!("{}.md", session_id));
+            let transcript_bytes = std::fs::metadata(&raw_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            let monitor_event_id = emit_compaction_event(
+                &self.monitor_store,
+                short_id,
+                &model_str,
+                transcript_bytes,
+                client_id,
+            );
+
+            let started = std::time::Instant::now();
+
             match compaction::recompact_session(session_id, &archive_dir, llm, &model_str).await {
                 Ok(()) => {
                     recompacted_count += 1;
@@ -685,9 +727,33 @@ impl MemoryService {
                     // Update FTS5 index: index summary, delete raw
                     if let Ok(store) = self.get_or_create_store(client_id) {
                         let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
-                        if let Ok(summary) = std::fs::read_to_string(&summary_path) {
-                            let summary_label = format!("session/{}-summary", session_id);
-                            let _ = store.index(&summary_label, &summary);
+                        match std::fs::read_to_string(&summary_path) {
+                            Ok(summary) => {
+                                let summary_label =
+                                    format!("session/{}-summary", session_id);
+                                let _ = store.index(&summary_label, &summary);
+
+                                if let Some(event_id) = &monitor_event_id {
+                                    complete_compaction_event(
+                                        &self.monitor_store,
+                                        event_id,
+                                        summary.len() as u64,
+                                        transcript_bytes,
+                                        Some(&summary),
+                                        started.elapsed().as_millis() as u64,
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(event_id) = &monitor_event_id {
+                                    error_compaction_event(
+                                        &self.monitor_store,
+                                        event_id,
+                                        &format!("Failed to read summary: {}", e),
+                                        started.elapsed().as_millis() as u64,
+                                    );
+                                }
+                            }
                         }
                         // Remove raw transcript from index (if it was indexed)
                         let raw_label = format!("session/{}", session_id);
@@ -696,9 +762,17 @@ impl MemoryService {
                 }
                 Err(e) => {
                     failed_count += 1;
+                    if let Some(event_id) = &monitor_event_id {
+                        error_compaction_event(
+                            &self.monitor_store,
+                            event_id,
+                            &e,
+                            started.elapsed().as_millis() as u64,
+                        );
+                    }
                     tracing::warn!(
                         "Recompact failed for session {}: {}",
-                        &session_id[..8.min(session_id.len())],
+                        short_id,
                         e,
                     );
                 }
