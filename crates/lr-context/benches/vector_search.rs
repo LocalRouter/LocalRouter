@@ -135,6 +135,7 @@ fn bench_search(c: &mut Criterion) {
                             black_box(&["programming language safety".to_string()]),
                             black_box(5),
                             None,
+                            &Default::default(),
                         )
                         .unwrap();
                 });
@@ -157,6 +158,7 @@ fn bench_search(c: &mut Criterion) {
                                 black_box(&["programming language safety".to_string()]),
                                 black_box(5),
                                 None,
+                                &Default::default(),
                             )
                             .unwrap();
                     });

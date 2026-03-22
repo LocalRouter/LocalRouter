@@ -25,7 +25,8 @@ pub struct McpTool {
 pub struct McpPrompt {
     /// Namespaced prompt name (e.g. "github__pr_template")
     pub name: String,
-    /// Prompt description
+    /// Prompt description (populated from MCP server, will be surfaced in prompt catalog)
+    #[allow(dead_code)]
     pub description: Option<String>,
     /// Prompt arguments (empty = no-arg prompt)
     pub arguments: Vec<McpPromptArgument>,

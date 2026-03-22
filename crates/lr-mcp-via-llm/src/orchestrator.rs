@@ -500,7 +500,7 @@ pub async fn run_agentic_loop(
                     // normal MCP/client handling below.
                     // (The assistant message & error results will be appended in the
                     // MCP execution block below.)
-                    mcp_calls.extend(unknown_calls.drain(..));
+                    mcp_calls.append(&mut unknown_calls);
                 }
 
                 if !client_calls.is_empty() && !mcp_calls.is_empty() {

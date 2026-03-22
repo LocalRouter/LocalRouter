@@ -4216,7 +4216,6 @@ read_tool_name: "ctx_read"
         let settings = McpGatewaySettings {
             sampling: SamplingBehavior::DirectAsk,
             elicitation_mode: ElicitationMode::Off,
-            ..Default::default()
         };
         let yaml = serde_yaml::to_string(&settings).unwrap();
         let deserialized: McpGatewaySettings = serde_yaml::from_str(&yaml).unwrap();

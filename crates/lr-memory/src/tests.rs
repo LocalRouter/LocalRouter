@@ -1,9 +1,7 @@
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
+use std::time::Duration;
 
-    use crate::session_manager::{MessageHashable, SessionConfig, SessionManager};
-    use crate::transcript::TranscriptWriter;
+use crate::session_manager::{MessageHashable, SessionConfig, SessionManager};
+use crate::transcript::TranscriptWriter;
 
     // ========================================================================
     // SessionManager tests
@@ -24,7 +22,7 @@ mod tests {
         let (id, path, is_new) = mgr.get_or_create_session("client-1", &dir);
         assert!(is_new);
         assert!(!id.is_empty());
-        assert!(path.to_string_lossy().contains("client-1") == false); // path is in /tmp/test-sessions
+        assert!(!path.to_string_lossy().contains("client-1")); // path is in /tmp/test-sessions
         assert!(path.to_string_lossy().ends_with(".md"));
     }
 
@@ -894,4 +892,3 @@ Sure! Here are the details...
         assert!(client_dir.join("archive/expired1.md").exists());
         assert!(client_dir.join("archive/expired1-summary.md").exists());
     }
-}

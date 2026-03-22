@@ -321,6 +321,28 @@ impl SafetyCheckResult {
     }
 }
 
+/// The SafetyModel trait - implemented by each model (Llama Guard, ShieldGemma, etc.)
+#[async_trait::async_trait]
+pub trait SafetyModel: Send + Sync {
+    /// Instance identifier (e.g. "llamaguard-4-local", "granite_guardian")
+    fn id(&self) -> &str;
+
+    /// Unique type identifier (e.g. "llama_guard_4", "shield_gemma")
+    fn model_type_id(&self) -> &str;
+
+    /// Human-readable display name
+    fn display_name(&self) -> &str;
+
+    /// List of categories this model can detect
+    fn supported_categories(&self) -> Vec<SafetyCategoryInfo>;
+
+    /// Whether this model checks all categories at once or one at a time
+    fn inference_mode(&self) -> InferenceMode;
+
+    /// Run a safety check
+    async fn check(&self, input: &SafetyCheckInput) -> Result<SafetyVerdict, String>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,26 +398,4 @@ mod tests {
             SafetyCategory::ViolentCrimes
         );
     }
-}
-
-/// The SafetyModel trait - implemented by each model (Llama Guard, ShieldGemma, etc.)
-#[async_trait::async_trait]
-pub trait SafetyModel: Send + Sync {
-    /// Instance identifier (e.g. "llamaguard-4-local", "granite_guardian")
-    fn id(&self) -> &str;
-
-    /// Unique type identifier (e.g. "llama_guard_4", "shield_gemma")
-    fn model_type_id(&self) -> &str;
-
-    /// Human-readable display name
-    fn display_name(&self) -> &str;
-
-    /// List of categories this model can detect
-    fn supported_categories(&self) -> Vec<SafetyCategoryInfo>;
-
-    /// Whether this model checks all categories at once or one at a time
-    fn inference_mode(&self) -> InferenceMode;
-
-    /// Run a safety check
-    async fn check(&self, input: &SafetyCheckInput) -> Result<SafetyVerdict, String>;
 }

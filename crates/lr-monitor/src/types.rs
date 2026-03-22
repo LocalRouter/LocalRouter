@@ -168,6 +168,7 @@ impl MonitorEventType {
 /// that are filled via `update()` when the operation completes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum MonitorEventData {
     // ---- LLM (combined: request + transform + response/error) ----
     LlmCall {

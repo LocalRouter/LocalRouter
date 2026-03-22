@@ -251,8 +251,8 @@ async fn test_skills_e2e_all_tool_commands() {
         "get_info response should list references"
     );
     assert!(
-        text.contains("ResourceRead"),
-        "get_info should reference ResourceRead for reading scripts"
+        text.contains("SkillRead"),
+        "get_info should reference SkillRead for reading scripts"
     );
 
     // ── Step 3: tools/list unchanged after get_info ─────────────────

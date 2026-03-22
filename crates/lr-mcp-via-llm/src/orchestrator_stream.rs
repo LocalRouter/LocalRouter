@@ -359,6 +359,7 @@ async fn streaming_loop(
 
         // Accumulate the full message from deltas
         let mut accumulated_content = String::new();
+        let mut accumulated_reasoning_content = String::new();
         let mut accumulated_tool_calls: Vec<ToolCallAccumulator> = Vec::new();
         let mut accumulated_role = String::from("assistant");
         let mut finish_reason: Option<String> = None;
@@ -379,6 +380,10 @@ async fn streaming_loop(
                         // Accumulate content
                         if let Some(ref content) = choice.delta.content {
                             accumulated_content.push_str(content);
+                        }
+                        // Accumulate reasoning/thinking content
+                        if let Some(ref reasoning) = choice.delta.reasoning_content {
+                            accumulated_reasoning_content.push_str(reasoning);
                         }
                         if let Some(ref role) = choice.delta.role {
                             accumulated_role.clone_from(role);
@@ -432,12 +437,19 @@ async fn streaming_loop(
             )
         };
 
+        let reasoning_content_opt = if accumulated_reasoning_content.is_empty() {
+            None
+        } else {
+            Some(accumulated_reasoning_content.clone())
+        };
+
         let accumulated_message = ChatMessage {
             role: accumulated_role,
             content: ChatMessageContent::Text(accumulated_content.clone()),
             tool_calls: tool_calls.clone(),
             tool_call_id: None,
             name: None,
+            reasoning_content: reasoning_content_opt.clone(),
         };
 
         // Complete the per-iteration LlmCall event
@@ -587,7 +599,7 @@ async fn streaming_loop(
                     }
 
                     // Mixed with real calls — merge unknowns into mcp_calls for error handling
-                    mcp_calls.extend(unknown_calls.drain(..));
+                    mcp_calls.append(&mut unknown_calls);
                 }
 
                 if !client_calls.is_empty() && !mcp_calls.is_empty() {
@@ -799,7 +811,7 @@ async fn streaming_loop(
                             roots.clone(),
                             permissions,
                             &arguments,
-                            &prompts,
+                            prompts,
                         )
                         .await
                     } else {
