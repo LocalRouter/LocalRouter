@@ -1,9 +1,9 @@
 import { Badge } from '@/components/ui/Badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
 import { cn } from '@/lib/utils'
-import { ChevronRight, Clock, User, Server } from 'lucide-react'
+import { Clock, User, Server } from 'lucide-react'
 import { useState } from 'react'
 import type { MonitorEvent } from '@/types/tauri-commands'
 
@@ -81,7 +81,7 @@ export function EventDetail({ event }: EventDetailProps) {
   )
 }
 
-// ---- Pretty-printed Messages ----
+// ---- Utility Functions ----
 
 const ROLE_COLORS: Record<string, string> = {
   system: 'bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20',
@@ -115,6 +115,23 @@ function formatToolArgs(args: unknown): string {
   }
   return JSON.stringify(args, null, 2)
 }
+
+function extractMcpContent(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed?.content && Array.isArray(parsed.content)) {
+      const textParts = (parsed.content as Array<Record<string, unknown>>)
+        .filter(p => p.type === 'text' && typeof p.text === 'string')
+        .map(p => p.text as string)
+      if (textParts.length > 0) return textParts.join('\n')
+    }
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return raw
+  }
+}
+
+// ---- Reusable Display Components ----
 
 function MessageItem({ message }: { message: Record<string, unknown> }) {
   const role = (message.role as string) || 'unknown'
@@ -159,102 +176,98 @@ function MessageItem({ message }: { message: Record<string, unknown> }) {
   )
 }
 
-function MessagesSection({ messages }: { messages: Array<Record<string, unknown>> }) {
-  const [isOpen, setIsOpen] = useState(messages.length <= 5)
-
+function Field({ label, value }: { label: string; value: string | undefined }) {
+  if (!value || value === 'undefined' || value === 'null') return null
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
-        <ChevronRight className={cn('h-3 w-3 transition-transform', isOpen && 'rotate-90')} />
-        <span className="font-medium">Messages ({messages.length})</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="mt-1 space-y-1.5">
-          {messages.map((msg, i) => (
-            <MessageItem key={i} message={msg} />
-          ))}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
-  )
-}
-
-// ---- Pretty-printed Tools using McpToolDisplay ----
-
-function ToolsSection({ tools }: { tools: Array<Record<string, unknown>> }) {
-  const [isOpen, setIsOpen] = useState(false)
-
-  const displayItems: McpToolDisplayItem[] = tools.map(t => {
-    const fn = t.function as Record<string, unknown> | undefined
-    return {
-      name: (fn?.name as string) || (t.name as string) || 'unknown',
-      description: (fn?.description as string) || null,
-      inputSchema: (fn?.parameters as Record<string, unknown>) || null,
-    }
-  })
-
-  return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
-        <ChevronRight className={cn('h-3 w-3 transition-transform', isOpen && 'rotate-90')} />
-        <span className="font-medium">Tools ({tools.length})</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="mt-1">
-          <McpToolDisplay tools={displayItems} compact />
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
-  )
-}
-
-// ---- Type-specific detail components ----
-
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold border-b border-border/50 pb-0.5 pt-1">
-      {title}
+    <div className="text-xs">
+      <span className="text-muted-foreground">{label}: </span>
+      <span className="font-medium">{value}</span>
     </div>
   )
 }
 
-function ParametersTable({ body }: { body: Record<string, unknown> }) {
-  const params = [
-    ['temperature', body.temperature],
-    ['max_tokens', body.max_tokens],
-    ['top_p', body.top_p],
-    ['frequency_penalty', body.frequency_penalty],
-    ['presence_penalty', body.presence_penalty],
-    ['seed', body.seed],
-    ['top_k', body.top_k],
-    ['repetition_penalty', body.repetition_penalty],
-  ].filter(([, v]) => v != null) as [string, unknown][]
-
-  if (params.length === 0) return null
-
-  const [isOpen, setIsOpen] = useState(false)
-
+function ServerField({ data }: { data: EventData }) {
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
-        <ChevronRight className={cn('h-3 w-3 transition-transform', isOpen && 'rotate-90')} />
-        <span className="font-medium">Parameters</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <table className="mt-1 text-xs w-full">
-          <tbody>
-            {params.map(([key, value]) => (
-              <tr key={key} className="border-b border-border/20">
-                <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap">{key}</td>
-                <td className="py-0.5 font-mono">{String(value)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </CollapsibleContent>
-    </Collapsible>
+    <div className="flex items-center gap-1 text-xs">
+      <Server className="h-3 w-3 text-muted-foreground" />
+      <span className="text-muted-foreground">Server:</span>
+      <span className="font-medium">{(data.server_name || data.server_id) as string}</span>
+    </div>
   )
 }
+
+function JsonBlock({ data }: { data: unknown }) {
+  if (data === null || data === undefined) return null
+
+  const cleanData = typeof data === 'object' && !Array.isArray(data)
+    ? Object.fromEntries(Object.entries(data as Record<string, unknown>).filter(([, v]) => v != null))
+    : data
+
+  if (typeof cleanData === 'object' && !Array.isArray(cleanData) && Object.keys(cleanData as Record<string, unknown>).length === 0) return null
+
+  return (
+    <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[400px] overflow-auto">
+      {JSON.stringify(cleanData, null, 2)}
+    </pre>
+  )
+}
+
+function ArgumentsBlock({ args }: { args: unknown }) {
+  if (args == null || (typeof args === 'object' && Object.keys(args as Record<string, unknown>).length === 0)) return null
+
+  const entries = typeof args === 'object' && !Array.isArray(args)
+    ? Object.entries(args as Record<string, unknown>).filter(([, v]) => v != null)
+    : []
+
+  if (entries.length === 0) {
+    return <JsonBlock data={args} />
+  }
+
+  return (
+    <table className="text-xs w-full">
+      <tbody>
+        {entries.map(([key, value]) => (
+          <tr key={key} className="border-b border-border/20">
+            <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap align-top">{key}</td>
+            <td className="py-0.5 font-mono whitespace-pre-wrap break-all max-w-0">
+              {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+function McpResponseTab({ data }: { data: EventData }) {
+  const rawContent = (data.response_preview || data.content_preview) as string | undefined
+  const displayContent = rawContent ? extractMcpContent(rawContent) : null
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        {data.success != null && <Field label="Success" value={String(data.success)} />}
+        {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+      </div>
+      {data.error && (
+        <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+          {data.error as string}
+        </pre>
+      )}
+      {displayContent && (
+        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
+          {displayContent}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+// Sub-tab styling
+const SUB_TABS_LIST = "h-7 w-full bg-muted/50 p-0.5"
+const SUB_TAB = "text-[11px] h-6 px-2.5"
+
+// ---- LLM Call Detail ----
 
 function LlmCallDetail({ data }: { data: EventData }) {
   const body = data.request_body as Record<string, unknown> | undefined
@@ -264,81 +277,146 @@ function LlmCallDetail({ data }: { data: EventData }) {
   const hasResponse = data.provider != null
   const hasError = data.error != null
 
-  // Toggle between original and transformed request view
   const [showTransformed, setShowTransformed] = useState(hasTransformed)
 
-  // The active body to display (original or transformed)
   const activeBody = (showTransformed && transformedBody) ? transformedBody : body
   const messages = activeBody?.messages as Array<Record<string, unknown>> | undefined
   const tools = activeBody?.tools as Array<Record<string, unknown>> | undefined
 
+  const params = activeBody ? [
+    ['temperature', activeBody.temperature],
+    ['max_tokens', activeBody.max_tokens],
+    ['top_p', activeBody.top_p],
+    ['frequency_penalty', activeBody.frequency_penalty],
+    ['presence_penalty', activeBody.presence_penalty],
+    ['seed', activeBody.seed],
+    ['top_k', activeBody.top_k],
+    ['repetition_penalty', activeBody.repetition_penalty],
+  ].filter(([, v]) => v != null) as [string, unknown][] : []
+
+  const toolDisplayItems: McpToolDisplayItem[] = (tools || []).map(t => {
+    const fn = t.function as Record<string, unknown> | undefined
+    return {
+      name: (fn?.name as string) || (t.name as string) || 'unknown',
+      description: (fn?.description as string) || null,
+      inputSchema: (fn?.parameters as Record<string, unknown>) || null,
+    }
+  })
+
+  const defaultSubTab = messages && messages.length > 0 ? 'messages'
+    : tools && tools.length > 0 ? 'tools'
+    : params.length > 0 ? 'parameters' : 'body'
+
   return (
-    <div className="space-y-2">
-      {/* Request section header with original/transformed toggle */}
-      {(hasResponse || hasError) && (
-        <div className="flex items-center justify-between">
-          <SectionHeader title="Request" />
+    <Tabs defaultValue="request">
+      <TabsList className="w-full">
+        <TabsTrigger value="request">Request</TabsTrigger>
+        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+        {hasError && <TabsTrigger value="error">Error</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="request" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Endpoint" value={data.endpoint as string} />
+          <Field label="Model" value={data.model as string} />
+          <Field label="Stream" value={data.stream != null ? String(data.stream) : undefined} />
         </div>
-      )}
 
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Endpoint" value={data.endpoint as string} />
-        <Field label="Model" value={data.model as string} />
-        <Field label="Stream" value={data.stream != null ? String(data.stream) : undefined} />
-      </div>
-
-      {/* Original / Transformed toggle */}
-      {hasTransformed && (
-        <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-md border border-border text-[11px]">
-            <button
-              onClick={() => setShowTransformed(false)}
-              className={cn(
-                'px-2 py-0.5 rounded-l-md transition-colors',
-                !showTransformed ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-              )}
-            >
-              Original
-            </button>
-            <button
-              onClick={() => setShowTransformed(true)}
-              className={cn(
-                'px-2 py-0.5 rounded-r-md border-l transition-colors',
-                showTransformed ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-              )}
-            >
-              Transformed
-            </button>
-          </div>
-          {showTransformed && transformations && transformations.length > 0 && (
-            <div className="flex items-center gap-1 flex-wrap">
-              {transformations.map((t, i) => (
-                <Badge key={i} variant="secondary" className="text-[10px]">{t}</Badge>
-              ))}
+        {hasTransformed && (
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-md border border-border text-[11px]">
+              <button
+                onClick={() => setShowTransformed(false)}
+                className={cn(
+                  'px-2 py-0.5 rounded-l-md transition-colors',
+                  !showTransformed ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                Original
+              </button>
+              <button
+                onClick={() => setShowTransformed(true)}
+                className={cn(
+                  'px-2 py-0.5 rounded-r-md border-l transition-colors',
+                  showTransformed ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                Transformed
+              </button>
             </div>
-          )}
-        </div>
-      )}
+            {showTransformed && transformations && transformations.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap">
+                {transformations.map((t, i) => (
+                  <Badge key={i} variant="secondary" className="text-[10px]">{t}</Badge>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
-      {messages && messages.length > 0 && (
-        <MessagesSection messages={messages} />
-      )}
+        {activeBody && (
+          <Tabs defaultValue={defaultSubTab} key={showTransformed ? 'transformed' : 'original'}>
+            <TabsList className={SUB_TABS_LIST}>
+              {messages && messages.length > 0 && (
+                <TabsTrigger value="messages" className={SUB_TAB}>
+                  Messages ({messages.length})
+                </TabsTrigger>
+              )}
+              {tools && tools.length > 0 && (
+                <TabsTrigger value="tools" className={SUB_TAB}>
+                  Tools ({tools.length})
+                </TabsTrigger>
+              )}
+              {params.length > 0 && (
+                <TabsTrigger value="parameters" className={SUB_TAB}>
+                  Parameters
+                </TabsTrigger>
+              )}
+              <TabsTrigger value="body" className={SUB_TAB}>
+                Full Body
+              </TabsTrigger>
+            </TabsList>
 
-      {tools && tools.length > 0 && (
-        <ToolsSection tools={tools} />
-      )}
+            {messages && messages.length > 0 && (
+              <TabsContent value="messages">
+                <div className="space-y-1.5">
+                  {messages.map((msg, i) => (
+                    <MessageItem key={i} message={msg} />
+                  ))}
+                </div>
+              </TabsContent>
+            )}
 
-      {activeBody && <ParametersTable body={activeBody} />}
+            {tools && tools.length > 0 && (
+              <TabsContent value="tools">
+                <McpToolDisplay tools={toolDisplayItems} compact />
+              </TabsContent>
+            )}
 
-      {activeBody && (
-        <JsonSection title="Full Request Body" data={activeBody} defaultOpen={false} />
-      )}
+            {params.length > 0 && (
+              <TabsContent value="parameters">
+                <table className="text-xs w-full">
+                  <tbody>
+                    {params.map(([key, value]) => (
+                      <tr key={key} className="border-b border-border/20">
+                        <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap">{key}</td>
+                        <td className="py-0.5 font-mono">{String(value)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TabsContent>
+            )}
 
-      {/* Response section (present when status=complete) */}
+            <TabsContent value="body">
+              <JsonBlock data={activeBody} />
+            </TabsContent>
+          </Tabs>
+        )}
+      </TabsContent>
+
       {hasResponse && (
-        <>
-          <SectionHeader title="Response" />
-
+        <TabsContent value="response" className="space-y-2">
           <table className="w-full text-xs">
             <tbody>
               <tr className="border-b border-border/30">
@@ -394,21 +472,23 @@ function LlmCallDetail({ data }: { data: EventData }) {
             </tbody>
           </table>
 
-          {data.content_preview && (
-            <div className="text-xs">
-              <span className="text-muted-foreground font-medium">Content:</span>
+          <div className="text-xs">
+            <span className="text-muted-foreground font-medium">Content:</span>
+            {(data.content_preview as string) ? (
               <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
                 {data.content_preview as string}
               </pre>
-            </div>
-          )}
-        </>
+            ) : (
+              <p className="mt-1 p-2 bg-muted rounded text-xs text-muted-foreground italic">
+                No text content{data.finish_reason === 'tool_calls' ? ' — response contained tool calls only' : ''}
+              </p>
+            )}
+          </div>
+        </TabsContent>
       )}
 
-      {/* Error section (present when status=error) */}
       {hasError && (
-        <>
-          <SectionHeader title="Error" />
+        <TabsContent value="error" className="space-y-2">
           <div className="grid grid-cols-2 gap-2 text-xs">
             {data.provider && <Field label="Provider" value={data.provider as string} />}
             {data.status_code != null && <Field label="Status Code" value={String(data.status_code)} />}
@@ -416,173 +496,205 @@ function LlmCallDetail({ data }: { data: EventData }) {
           <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
             {data.error as string}
           </pre>
-        </>
+        </TabsContent>
       )}
-    </div>
+    </Tabs>
   )
 }
 
-function ServerField({ data }: { data: EventData }) {
-  return (
-    <div className="flex items-center gap-1 text-xs">
-      <Server className="h-3 w-3 text-muted-foreground" />
-      <span className="text-muted-foreground">Server:</span>
-      <span className="font-medium">{(data.server_name || data.server_id) as string}</span>
-    </div>
-  )
-}
-
-/// Extract text from MCP response content structure:
-/// {"content":[{"type":"text","text":"..."}]} → the text value
-/// Falls back to the raw string if not in this format.
-function extractMcpContent(raw: string): string {
-  try {
-    const parsed = JSON.parse(raw)
-    if (parsed?.content && Array.isArray(parsed.content)) {
-      const textParts = (parsed.content as Array<Record<string, unknown>>)
-        .filter(p => p.type === 'text' && typeof p.text === 'string')
-        .map(p => p.text as string)
-      if (textParts.length > 0) return textParts.join('\n')
-    }
-    // If it's a JSON object but not MCP format, pretty-print it
-    return JSON.stringify(parsed, null, 2)
-  } catch {
-    return raw
-  }
-}
-
-/// Pretty-print tool arguments as a key-value table
-function ArgumentsTable({ args }: { args: unknown }) {
-  const [isOpen, setIsOpen] = useState(true)
-
-  if (args == null || (typeof args === 'object' && Object.keys(args as Record<string, unknown>).length === 0)) return null
-
-  const entries = typeof args === 'object' && !Array.isArray(args)
-    ? Object.entries(args as Record<string, unknown>).filter(([, v]) => v != null)
-    : []
-
-  if (entries.length === 0) {
-    return <JsonSection title="Arguments" data={args} defaultOpen={true} />
-  }
-
-  return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
-        <ChevronRight className={cn('h-3 w-3 transition-transform', isOpen && 'rotate-90')} />
-        <span className="font-medium">Arguments</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <table className="mt-1 text-xs w-full">
-          <tbody>
-            {entries.map(([key, value]) => (
-              <tr key={key} className="border-b border-border/20">
-                <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap align-top">{key}</td>
-                <td className="py-0.5 font-mono whitespace-pre-wrap break-all max-w-0">
-                  {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </CollapsibleContent>
-    </Collapsible>
-  )
-}
-
-function McpResponseSection({ data }: { data: EventData }) {
-  if (data.success == null && !data.error && !data.response_preview && !data.content_preview) return null
-
-  const rawContent = (data.response_preview || data.content_preview) as string | undefined
-  const displayContent = rawContent ? extractMcpContent(rawContent) : null
-
-  return (
-    <>
-      <SectionHeader title="Response" />
-      {data.success != null && (
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <Field label="Success" value={String(data.success)} />
-          {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
-        </div>
-      )}
-      {data.error && (
-        <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-          {data.error as string}
-        </pre>
-      )}
-      {displayContent && (
-        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-          {displayContent}
-        </pre>
-      )}
-    </>
-  )
-}
+// ---- MCP Tool Call Detail ----
 
 function McpToolCallDetail({ data }: { data: EventData }) {
+  const hasResponse = data.success != null || data.error != null || data.response_preview != null || data.content_preview != null
+
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Tool" value={data.tool_name as string} />
-        <ServerField data={data} />
-      </div>
-      {data.firewall_action && (
-        <Field label="Firewall" value={data.firewall_action as string} />
+    <Tabs defaultValue="request">
+      <TabsList className="w-full">
+        <TabsTrigger value="request">Request</TabsTrigger>
+        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="request" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Tool" value={data.tool_name as string} />
+          <ServerField data={data} />
+          {data.firewall_action && <Field label="Firewall" value={data.firewall_action as string} />}
+        </div>
+        {data.arguments != null && <ArgumentsBlock args={data.arguments as unknown} />}
+      </TabsContent>
+
+      {hasResponse && (
+        <TabsContent value="response">
+          <McpResponseTab data={data} />
+        </TabsContent>
       )}
-      <ArgumentsTable args={data.arguments as unknown} />
-      <McpResponseSection data={data} />
-    </div>
+    </Tabs>
   )
 }
+
+// ---- MCP Resource Read Detail ----
 
 function McpResourceReadDetail({ data }: { data: EventData }) {
+  const hasResponse = data.success != null || data.error != null || data.response_preview != null || data.content_preview != null
+
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="URI" value={data.uri as string} />
-        <ServerField data={data} />
-      </div>
-      <McpResponseSection data={data} />
-    </div>
+    <Tabs defaultValue="request">
+      <TabsList className="w-full">
+        <TabsTrigger value="request">Request</TabsTrigger>
+        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="request" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="URI" value={data.uri as string} />
+          <ServerField data={data} />
+        </div>
+      </TabsContent>
+
+      {hasResponse && (
+        <TabsContent value="response">
+          <McpResponseTab data={data} />
+        </TabsContent>
+      )}
+    </Tabs>
   )
 }
 
+// ---- MCP Prompt Get Detail ----
+
 function McpPromptGetDetail({ data }: { data: EventData }) {
+  const hasResponse = data.success != null || data.error != null || data.response_preview != null || data.content_preview != null
+
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Prompt" value={data.prompt_name as string} />
-        <ServerField data={data} />
-      </div>
-      {data.arguments && <JsonSection title="Arguments" data={data.arguments as unknown} defaultOpen={true} />}
-      <McpResponseSection data={data} />
-    </div>
+    <Tabs defaultValue="request">
+      <TabsList className="w-full">
+        <TabsTrigger value="request">Request</TabsTrigger>
+        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="request" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Prompt" value={data.prompt_name as string} />
+          <ServerField data={data} />
+        </div>
+        {data.arguments && <JsonBlock data={data.arguments as unknown} />}
+      </TabsContent>
+
+      {hasResponse && (
+        <TabsContent value="response">
+          <McpResponseTab data={data} />
+        </TabsContent>
+      )}
+    </Tabs>
   )
 }
+
+// ---- MCP Elicitation Detail ----
+
+function McpElicitationDetail({ data }: { data: EventData }) {
+  const hasResponse = data.action != null
+
+  return (
+    <Tabs defaultValue="request">
+      <TabsList className="w-full">
+        <TabsTrigger value="request">Request</TabsTrigger>
+        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="request" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <ServerField data={data} />
+        </div>
+        {data.message && (
+          <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
+            {data.message as string}
+          </pre>
+        )}
+        {data.schema && <JsonBlock data={data.schema as unknown} />}
+      </TabsContent>
+
+      {hasResponse && (
+        <TabsContent value="response" className="space-y-2">
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Field label="Action" value={data.action as string} />
+            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+          </div>
+          {data.content && <JsonBlock data={data.content as unknown} />}
+        </TabsContent>
+      )}
+    </Tabs>
+  )
+}
+
+// ---- MCP Sampling Detail ----
+
+function McpSamplingDetail({ data }: { data: EventData }) {
+  const hasResponse = data.action != null
+
+  return (
+    <Tabs defaultValue="request">
+      <TabsList className="w-full">
+        <TabsTrigger value="request">Request</TabsTrigger>
+        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="request" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <ServerField data={data} />
+          {data.message_count != null && <Field label="Messages" value={String(data.message_count)} />}
+          {data.model_hint && <Field label="Model Hint" value={data.model_hint as string} />}
+          {data.max_tokens != null && <Field label="Max Tokens" value={String(data.max_tokens)} />}
+        </div>
+      </TabsContent>
+
+      {hasResponse && (
+        <TabsContent value="response" className="space-y-2">
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Field label="Action" value={data.action as string} />
+            {data.model_used && <Field label="Model Used" value={data.model_used as string} />}
+            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+          </div>
+          {data.content_preview && (
+            <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
+              {data.content_preview as string}
+            </pre>
+          )}
+        </TabsContent>
+      )}
+    </Tabs>
+  )
+}
+
+// ---- Guardrail Detail ----
 
 function GuardrailDetail({ data }: { data: EventData }) {
   const categories = data.flagged_categories as Array<Record<string, unknown>> | undefined
-  const hasResponse = data.result != null
-  return (
-    <div className="space-y-2">
-      {hasResponse && <SectionHeader title="Scan" />}
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        {data.direction && <Field label="Direction" value={data.direction as string} />}
-        {data.models_used && (
-          <Field label="Models" value={(data.models_used as string[]).join(', ')} />
-        )}
-      </div>
-      {data.text_preview && (
-        <div className="text-xs">
-          <span className="text-muted-foreground font-medium">Input:</span>
-          <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[100px] overflow-auto">
-            {data.text_preview as string}
-          </pre>
-        </div>
-      )}
+  const hasResult = data.result != null
 
-      {hasResponse && (
-        <>
-          <SectionHeader title="Result" />
+  return (
+    <Tabs defaultValue="scan">
+      <TabsList className="w-full">
+        <TabsTrigger value="scan">Scan</TabsTrigger>
+        {hasResult && <TabsTrigger value="result">Result</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="scan" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          {data.direction && <Field label="Direction" value={data.direction as string} />}
+          {data.models_used && <Field label="Models" value={(data.models_used as string[]).join(', ')} />}
+        </div>
+        {data.text_preview && (
+          <div className="text-xs">
+            <span className="text-muted-foreground font-medium">Input:</span>
+            <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
+              {data.text_preview as string}
+            </pre>
+          </div>
+        )}
+      </TabsContent>
+
+      {hasResult && (
+        <TabsContent value="result" className="space-y-2">
           <div className="grid grid-cols-2 gap-2 text-xs">
             <Field label="Result" value={data.result as string} />
             {data.action_taken && <Field label="Action" value={data.action_taken as string} />}
@@ -600,363 +712,323 @@ function GuardrailDetail({ data }: { data: EventData }) {
               ))}
             </div>
           )}
-        </>
+        </TabsContent>
       )}
-    </div>
+    </Tabs>
   )
 }
 
-function SecretScanDetail({ data }: { data: EventData }) {
-  const hasResponse = data.findings_count != null
-  return (
-    <div className="space-y-2">
-      {hasResponse && <SectionHeader title="Scan" />}
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        {data.rules_count != null && <Field label="Rules" value={String(data.rules_count)} />}
-      </div>
-      {data.text_preview && (
-        <div className="text-xs">
-          <span className="text-muted-foreground font-medium">Input:</span>
-          <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[100px] overflow-auto">
-            {data.text_preview as string}
-          </pre>
-        </div>
-      )}
+// ---- Secret Scan Detail ----
 
-      {hasResponse && (
-        <>
-          <SectionHeader title="Result" />
+function SecretScanDetail({ data }: { data: EventData }) {
+  const hasResult = data.findings_count != null
+
+  return (
+    <Tabs defaultValue="scan">
+      <TabsList className="w-full">
+        <TabsTrigger value="scan">Scan</TabsTrigger>
+        {hasResult && <TabsTrigger value="result">Result</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="scan" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          {data.rules_count != null && <Field label="Rules" value={String(data.rules_count)} />}
+        </div>
+        {data.text_preview && (
+          <div className="text-xs">
+            <span className="text-muted-foreground font-medium">Input:</span>
+            <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
+              {data.text_preview as string}
+            </pre>
+          </div>
+        )}
+      </TabsContent>
+
+      {hasResult && (
+        <TabsContent value="result" className="space-y-2">
           <div className="grid grid-cols-2 gap-2 text-xs">
             <Field label="Findings" value={String(data.findings_count)} />
             {data.action_taken && <Field label="Action" value={data.action_taken as string} />}
             {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
           </div>
-          {data.findings && <JsonSection title="Findings" data={data.findings as unknown} defaultOpen={true} />}
-        </>
+          {data.findings && <JsonBlock data={data.findings as unknown} />}
+        </TabsContent>
       )}
-    </div>
+    </Tabs>
   )
 }
 
-function RoutingDetail({ data }: { data: EventData }) {
-  // RouteLlmClassify has request+response; RoutingDecision is standalone
-  const hasClassifyResponse = data.selected_tier != null || data.win_rate != null
-  return (
-    <div className="space-y-2">
-      {hasClassifyResponse && <SectionHeader title="Classification Request" />}
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        {data.routing_type && <Field label="Type" value={data.routing_type as string} />}
-        {data.original_model && <Field label="Original Model" value={data.original_model as string} />}
-        {data.threshold != null && <Field label="Threshold" value={String(data.threshold)} />}
-      </div>
+// ---- Routing Detail ----
 
-      {hasClassifyResponse && (
-        <>
-          <SectionHeader title="Classification Result" />
+function RoutingDetail({ data }: { data: EventData }) {
+  const hasResult = data.selected_tier != null || data.win_rate != null || data.final_model != null
+
+  return (
+    <Tabs defaultValue="request">
+      <TabsList className="w-full">
+        <TabsTrigger value="request">Request</TabsTrigger>
+        {hasResult && <TabsTrigger value="result">Result</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="request" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          {data.routing_type && <Field label="Type" value={data.routing_type as string} />}
+          {data.original_model && <Field label="Original Model" value={data.original_model as string} />}
+          {data.threshold != null && <Field label="Threshold" value={String(data.threshold)} />}
+        </div>
+      </TabsContent>
+
+      {hasResult && (
+        <TabsContent value="result" className="space-y-2">
           <div className="grid grid-cols-2 gap-2 text-xs">
             {data.selected_tier && <Field label="Tier" value={data.selected_tier as string} />}
             {data.win_rate != null && <Field label="Win Rate" value={((data.win_rate as number) * 100).toFixed(1) + '%'} />}
             {data.routed_model && <Field label="Routed Model" value={data.routed_model as string} />}
+            {data.final_model && <Field label="Final Model" value={data.final_model as string} />}
             {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
+            {data.firewall_action && <Field label="Firewall" value={data.firewall_action as string} />}
+            {data.candidate_models && <Field label="Candidates" value={(data.candidate_models as string[]).join(', ')} />}
           </div>
-        </>
+        </TabsContent>
       )}
-
-      {/* RoutingDecision standalone fields */}
-      {data.final_model && <Field label="Final Model" value={data.final_model as string} />}
-      {data.firewall_action && <Field label="Firewall" value={data.firewall_action as string} />}
-      {data.candidate_models && (
-        <Field label="Candidates" value={(data.candidate_models as string[]).join(', ')} />
-      )}
-    </div>
+    </Tabs>
   )
 }
 
-// ---- New event detail components ----
+// ---- Error/Message Event Details ----
 
 function AuthErrorDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Error Type" value={data.error_type as string} />
-        <Field label="Status Code" value={String(data.status_code)} />
-        <Field label="Endpoint" value={data.endpoint as string} />
-        {data.reason && <Field label="Reason" value={data.reason as string} />}
-      </div>
-      <div className="text-xs">
-        <span className="text-muted-foreground font-medium">Message:</span>
-        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-          {data.message as string}
-        </pre>
-      </div>
-    </div>
+    <Tabs defaultValue="overview">
+      <TabsList className="w-full">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+      </TabsList>
+      <TabsContent value="overview" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Error Type" value={data.error_type as string} />
+          <Field label="Status Code" value={String(data.status_code)} />
+          <Field label="Endpoint" value={data.endpoint as string} />
+          {data.reason && <Field label="Reason" value={data.reason as string} />}
+        </div>
+      </TabsContent>
+      {data.message && (
+        <TabsContent value="message">
+          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+            {data.message as string}
+          </pre>
+        </TabsContent>
+      )}
+    </Tabs>
   )
 }
 
 function RateLimitDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Reason" value={data.reason as string} />
-        <Field label="Status Code" value={String(data.status_code)} />
-        <Field label="Endpoint" value={data.endpoint as string} />
-        {data.retry_after_secs != null && <Field label="Retry After" value={`${data.retry_after_secs}s`} />}
-      </div>
-      <div className="text-xs">
-        <span className="text-muted-foreground font-medium">Message:</span>
-        <pre className="mt-1 p-2 bg-amber-500/10 rounded text-xs whitespace-pre-wrap text-amber-700 dark:text-amber-400">
-          {data.message as string}
-        </pre>
-      </div>
-    </div>
+    <Tabs defaultValue="overview">
+      <TabsList className="w-full">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+      </TabsList>
+      <TabsContent value="overview" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Reason" value={data.reason as string} />
+          <Field label="Status Code" value={String(data.status_code)} />
+          <Field label="Endpoint" value={data.endpoint as string} />
+          {data.retry_after_secs != null && <Field label="Retry After" value={`${data.retry_after_secs}s`} />}
+        </div>
+      </TabsContent>
+      {data.message && (
+        <TabsContent value="message">
+          <pre className="p-2 bg-amber-500/10 rounded text-xs whitespace-pre-wrap text-amber-700 dark:text-amber-400">
+            {data.message as string}
+          </pre>
+        </TabsContent>
+      )}
+    </Tabs>
   )
 }
 
 function ValidationErrorDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Endpoint" value={data.endpoint as string} />
-        <Field label="Status Code" value={String(data.status_code)} />
-        {data.field && <Field label="Field" value={data.field as string} />}
-      </div>
-      <div className="text-xs">
-        <span className="text-muted-foreground font-medium">Message:</span>
-        <pre className="mt-1 p-2 bg-yellow-500/10 rounded text-xs whitespace-pre-wrap text-yellow-700 dark:text-yellow-400">
-          {data.message as string}
-        </pre>
-      </div>
-    </div>
+    <Tabs defaultValue="overview">
+      <TabsList className="w-full">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+      </TabsList>
+      <TabsContent value="overview" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Endpoint" value={data.endpoint as string} />
+          <Field label="Status Code" value={String(data.status_code)} />
+          {data.field && <Field label="Field" value={data.field as string} />}
+        </div>
+      </TabsContent>
+      {data.message && (
+        <TabsContent value="message">
+          <pre className="p-2 bg-yellow-500/10 rounded text-xs whitespace-pre-wrap text-yellow-700 dark:text-yellow-400">
+            {data.message as string}
+          </pre>
+        </TabsContent>
+      )}
+    </Tabs>
   )
 }
 
 function McpServerEventDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <div className="flex items-center gap-1 text-xs">
-          <Server className="h-3 w-3 text-muted-foreground" />
-          <span className="text-muted-foreground">Server:</span>
-          <span>{(data.server_name || data.server_id) as string}</span>
+    <Tabs defaultValue="overview">
+      <TabsList className="w-full">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+      </TabsList>
+      <TabsContent value="overview" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="flex items-center gap-1 text-xs">
+            <Server className="h-3 w-3 text-muted-foreground" />
+            <span className="text-muted-foreground">Server:</span>
+            <span>{(data.server_name || data.server_id) as string}</span>
+          </div>
+          <Field label="Action" value={data.action as string} />
         </div>
-        <Field label="Action" value={data.action as string} />
-      </div>
-      <div className="text-xs">
-        <span className="text-muted-foreground font-medium">Message:</span>
-        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-          {data.message as string}
-        </pre>
-      </div>
-    </div>
+      </TabsContent>
+      {data.message && (
+        <TabsContent value="message">
+          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+            {data.message as string}
+          </pre>
+        </TabsContent>
+      )}
+    </Tabs>
   )
 }
 
 function OAuthEventDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Action" value={data.action as string} />
-        <Field label="Status Code" value={String(data.status_code)} />
-        {data.client_id_hint && <Field label="Client" value={data.client_id_hint as string} />}
-      </div>
-      <div className="text-xs">
-        <span className="text-muted-foreground font-medium">Message:</span>
-        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-          {data.message as string}
-        </pre>
-      </div>
-    </div>
+    <Tabs defaultValue="overview">
+      <TabsList className="w-full">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+      </TabsList>
+      <TabsContent value="overview" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Action" value={data.action as string} />
+          <Field label="Status Code" value={String(data.status_code)} />
+          {data.client_id_hint && <Field label="Client" value={data.client_id_hint as string} />}
+        </div>
+      </TabsContent>
+      {data.message && (
+        <TabsContent value="message">
+          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+            {data.message as string}
+          </pre>
+        </TabsContent>
+      )}
+    </Tabs>
   )
 }
 
 function InternalErrorDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Error Type" value={data.error_type as string} />
-        <Field label="Status Code" value={String(data.status_code)} />
-      </div>
-      <div className="text-xs">
-        <span className="text-muted-foreground font-medium">Message:</span>
-        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-          {data.message as string}
-        </pre>
-      </div>
-    </div>
+    <Tabs defaultValue="overview">
+      <TabsList className="w-full">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+      </TabsList>
+      <TabsContent value="overview" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Error Type" value={data.error_type as string} />
+          <Field label="Status Code" value={String(data.status_code)} />
+        </div>
+      </TabsContent>
+      {data.message && (
+        <TabsContent value="message">
+          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+            {data.message as string}
+          </pre>
+        </TabsContent>
+      )}
+    </Tabs>
   )
 }
 
 function ModerationEventDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Reason" value={data.reason as string} />
-        <Field label="Status Code" value={String(data.status_code)} />
-      </div>
-      <div className="text-xs">
-        <span className="text-muted-foreground font-medium">Message:</span>
-        <pre className="mt-1 p-2 bg-orange-500/10 rounded text-xs whitespace-pre-wrap text-orange-700 dark:text-orange-400">
-          {data.message as string}
-        </pre>
-      </div>
-    </div>
+    <Tabs defaultValue="overview">
+      <TabsList className="w-full">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+      </TabsList>
+      <TabsContent value="overview" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Reason" value={data.reason as string} />
+          <Field label="Status Code" value={String(data.status_code)} />
+        </div>
+      </TabsContent>
+      {data.message && (
+        <TabsContent value="message">
+          <pre className="p-2 bg-orange-500/10 rounded text-xs whitespace-pre-wrap text-orange-700 dark:text-orange-400">
+            {data.message as string}
+          </pre>
+        </TabsContent>
+      )}
+    </Tabs>
   )
 }
 
 function ConnectionErrorDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Transport" value={data.transport as string} />
-        <Field label="Action" value={data.action as string} />
-      </div>
-      <div className="text-xs">
-        <span className="text-muted-foreground font-medium">Message:</span>
-        <pre className="mt-1 p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-          {data.message as string}
-        </pre>
-      </div>
-    </div>
-  )
-}
-
-function McpElicitationDetail({ data }: { data: EventData }) {
-  const hasResponse = data.action != null
-  return (
-    <div className="space-y-2">
-      {hasResponse && <SectionHeader title="Request" />}
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <ServerField data={data} />
-      </div>
+    <Tabs defaultValue="overview">
+      <TabsList className="w-full">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+      </TabsList>
+      <TabsContent value="overview" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Transport" value={data.transport as string} />
+          <Field label="Action" value={data.action as string} />
+        </div>
+      </TabsContent>
       {data.message && (
-        <div className="text-xs">
-          <span className="text-muted-foreground font-medium">Message:</span>
-          <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
+        <TabsContent value="message">
+          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
             {data.message as string}
           </pre>
-        </div>
+        </TabsContent>
       )}
-      {data.schema && <JsonSection title="Schema" data={data.schema as unknown} defaultOpen={false} />}
-
-      {hasResponse && (
-        <>
-          <SectionHeader title="Response" />
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <Field label="Action" value={data.action as string} />
-            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
-          </div>
-          {data.content && <JsonSection title="Content" data={data.content as unknown} defaultOpen={true} />}
-        </>
-      )}
-    </div>
+    </Tabs>
   )
 }
 
-function McpSamplingDetail({ data }: { data: EventData }) {
-  const hasResponse = data.action != null
-  return (
-    <div className="space-y-2">
-      {hasResponse && <SectionHeader title="Request" />}
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <ServerField data={data} />
-        {data.message_count != null && <Field label="Messages" value={String(data.message_count)} />}
-        {data.model_hint && <Field label="Model Hint" value={data.model_hint as string} />}
-        {data.max_tokens != null && <Field label="Max Tokens" value={String(data.max_tokens)} />}
-      </div>
-
-      {hasResponse && (
-        <>
-          <SectionHeader title="Response" />
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <Field label="Action" value={data.action as string} />
-            {data.model_used && <Field label="Model Used" value={data.model_used as string} />}
-            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
-          </div>
-          {data.content_preview && (
-            <div className="text-xs">
-              <span className="text-muted-foreground font-medium">Content:</span>
-              <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
-                {data.content_preview as string}
-              </pre>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
+// ---- Simple field-only events ----
 
 function PromptCompressionDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Method" value={data.method as string} />
-        <Field label="Reduction" value={`${((data.reduction_percent as number) ?? 0).toFixed(1)}%`} />
-        <Field label="Original Tokens" value={String(data.original_tokens)} />
-        <Field label="Compressed Tokens" value={String(data.compressed_tokens)} />
-        <Field label="Duration" value={`${data.duration_ms}ms`} />
-      </div>
+    <div className="grid grid-cols-2 gap-2 text-xs">
+      <Field label="Method" value={data.method as string} />
+      <Field label="Reduction" value={`${((data.reduction_percent as number) ?? 0).toFixed(1)}%`} />
+      <Field label="Original Tokens" value={String(data.original_tokens)} />
+      <Field label="Compressed Tokens" value={String(data.compressed_tokens)} />
+      <Field label="Duration" value={`${data.duration_ms}ms`} />
     </div>
   )
 }
 
 function FirewallDecisionDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Type" value={data.firewall_type as string} />
-        <Field label="Item" value={data.item_name as string} />
-        <Field label="Action" value={data.action as string} />
-        {data.duration && <Field label="Duration" value={data.duration as string} />}
-      </div>
+    <div className="grid grid-cols-2 gap-2 text-xs">
+      <Field label="Type" value={data.firewall_type as string} />
+      <Field label="Item" value={data.item_name as string} />
+      <Field label="Action" value={data.action as string} />
+      {data.duration && <Field label="Duration" value={data.duration as string} />}
     </div>
   )
 }
 
 function SseConnectionDetail({ data }: { data: EventData }) {
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Session" value={data.session_id as string} />
-        <Field label="Action" value={data.action as string} />
-      </div>
+    <div className="grid grid-cols-2 gap-2 text-xs">
+      <Field label="Session" value={data.session_id as string} />
+      <Field label="Action" value={data.action as string} />
     </div>
-  )
-}
-
-function Field({ label, value }: { label: string; value: string | undefined }) {
-  if (!value || value === 'undefined' || value === 'null') return null
-  return (
-    <div className="text-xs">
-      <span className="text-muted-foreground">{label}: </span>
-      <span className="font-medium">{value}</span>
-    </div>
-  )
-}
-
-function JsonSection({ title, data, defaultOpen }: { title: string; data: unknown; defaultOpen: boolean }) {
-  const [isOpen, setIsOpen] = useState(defaultOpen)
-
-  if (data === null || data === undefined) return null
-
-  // Filter out null/undefined values from objects
-  const cleanData = typeof data === 'object' && !Array.isArray(data)
-    ? Object.fromEntries(Object.entries(data as Record<string, unknown>).filter(([, v]) => v != null))
-    : data
-
-  if (typeof cleanData === 'object' && !Array.isArray(cleanData) && Object.keys(cleanData as Record<string, unknown>).length === 0) return null
-
-  return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
-        <ChevronRight className={cn('h-3 w-3 transition-transform', isOpen && 'rotate-90')} />
-        <span className="font-medium">{title}</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[400px] overflow-auto">
-          {JSON.stringify(cleanData, null, 2)}
-        </pre>
-      </CollapsibleContent>
-    </Collapsible>
   )
 }

@@ -447,6 +447,17 @@ mod helpers {
         }
     }
 
+    pub fn make_client_tool(name: &str) -> lr_providers::Tool {
+        lr_providers::Tool {
+            tool_type: "function".to_string(),
+            function: lr_providers::FunctionDefinition {
+                name: name.to_string(),
+                description: Some("Client-side tool".to_string()),
+                parameters: json!({"type": "object", "properties": {}}),
+            },
+        }
+    }
+
     pub fn make_mcp_tool(name: &str, description: &str) -> McpTool {
         McpTool {
             name: name.to_string(),
@@ -456,6 +467,14 @@ mod helpers {
     }
 
     pub fn make_request(user_message: &str) -> CompletionRequest {
+        make_request_with_tools(user_message, None)
+    }
+
+    /// Create a request with client-side tools (so orchestrator can classify them correctly).
+    pub fn make_request_with_tools(
+        user_message: &str,
+        client_tools: Option<Vec<lr_providers::Tool>>,
+    ) -> CompletionRequest {
         CompletionRequest {
             model: "mock/test-model".to_string(),
             messages: vec![ChatMessage {
@@ -476,7 +495,7 @@ mod helpers {
             seed: None,
             repetition_penalty: None,
             extensions: None,
-            tools: None,
+            tools: client_tools,
             tool_choice: None,
             response_format: None,
             logprobs: None,
@@ -736,7 +755,11 @@ mod agentic_loop_tests {
 
         let session = make_session();
         let config = make_config();
-        let request = make_request("Use client tool");
+        // Include client tool definition so the orchestrator classifies it correctly
+        let request = make_request_with_tools(
+            "Use client tool",
+            Some(vec![make_client_tool("my_client_tool")]),
+        );
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -768,6 +791,71 @@ mod agentic_loop_tests {
         }
 
         // MCP server should not have received any calls
+        assert!(env.mock_servers[0].calls_received.lock().is_empty());
+    }
+
+    /// When the LLM hallucinates a tool name that doesn't match any MCP or client tool,
+    /// the orchestrator should NOT return it to the client. Instead, it should send an
+    /// error tool result and continue the loop so the LLM can retry.
+    #[tokio::test]
+    async fn hallucinated_tool_name_continues_loop() {
+        let mcp_tools = vec![make_mcp_tool("fs__read", "Read a file")];
+
+        let env = setup_test_env(
+            vec![
+                // First: LLM hallucinates a tool name not in MCP or client tools
+                make_response(
+                    None,
+                    Some(vec![make_tool_call("h1", "nonexistent_tool", "{}")]),
+                ),
+                // Second: LLM recovers and returns a final text response
+                make_response(Some("Here is the answer"), None),
+            ],
+            mcp_tools,
+            HashMap::new(),
+        )
+        .await;
+
+        let session = make_session();
+        let config = make_config();
+        // No client tools — the hallucinated name should NOT be returned
+        let request = make_request("Do something");
+
+        let result = run_agentic_loop(
+            env.gateway.clone(),
+            &env.router,
+            &env.client,
+            session,
+            request,
+            &config,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("should succeed after LLM retries");
+
+        match result {
+            OrchestratorResult::Complete(resp) => {
+                // Should get the text response, NOT a tool call
+                assert!(resp.choices[0].message.tool_calls.is_none());
+                match &resp.choices[0].message.content {
+                    lr_providers::ChatMessageContent::Text(t) => {
+                        assert_eq!(t, "Here is the answer");
+                    }
+                    _ => panic!("Expected text content"),
+                }
+            }
+            _ => panic!("Expected Complete with text response"),
+        }
+
+        // MCP server should not have received any calls (hallucinated tool is not MCP)
         assert!(env.mock_servers[0].calls_received.lock().is_empty());
     }
 
@@ -1099,7 +1187,11 @@ mod mixed_tool_tests {
 
         let session = make_session();
         let config = make_config();
-        let request = make_request("Mixed tools");
+        // Include client tool definition so the orchestrator classifies it correctly
+        let request = make_request_with_tools(
+            "Mixed tools",
+            Some(vec![make_client_tool("my_tool")]),
+        );
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -1174,7 +1266,11 @@ mod mixed_tool_tests {
 
         let session = make_session();
         let config = make_config();
-        let request = make_request("Mixed tools");
+        // Include client tool definition so the orchestrator classifies it correctly
+        let request = make_request_with_tools(
+            "Mixed tools",
+            Some(vec![make_client_tool("my_tool")]),
+        );
 
         // Phase 1: get PendingMixed
         let result = run_agentic_loop(

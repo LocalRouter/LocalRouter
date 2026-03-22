@@ -159,6 +159,15 @@ pub async fn run_agentic_loop(
         }
     }
 
+    // Capture original client tool names before MCP injection.
+    // Any tool call not matching MCP or client tools is a hallucinated name and must not
+    // be returned to the client — instead we send an error tool result and continue the loop.
+    let client_tool_names: HashSet<String> = request
+        .tools
+        .as_ref()
+        .map(|tools| tools.iter().map(|t| t.function.name.clone()).collect())
+        .unwrap_or_default();
+
     // Fetch MCP tools
     let mcp_tools = gw_client.list_tools().await?;
     let mut mcp_tool_names: HashSet<String> = mcp_tools.iter().map(|t| t.name.clone()).collect();
@@ -314,6 +323,7 @@ pub async fn run_agentic_loop(
                     input_tokens: None,
                     output_tokens: None,
                     total_tokens: None,
+                    reasoning_tokens: None,
                     cost_usd: None,
                     latency_ms: None,
                     finish_reason: None,
@@ -422,10 +432,70 @@ pub async fn run_agentic_loop(
         // Check for tool calls
         if let Some(ref tool_calls) = choice.message.tool_calls {
             if !tool_calls.is_empty() {
-                // Classify: MCP vs client tools
-                let (mcp_calls, client_calls): (Vec<&ToolCall>, Vec<&ToolCall>) = tool_calls
-                    .iter()
-                    .partition(|tc| mcp_tool_names.contains(&tc.function.name));
+                // Classify tool calls into three buckets:
+                // 1. MCP tools — execute server-side and loop
+                // 2. Client tools — return to client for execution
+                // 3. Unknown tools — hallucinated names, send error result and loop
+                let mut mcp_calls: Vec<&ToolCall> = Vec::new();
+                let mut client_calls: Vec<&ToolCall> = Vec::new();
+                let mut unknown_calls: Vec<&ToolCall> = Vec::new();
+
+                for tc in tool_calls {
+                    if mcp_tool_names.contains(&tc.function.name) {
+                        mcp_calls.push(tc);
+                    } else if client_tool_names.contains(&tc.function.name) {
+                        client_calls.push(tc);
+                    } else {
+                        unknown_calls.push(tc);
+                    }
+                }
+
+                // Handle unknown/hallucinated tool calls: add error results and
+                // re-classify as MCP-handled so the loop continues instead of
+                // returning broken tool calls to the client.
+                if !unknown_calls.is_empty() {
+                    tracing::warn!(
+                        "MCP via LLM: {} unknown tool calls [{}] (iteration {}), sending error results",
+                        unknown_calls.len(),
+                        unknown_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
+                        iteration + 1
+                    );
+
+                    // If there are ONLY unknown calls (no MCP and no client), we need
+                    // to add the assistant message + error tool results and continue
+                    // the loop so the LLM can retry.
+                    if mcp_calls.is_empty() && client_calls.is_empty() {
+                        let mut assistant_msg = choice.message.clone();
+                        sanitize_tool_call_arguments(&mut assistant_msg);
+                        request.messages.push(assistant_msg);
+
+                        for tc in &unknown_calls {
+                            let available: Vec<&str> = mcp_tool_names.iter().map(|s| s.as_str()).collect();
+                            request.messages.push(ChatMessage {
+                                role: "tool".to_string(),
+                                content: ChatMessageContent::Text(format!(
+                                    "Error: tool '{}' does not exist. Available tools: [{}]",
+                                    tc.function.name,
+                                    available.join(", ")
+                                )),
+                                tool_calls: None,
+                                tool_call_id: Some(tc.id.clone()),
+                                name: None,
+                            });
+                        }
+
+                        iteration += 1;
+                        continue;
+                    }
+
+                    // Mixed with real calls: we still need to provide tool results for
+                    // the unknown calls so the conversation stays valid. Add them as
+                    // if they were MCP calls that errored, then fall through to the
+                    // normal MCP/client handling below.
+                    // (The assistant message & error results will be appended in the
+                    // MCP execution block below.)
+                    mcp_calls.extend(unknown_calls.drain(..));
+                }
 
                 if !client_calls.is_empty() && !mcp_calls.is_empty() {
                     // Mixed tools: spawn MCP in background, return client tools
@@ -459,6 +529,19 @@ pub async fn run_agentic_loop(
                     for tool_call in &mcp_calls {
                         let tool_name = tool_call.function.name.clone();
                         let tool_call_id = tool_call.id.clone();
+
+                        // Unknown/hallucinated tools mixed in: return error result
+                        if !mcp_tool_names.contains(&tool_name) {
+                            let err_msg = format!(
+                                "Error: tool '{}' does not exist",
+                                tool_name
+                            );
+                            let tc_id = tool_call_id.clone();
+                            let handle = tokio::spawn(async move { (tc_id, Err(err_msg)) });
+                            mcp_handles.push(handle);
+                            continue;
+                        }
+
                         let arguments: Value =
                             match serde_json::from_str(&tool_call.function.arguments) {
                                 Ok(v) => v,
@@ -570,6 +653,24 @@ pub async fn run_agentic_loop(
 
                 for tool_call in &mcp_calls {
                     let tool_name = &tool_call.function.name;
+
+                    // Handle unknown/hallucinated tool names that were merged in
+                    if !mcp_tool_names.contains(tool_name) {
+                        let available: Vec<&str> = mcp_tool_names.iter().map(|s| s.as_str()).collect();
+                        request.messages.push(ChatMessage {
+                            role: "tool".to_string(),
+                            content: ChatMessageContent::Text(format!(
+                                "Error: tool '{}' does not exist. Available tools: [{}]",
+                                tool_name,
+                                available.join(", ")
+                            )),
+                            tool_calls: None,
+                            tool_call_id: Some(tool_call.id.clone()),
+                            name: None,
+                        });
+                        continue;
+                    }
+
                     let arguments: Value = match serde_json::from_str(&tool_call.function.arguments)
                     {
                         Ok(v) => v,
