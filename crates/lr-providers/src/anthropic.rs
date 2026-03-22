@@ -320,41 +320,49 @@ impl AnthropicProvider {
             "claude-opus-4-20250514" => PricingInfo {
                 input_cost_per_1k: 0.015,
                 output_cost_per_1k: 0.075,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "claude-sonnet-4-20250514" => PricingInfo {
                 input_cost_per_1k: 0.003,
                 output_cost_per_1k: 0.015,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "claude-3-5-sonnet-20241022" => PricingInfo {
                 input_cost_per_1k: 0.003,
                 output_cost_per_1k: 0.015,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "claude-3-5-haiku-20241022" => PricingInfo {
                 input_cost_per_1k: 0.001,
                 output_cost_per_1k: 0.005,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "claude-3-opus-20240229" => PricingInfo {
                 input_cost_per_1k: 0.015,
                 output_cost_per_1k: 0.075,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "claude-3-sonnet-20240229" => PricingInfo {
                 input_cost_per_1k: 0.003,
                 output_cost_per_1k: 0.015,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "claude-3-haiku-20240307" => PricingInfo {
                 input_cost_per_1k: 0.00025,
                 output_cost_per_1k: 0.00125,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
                 input_cost_per_1k: 0.0,
                 output_cost_per_1k: 0.0,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
         }
@@ -465,6 +473,7 @@ impl ModelProvider for AnthropicProvider {
             return Ok(PricingInfo {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
                 output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
+                reasoning_cost_per_1k: catalog_model.pricing.reasoning_cost_per_1k(),
                 currency: catalog_model.pricing.currency.to_string(),
             });
         }
@@ -477,36 +486,44 @@ impl ModelProvider for AnthropicProvider {
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
         let (system, messages) = Self::convert_messages(&request.messages)?;
 
-        // Convert tools from OpenAI format to Anthropic format
-        let tools = request.tools.as_ref().map(|openai_tools| {
-            openai_tools
-                .iter()
-                .map(|t| AnthropicTool {
-                    name: t.function.name.clone(),
-                    description: t.function.description.clone(),
-                    input_schema: t.function.parameters.clone(),
-                })
-                .collect()
-        });
-
-        // Convert tool_choice from OpenAI format to Anthropic format
-        let tool_choice = request.tool_choice.as_ref().and_then(|tc| match tc {
-            super::ToolChoice::Auto(s) => match s.as_str() {
-                "auto" => Some(AnthropicToolChoice {
-                    choice_type: "auto".to_string(),
-                    name: None,
+        // Convert tools and tool_choice from OpenAI format to Anthropic format.
+        // Anthropic has no native "none" mode — strip tools entirely to prevent tool use.
+        let (tools, tool_choice) = if request
+            .tool_choice
+            .as_ref()
+            .is_some_and(|tc| tc.is_none_mode())
+        {
+            (None, None)
+        } else {
+            let tools = request.tools.as_ref().map(|openai_tools| {
+                openai_tools
+                    .iter()
+                    .map(|t| AnthropicTool {
+                        name: t.function.name.clone(),
+                        description: t.function.description.clone(),
+                        input_schema: t.function.parameters.clone(),
+                    })
+                    .collect()
+            });
+            let tool_choice = request.tool_choice.as_ref().and_then(|tc| match tc {
+                super::ToolChoice::Auto(s) => match s.as_str() {
+                    "auto" => Some(AnthropicToolChoice {
+                        choice_type: "auto".to_string(),
+                        name: None,
+                    }),
+                    "required" => Some(AnthropicToolChoice {
+                        choice_type: "any".to_string(),
+                        name: None,
+                    }),
+                    _ => None,
+                },
+                super::ToolChoice::Specific { function, .. } => Some(AnthropicToolChoice {
+                    choice_type: "tool".to_string(),
+                    name: Some(function.name.clone()),
                 }),
-                "required" => Some(AnthropicToolChoice {
-                    choice_type: "any".to_string(),
-                    name: None,
-                }),
-                _ => None,
-            },
-            super::ToolChoice::Specific { function, .. } => Some(AnthropicToolChoice {
-                choice_type: "tool".to_string(),
-                name: Some(function.name.clone()),
-            }),
-        });
+            });
+            (tools, tool_choice)
+        };
 
         let anthropic_request = AnthropicRequest {
             model: request.model.clone(),
@@ -634,36 +651,44 @@ impl ModelProvider for AnthropicProvider {
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
         let (system, messages) = Self::convert_messages(&request.messages)?;
 
-        // Convert tools from OpenAI format to Anthropic format
-        let tools = request.tools.as_ref().map(|openai_tools| {
-            openai_tools
-                .iter()
-                .map(|t| AnthropicTool {
-                    name: t.function.name.clone(),
-                    description: t.function.description.clone(),
-                    input_schema: t.function.parameters.clone(),
-                })
-                .collect()
-        });
-
-        // Convert tool_choice from OpenAI format to Anthropic format
-        let tool_choice = request.tool_choice.as_ref().and_then(|tc| match tc {
-            super::ToolChoice::Auto(s) => match s.as_str() {
-                "auto" => Some(AnthropicToolChoice {
-                    choice_type: "auto".to_string(),
-                    name: None,
+        // Convert tools and tool_choice from OpenAI format to Anthropic format.
+        // Anthropic has no native "none" mode — strip tools entirely to prevent tool use.
+        let (tools, tool_choice) = if request
+            .tool_choice
+            .as_ref()
+            .is_some_and(|tc| tc.is_none_mode())
+        {
+            (None, None)
+        } else {
+            let tools = request.tools.as_ref().map(|openai_tools| {
+                openai_tools
+                    .iter()
+                    .map(|t| AnthropicTool {
+                        name: t.function.name.clone(),
+                        description: t.function.description.clone(),
+                        input_schema: t.function.parameters.clone(),
+                    })
+                    .collect()
+            });
+            let tool_choice = request.tool_choice.as_ref().and_then(|tc| match tc {
+                super::ToolChoice::Auto(s) => match s.as_str() {
+                    "auto" => Some(AnthropicToolChoice {
+                        choice_type: "auto".to_string(),
+                        name: None,
+                    }),
+                    "required" => Some(AnthropicToolChoice {
+                        choice_type: "any".to_string(),
+                        name: None,
+                    }),
+                    _ => None,
+                },
+                super::ToolChoice::Specific { function, .. } => Some(AnthropicToolChoice {
+                    choice_type: "tool".to_string(),
+                    name: Some(function.name.clone()),
                 }),
-                "required" => Some(AnthropicToolChoice {
-                    choice_type: "any".to_string(),
-                    name: None,
-                }),
-                _ => None,
-            },
-            super::ToolChoice::Specific { function, .. } => Some(AnthropicToolChoice {
-                choice_type: "tool".to_string(),
-                name: Some(function.name.clone()),
-            }),
-        });
+            });
+            (tools, tool_choice)
+        };
 
         let anthropic_request = AnthropicRequest {
             model: request.model.clone(),

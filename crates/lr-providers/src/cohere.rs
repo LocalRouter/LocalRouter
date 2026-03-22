@@ -409,6 +409,7 @@ impl ModelProvider for CohereProvider {
             return Ok(PricingInfo {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
                 output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
+                reasoning_cost_per_1k: catalog_model.pricing.reasoning_cost_per_1k(),
                 currency: catalog_model.pricing.currency.to_string(),
             });
         }
@@ -421,26 +422,31 @@ impl ModelProvider for CohereProvider {
             "command-r-plus" => PricingInfo {
                 input_cost_per_1k: 0.003,  // $3 per 1M tokens
                 output_cost_per_1k: 0.015, // $15 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "command-r" => PricingInfo {
                 input_cost_per_1k: 0.0005,  // $0.5 per 1M tokens
                 output_cost_per_1k: 0.0015, // $1.5 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "command" => PricingInfo {
                 input_cost_per_1k: 0.001,  // $1 per 1M tokens
                 output_cost_per_1k: 0.002, // $2 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "command-light" => PricingInfo {
                 input_cost_per_1k: 0.0003,  // $0.3 per 1M tokens
                 output_cost_per_1k: 0.0006, // $0.6 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
                 input_cost_per_1k: 0.001,
                 output_cost_per_1k: 0.002,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
         };

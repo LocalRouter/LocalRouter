@@ -626,15 +626,10 @@ impl ModelProvider for OllamaProvider {
                         }
 
                         // Check for Ollama error responses (e.g. {"error":"..."})
-                        if let Ok(error_obj) =
-                            serde_json::from_str::<serde_json::Value>(&line)
-                        {
+                        if let Ok(error_obj) = serde_json::from_str::<serde_json::Value>(&line) {
                             if let Some(error_msg) = error_obj.get("error").and_then(|v| v.as_str())
                             {
-                                error!(
-                                    "Ollama streaming error: {} - Model: {}",
-                                    error_msg, model
-                                );
+                                error!("Ollama streaming error: {} - Model: {}", error_msg, model);
                                 chunks.push(Err(AppError::Provider(format!(
                                     "Ollama error: {}",
                                     error_msg

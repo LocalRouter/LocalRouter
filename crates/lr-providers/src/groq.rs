@@ -285,23 +285,27 @@ impl ModelProvider for GroqProvider {
                 PricingInfo {
                     input_cost_per_1k: 0.00059,  // $0.59 per 1M tokens
                     output_cost_per_1k: 0.00079, // $0.79 per 1M tokens
+                    reasoning_cost_per_1k: None,
                     currency: "USD".to_string(),
                 }
             }
             "llama-3.1-8b-instant" | "llama3-8b-8192" | "gemma2-9b-it" => PricingInfo {
                 input_cost_per_1k: 0.00005,  // $0.05 per 1M tokens
                 output_cost_per_1k: 0.00008, // $0.08 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "mixtral-8x7b-32768" => PricingInfo {
                 input_cost_per_1k: 0.00024,  // $0.24 per 1M tokens
                 output_cost_per_1k: 0.00024, // $0.24 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
                 // Default fallback pricing
                 input_cost_per_1k: 0.0001,
                 output_cost_per_1k: 0.0001,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
         };

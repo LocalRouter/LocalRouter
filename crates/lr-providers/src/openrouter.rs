@@ -240,6 +240,7 @@ impl ModelProvider for OpenRouterProvider {
             input_cost_per_1k: model_data.pricing.prompt.parse::<f64>().unwrap_or(0.0) * 1000.0,
             output_cost_per_1k: model_data.pricing.completion.parse::<f64>().unwrap_or(0.0)
                 * 1000.0,
+            reasoning_cost_per_1k: None,
             currency: "USD".to_string(),
         })
     }

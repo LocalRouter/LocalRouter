@@ -279,18 +279,21 @@ impl ModelProvider for DeepInfraProvider {
             PricingInfo {
                 input_cost_per_1k: 0.0027,  // $2.7 per 1M tokens
                 output_cost_per_1k: 0.0027, // $2.7 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         } else if model.contains("70B") || model.contains("72B") {
             PricingInfo {
                 input_cost_per_1k: 0.00059,  // $0.59 per 1M tokens
                 output_cost_per_1k: 0.00059, // $0.59 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         } else {
             PricingInfo {
                 input_cost_per_1k: 0.00009,  // $0.09 per 1M tokens
                 output_cost_per_1k: 0.00009, // $0.09 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         };

@@ -216,21 +216,25 @@ impl ModelProvider for XAIProvider {
             "grok-2" => PricingInfo {
                 input_cost_per_1k: 0.002,  // $2 per 1M tokens
                 output_cost_per_1k: 0.010, // $10 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "grok-2-mini" => PricingInfo {
                 input_cost_per_1k: 0.0002, // $0.2 per 1M tokens
                 output_cost_per_1k: 0.001, // $1 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "grok-beta" => PricingInfo {
                 input_cost_per_1k: 0.005,  // $5 per 1M tokens
                 output_cost_per_1k: 0.015, // $15 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
                 input_cost_per_1k: 0.002,
                 output_cost_per_1k: 0.010,
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
         };

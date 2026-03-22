@@ -286,18 +286,21 @@ impl ModelProvider for TogetherAIProvider {
             PricingInfo {
                 input_cost_per_1k: 0.005,  // $5 per 1M tokens
                 output_cost_per_1k: 0.015, // $15 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         } else if model.contains("70B") || model.contains("72B") {
             PricingInfo {
                 input_cost_per_1k: 0.0009,  // $0.9 per 1M tokens
                 output_cost_per_1k: 0.0009, // $0.9 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         } else {
             PricingInfo {
                 input_cost_per_1k: 0.0002,  // $0.2 per 1M tokens
                 output_cost_per_1k: 0.0002, // $0.2 per 1M tokens
+                reasoning_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         };
