@@ -404,7 +404,8 @@ pub fn read_skill_file(
         ));
     }
 
-    // Verify the file is part of the skill's known files
+    // Resolve the file path against the skill's known files.
+    // Tries: exact match → strip prefix → add prefix → fuzzy match.
     let all_files: Vec<&str> = skill
         .scripts
         .iter()
@@ -413,32 +414,111 @@ pub fn read_skill_file(
         .map(|s| s.as_str())
         .collect();
 
-    if !all_files.contains(&subpath) {
-        return if all_files.is_empty() {
-            Err(format!(
-                "File '{}' is not part of skill '{}'. This skill has no readable files (no scripts/, references/, or assets/ directory).",
-                subpath,
-                skill.metadata.name,
-            ))
-        } else {
-            Err(format!(
-                "File '{}' is not part of skill '{}'. Available files: {}",
-                subpath,
-                skill.metadata.name,
-                all_files.join(", ")
-            ))
-        };
-    }
+    let (resolved_path, path_correction) = resolve_skill_file_path(subpath, &all_files)?;
 
     // Read from disk
-    let file_path = skill.skill_dir.join(subpath);
+    let file_path = skill.skill_dir.join(resolved_path);
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read '{}': {}", file_path.display(), e))?;
 
-    match correction_note {
-        Some(note) => Ok(format!("{}{}", note, content)),
-        None => Ok(content),
+    // Combine skill-name and path correction notes
+    let mut prefix = String::new();
+    if let Some(note) = correction_note {
+        prefix.push_str(&note);
     }
+    if let Some(note) = path_correction {
+        prefix.push_str(&note);
+    }
+    if prefix.is_empty() {
+        Ok(content)
+    } else {
+        Ok(format!("{}{}", prefix, content))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File path resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve a requested file path against a skill's known files.
+///
+/// Tries layers in order:
+/// 1. Exact match
+/// 2. Strip directory prefix and try bare filename (e.g., `scripts/run.sh` → `run.sh`)
+/// 3. Add known prefixes (`scripts/`, `references/`, `assets/`)
+/// 4. Fuzzy match using Levenshtein distance
+///
+/// Returns `(resolved_path, Option<correction_note>)` on success.
+fn resolve_skill_file_path<'a>(
+    requested: &str,
+    all_files: &[&'a str],
+) -> Result<(&'a str, Option<String>), String> {
+    if all_files.is_empty() {
+        return Err(format!(
+            "File '{}' not found. This skill has no readable files.",
+            requested,
+        ));
+    }
+
+    // Layer 1: Exact match
+    if let Some(&path) = all_files.iter().find(|&&f| f == requested) {
+        return Ok((path, None));
+    }
+
+    // Layer 2: Strip prefix — e.g., `scripts/sysinfo.sh` → try `sysinfo.sh`
+    if let Some(basename) = requested.rsplit('/').next() {
+        if basename != requested {
+            if let Some(&path) = all_files.iter().find(|&&f| f == basename) {
+                return Ok((
+                    path,
+                    Some(format!(
+                        "Note: '{}' was not found. Reading '{}' instead.\n\n",
+                        requested, path
+                    )),
+                ));
+            }
+        }
+    }
+
+    // Layer 3: Add prefix — e.g., `run.sh` → try `scripts/run.sh`, `references/run.sh`, `assets/run.sh`
+    for prefix in &["scripts", "references", "assets"] {
+        let prefixed = format!("{}/{}", prefix, requested);
+        if let Some(&path) = all_files.iter().find(|&&f| f == prefixed) {
+            return Ok((
+                path,
+                Some(format!(
+                    "Note: '{}' was not found. Reading '{}' instead.\n\n",
+                    requested, path
+                )),
+            ));
+        }
+    }
+
+    // Layer 4: Fuzzy match using shared fuzzy matching
+    let candidates: Vec<(usize, &str)> = all_files
+        .iter()
+        .enumerate()
+        .map(|(i, &f)| (i, f))
+        .collect();
+    if let Some((idx, kind)) = crate::fuzzy::find_best_match(requested, &candidates) {
+        if !matches!(kind, crate::fuzzy::MatchKind::Exact) {
+            let resolved = all_files[idx];
+            return Ok((
+                resolved,
+                Some(format!(
+                    "Note: '{}' was not found. Reading '{}' instead.\n\n",
+                    requested, resolved,
+                )),
+            ));
+        }
+    }
+
+    // No match found — return error with available files
+    Err(format!(
+        "File '{}' not found. Available files: {}",
+        requested,
+        all_files.join(", ")
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -577,4 +657,70 @@ fn build_skill_read_response(skill: &SkillDefinition, tool_name: &str) -> serde_
             "text": text
         }]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_exact_match() {
+        let files = vec!["sysinfo.sh", "scripts/build.sh"];
+        let (resolved, note) = resolve_skill_file_path("sysinfo.sh", &files).unwrap();
+        assert_eq!(resolved, "sysinfo.sh");
+        assert!(note.is_none());
+    }
+
+    #[test]
+    fn test_resolve_strip_prefix() {
+        // LLM guesses scripts/sysinfo.sh but file is at root
+        let files = vec!["sysinfo.sh"];
+        let (resolved, note) = resolve_skill_file_path("scripts/sysinfo.sh", &files).unwrap();
+        assert_eq!(resolved, "sysinfo.sh");
+        assert!(note.is_some());
+        assert!(note.unwrap().contains("sysinfo.sh"));
+    }
+
+    #[test]
+    fn test_resolve_add_prefix() {
+        // LLM guesses bare run.sh but file is in scripts/
+        let files = vec!["scripts/run.sh", "references/doc.md"];
+        let (resolved, note) = resolve_skill_file_path("run.sh", &files).unwrap();
+        assert_eq!(resolved, "scripts/run.sh");
+        assert!(note.is_some());
+        assert!(note.unwrap().contains("scripts/run.sh"));
+    }
+
+    #[test]
+    fn test_resolve_add_references_prefix() {
+        let files = vec!["references/doc.md"];
+        let (resolved, note) = resolve_skill_file_path("doc.md", &files).unwrap();
+        assert_eq!(resolved, "references/doc.md");
+        assert!(note.is_some());
+    }
+
+    #[test]
+    fn test_resolve_fuzzy_match() {
+        // Typo: sysinf.sh → sysinfo.sh
+        let files = vec!["sysinfo.sh", "helper.py"];
+        let (resolved, note) = resolve_skill_file_path("sysinf.sh", &files).unwrap();
+        assert_eq!(resolved, "sysinfo.sh");
+        assert!(note.is_some());
+        assert!(note.unwrap().contains("sysinfo.sh"));
+    }
+
+    #[test]
+    fn test_resolve_no_match_lists_available() {
+        let files = vec!["sysinfo.sh", "helper.py"];
+        let err = resolve_skill_file_path("totally-different.rb", &files).unwrap_err();
+        assert!(err.contains("sysinfo.sh"));
+        assert!(err.contains("helper.py"));
+    }
+
+    #[test]
+    fn test_resolve_empty_files_error() {
+        let files: Vec<&str> = vec![];
+        let err = resolve_skill_file_path("anything.sh", &files).unwrap_err();
+        assert!(err.contains("no readable files"));
+    }
 }

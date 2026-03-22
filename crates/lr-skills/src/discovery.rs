@@ -87,6 +87,29 @@ fn list_subdir_files(skill_dir: &Path, subdir: &str) -> Vec<String> {
     files
 }
 
+/// List non-hidden, non-SKILL.md files directly in the skill root directory.
+///
+/// Returns bare filenames (e.g., `"sysinfo.sh"`) without any directory prefix.
+fn list_root_files(skill_dir: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(skill_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.eq_ignore_ascii_case("SKILL.md") || name.starts_with('.') {
+                    continue;
+                }
+                files.push(name.to_string());
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 /// Try to load a skill from a directory containing SKILL.md
 fn load_skill_from_dir(skill_dir: &Path, source_path: &str) -> Option<SkillDefinition> {
     let skill_md_path = skill_dir.join("SKILL.md");
@@ -110,7 +133,9 @@ fn load_skill_from_dir(skill_dir: &Path, source_path: &str) -> Option<SkillDefin
         }
     };
 
-    let scripts = list_subdir_files(skill_dir, "scripts");
+    let mut scripts = list_subdir_files(skill_dir, "scripts");
+    scripts.extend(list_root_files(skill_dir));
+    scripts.sort();
     let references = list_subdir_files(skill_dir, "references");
     let assets = list_subdir_files(skill_dir, "assets");
 
@@ -470,5 +495,71 @@ Body"#,
         let result = discover_skills(skill_dir);
         assert_eq!(result.skills.len(), 1);
         assert_eq!(result.skills[0].references, vec!["references/doc.md"]);
+    }
+
+    #[test]
+    fn test_discover_root_level_scripts() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path();
+
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: sysinfo\n---\nRun ./sysinfo.sh",
+        )
+        .unwrap();
+        fs::write(skill_dir.join("sysinfo.sh"), "#!/bin/bash\nuname -a").unwrap();
+
+        let result = discover_skills(skill_dir);
+        assert_eq!(result.skills.len(), 1);
+        assert!(result.skills[0]
+            .scripts
+            .contains(&"sysinfo.sh".to_string()));
+    }
+
+    #[test]
+    fn test_discover_root_and_subdir_scripts() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path();
+
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: mixed\n---\nBody").unwrap();
+        fs::write(skill_dir.join("run.sh"), "#!/bin/bash").unwrap();
+        fs::create_dir(skill_dir.join("scripts")).unwrap();
+        fs::write(skill_dir.join("scripts/build.sh"), "#!/bin/bash").unwrap();
+
+        let result = discover_skills(skill_dir);
+        assert_eq!(result.skills.len(), 1);
+        let scripts = &result.skills[0].scripts;
+        assert!(scripts.contains(&"run.sh".to_string()));
+        assert!(scripts.contains(&"scripts/build.sh".to_string()));
+        assert_eq!(scripts.len(), 2);
+    }
+
+    #[test]
+    fn test_root_files_exclude_skillmd_and_hidden() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path();
+
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: test\n---\nBody").unwrap();
+        fs::write(skill_dir.join(".gitignore"), "*.log").unwrap();
+        fs::write(skill_dir.join(".DS_Store"), "").unwrap();
+        fs::write(skill_dir.join("run.sh"), "#!/bin/bash").unwrap();
+
+        let result = discover_skills(skill_dir);
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].scripts, vec!["run.sh".to_string()]);
+    }
+
+    #[test]
+    fn test_root_files_skip_directories() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path();
+
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: test\n---\nBody").unwrap();
+        fs::create_dir(skill_dir.join("some-dir")).unwrap();
+        fs::write(skill_dir.join("run.sh"), "#!/bin/bash").unwrap();
+
+        let result = discover_skills(skill_dir);
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].scripts, vec!["run.sh".to_string()]);
     }
 }
