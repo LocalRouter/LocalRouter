@@ -1120,20 +1120,22 @@ export default function Home() {
           <div className="mt-16 pt-16 border-t border-border/50">
             <div className="grid gap-8 md:grid-cols-2">
               {/* Content Safety (GuardRails) */}
-              <div className="relative overflow-visible mt-0 lg:mt-[32px] lg:pt-[80px] lg:pb-[95px] lg:-mb-[95px] lg:overflow-hidden">
+              <div className="relative overflow-visible mt-0 lg:mt-28">
                 <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-red-500/50 transition-colors overflow-visible">
-                  <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
-                    <div className="scale-[0.5] origin-top-right">
-                      <GuardrailApprovalDemo />
-                    </div>
-                  </div>
                   <div className="flex items-center gap-2 mb-3">
                     <div className="h-8 w-8 rounded-lg bg-red-500/10 flex items-center justify-center">
                       <Shield className="h-4 w-4 text-red-500" />
                     </div>
                     <span className="text-sm font-medium text-red-500 uppercase tracking-wide">GuardRails</span>
                   </div>
-                  <h3 className="text-xl font-bold tracking-tight">Content Safety Inspection</h3>
+                  <div className="relative">
+                    <h3 className="text-xl font-bold tracking-tight">Content Safety Inspection</h3>
+                    <div className="hidden lg:block absolute bottom-0 -right-1 pointer-events-none z-10">
+                      <div className="scale-[0.5] origin-bottom-right">
+                        <GuardrailApprovalDemo />
+                      </div>
+                    </div>
+                  </div>
                   <p className="mt-2 text-sm text-muted-foreground">
                     Scan LLM requests and responses for prompt injection, jailbreaks, PII leakage, and code injection. When a rule triggers, a popup lets you allow or deny.
                   </p>
@@ -1158,20 +1160,22 @@ export default function Home() {
               </div>
 
               {/* Secret Scanning */}
-              <div className="relative overflow-visible mt-0 lg:mt-[32px] lg:pt-[80px] lg:pb-[95px] lg:-mb-[95px] lg:overflow-hidden">
+              <div className="relative overflow-visible mt-0 lg:mt-28">
                 <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-orange-500/50 transition-colors overflow-visible">
-                  <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
-                    <div className="scale-[0.5] origin-top-right">
-                      <SecretScanApprovalDemo />
-                    </div>
-                  </div>
                   <div className="flex items-center gap-2 mb-3">
                     <div className="h-8 w-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
                       <KeyRound className="h-4 w-4 text-orange-500" />
                     </div>
                     <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">Secret Scanning</span>
                   </div>
-                  <h3 className="text-xl font-bold tracking-tight">Secret Scanning</h3>
+                  <div className="relative">
+                    <h3 className="text-xl font-bold tracking-tight">Secret Scanning</h3>
+                    <div className="hidden lg:block absolute bottom-0 -right-1 pointer-events-none z-10">
+                      <div className="scale-[0.5] origin-bottom-right">
+                        <SecretScanApprovalDemo />
+                      </div>
+                    </div>
+                  </div>
                   <p className="mt-2 text-sm text-muted-foreground">
                     Scans outbound requests for API keys, tokens, and passwords before they reach providers. Multi-stage pipeline with regex matching and Shannon entropy filtering.
                   </p>
@@ -1196,20 +1200,22 @@ export default function Home() {
               </div>
 
               {/* Runtime Approvals */}
-              <div className="relative overflow-visible mt-0 lg:mt-[32px] lg:pt-[80px] lg:pb-[95px] lg:-mb-[95px] lg:overflow-hidden">
+              <div className="relative overflow-visible mt-0 lg:mt-28">
                 <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-amber-500/50 transition-colors overflow-visible">
-                  <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
-                    <div className="scale-[0.5] origin-top-right">
-                      <FirewallApprovalDemo />
-                    </div>
-                  </div>
                   <div className="flex items-center gap-2 mb-3">
                     <div className="h-8 w-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
                       <ShieldCheck className="h-4 w-4 text-amber-500" />
                     </div>
                     <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
                   </div>
-                  <h3 className="text-xl font-bold tracking-tight">Runtime Approval Firewall</h3>
+                  <div className="relative">
+                    <h3 className="text-xl font-bold tracking-tight">Runtime Approval Firewall</h3>
+                    <div className="hidden lg:block absolute bottom-0 -right-1 pointer-events-none z-10">
+                      <div className="scale-[0.5] origin-bottom-right">
+                        <FirewallApprovalDemo />
+                      </div>
+                    </div>
+                  </div>
                   <p className="mt-2 text-sm text-muted-foreground">
                     Interactive approval prompts for sensitive operations. Inspect and modify tool arguments, model parameters, and API payloads in real time.
                   </p>
@@ -1234,20 +1240,22 @@ export default function Home() {
               </div>
 
               {/* Elicitation & Sampling */}
-              <div className="relative overflow-visible mt-0 lg:mt-[32px] lg:pt-[80px] lg:pb-[95px] lg:-mb-[95px] lg:overflow-hidden">
+              <div className="relative overflow-visible mt-0 lg:mt-28">
                 <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-indigo-500/50 transition-colors overflow-visible">
-                  <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
-                    <div className="scale-[0.5] origin-top-right">
-                      <ElicitationDemo />
-                    </div>
-                  </div>
                   <div className="flex items-center gap-2 mb-3">
                     <div className="h-8 w-8 rounded-lg bg-indigo-500/10 flex items-center justify-center">
                       <MessagesSquare className="h-4 w-4 text-indigo-500" />
                     </div>
                     <span className="text-sm font-medium text-indigo-500 uppercase tracking-wide">MCP Permissions</span>
                   </div>
-                  <h3 className="text-xl font-bold tracking-tight">Elicitation &amp; Sampling</h3>
+                  <div className="relative">
+                    <h3 className="text-xl font-bold tracking-tight">Elicitation &amp; Sampling</h3>
+                    <div className="hidden lg:block absolute bottom-0 -right-1 pointer-events-none z-10">
+                      <div className="scale-[0.5] origin-bottom-right">
+                        <ElicitationDemo />
+                      </div>
+                    </div>
+                  </div>
                   <p className="mt-2 text-sm text-muted-foreground">
                     MCP servers can request user input via structured forms and route LLM completions through your configured providers — all gated by approval policies.
                   </p>
