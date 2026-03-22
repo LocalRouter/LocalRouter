@@ -124,6 +124,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 total_tokens: None,
+                reasoning_tokens: None,
                 cost_usd: None,
                 latency_ms: None,
                 finish_reason: None,

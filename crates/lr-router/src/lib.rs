@@ -232,7 +232,7 @@ async fn wrap_stream_with_usage_tracking(
                 let est_prompt = 10; // Baseline estimate since we don't know actual prompt tokens
                 let est_completion = (completion_chars.load(Ordering::Relaxed) / 4).max(1);
 
-                let est_cost = calculate_cost(est_prompt, est_completion, &pricing);
+                let est_cost = calculate_cost(est_prompt, est_completion, None, &pricing);
 
                 let usage = UsageInfo {
                     input_tokens: est_prompt,
@@ -268,15 +268,27 @@ async fn wrap_stream_with_usage_tracking(
     Box::pin(wrapped)
 }
 
-/// Calculate cost in USD from token usage and pricing info
+/// Calculate cost in USD from token usage and pricing info.
+/// Reasoning tokens are typically included in `output_tokens` by providers,
+/// so we subtract them to avoid double-counting, then charge reasoning tokens
+/// at the reasoning rate (or output rate if no separate reasoning pricing).
 fn calculate_cost(
     input_tokens: u64,
     output_tokens: u64,
+    reasoning_tokens: Option<u64>,
     pricing: &lr_providers::PricingInfo,
 ) -> f64 {
     let input_cost = (input_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-    let output_cost = (output_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
-    input_cost + output_cost
+
+    let reasoning_tokens = reasoning_tokens.unwrap_or(0);
+    let non_reasoning_output = output_tokens.saturating_sub(reasoning_tokens);
+    let reasoning_rate = pricing
+        .reasoning_cost_per_1k
+        .unwrap_or(pricing.output_cost_per_1k);
+    let reasoning_cost = (reasoning_tokens as f64 / 1000.0) * reasoning_rate;
+    let output_cost = (non_reasoning_output as f64 / 1000.0) * pricing.output_cost_per_1k;
+
+    input_cost + output_cost + reasoning_cost
 }
 
 /// Router for handling completion requests with API key-based model selection
@@ -831,9 +843,16 @@ impl Router {
             .await
             .unwrap_or_else(|_| lr_providers::PricingInfo::free());
 
+        let reasoning_tokens = response
+            .usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
+            .map(|t| t as u64);
         let cost = calculate_cost(
             response.usage.prompt_tokens as u64,
             response.usage.completion_tokens as u64,
+            reasoning_tokens,
             &pricing,
         );
 
@@ -1330,9 +1349,16 @@ impl Router {
                         .await
                         .unwrap_or_else(|_| lr_providers::PricingInfo::free());
 
+                    let reasoning_tokens = response
+                        .usage
+                        .completion_tokens_details
+                        .as_ref()
+                        .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
+                        .map(|t| t as u64);
                     let cost = calculate_cost(
                         response.usage.prompt_tokens as u64,
                         response.usage.completion_tokens as u64,
+                        reasoning_tokens,
                         &pricing,
                     );
 
@@ -1722,7 +1748,7 @@ impl Router {
             .get_pricing(model)
             .await
             .unwrap_or_else(|_| lr_providers::PricingInfo::free());
-        let cost = calculate_cost(total_tokens, 0, &pricing);
+        let cost = calculate_cost(total_tokens, 0, None, &pricing);
         self.free_tier_manager
             .record_usage(provider, &free_tier, total_tokens, cost);
 

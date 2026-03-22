@@ -166,6 +166,7 @@ pub async fn moderations(
         0,
         0,
         None,
+        None,
         0,
         Some("stop"),
         &format!("[{} input(s), {} flagged]", texts.len(), flagged_count),

@@ -37,6 +37,7 @@ impl LlmCallGuard {
         status_code: u16,
         input_tokens: u64,
         output_tokens: u64,
+        reasoning_tokens_val: Option<u64>,
         cost_usd: Option<f64>,
         latency_ms: u64,
         finish_reason: Option<&str>,
@@ -52,6 +53,7 @@ impl LlmCallGuard {
             status_code,
             input_tokens,
             output_tokens,
+            reasoning_tokens_val,
             cost_usd,
             latency_ms,
             finish_reason,
@@ -127,11 +129,13 @@ pub fn emit_llm_call(
             input_tokens: None,
             output_tokens: None,
             total_tokens: None,
+            reasoning_tokens: None,
             cost_usd: None,
             latency_ms: None,
             finish_reason: None,
             content_preview: None,
             streamed: None,
+            response_body: None,
             error: None,
         },
         EventStatus::Pending,
@@ -178,6 +182,7 @@ pub fn complete_llm_call(
     status_code: u16,
     input_tokens: u64,
     output_tokens: u64,
+    reasoning_tokens_val: Option<u64>,
     cost_usd: Option<f64>,
     latency_ms: u64,
     finish_reason: Option<&str>,
@@ -199,6 +204,7 @@ pub fn complete_llm_call(
             input_tokens: ref mut it,
             output_tokens: ref mut ot,
             total_tokens: ref mut tt,
+            reasoning_tokens: ref mut rt,
             cost_usd: ref mut cu,
             latency_ms: ref mut lm,
             finish_reason: ref mut fr,
@@ -213,6 +219,7 @@ pub fn complete_llm_call(
             *it = Some(input_tokens);
             *ot = Some(output_tokens);
             *tt = Some(input_tokens + output_tokens);
+            *rt = reasoning_tokens_val;
             *cu = cost_usd;
             *lm = Some(latency_ms);
             *fr = finish_reason;
@@ -249,6 +256,27 @@ pub fn complete_llm_call_error(
             *p = Some(provider);
             *sc = Some(status_code);
             *e = Some(error_msg);
+        }
+    });
+}
+
+/// Update the LlmCall event with the full response body JSON.
+///
+/// Called after building the API response, so the event already has status/metrics
+/// but gains the full response for inspection in the monitor UI.
+pub fn update_llm_call_response_body(
+    state: &AppState,
+    event_id: &str,
+    response_body: &serde_json::Value,
+) {
+    let body = truncate_json(response_body, 10_000);
+    state.monitor_store.update(event_id, |event| {
+        if let MonitorEventData::LlmCall {
+            response_body: ref mut rb,
+            ..
+        } = &mut event.data
+        {
+            *rb = Some(body);
         }
     });
 }

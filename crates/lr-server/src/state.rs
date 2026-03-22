@@ -1358,6 +1358,7 @@ mod tests {
             cost: Some(CostDetails {
                 prompt_cost: 0.0001,
                 completion_cost: 0.0002,
+                reasoning_cost: None,
                 total_cost: 0.0003,
                 currency: "USD".to_string(),
             }),

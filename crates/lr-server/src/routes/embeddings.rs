@@ -256,6 +256,7 @@ pub async fn embeddings(
         200,
         response.usage.prompt_tokens as u64,
         0,
+        None,
         Some(cost),
         latency_ms,
         None,

@@ -998,6 +998,12 @@ async fn build_non_streaming_response(
             .choices
             .first()
             .and_then(|c| c.finish_reason.as_deref());
+        let reasoning_tokens = response
+            .usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
+            .map(|t| t as u64);
         super::monitor_helpers::complete_llm_call(
             &state,
             &llm_event_id,
@@ -1006,6 +1012,7 @@ async fn build_non_streaming_response(
             200,
             response.usage.prompt_tokens as u64,
             response.usage.completion_tokens as u64,
+            reasoning_tokens,
             Some(cost),
             latency_ms,
             finish_reason,
@@ -1056,6 +1063,7 @@ async fn build_non_streaming_response(
             prompt_cost: (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
             completion_cost: (response.usage.completion_tokens as f64 / 1000.0)
                 * pricing.output_cost_per_1k,
+            reasoning_cost: None,
             total_cost: cost,
             currency: "USD".to_string(),
         }),
@@ -1438,6 +1446,7 @@ async fn handle_streaming(
             200,
             prompt_tokens as u64,
             completion_tokens as u64,
+            None,
             Some(cost),
             latency_ms,
             Some(&finish_reason_final),
@@ -1461,6 +1470,7 @@ async fn handle_streaming(
             cost: Some(crate::types::CostDetails {
                 prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
                 completion_cost: (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k,
+                reasoning_cost: None,
                 total_cost: cost,
                 currency: "USD".to_string(),
             }),
@@ -1855,6 +1865,7 @@ async fn handle_streaming_parallel(
                 200,
                 prompt_tokens as u64,
                 completion_tokens as u64,
+                None,
                 Some(cost),
                 latency_ms,
                 Some(&finish_reason_val),
@@ -1879,6 +1890,7 @@ async fn handle_streaming_parallel(
                     prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
                     completion_cost: (completion_tokens as f64 / 1000.0)
                         * pricing.output_cost_per_1k,
+                    reasoning_cost: None,
                     total_cost: cost,
                     currency: "USD".to_string(),
                 }),

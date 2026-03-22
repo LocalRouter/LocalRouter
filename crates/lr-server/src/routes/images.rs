@@ -182,6 +182,7 @@ pub async fn image_generations(
         0,
         0,
         None,
+        None,
         latency_ms,
         Some("stop"),
         &format!("[{} image(s) generated]", image_count),
