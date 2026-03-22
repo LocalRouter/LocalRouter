@@ -1047,6 +1047,15 @@ async fn build_non_streaming_response(
         request_usage_entries: None,
     };
 
+    // Store full response body in monitor event for inspection
+    if let Ok(response_json) = serde_json::to_value(&api_response) {
+        super::monitor_helpers::update_llm_call_response_body(
+            &state,
+            &llm_event_id,
+            &response_json,
+        );
+    }
+
     // Track generation details
     let generation_details = GenerationDetails {
         id: generation_id,
@@ -1452,6 +1461,22 @@ async fn handle_streaming(
             Some(&finish_reason_final),
             &completion_content,
             true,
+        );
+
+        // Store reconstructed response body for monitor UI inspection
+        let response_body = super::monitor_helpers::build_streaming_response_body(
+            &gen_id_clone,
+            &model_clone,
+            &completion_content,
+            &finish_reason_final,
+            prompt_tokens as u64,
+            completion_tokens as u64,
+            created_at_clone.timestamp(),
+        );
+        super::monitor_helpers::update_llm_call_response_body(
+            &state_clone,
+            &llm_event_id,
+            &response_body,
         );
 
         let generation_details = GenerationDetails {
@@ -1871,6 +1896,22 @@ async fn handle_streaming_parallel(
                 Some(&finish_reason_val),
                 &content_accumulator,
                 true,
+            );
+
+            // Store reconstructed response body for monitor UI inspection
+            let response_body = super::monitor_helpers::build_streaming_response_body(
+                &gen_id_clone,
+                &model_clone,
+                &content_accumulator,
+                &finish_reason_val,
+                prompt_tokens as u64,
+                completion_tokens as u64,
+                created_at.timestamp(),
+            );
+            super::monitor_helpers::update_llm_call_response_body(
+                &state_clone,
+                &llm_event_id,
+                &response_body,
             );
 
             let generation_details = GenerationDetails {

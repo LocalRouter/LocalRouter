@@ -242,6 +242,15 @@ pub fn complete_llm_call_error(
     let model = model.to_string();
     let error_msg = truncate_string(error_msg, 1000);
 
+    // Build a response body representing the error so it's visible in the monitor UI
+    let error_body = serde_json::json!({
+        "error": {
+            "message": &error_msg,
+            "type": "provider_error",
+            "code": status_code,
+        }
+    });
+
     state.monitor_store.update(event_id, |event| {
         event.status = EventStatus::Error;
         if let MonitorEventData::LlmCall {
@@ -249,6 +258,7 @@ pub fn complete_llm_call_error(
             provider: ref mut p,
             status_code: ref mut sc,
             error: ref mut e,
+            response_body: ref mut rb,
             ..
         } = &mut event.data
         {
@@ -256,6 +266,7 @@ pub fn complete_llm_call_error(
             *p = Some(provider);
             *sc = Some(status_code);
             *e = Some(error_msg);
+            *rb = Some(error_body);
         }
     });
 }
@@ -279,6 +290,42 @@ pub fn update_llm_call_response_body(
             *rb = Some(body);
         }
     });
+}
+
+/// Build a synthetic response body JSON for streaming completions.
+///
+/// Since streaming doesn't produce a single response object, this reconstructs
+/// a response-like JSON from the accumulated data for monitor UI inspection.
+pub fn build_streaming_response_body(
+    generation_id: &str,
+    model: &str,
+    content: &str,
+    finish_reason: &str,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    created_timestamp: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": generation_id,
+        "object": "chat.completion",
+        "created": created_timestamp,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": if content.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(content.to_string()) },
+            },
+            "finish_reason": finish_reason,
+        }],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+        "_streaming": true,
+        "_note": "Reconstructed from streaming response chunks",
+    })
 }
 
 // ---- Auth & Access Control events ----

@@ -1,10 +1,11 @@
 import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
 import { cn } from '@/lib/utils'
-import { Clock, User, Server } from 'lucide-react'
-import { useState } from 'react'
+import { Clock, User, Server, Copy, Check } from 'lucide-react'
+import { useState, useCallback } from 'react'
 import type { MonitorEvent } from '@/types/tauri-commands'
 
 interface EventDetailProps {
@@ -25,6 +26,14 @@ export function EventDetail({ event }: EventDetailProps) {
 
   const data = event.data as EventData
   const type = data.type as string
+  const [copied, setCopied] = useState(false)
+
+  const handleCopyEvent = useCallback(() => {
+    navigator.clipboard.writeText(JSON.stringify(event, null, 2)).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [event])
 
   return (
     <ScrollArea className="h-full">
@@ -43,6 +52,15 @@ export function EventDetail({ event }: EventDetailProps) {
               {event.duration_ms}ms
             </span>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ml-auto h-6 w-6"
+            onClick={handleCopyEvent}
+            title="Copy event JSON to clipboard"
+          >
+            {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+          </Button>
         </div>
 
         {/* Client info */}
@@ -114,6 +132,15 @@ function formatToolArgs(args: unknown): string {
     try { return JSON.stringify(JSON.parse(args), null, 2) } catch { return args }
   }
   return JSON.stringify(args, null, 2)
+}
+
+/** Pretty-print a JSON string. Returns the original string if parsing fails. */
+function formatJsonString(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return raw
+  }
 }
 
 function extractMcpContent(raw: string): string {
@@ -224,12 +251,12 @@ function ArgumentsBlock({ args }: { args: unknown }) {
   }
 
   return (
-    <table className="text-xs w-full table-fixed">
+    <table className="text-xs w-full">
       <tbody>
         {entries.map(([key, value]) => (
           <tr key={key} className="border-b border-border/20">
-            <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap align-top w-[1%]">{key}</td>
-            <td className="py-0.5 font-mono whitespace-pre-wrap break-words">
+            <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap align-top">{key}</td>
+            <td className="py-0.5 font-mono whitespace-pre-wrap break-all">
               {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
             </td>
           </tr>
@@ -241,7 +268,8 @@ function ArgumentsBlock({ args }: { args: unknown }) {
 
 function McpResponseTab({ data }: { data: EventData }) {
   const rawContent = (data.response_preview || data.content_preview) as string | undefined
-  const displayContent = rawContent ? extractMcpContent(rawContent) : null
+  const extractedContent = rawContent ? extractMcpContent(rawContent) : null
+  const hasRawBody = rawContent != null && rawContent.length > 0
 
   return (
     <div className="space-y-2">
@@ -254,10 +282,31 @@ function McpResponseTab({ data }: { data: EventData }) {
           {data.error as string}
         </pre>
       )}
-      {displayContent && (
-        <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-          {displayContent}
-        </pre>
+      {(extractedContent || hasRawBody) && (
+        <Tabs defaultValue={extractedContent ? 'content' : 'full_body'}>
+          <TabsList className={SUB_TABS_LIST}>
+            {extractedContent && (
+              <TabsTrigger value="content" className={SUB_TAB}>Content</TabsTrigger>
+            )}
+            {hasRawBody && (
+              <TabsTrigger value="full_body" className={SUB_TAB}>Full Body</TabsTrigger>
+            )}
+          </TabsList>
+          {extractedContent && (
+            <TabsContent value="content">
+              <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[400px] overflow-auto">
+                {extractedContent}
+              </pre>
+            </TabsContent>
+          )}
+          {hasRawBody && (
+            <TabsContent value="full_body">
+              <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[400px] overflow-auto">
+                {formatJsonString(rawContent)}
+              </pre>
+            </TabsContent>
+          )}
+        </Tabs>
       )}
     </div>
   )
@@ -406,7 +455,7 @@ function LlmCallDetail({ data }: { data: EventData }) {
   const transformedBody = data.transformed_body as Record<string, unknown> | undefined
   const transformations = data.transformations_applied as string[] | undefined
   const hasTransformed = transformedBody != null
-  const hasResponse = data.provider != null
+  const hasResponse = data.provider != null || data.response_body != null
   const hasError = data.error != null
 
   const [showTransformed, setShowTransformed] = useState(hasTransformed)
@@ -559,9 +608,24 @@ function LlmCallDetail({ data }: { data: EventData }) {
             {data.provider && <Field label="Provider" value={data.provider as string} />}
             {data.status_code != null && <Field label="Status Code" value={String(data.status_code)} />}
           </div>
-          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-            {data.error as string}
-          </pre>
+          <Tabs defaultValue="message">
+            <TabsList className={SUB_TABS_LIST}>
+              <TabsTrigger value="message" className={SUB_TAB}>Message</TabsTrigger>
+              {data.response_body && (
+                <TabsTrigger value="full_body" className={SUB_TAB}>Full Body</TabsTrigger>
+              )}
+            </TabsList>
+            <TabsContent value="message">
+              <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+                {data.error as string}
+              </pre>
+            </TabsContent>
+            {data.response_body && (
+              <TabsContent value="full_body">
+                <JsonBlock data={data.response_body as unknown} />
+              </TabsContent>
+            )}
+          </Tabs>
         </TabsContent>
       )}
     </Tabs>

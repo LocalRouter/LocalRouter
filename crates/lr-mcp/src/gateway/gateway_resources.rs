@@ -401,14 +401,7 @@ impl McpGateway {
                 let preview = resp
                     .result
                     .as_ref()
-                    .map(|r| {
-                        let s = serde_json::to_string(r).unwrap_or_default();
-                        if s.len() > 2000 {
-                            format!("{}...", &s[..2000])
-                        } else {
-                            s
-                        }
-                    })
+                    .map(|r| serde_json::to_string_pretty(r).unwrap_or_default())
                     .unwrap_or_default();
                 let err = resp.error.as_ref().map(|e| e.message.clone());
                 (resp.error.is_none(), preview, err)

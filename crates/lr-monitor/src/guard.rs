@@ -130,6 +130,7 @@ mod tests {
                 finish_reason: None,
                 content_preview: None,
                 streamed: None,
+                response_body: None,
                 error: None,
             },
             EventStatus::Pending,

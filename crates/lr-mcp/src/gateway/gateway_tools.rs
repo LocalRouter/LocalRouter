@@ -431,14 +431,7 @@ impl McpGateway {
                 let response_preview = response
                     .result
                     .as_ref()
-                    .map(|r| {
-                        let s = serde_json::to_string(r).unwrap_or_default();
-                        if s.len() > 2000 {
-                            format!("{}...", &s[..2000])
-                        } else {
-                            s
-                        }
-                    })
+                    .map(|r| serde_json::to_string_pretty(r).unwrap_or_default())
                     .unwrap_or_default();
                 let error_msg = response.error.as_ref().map(|e| e.message.clone());
                 let success = response.error.is_none();
@@ -958,12 +951,7 @@ impl McpGateway {
         // 6. Apply result and update monitor event
         match result {
             VirtualToolCallResult::Success(response) => {
-                let preview = serde_json::to_string(&response).unwrap_or_default();
-                let preview = if preview.len() > 2000 {
-                    format!("{}...", &preview[..2000])
-                } else {
-                    preview
-                };
+                let preview = serde_json::to_string_pretty(&response).unwrap_or_default();
                 self.update_monitor_event(
                     &mon_event_id,
                     Box::new(move |event| {
@@ -993,12 +981,7 @@ impl McpGateway {
                 send_list_changed,
                 state_update,
             } => {
-                let preview = serde_json::to_string(&response).unwrap_or_default();
-                let preview = if preview.len() > 2000 {
-                    format!("{}...", &preview[..2000])
-                } else {
-                    preview
-                };
+                let preview = serde_json::to_string_pretty(&response).unwrap_or_default();
                 self.update_monitor_event(
                     &mon_event_id,
                     Box::new(move |event| {
