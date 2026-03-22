@@ -481,7 +481,8 @@ async fn streaming_loop(
                         iteration + 1
                     );
 
-                    let full_assistant_message = accumulated_message;
+                    let mut full_assistant_message = accumulated_message;
+                    orchestrator::sanitize_tool_call_arguments(&mut full_assistant_message);
                     let client_tool_call_ids: Vec<String> =
                         client_calls.iter().map(|tc| tc.id.clone()).collect();
 
@@ -584,6 +585,9 @@ async fn streaming_loop(
                     iteration + 1
                 );
 
+                // Sanitize malformed arguments to prevent provider errors on next iteration
+                let mut accumulated_message = accumulated_message;
+                orchestrator::sanitize_tool_call_arguments(&mut accumulated_message);
                 request.messages.push(accumulated_message);
 
                 for tool_call in &mcp_calls {

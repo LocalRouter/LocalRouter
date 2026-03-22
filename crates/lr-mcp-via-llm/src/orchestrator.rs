@@ -81,6 +81,18 @@ pub enum OrchestratorResult {
     },
 }
 
+/// Sanitize malformed tool call arguments to prevent provider errors on subsequent iterations.
+/// Replaces invalid JSON arguments with `"{}"` so the conversation remains valid when re-sent.
+pub(crate) fn sanitize_tool_call_arguments(message: &mut ChatMessage) {
+    if let Some(ref mut tool_calls) = message.tool_calls {
+        for tc in tool_calls.iter_mut() {
+            if serde_json::from_str::<Value>(&tc.function.arguments).is_err() {
+                tc.function.arguments = "{}".to_string();
+            }
+        }
+    }
+}
+
 /// Run the agentic loop for an MCP via LLM request
 ///
 /// If `guardrail_gate` is provided, it will be awaited after the first LLM call
@@ -428,7 +440,8 @@ pub async fn run_agentic_loop(
 
                     // Capture the full assistant message and client tool call IDs
                     // before we move `response`
-                    let full_assistant_message = choice.message.clone();
+                    let mut full_assistant_message = choice.message.clone();
+                    sanitize_tool_call_arguments(&mut full_assistant_message);
                     let client_tool_call_ids: Vec<String> =
                         client_calls.iter().map(|tc| tc.id.clone()).collect();
                     let client_tools_owned: Vec<ToolCall> =
@@ -550,7 +563,10 @@ pub async fn run_agentic_loop(
                 );
 
                 // Add the assistant message with tool calls to the conversation
-                request.messages.push(choice.message.clone());
+                // (sanitize malformed arguments to prevent provider errors on next iteration)
+                let mut assistant_msg = choice.message.clone();
+                sanitize_tool_call_arguments(&mut assistant_msg);
+                request.messages.push(assistant_msg);
 
                 for tool_call in &mcp_calls {
                     let tool_name = &tool_call.function.name;

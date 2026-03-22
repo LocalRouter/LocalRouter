@@ -467,8 +467,8 @@ impl ModelProvider for OllamaProvider {
                 status, request.model, error_text
             );
             return Err(AppError::Provider(format!(
-                "Ollama API error: {} - {}. Model may not be loaded. Try: ollama pull {}",
-                status, error_text, request.model
+                "Ollama API error: {} - {}",
+                status, error_text
             )));
         }
 
@@ -583,8 +583,8 @@ impl ModelProvider for OllamaProvider {
                 status, request.model, error_body
             );
             return Err(AppError::Provider(format!(
-                "Ollama streaming API error: {} - {}. Model may not be loaded. Try: ollama pull {}",
-                status, error_body, request.model
+                "Ollama streaming API error: {} - {}",
+                status, error_body
             )));
         }
 
