@@ -30,6 +30,79 @@ use lr_providers::factory::{
 use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;
 
+/// CompactionLlm implementation that uses the Router to call an LLM for summarization.
+struct RouterCompactionLlm {
+    router: Arc<router::Router>,
+}
+
+#[async_trait::async_trait]
+impl lr_memory::CompactionLlm for RouterCompactionLlm {
+    async fn summarize(&self, model: &str, transcript: &str) -> Result<String, String> {
+        use lr_providers::{ChatMessage, ChatMessageContent, CompletionRequest};
+
+        let request = CompletionRequest {
+            model: model.to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: ChatMessageContent::Text(
+                        lr_memory::compaction::system_prompt().to_string(),
+                    ),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: ChatMessageContent::Text(transcript.to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                },
+            ],
+            temperature: Some(0.0),
+            max_tokens: Some(4096),
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
+            n: None,
+            logit_bias: None,
+            parallel_tool_calls: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
+            pre_computed_routing: None,
+        };
+
+        let response = self
+            .router
+            .complete("memory-service", request)
+            .await
+            .map_err(|e| format!("LLM compaction failed: {}", e))?;
+
+        response
+            .choices
+            .first()
+            .map(|c| c.message.content.as_text())
+            .ok_or_else(|| "Empty LLM response".to_string())
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse CLI arguments
@@ -657,6 +730,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             app_state
                                 .mcp_via_llm_manager
                                 .set_memory_service(Some(service.clone()));
+
+                            // Wire up compaction LLM (uses Router to call LLM for summarization)
+                            service.set_compaction_llm(Arc::new(RouterCompactionLlm {
+                                router: app_router.clone(),
+                            }));
 
                             // Start session monitor (checks for expired sessions → triggers compaction)
                             service.start_session_monitor();
@@ -2034,6 +2112,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Memory Compaction commands
             ui::commands::get_memory_compaction_stats,
             ui::commands::force_compact_memory,
+            ui::commands::recompact_memory,
             ui::commands::reindex_client_memory,
             // Secret Scanning commands
             ui::commands::rebuild_secret_scanner,
@@ -2043,6 +2122,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_secret_scanning_patterns,
             ui::commands_clients::get_client_secret_scanning_config,
             ui::commands_clients::update_client_secret_scanning_config,
+            // Per-client JSON Repair commands
+            ui::commands_clients::get_client_json_repair_config,
+            ui::commands_clients::update_client_json_repair_config,
             // Prompt Compression commands
             ui::commands::get_client_compression_config,
             ui::commands::update_client_compression_config,
@@ -2187,6 +2269,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_monitor::clear_monitor_events,
             ui::commands_monitor::get_monitor_stats,
             ui::commands_monitor::set_monitor_max_capacity,
+            ui::commands_monitor::set_monitor_intercept_rule,
+            ui::commands_monitor::get_monitor_intercept_rule,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

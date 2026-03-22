@@ -62,6 +62,8 @@ pub struct ClientInfo {
     pub sync_config: bool,
     /// Whether guardrails are active (has non-allow category_actions)
     pub guardrails_active: bool,
+    /// Whether JSON repair is active (resolved from per-client override or global)
+    pub json_repair_active: bool,
 }
 
 /// List all clients
@@ -104,6 +106,7 @@ pub async fn list_clients(
                     .unwrap_or(&config.guardrails.category_actions);
                 effective_actions.iter().any(|a| a.action != "allow")
             },
+            json_repair_active: c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
         })
         .collect())
 }
@@ -175,6 +178,13 @@ pub async fn create_client(
                 .as_deref()
                 .unwrap_or(&cfg.guardrails.category_actions);
             effective_actions.iter().any(|a| a.action != "allow")
+        },
+        json_repair_active: {
+            let cfg = config_manager.get();
+            client
+                .json_repair
+                .enabled
+                .unwrap_or(cfg.json_repair.enabled)
         },
     };
 
@@ -396,6 +406,13 @@ pub async fn clone_client(
                 .as_deref()
                 .unwrap_or(&cfg.guardrails.category_actions);
             effective_actions.iter().any(|a| a.action != "allow")
+        },
+        json_repair_active: {
+            let cfg = config_manager.get();
+            new_client
+                .json_repair
+                .enabled
+                .unwrap_or(cfg.json_repair.enabled)
         },
     };
 
@@ -772,6 +789,10 @@ pub struct ClientEffectiveConfig {
     pub catalog_compression_effective: bool,
     /// "client" if overridden, "global" if inherited
     pub catalog_compression_source: String,
+    /// Effective JSON repair (resolved from client override or global)
+    pub json_repair_effective: bool,
+    /// "client" if overridden, "global" if inherited
+    pub json_repair_source: String,
 }
 
 /// Get the effective (inheritance-resolved) configuration for a client.
@@ -807,6 +828,15 @@ pub async fn get_client_effective_config(
         },
         catalog_compression_effective: client.is_catalog_compression_enabled(ctx),
         catalog_compression_source: if client.catalog_compression_enabled.is_some() {
+            "client".to_string()
+        } else {
+            "global".to_string()
+        },
+        json_repair_effective: client
+            .json_repair
+            .enabled
+            .unwrap_or(config.json_repair.enabled),
+        json_repair_source: if client.json_repair.enabled.is_some() {
             "client".to_string()
         } else {
             "global".to_string()
@@ -1034,6 +1064,9 @@ pub struct ClientFeatureStatus {
     pub active: bool,
     /// "override" if per-client setting exists, "global" if inherited
     pub source: String,
+    /// Feature-specific effective value (e.g. "ask", "notify", "off" for secret_scanning)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_value: Option<String>,
 }
 
 /// Get effective feature status for all clients
@@ -1050,7 +1083,7 @@ pub async fn get_feature_clients_status(
         .into_iter()
         .filter(|c| !c.name.starts_with("_test_strategy_"))
         .map(|c| {
-            let (active, source) = match feature.as_str() {
+            let (active, source, effective_value) = match feature.as_str() {
                 "json_repair" => (
                     c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
                     if c.json_repair.enabled.is_some() {
@@ -1058,6 +1091,7 @@ pub async fn get_feature_clients_status(
                     } else {
                         "global"
                     },
+                    None,
                 ),
                 "prompt_compression" => (
                     c.prompt_compression
@@ -1068,6 +1102,7 @@ pub async fn get_feature_clients_status(
                     } else {
                         "global"
                     },
+                    None,
                 ),
                 "guardrails" => {
                     let effective_actions = c
@@ -1075,13 +1110,18 @@ pub async fn get_feature_clients_status(
                         .category_actions
                         .as_deref()
                         .unwrap_or(&config.guardrails.category_actions);
+                    let active_count = effective_actions
+                        .iter()
+                        .filter(|a| a.action != "allow")
+                        .count();
                     (
-                        effective_actions.iter().any(|a| a.action != "allow"),
+                        active_count > 0,
                         if c.guardrails.category_actions.is_some() {
                             "override"
                         } else {
                             "global"
                         },
+                        Some(format!("{} active", active_count)),
                     )
                 }
                 "secret_scanning" => {
@@ -1090,6 +1130,11 @@ pub async fn get_feature_clients_status(
                         .action
                         .as_ref()
                         .unwrap_or(&config.secret_scanning.action);
+                    let value = match effective_action {
+                        lr_config::SecretScanAction::Ask => "ask",
+                        lr_config::SecretScanAction::Notify => "notify",
+                        lr_config::SecretScanAction::Off => "off",
+                    };
                     (
                         *effective_action != lr_config::SecretScanAction::Off,
                         if c.secret_scanning.action.is_some() {
@@ -1097,6 +1142,7 @@ pub async fn get_feature_clients_status(
                         } else {
                             "global"
                         },
+                        Some(value.to_string()),
                     )
                 }
                 "catalog_compression" => (
@@ -1106,6 +1152,7 @@ pub async fn get_feature_clients_status(
                     } else {
                         "global"
                     },
+                    None,
                 ),
                 "context_management" => (
                     c.is_context_management_enabled(&config.context_management),
@@ -1114,6 +1161,7 @@ pub async fn get_feature_clients_status(
                     } else {
                         "global"
                     },
+                    None,
                 ),
                 "memory" => (
                     c.memory_enabled.unwrap_or(false),
@@ -1122,7 +1170,20 @@ pub async fn get_feature_clients_status(
                     } else {
                         "global"
                     },
+                    None,
                 ),
+                "coding_agents" => {
+                    let value = match c.coding_agent_permission {
+                        lr_config::PermissionState::Allow => "allow",
+                        lr_config::PermissionState::Ask => "ask",
+                        lr_config::PermissionState::Off => "off",
+                    };
+                    (
+                        c.coding_agent_permission != lr_config::PermissionState::Off,
+                        "global", // coding agent permission is always per-client (no global default to inherit)
+                        Some(value.to_string()),
+                    )
+                }
                 "strong_weak" => {
                     let strategy = config.strategies.iter().find(|s| s.id == c.strategy_id);
                     let active = strategy
@@ -1130,9 +1191,9 @@ pub async fn get_feature_clients_status(
                         .and_then(|ac| ac.routellm_config.as_ref())
                         .map(|rc| rc.enabled)
                         .unwrap_or(false);
-                    (active, "global")
+                    (active, "global", None)
                 }
-                _ => (false, "global"),
+                _ => (false, "global", None),
             };
 
             ClientFeatureStatus {
@@ -1140,6 +1201,7 @@ pub async fn get_feature_clients_status(
                 client_name: c.name.clone(),
                 active,
                 source: source.to_string(),
+                effective_value,
             }
         })
         .collect())
@@ -1714,6 +1776,23 @@ pub(crate) fn reevaluate_pending_approvals(
             FirewallCheckResult::Deny => Some(FirewallApprovalAction::Deny),
             FirewallCheckResult::Ask => None,
         };
+
+        // Guard: if monitor intercept is active and would match, don't auto-resolve Allow
+        if auto_action == Some(FirewallApprovalAction::AllowOnce) {
+            use lr_mcp::gateway::firewall::InterceptCategory;
+            let category = if info.is_model_request || info.is_auto_router_request {
+                InterceptCategory::Llm
+            } else if info.is_guardrail_request {
+                InterceptCategory::Guardrails
+            } else if info.is_secret_scan_request {
+                InterceptCategory::SecretScan
+            } else {
+                InterceptCategory::Mcp
+            };
+            if firewall_manager.should_intercept(&info.client_id, category) {
+                continue; // Keep popup open — intercept is still active
+            }
+        }
 
         if let Some(action) = auto_action {
             tracing::info!(
@@ -3162,6 +3241,60 @@ pub async fn update_client_secret_scanning_config(
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
                 client.secret_scanning = new_config.clone();
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Per-Client JSON Repair Commands
+// ============================================================================
+
+/// Get the JSON repair configuration for a specific client
+#[tauri::command]
+pub async fn get_client_json_repair_config(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    serde_json::to_value(&client.json_repair).map_err(|e| e.to_string())
+}
+
+/// Update the JSON repair configuration for a specific client
+#[tauri::command]
+pub async fn update_client_json_repair_config(
+    client_id: String,
+    config_json: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let new_config: lr_config::ClientJsonRepairConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.json_repair = new_config.clone();
                 found = true;
             }
         })

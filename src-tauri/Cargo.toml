@@ -58,6 +58,7 @@ clap = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 parking_lot = { workspace = true }
+async-trait = { workspace = true }
 
 # These may still be needed by ui/ commands and updater
 reqwest = { workspace = true }

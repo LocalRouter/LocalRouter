@@ -4368,14 +4368,17 @@ pub async fn install_embedding_model(
     svc.ensure_loaded()
         .map_err(|e| format!("Model downloaded but failed to load: {}", e))?;
 
-    // Propagate to context-mode virtual server if vector search is globally enabled
-    if config_manager
+    // Auto-enable vector search and propagate to context-mode virtual server
+    if !config_manager
         .get()
         .context_management
         .vector_search_enabled
     {
-        context_mode_vs.set_embedding_service(Some(svc.clone()));
+        config_manager
+            .update(|c| c.context_management.vector_search_enabled = true)
+            .map_err(|e| e.to_string())?;
     }
+    context_mode_vs.set_embedding_service(Some(svc.clone()));
 
     // Propagate to memory service for hybrid memory search
     if let Some(ref memory_svc) = *state.memory_service.read() {
@@ -4973,14 +4976,9 @@ pub struct CompactionStatsResult {
     pub active_sessions: usize,
     pub pending_compaction: usize,
     pub archived_sessions: usize,
+    pub summarized_sessions: usize,
     pub indexed_sources: usize,
     pub total_lines: usize,
-}
-
-/// Result of a force-compact operation
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ForceCompactResult {
-    pub archived_count: usize,
 }
 
 /// Get compaction statistics for a client's memory
@@ -4999,26 +4997,128 @@ pub async fn get_memory_compaction_stats(
         active_sessions: stats.active_sessions,
         pending_compaction: stats.pending_compaction,
         archived_sessions: stats.archived_sessions,
+        summarized_sessions: stats.summarized_sessions,
         indexed_sources: stats.indexed_sources,
         total_lines: stats.total_lines,
     })
 }
 
-/// Force-compact all expired sessions for a client (move to archive)
+/// Force-compact all expired sessions for a client.
+/// Archives sessions and optionally summarizes them with the configured LLM.
+/// Emits progress events: memory-compact-progress, memory-compact-complete, memory-compact-failed
 #[tauri::command]
 pub async fn force_compact_memory(
     client_id: String,
     state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<ForceCompactResult, String> {
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let svc = {
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
 
-    let result = svc.force_compact(&client_id).await?;
-    Ok(ForceCompactResult {
-        archived_count: result.archived_count,
-    })
+    let cid = client_id.clone();
+    let app_handle = app.clone();
+
+    tokio::spawn(async move {
+        let cid_ref = cid.as_str();
+        let app_ref = &app_handle;
+
+        let result = svc
+            .force_compact(cid_ref, |current, total| {
+                let _ = app_ref.emit(
+                    "memory-compact-progress",
+                    serde_json::json!({
+                        "client_id": cid_ref,
+                        "current": current,
+                        "total": total,
+                    }),
+                );
+            })
+            .await;
+
+        match result {
+            Ok(r) => {
+                let _ = app_ref.emit(
+                    "memory-compact-complete",
+                    serde_json::json!({
+                        "client_id": cid_ref,
+                        "archived_count": r.archived_count,
+                        "summarized_count": r.summarized_count,
+                    }),
+                );
+            }
+            Err(e) => {
+                let _ = app_ref.emit(
+                    "memory-compact-failed",
+                    serde_json::json!({
+                        "client_id": cid_ref,
+                        "error": e,
+                    }),
+                );
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Re-compact all archived sessions for a client by regenerating LLM summaries.
+/// Emits progress events: memory-recompact-progress, memory-recompact-complete, memory-recompact-failed
+#[tauri::command]
+pub async fn recompact_memory(
+    client_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    let cid = client_id.clone();
+    let app_handle = app.clone();
+
+    tokio::spawn(async move {
+        let cid_ref = cid.as_str();
+        let app_ref = &app_handle;
+
+        let result = svc
+            .recompact_all(cid_ref, |current, total| {
+                let _ = app_ref.emit(
+                    "memory-recompact-progress",
+                    serde_json::json!({
+                        "client_id": cid_ref,
+                        "current": current,
+                        "total": total,
+                    }),
+                );
+            })
+            .await;
+
+        match result {
+            Ok(r) => {
+                let _ = app_ref.emit(
+                    "memory-recompact-complete",
+                    serde_json::json!({
+                        "client_id": cid_ref,
+                        "recompacted_count": r.recompacted_count,
+                    }),
+                );
+            }
+            Err(e) => {
+                let _ = app_ref.emit(
+                    "memory-recompact-failed",
+                    serde_json::json!({
+                        "client_id": cid_ref,
+                        "error": e,
+                    }),
+                );
+            }
+        }
+    });
+
+    Ok(())
 }
 
 /// Rebuild the FTS5 index for a client from all session files on disk.
