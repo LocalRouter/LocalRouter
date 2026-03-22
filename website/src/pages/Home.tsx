@@ -1120,7 +1120,7 @@ export default function Home() {
           <div className="mt-16 pt-16 border-t border-border/50">
             <div className="grid gap-8 md:grid-cols-2">
               {/* Content Safety (GuardRails) */}
-              <div className="relative overflow-visible mt-0 lg:mt-28">
+              <div className="relative overflow-visible mt-0 lg:mt-[32px] lg:pt-[80px] lg:pb-[95px] lg:-mb-[95px] lg:overflow-hidden">
                 <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-red-500/50 transition-colors overflow-visible">
                   <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
                     <div className="scale-[0.5] origin-top-right">
@@ -1158,7 +1158,7 @@ export default function Home() {
               </div>
 
               {/* Secret Scanning */}
-              <div className="relative overflow-visible mt-0 lg:mt-28">
+              <div className="relative overflow-visible mt-0 lg:mt-[32px] lg:pt-[80px] lg:pb-[95px] lg:-mb-[95px] lg:overflow-hidden">
                 <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-orange-500/50 transition-colors overflow-visible">
                   <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
                     <div className="scale-[0.5] origin-top-right">
@@ -1196,7 +1196,7 @@ export default function Home() {
               </div>
 
               {/* Runtime Approvals */}
-              <div className="relative overflow-visible mt-0 lg:mt-28">
+              <div className="relative overflow-visible mt-0 lg:mt-[32px] lg:pt-[80px] lg:pb-[95px] lg:-mb-[95px] lg:overflow-hidden">
                 <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-amber-500/50 transition-colors overflow-visible">
                   <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
                     <div className="scale-[0.5] origin-top-right">
@@ -1234,7 +1234,7 @@ export default function Home() {
               </div>
 
               {/* Elicitation & Sampling */}
-              <div className="relative overflow-visible mt-0 lg:mt-28">
+              <div className="relative overflow-visible mt-0 lg:mt-[32px] lg:pt-[80px] lg:pb-[95px] lg:-mb-[95px] lg:overflow-hidden">
                 <div className="relative group rounded-xl border bg-card/95 backdrop-blur-sm p-6 hover:border-indigo-500/50 transition-colors overflow-visible">
                   <div className="hidden lg:block absolute right-2 top-20 -translate-y-[25%] pointer-events-none z-10">
                     <div className="scale-[0.5] origin-top-right">

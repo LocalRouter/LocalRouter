@@ -5,7 +5,7 @@
  * with static mock data to show the mcp_via_llm client mode.
  */
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import ReactFlow, {
   Background,
   type NodeTypes,
@@ -23,6 +23,7 @@ import { MarketplaceNode } from '@app/components/connection-graph/nodes/Marketpl
 import { EndpointNode } from '@app/components/connection-graph/nodes/EndpointNode'
 import { RouterGroupNode } from '@app/components/connection-graph/nodes/RouterGroupNode'
 import type { GraphNodeData } from '@app/components/connection-graph/types'
+import type { ClientMode } from '@app/types/tauri-commands'
 
 const nodeTypes: NodeTypes = {
   accessKey: AccessKeyNode,
@@ -90,7 +91,14 @@ const mockStrategies = [{
   },
 }]
 
+const modes: { value: ClientMode; label: string }[] = [
+  { value: 'mcp_via_llm', label: 'MCP via LLM' },
+  { value: 'both', label: 'MCP & LLM' },
+]
+
 export default function McpViaLlmDiagram() {
+  const [mode, setMode] = useState<ClientMode>('mcp_via_llm')
+
   const { nodes, edges, bounds } = useMemo(() => {
     const result = buildGraph(
       [mockClient],
@@ -101,7 +109,7 @@ export default function McpViaLlmDiagram() {
       mockHealthState,
       mockActiveConnections,
       mockStrategies,
-      'mcp_via_llm',
+      mode,
     )
     // Patch the client node to use the openclaw icon
     for (const node of result.nodes) {
@@ -109,34 +117,66 @@ export default function McpViaLlmDiagram() {
         (node.data as any).iconUrl = '/icons/openclaw.png'
       }
     }
+    // In mcp_via_llm mode, add "Injected" label on the LLM→MCP edge
+    if (mode === 'mcp_via_llm') {
+      for (const edge of result.edges) {
+        if (edge.id === 'edge-llm-to-mcp') {
+          edge.label = 'Injected'
+          edge.labelStyle = { fill: '#8b5cf6', fontSize: 11, fontWeight: 600 }
+          edge.labelBgStyle = { fill: '#1e1b4b', fillOpacity: 0.9 }
+          edge.labelBgPadding = [4, 6] as [number, number]
+          edge.labelBgBorderRadius = 4
+        }
+      }
+    }
     return result
-  }, [])
+  }, [mode])
 
   const containerHeight = Math.max(150, bounds.height)
 
   return (
-    <div style={{ height: containerHeight }} className="w-full">
-      <ReactFlow
-        nodes={nodes as Node<GraphNodeData>[]}
-        edges={edges as Edge[]}
-        nodeTypes={nodeTypes}
-        defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-        fitView
-        fitViewOptions={{ padding: 0.15 }}
-        minZoom={0.5}
-        maxZoom={1.5}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable={false}
-        panOnDrag={false}
-        zoomOnScroll={false}
-        zoomOnPinch={false}
-        zoomOnDoubleClick={false}
-        preventScrolling={true}
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background color="#94a3b8" gap={16} size={1} />
-      </ReactFlow>
+    <div className="w-full">
+      <div style={{ height: containerHeight }}>
+        <ReactFlow
+          key={mode}
+          nodes={nodes as Node<GraphNodeData>[]}
+          edges={edges as Edge[]}
+          nodeTypes={nodeTypes}
+          defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+          fitView
+          fitViewOptions={{ padding: 0.15 }}
+          minZoom={0.5}
+          maxZoom={1.5}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          panOnDrag={false}
+          zoomOnScroll={false}
+          zoomOnPinch={false}
+          zoomOnDoubleClick={false}
+          preventScrolling={true}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background color="#94a3b8" gap={16} size={1} />
+        </ReactFlow>
+      </div>
+      <div className="flex justify-center py-3 border-t border-border/50">
+        <div className="inline-flex rounded-lg bg-muted p-0.5 text-sm">
+          {modes.map(m => (
+            <button
+              key={m.value}
+              onClick={() => setMode(m.value)}
+              className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+                mode === m.value
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
