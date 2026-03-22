@@ -174,7 +174,23 @@ impl OpenAIProvider {
                 output_cost_per_1k: 0.012,
                 currency: "USD".to_string(),
             }),
-            _ => None,
+            _ => {
+                // Try stripping date suffix (-YYYY-MM-DD) and retrying
+                let bytes = model.as_bytes();
+                if bytes.len() > 11 {
+                    let s = bytes.len() - 11;
+                    if bytes[s] == b'-'
+                        && bytes[s + 1..s + 5].iter().all(u8::is_ascii_digit)
+                        && bytes[s + 5] == b'-'
+                        && bytes[s + 6..s + 8].iter().all(u8::is_ascii_digit)
+                        && bytes[s + 8] == b'-'
+                        && bytes[s + 9..s + 11].iter().all(u8::is_ascii_digit)
+                    {
+                        return Self::get_model_pricing(&model[..s]);
+                    }
+                }
+                None
+            }
         }
     }
 

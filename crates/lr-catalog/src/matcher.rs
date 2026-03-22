@@ -68,7 +68,32 @@ impl ModelMatcher {
         }
 
         // 4. Try fuzzy/prefix matching
-        self.fuzzy_match(provider, model_id)
+        if let Some(model) = self.fuzzy_match(provider, model_id) {
+            return Some(model);
+        }
+
+        // 5. Try stripping date suffix (-YYYY-MM-DD) and retrying
+        //
+        // Providers like OpenAI return dated model variants (e.g., gpt-4.1-2025-04-14)
+        // that share pricing/metadata with the base model (e.g., gpt-4.1).
+        if let Some(base) = strip_date_suffix(&norm_model) {
+            let base = base.to_string();
+            if let Some(model) = self
+                .by_provider
+                .get(&(norm_provider.clone(), base.clone()))
+            {
+                return Some(model);
+            }
+            let base_id = format!("{}/{}", norm_provider, base);
+            if let Some(model) = self.by_id.get(&base_id) {
+                return Some(model);
+            }
+            if let Some(model) = self.by_alias.get(&base) {
+                return Some(model);
+            }
+        }
+
+        None
     }
 
     /// Find a model by name only (ignoring provider)
@@ -93,7 +118,25 @@ impl ModelMatcher {
         }
 
         // 3. Try fuzzy/prefix matching on model names
-        self.fuzzy_match_by_name(&norm_model)
+        if let Some(model) = self.fuzzy_match_by_name(&norm_model) {
+            return Some(model);
+        }
+
+        // 4. Try stripping date suffix (-YYYY-MM-DD) and retrying
+        if let Some(base) = strip_date_suffix(&norm_model) {
+            if let Some(model) = self.by_alias.get(base) {
+                return Some(model);
+            }
+            for (full_id, model) in &self.by_id {
+                if let Some((_provider, model_name)) = full_id.split_once('/') {
+                    if normalize_id(model_name) == base {
+                        return Some(model);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Fuzzy matching for common variations
@@ -130,6 +173,29 @@ impl ModelMatcher {
 /// Converts to lowercase and replaces various separators with hyphens
 fn normalize_id(id: &str) -> String {
     id.to_lowercase().replace(['_', ':', ' '], "-")
+}
+
+/// Strip a trailing date suffix (-YYYY-MM-DD) from a model ID.
+///
+/// Providers like OpenAI version models with date suffixes (e.g., `gpt-4.1-2025-04-14`).
+/// These dated variants share pricing and metadata with the base model (`gpt-4.1`).
+/// Returns the base model ID if a date suffix is found, None otherwise.
+fn strip_date_suffix(model_id: &str) -> Option<&str> {
+    // Pattern: -YYYY-MM-DD (11 chars at the end)
+    let bytes = model_id.as_bytes();
+    if bytes.len() > 11 {
+        let s = bytes.len() - 11;
+        if bytes[s] == b'-'
+            && bytes[s + 1..s + 5].iter().all(u8::is_ascii_digit)
+            && bytes[s + 5] == b'-'
+            && bytes[s + 6..s + 8].iter().all(u8::is_ascii_digit)
+            && bytes[s + 8] == b'-'
+            && bytes[s + 9..s + 11].iter().all(u8::is_ascii_digit)
+        {
+            return Some(&model_id[..s]);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -321,6 +387,75 @@ mod tests {
         let matcher = ModelMatcher::new(models_static);
 
         let result = matcher.find_model_by_name("nonexistent-model");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_strip_date_suffix() {
+        // Valid ISO date suffixes
+        assert_eq!(
+            strip_date_suffix("gpt-4.1-2025-04-14"),
+            Some("gpt-4.1")
+        );
+        assert_eq!(
+            strip_date_suffix("o1-2024-12-17"),
+            Some("o1")
+        );
+        assert_eq!(
+            strip_date_suffix("gpt-4o-audio-preview-2024-12-17"),
+            Some("gpt-4o-audio-preview")
+        );
+        assert_eq!(
+            strip_date_suffix("gpt-5.4-nano-2026-03-17"),
+            Some("gpt-5.4-nano")
+        );
+
+        // No date suffix - should return None
+        assert_eq!(strip_date_suffix("gpt-4o"), None);
+        assert_eq!(strip_date_suffix("gpt-4o-mini"), None);
+        assert_eq!(strip_date_suffix("o1"), None);
+
+        // Too short to have a date suffix
+        assert_eq!(strip_date_suffix("-2025-01-01"), None);
+        // Single char base is still valid (won't match any real model anyway)
+        assert_eq!(strip_date_suffix("x-2025-01-01"), Some("x"));
+
+        // MMDD format (not handled - intentionally)
+        assert_eq!(strip_date_suffix("gpt-3.5-turbo-instruct-0914"), None);
+    }
+
+    #[test]
+    fn test_date_suffix_stripping_find_model() {
+        let models = create_test_models();
+        let models_static: &'static [CatalogModel] = Box::leak(models.into_boxed_slice());
+        let matcher = ModelMatcher::new(models_static);
+
+        // gpt-4-2024-06-01 should resolve to gpt-4 via date suffix stripping
+        let result = matcher.find_model("openai", "gpt-4-2024-06-01");
+        assert!(result.is_some(), "Should find gpt-4 via date suffix stripping");
+        assert_eq!(result.unwrap().id, "openai/gpt-4");
+    }
+
+    #[test]
+    fn test_date_suffix_stripping_find_by_name() {
+        let models = create_test_models();
+        let models_static: &'static [CatalogModel] = Box::leak(models.into_boxed_slice());
+        let matcher = ModelMatcher::new(models_static);
+
+        // gpt-4-2024-06-01 should resolve to gpt-4 by name
+        let result = matcher.find_model_by_name("gpt-4-2024-06-01");
+        assert!(result.is_some(), "Should find gpt-4 by name via date suffix stripping");
+        assert_eq!(result.unwrap().id, "openai/gpt-4");
+    }
+
+    #[test]
+    fn test_date_suffix_no_false_positive() {
+        let models = create_test_models();
+        let models_static: &'static [CatalogModel] = Box::leak(models.into_boxed_slice());
+        let matcher = ModelMatcher::new(models_static);
+
+        // A model that doesn't exist even after stripping should still return None
+        let result = matcher.find_model("openai", "nonexistent-2025-01-01");
         assert!(result.is_none());
     }
 }
