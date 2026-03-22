@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
 import { LogicalSize } from "@tauri-apps/api/dpi"
@@ -78,6 +78,7 @@ export function FirewallApproval() {
   const [details, setDetails] = useState<ApprovalDetails | null>(null)
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [buttonsReady, setButtonsReady] = useState(false)
 
@@ -428,7 +429,12 @@ export function FirewallApproval() {
   }
 
   const handleAction = async (action: ApprovalAction) => {
-    if (!details) return
+    // Guard with ref to prevent double-invocation from Radix dropdown click-through.
+    // When a dropdown item is clicked, the portal is removed on pointerup, causing
+    // the browser click event to fall through to the button underneath. React state
+    // (setSubmitting) is batched and won't block the second call, but a ref is synchronous.
+    if (!details || submittingRef.current) return
+    submittingRef.current = true
     setSubmitting(true)
     try {
       const params: Record<string, unknown> = {
@@ -473,6 +479,7 @@ export function FirewallApproval() {
     } catch (err) {
       console.error("Failed to submit approval:", err)
       setError(typeof err === "string" ? err : "Failed to submit response")
+      submittingRef.current = false
       setSubmitting(false)
     }
   }

@@ -1263,7 +1263,7 @@ pub async fn submit_firewall_approval(
         None
     };
 
-    // Submit the response to the firewall manager
+    // Compute the submit action (some actions are remapped for the gateway)
     // BlockCategories and Deny1Hour are handled locally → submit as Deny
     // AllowCategories is handled locally → submit as AllowOnce
     let submit_action = match &action {
@@ -1273,13 +1273,14 @@ pub async fn submit_firewall_approval(
         FirewallApprovalAction::AllowCategories => FirewallApprovalAction::AllowOnce,
         other => other.clone(),
     };
-    state
-        .mcp_gateway
-        .firewall_manager
-        .submit_response(&request_id, submit_action, edited_args_value)
-        .map_err(|e| e.to_string())?;
 
-    // Handle special actions that modify permissions
+    // Phase 1: Update config/trackers BEFORE submitting response to the gateway.
+    // This ensures that by the time the gateway unblocks and the client sends the
+    // next request, the ClientManager already has the updated permissions
+    // (config_manager.update() synchronously calls sync_clients()).
+    // Wrapped in an async block so that errors don't prevent submit_response (Phase 2)
+    // from being called — the current request must always get a response.
+    let phase1_err = async {
     match action {
         FirewallApprovalAction::AllowPermanent => {
             if let Some(ref info) = pending_info {
@@ -1642,8 +1643,25 @@ pub async fn submit_firewall_approval(
         }
         _ => {}
     }
+    Ok::<(), String>(())
+    }.await.err();
 
-    // Re-evaluate remaining pending approvals that might now be auto-resolvable
+    if let Some(ref e) = phase1_err {
+        tracing::error!(
+            "Pre-submit config/tracker update failed: {} — proceeding with submit anyway",
+            e
+        );
+    }
+
+    // Phase 2: Submit the response to the firewall manager (unblocks the gateway).
+    // Config/trackers are already updated, so the next request will see the new permissions.
+    state
+        .mcp_gateway
+        .firewall_manager
+        .submit_response(&request_id, submit_action, edited_args_value)
+        .map_err(|e| e.to_string())?;
+
+    // Phase 3: Re-evaluate remaining pending approvals that might now be auto-resolvable
     reevaluate_pending_approvals(
         &app,
         &state.mcp_gateway.firewall_manager,
@@ -1796,7 +1814,7 @@ pub(crate) fn reevaluate_pending_approvals(
 
         if let Some(action) = auto_action {
             tracing::info!(
-                "Auto-resolving firewall request {} ({}) → {:?}",
+                "Re-evaluation: auto-resolving pending firewall request {} ({}) → {:?}",
                 info.request_id,
                 info.tool_name,
                 action
