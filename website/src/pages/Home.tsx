@@ -6,6 +6,7 @@ import { GuardrailApprovalDemo } from '@/components/GuardrailApprovalDemo'
 import { SecretScanApprovalDemo } from '@/components/SecretScanApprovalDemo'
 import { FreeTierFallbackDemo } from '@/components/FreeTierFallbackDemo'
 import { ElicitationDemo } from '@/components/ElicitationDemo'
+import McpViaLlmDiagram from '@/components/McpViaLlmDiagram'
 import {
   Shield,
   ShieldCheck,
@@ -849,96 +850,9 @@ export default function Home() {
                 Learn more <span aria-hidden="true">&rarr;</span>
               </Link>
             </div>
-            {/* Visual: MCP Architecture */}
-            <div className="relative overflow-x-auto">
-              <div className="rounded-xl border bg-gradient-to-br from-emerald-950 to-slate-900 p-6 shadow-2xl min-w-[480px]">
-                {/* Three-column layout: Client → Gateway → Servers */}
-                <div className="flex items-stretch gap-3">
-                  {/* Client */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="rounded-lg bg-blue-500/20 border border-blue-500/30 p-3 text-center">
-                      <div className="h-8 w-8 rounded bg-blue-500/30 flex items-center justify-center mx-auto mb-1">
-                        <span className="text-blue-400 text-sm font-bold">{'</>'}</span>
-                      </div>
-                      <div className="text-white text-xs font-medium">Client</div>
-                      <div className="text-blue-400 text-[10px]">Cursor</div>
-                    </div>
-                  </div>
-
-                  {/* STDIO Connection */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="flex items-center gap-1">
-                      <div className="w-6 h-0.5 bg-slate-500" />
-                      <div className="px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 text-[9px] font-mono">STDIO</div>
-                      <div className="w-6 h-0.5 bg-slate-500" />
-                    </div>
-                  </div>
-
-                  {/* Gateway */}
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="rounded-lg bg-emerald-500/20 border-2 border-emerald-500/50 p-3 text-center">
-                      <Wrench className="h-6 w-6 text-emerald-400 mx-auto mb-1" />
-                      <div className="text-white text-xs font-medium">Unified MCP</div>
-                      <div className="text-emerald-400 text-[10px]">Gateway</div>
-                    </div>
-                  </div>
-
-                  {/* Connections to servers */}
-                  <div className="flex flex-col items-center justify-center gap-2">
-                    <div className="flex items-center">
-                      <div className="w-3 h-0.5 bg-slate-600" />
-                      <div className="px-1 py-0.5 rounded bg-slate-700/50 text-slate-500 text-[8px] font-mono">STDIO</div>
-                    </div>
-                    <div className="flex items-center">
-                      <div className="w-3 h-0.5 bg-emerald-600" />
-                      <div className="px-1 py-0.5 rounded bg-emerald-900/50 text-emerald-500 text-[8px] font-mono">API Key</div>
-                    </div>
-                    <div className="flex items-center">
-                      <div className="w-3 h-0.5 bg-emerald-600" />
-                      <div className="px-1 py-0.5 rounded bg-emerald-900/50 text-emerald-500 text-[8px] font-mono">OAuth</div>
-                    </div>
-                  </div>
-
-                  {/* MCP Servers */}
-                  <div className="flex flex-col gap-2">
-                    {/* Skill Server */}
-                    <div className="rounded-lg bg-violet-500/10 border border-violet-500/30 p-2 flex items-center gap-2">
-                      <Blocks className="h-5 w-5 text-violet-400" />
-                      <div>
-                        <div className="text-white text-xs font-medium">Project Manager</div>
-                        <div className="text-violet-400 text-[10px]">Skill • Multi-step</div>
-                      </div>
-                    </div>
-                    {/* Online Servers */}
-                    <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 p-2 flex items-center gap-2">
-                      <img src="/icons/github.svg" alt="GitHub" className="h-5 w-5" />
-                      <div>
-                        <div className="text-white text-xs font-medium">GitHub</div>
-                        <div className="text-emerald-400 text-[10px]">Cloud • Online</div>
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 p-2 flex items-center gap-2">
-                      <img src="/icons/jira.svg" alt="Jira" className="h-5 w-5" />
-                      <div>
-                        <div className="text-white text-xs font-medium">Jira</div>
-                        <div className="text-emerald-400 text-[10px]">Cloud • Online</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Legend */}
-                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center gap-4">
-                  <div className="flex items-center gap-1.5">
-                    <div className="h-2 w-2 rounded-full bg-emerald-500" />
-                    <span className="text-slate-400 text-[10px]">Online (OAuth)</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="h-2 w-2 rounded-full bg-slate-500" />
-                    <span className="text-slate-400 text-[10px]">Local (STDIO)</span>
-                  </div>
-                </div>
-              </div>
+            {/* Visual: MCP via LLM Architecture */}
+            <div className="relative overflow-hidden rounded-xl border bg-card shadow-2xl">
+              <McpViaLlmDiagram />
             </div>
           </div>
 
