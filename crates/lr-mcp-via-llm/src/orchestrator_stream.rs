@@ -362,12 +362,18 @@ async fn streaming_loop(
         let mut accumulated_tool_calls: Vec<ToolCallAccumulator> = Vec::new();
         let mut accumulated_role = String::from("assistant");
         let mut finish_reason: Option<String> = None;
+        let mut resolved_model: Option<String> = None;
 
         // Stream chunks, forwarding non-final ones to the client
         while let Some(chunk_result) = provider_stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
                     let mut has_finish = false;
+
+                    // Capture the resolved model from chunks (router injects "provider/model")
+                    if resolved_model.is_none() && !chunk.model.is_empty() {
+                        resolved_model = Some(chunk.model.clone());
+                    }
 
                     if let Some(choice) = chunk.choices.first() {
                         // Accumulate content
@@ -450,7 +456,15 @@ async fn streaming_loop(
                     s
                 };
                 let finish = finish_reason.clone();
-                let model = request.model.clone();
+                // Use the resolved model from the stream (includes provider prefix),
+                // falling back to the request model if no chunks were received.
+                let resolved = resolved_model.clone().unwrap_or_else(|| request.model.clone());
+                // Extract provider name from "provider/model" format
+                let provider = resolved
+                    .split_once('/')
+                    .map(|(p, _)| p.to_string())
+                    .unwrap_or_else(|| resolved.clone());
+                let model = resolved;
                 update_fn(
                     &iter_event_id,
                     Box::new(move |event| {
@@ -458,6 +472,7 @@ async fn streaming_loop(
                         event.duration_ms = Some(latency);
                         if let lr_monitor::MonitorEventData::LlmCall {
                             model: ref mut m,
+                            provider: ref mut p,
                             status_code: ref mut sc,
                             latency_ms: ref mut lm,
                             finish_reason: ref mut fr,
@@ -467,6 +482,7 @@ async fn streaming_loop(
                         } = &mut event.data
                         {
                             *m = model;
+                            *p = Some(provider);
                             *sc = Some(200);
                             *lm = Some(latency);
                             *fr = finish;
