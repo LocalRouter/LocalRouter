@@ -12,6 +12,7 @@ interface MessageMetadata {
   model?: string
   promptTokens?: number
   completionTokens?: number
+  reasoningTokens?: number
   totalTokens?: number
   latencyMs?: number
 }
@@ -228,6 +229,7 @@ export function ChatPanel({
 
       let completionTokens = 0
       let promptTokens = 0
+      let reasoningTokens: number | undefined
       let modelUsed = selectedModel
 
       // Stream response token by token
@@ -245,6 +247,12 @@ export function ChatPanel({
         if (chunk.usage) {
           promptTokens = chunk.usage.prompt_tokens
           completionTokens = chunk.usage.completion_tokens
+          const details = (chunk.usage as unknown as Record<string, unknown>).completion_tokens_details as
+            | { reasoning_tokens?: number; thinking_tokens?: number }
+            | undefined
+          if (details) {
+            reasoningTokens = details.reasoning_tokens ?? details.thinking_tokens
+          }
         }
         if (chunk.model) {
           modelUsed = chunk.model
@@ -262,6 +270,7 @@ export function ChatPanel({
                   model: modelUsed,
                   promptTokens,
                   completionTokens,
+                  reasoningTokens,
                   totalTokens: promptTokens + completionTokens,
                   latencyMs,
                 },
@@ -414,8 +423,11 @@ export function ChatPanel({
                         message.metadata.totalTokens > 0 && (
                           <span>
                             {message.metadata.promptTokens} +{" "}
-                            {message.metadata.completionTokens} ={" "}
-                            {message.metadata.totalTokens} tokens
+                            {message.metadata.completionTokens}
+                            {message.metadata.reasoningTokens != null &&
+                              message.metadata.reasoningTokens > 0 &&
+                              ` (${message.metadata.reasoningTokens} reasoning)`}
+                            {" "}= {message.metadata.totalTokens} tokens
                           </span>
                         )}
                       {message.metadata.latencyMs !== undefined && (

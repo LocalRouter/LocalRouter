@@ -224,12 +224,12 @@ function ArgumentsBlock({ args }: { args: unknown }) {
   }
 
   return (
-    <table className="text-xs w-full">
+    <table className="text-xs w-full table-fixed">
       <tbody>
         {entries.map(([key, value]) => (
           <tr key={key} className="border-b border-border/20">
-            <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap align-top">{key}</td>
-            <td className="py-0.5 font-mono whitespace-pre-wrap break-all max-w-0">
+            <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap align-top w-[1%]">{key}</td>
+            <td className="py-0.5 font-mono whitespace-pre-wrap break-words">
               {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
             </td>
           </tr>
@@ -266,6 +266,138 @@ function McpResponseTab({ data }: { data: EventData }) {
 // Sub-tab styling
 const SUB_TABS_LIST = "h-7 w-full bg-muted/50 p-0.5"
 const SUB_TAB = "text-[11px] h-6 px-2.5"
+
+// ---- LLM Response Content (sub-tabs: Overview | Content | Tool Calls | Full Body) ----
+
+function LlmResponseContent({ data }: { data: EventData }) {
+  const responseBody = data.response_body as Record<string, unknown> | undefined
+  const choices = responseBody?.choices as Array<Record<string, unknown>> | undefined
+  const firstChoice = choices?.[0] as Record<string, unknown> | undefined
+  const message = firstChoice?.message as Record<string, unknown> | undefined
+  const toolCalls = message?.tool_calls as Array<Record<string, unknown>> | undefined
+  const hasToolCalls = toolCalls != null && toolCalls.length > 0
+
+  const defaultSubTab = hasToolCalls && !data.content_preview ? 'tool_calls'
+    : data.content_preview ? 'content' : 'overview'
+
+  return (
+    <div className="space-y-2">
+      <table className="w-full text-xs">
+        <tbody>
+          <tr className="border-b border-border/30">
+            <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Provider</td>
+            <td className="py-0.5 font-medium">{data.provider as string}</td>
+            <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Status</td>
+            <td className="py-0.5 font-medium">{data.status_code != null ? String(data.status_code) : '—'}</td>
+            {data.streamed != null && (
+              <>
+                <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Streamed</td>
+                <td className="py-0.5 font-medium">{String(data.streamed)}</td>
+              </>
+            )}
+          </tr>
+          {data.total_tokens != null && (
+            <tr className="border-b border-border/30">
+              <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Input</td>
+              <td className="py-0.5 font-medium">{String(data.input_tokens)}</td>
+              <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Output</td>
+              <td className="py-0.5 font-medium">{String(data.output_tokens)}</td>
+              <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Total</td>
+              <td className="py-0.5 font-medium">{String(data.total_tokens)}</td>
+            </tr>
+          )}
+          {(data.reasoning_tokens != null && (data.reasoning_tokens as number) > 0) && (
+            <tr className="border-b border-border/30">
+              <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Reasoning</td>
+              <td className="py-0.5 font-medium" colSpan={5}>{String(data.reasoning_tokens)}</td>
+            </tr>
+          )}
+          {(data.cost_usd != null || data.latency_ms != null || data.finish_reason) && (
+            <tr>
+              {data.latency_ms != null && (
+                <>
+                  <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Latency</td>
+                  <td className="py-0.5 font-medium">{String(data.latency_ms)}ms</td>
+                </>
+              )}
+              {data.cost_usd != null && (
+                <>
+                  <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Cost</td>
+                  <td className="py-0.5 font-medium">${(data.cost_usd as number).toFixed(6)}</td>
+                </>
+              )}
+              {data.finish_reason && (
+                <>
+                  <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Finish</td>
+                  <td className="py-0.5 font-medium">{data.finish_reason as string}</td>
+                </>
+              )}
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      <Tabs defaultValue={defaultSubTab}>
+        <TabsList className={SUB_TABS_LIST}>
+          {data.content_preview && (
+            <TabsTrigger value="content" className={SUB_TAB}>Content</TabsTrigger>
+          )}
+          {hasToolCalls && (
+            <TabsTrigger value="tool_calls" className={SUB_TAB}>
+              Tool Calls ({toolCalls.length})
+            </TabsTrigger>
+          )}
+          {responseBody && (
+            <TabsTrigger value="full_body" className={SUB_TAB}>Full Body</TabsTrigger>
+          )}
+        </TabsList>
+
+        {data.content_preview && (
+          <TabsContent value="content">
+            <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
+              {data.content_preview as string}
+            </pre>
+          </TabsContent>
+        )}
+
+        {hasToolCalls && (
+          <TabsContent value="tool_calls">
+            <div className="space-y-1.5">
+              {toolCalls.map((tc, i) => {
+                const fn = tc.function as Record<string, unknown> | undefined
+                return (
+                  <div key={i} className="rounded-md border text-xs overflow-hidden">
+                    <div className="flex items-center gap-2 px-2 py-1 border-b bg-blue-500/10 text-blue-700 dark:text-blue-400">
+                      <span className="font-mono font-medium text-[11px]">{String(fn?.name ?? tc.type ?? 'unknown')}</span>
+                      {tc.id != null && <span className="text-[10px] opacity-70 font-mono">{String(tc.id)}</span>}
+                    </div>
+                    {fn?.arguments != null && (
+                      <pre className="px-2 py-1.5 bg-muted/50 whitespace-pre-wrap max-h-[200px] overflow-auto">
+                        {formatToolArgs(fn.arguments)}
+                      </pre>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </TabsContent>
+        )}
+
+        {responseBody && (
+          <TabsContent value="full_body">
+            <JsonBlock data={responseBody} />
+          </TabsContent>
+        )}
+      </Tabs>
+
+      {!data.content_preview && !hasToolCalls && !responseBody && (
+        <p className="p-2 bg-muted rounded text-xs text-muted-foreground italic">
+          No text content{data.finish_reason === 'tool_calls' ? ' — response contained tool calls only' : ''}
+        </p>
+      )}
+    </div>
+  )
+}
 
 // ---- LLM Call Detail ----
 
@@ -311,8 +443,8 @@ function LlmCallDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="request">
       <TabsList className="w-full">
         <TabsTrigger value="request">Request</TabsTrigger>
-        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
-        {hasError && <TabsTrigger value="error">Error</TabsTrigger>}
+        <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
+        <TabsTrigger value="error" disabled={!hasError}>Error</TabsTrigger>
       </TabsList>
 
       <TabsContent value="request" className="space-y-2">
@@ -416,74 +548,8 @@ function LlmCallDetail({ data }: { data: EventData }) {
       </TabsContent>
 
       {hasResponse && (
-        <TabsContent value="response" className="space-y-2">
-          <table className="w-full text-xs">
-            <tbody>
-              <tr className="border-b border-border/30">
-                <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Provider</td>
-                <td className="py-0.5 font-medium">{data.provider as string}</td>
-                <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Status</td>
-                <td className="py-0.5 font-medium">{data.status_code != null ? String(data.status_code) : '—'}</td>
-                {data.streamed != null && (
-                  <>
-                    <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Streamed</td>
-                    <td className="py-0.5 font-medium">{String(data.streamed)}</td>
-                  </>
-                )}
-              </tr>
-              {data.total_tokens != null && (
-                <tr className="border-b border-border/30">
-                  <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Input</td>
-                  <td className="py-0.5 font-medium">{String(data.input_tokens)}</td>
-                  <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Output</td>
-                  <td className="py-0.5 font-medium">{String(data.output_tokens)}</td>
-                  <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Total</td>
-                  <td className="py-0.5 font-medium">{String(data.total_tokens)}</td>
-                </tr>
-              )}
-              {(data.reasoning_tokens != null && (data.reasoning_tokens as number) > 0) && (
-                <tr className="border-b border-border/30">
-                  <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Reasoning</td>
-                  <td className="py-0.5 font-medium" colSpan={5}>{String(data.reasoning_tokens)}</td>
-                </tr>
-              )}
-              {(data.cost_usd != null || data.latency_ms != null || data.finish_reason) && (
-                <tr>
-                  {data.latency_ms != null && (
-                    <>
-                      <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Latency</td>
-                      <td className="py-0.5 font-medium">{String(data.latency_ms)}ms</td>
-                    </>
-                  )}
-                  {data.cost_usd != null && (
-                    <>
-                      <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Cost</td>
-                      <td className="py-0.5 font-medium">${(data.cost_usd as number).toFixed(6)}</td>
-                    </>
-                  )}
-                  {data.finish_reason && (
-                    <>
-                      <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Finish</td>
-                      <td className="py-0.5 font-medium">{data.finish_reason as string}</td>
-                    </>
-                  )}
-                </tr>
-              )}
-            </tbody>
-          </table>
-
-          <div className="text-xs">
-            <span className="text-muted-foreground font-medium">Content:</span>
-            {(data.content_preview as string) ? (
-              <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-                {data.content_preview as string}
-              </pre>
-            ) : (
-              <p className="mt-1 p-2 bg-muted rounded text-xs text-muted-foreground italic">
-                No text content{data.finish_reason === 'tool_calls' ? ' — response contained tool calls only' : ''}
-              </p>
-            )}
-          </div>
+        <TabsContent value="response">
+          <LlmResponseContent data={data} />
         </TabsContent>
       )}
 
@@ -511,7 +577,7 @@ function McpToolCallDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="request">
       <TabsList className="w-full">
         <TabsTrigger value="request">Request</TabsTrigger>
-        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+        <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
       </TabsList>
 
       <TabsContent value="request" className="space-y-2">
@@ -541,7 +607,7 @@ function McpResourceReadDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="request">
       <TabsList className="w-full">
         <TabsTrigger value="request">Request</TabsTrigger>
-        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+        <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
       </TabsList>
 
       <TabsContent value="request" className="space-y-2">
@@ -569,7 +635,7 @@ function McpPromptGetDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="request">
       <TabsList className="w-full">
         <TabsTrigger value="request">Request</TabsTrigger>
-        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+        <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
       </TabsList>
 
       <TabsContent value="request" className="space-y-2">
@@ -598,7 +664,7 @@ function McpElicitationDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="request">
       <TabsList className="w-full">
         <TabsTrigger value="request">Request</TabsTrigger>
-        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+        <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
       </TabsList>
 
       <TabsContent value="request" className="space-y-2">
@@ -635,7 +701,7 @@ function McpSamplingDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="request">
       <TabsList className="w-full">
         <TabsTrigger value="request">Request</TabsTrigger>
-        {hasResponse && <TabsTrigger value="response">Response</TabsTrigger>}
+        <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
       </TabsList>
 
       <TabsContent value="request" className="space-y-2">
@@ -675,7 +741,7 @@ function GuardrailDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="scan">
       <TabsList className="w-full">
         <TabsTrigger value="scan">Scan</TabsTrigger>
-        {hasResult && <TabsTrigger value="result">Result</TabsTrigger>}
+        <TabsTrigger value="result" disabled={!hasResult}>Result</TabsTrigger>
       </TabsList>
 
       <TabsContent value="scan" className="space-y-2">
@@ -727,7 +793,7 @@ function SecretScanDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="scan">
       <TabsList className="w-full">
         <TabsTrigger value="scan">Scan</TabsTrigger>
-        {hasResult && <TabsTrigger value="result">Result</TabsTrigger>}
+        <TabsTrigger value="result" disabled={!hasResult}>Result</TabsTrigger>
       </TabsList>
 
       <TabsContent value="scan" className="space-y-2">
@@ -767,7 +833,7 @@ function RoutingDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="request">
       <TabsList className="w-full">
         <TabsTrigger value="request">Request</TabsTrigger>
-        {hasResult && <TabsTrigger value="result">Result</TabsTrigger>}
+        <TabsTrigger value="result" disabled={!hasResult}>Result</TabsTrigger>
       </TabsList>
 
       <TabsContent value="request" className="space-y-2">
@@ -802,7 +868,7 @@ function AuthErrorDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="overview">
       <TabsList className="w-full">
         <TabsTrigger value="overview">Overview</TabsTrigger>
-        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+        <TabsTrigger value="message" disabled={!data.message}>Message</TabsTrigger>
       </TabsList>
       <TabsContent value="overview" className="space-y-2">
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -828,7 +894,7 @@ function RateLimitDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="overview">
       <TabsList className="w-full">
         <TabsTrigger value="overview">Overview</TabsTrigger>
-        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+        <TabsTrigger value="message" disabled={!data.message}>Message</TabsTrigger>
       </TabsList>
       <TabsContent value="overview" className="space-y-2">
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -854,7 +920,7 @@ function ValidationErrorDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="overview">
       <TabsList className="w-full">
         <TabsTrigger value="overview">Overview</TabsTrigger>
-        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+        <TabsTrigger value="message" disabled={!data.message}>Message</TabsTrigger>
       </TabsList>
       <TabsContent value="overview" className="space-y-2">
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -879,7 +945,7 @@ function McpServerEventDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="overview">
       <TabsList className="w-full">
         <TabsTrigger value="overview">Overview</TabsTrigger>
-        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+        <TabsTrigger value="message" disabled={!data.message}>Message</TabsTrigger>
       </TabsList>
       <TabsContent value="overview" className="space-y-2">
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -907,7 +973,7 @@ function OAuthEventDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="overview">
       <TabsList className="w-full">
         <TabsTrigger value="overview">Overview</TabsTrigger>
-        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+        <TabsTrigger value="message" disabled={!data.message}>Message</TabsTrigger>
       </TabsList>
       <TabsContent value="overview" className="space-y-2">
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -932,7 +998,7 @@ function InternalErrorDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="overview">
       <TabsList className="w-full">
         <TabsTrigger value="overview">Overview</TabsTrigger>
-        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+        <TabsTrigger value="message" disabled={!data.message}>Message</TabsTrigger>
       </TabsList>
       <TabsContent value="overview" className="space-y-2">
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -956,7 +1022,7 @@ function ModerationEventDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="overview">
       <TabsList className="w-full">
         <TabsTrigger value="overview">Overview</TabsTrigger>
-        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+        <TabsTrigger value="message" disabled={!data.message}>Message</TabsTrigger>
       </TabsList>
       <TabsContent value="overview" className="space-y-2">
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -980,7 +1046,7 @@ function ConnectionErrorDetail({ data }: { data: EventData }) {
     <Tabs defaultValue="overview">
       <TabsList className="w-full">
         <TabsTrigger value="overview">Overview</TabsTrigger>
-        {data.message && <TabsTrigger value="message">Message</TabsTrigger>}
+        <TabsTrigger value="message" disabled={!data.message}>Message</TabsTrigger>
       </TabsList>
       <TabsContent value="overview" className="space-y-2">
         <div className="grid grid-cols-2 gap-2 text-xs">
