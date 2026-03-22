@@ -1973,23 +1973,53 @@ async fn update_permission_for_allow_permanent(
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == info.client_id) {
-                // Determine if this is an MCP tool or skill tool based on the tool name format
-                // MCP tools: "server__tool_name"
-                // Skill tools: "skill_skillname_..."
-                if info.tool_name.starts_with("skill_") {
-                    // This is a skill tool - update skills_permissions.tools
-                    // Tool name format: skill_skillname_tool_type_script_name
-                    // We need to store it as "skillname__full_tool_name" in the permissions
-                    let skill_name = &info.server_name;
-                    let key = format!("{}__{}", skill_name, info.tool_name);
-                    client
-                        .skills_permissions
-                        .tools
-                        .insert(key, PermissionState::Allow);
+                // Detect skill tools by virtual server ID "_skills".
+                // For skills, info.server_name is "_skills" and info.tool_name is
+                // the meta-tool name (e.g. "SkillRead"). The actual skill name
+                // must be extracted from full_arguments (the "name" parameter).
+                if info.server_name == "_skills" {
+                    // Extract skill name from the full_arguments JSON
+                    let skill_name = info
+                        .full_arguments
+                        .as_ref()
+                        .and_then(|args_str| serde_json::from_str::<serde_json::Value>(args_str).ok())
+                        .and_then(|args| {
+                            args.get("name")
+                                .or_else(|| args.get("skill"))
+                                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        });
+
+                    if let Some(skill_name) = skill_name {
+                        let key = format!("{}__{}", skill_name, info.tool_name);
+                        client
+                            .skills_permissions
+                            .tools
+                            .insert(key, PermissionState::Allow);
+                        tracing::info!(
+                            "Set skill tool permission to Allow: skill={}, tool={}",
+                            skill_name,
+                            info.tool_name
+                        );
+                    } else {
+                        tracing::warn!(
+                            "Could not extract skill name from arguments for AllowPermanent: tool={}, args={:?}",
+                            info.tool_name,
+                            info.full_arguments
+                        );
+                    }
+                } else if info.server_name == "_marketplace" {
+                    // Marketplace uses a single PermissionState field, not per-tool
+                    client.marketplace_permission = PermissionState::Allow;
                     tracing::info!(
-                        "Set skill tool permission to Allow: skill={}, tool={}",
-                        skill_name,
-                        info.tool_name
+                        "Set marketplace permission to Allow for client {}",
+                        info.client_id
+                    );
+                } else if info.server_name == "_coding_agents" {
+                    // Coding agents uses a single PermissionState field, not per-tool
+                    client.coding_agent_permission = PermissionState::Allow;
+                    tracing::info!(
+                        "Set coding agent permission to Allow for client {}",
+                        info.client_id
                     );
                 } else {
                     // MCP tool — info.server_name is the server UUID,
@@ -2092,17 +2122,50 @@ async fn update_permission_for_deny_permanent(
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == info.client_id) {
-                if info.tool_name.starts_with("skill_") {
-                    let skill_name = &info.server_name;
-                    let key = format!("{}__{}", skill_name, info.tool_name);
-                    client
-                        .skills_permissions
-                        .tools
-                        .insert(key, PermissionState::Off);
+                // Detect skill tools by virtual server ID "_skills".
+                if info.server_name == "_skills" {
+                    // Extract skill name from the full_arguments JSON
+                    let skill_name = info
+                        .full_arguments
+                        .as_ref()
+                        .and_then(|args_str| serde_json::from_str::<serde_json::Value>(args_str).ok())
+                        .and_then(|args| {
+                            args.get("name")
+                                .or_else(|| args.get("skill"))
+                                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        });
+
+                    if let Some(skill_name) = skill_name {
+                        let key = format!("{}__{}", skill_name, info.tool_name);
+                        client
+                            .skills_permissions
+                            .tools
+                            .insert(key, PermissionState::Off);
+                        tracing::info!(
+                            "Set skill tool permission to Off: skill={}, tool={}",
+                            skill_name,
+                            info.tool_name
+                        );
+                    } else {
+                        tracing::warn!(
+                            "Could not extract skill name from arguments for DenyAlways: tool={}, args={:?}",
+                            info.tool_name,
+                            info.full_arguments
+                        );
+                    }
+                } else if info.server_name == "_marketplace" {
+                    // Marketplace uses a single PermissionState field, not per-tool
+                    client.marketplace_permission = PermissionState::Off;
                     tracing::info!(
-                        "Set skill tool permission to Off: skill={}, tool={}",
-                        skill_name,
-                        info.tool_name
+                        "Set marketplace permission to Off for client {}",
+                        info.client_id
+                    );
+                } else if info.server_name == "_coding_agents" {
+                    // Coding agents uses a single PermissionState field, not per-tool
+                    client.coding_agent_permission = PermissionState::Off;
+                    tracing::info!(
+                        "Set coding agent permission to Off for client {}",
+                        info.client_id
                     );
                 } else {
                     // MCP tool — info.server_name is the server UUID,
