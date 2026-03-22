@@ -643,6 +643,8 @@ fn response_to_chunk(response: &lr_providers::CompletionResponse) -> lr_provider
                             .collect()
                     })
                 }),
+                reasoning_content: choice
+                    .and_then(|c| c.message.reasoning_content.clone()),
             },
             finish_reason: choice.and_then(|c| c.finish_reason.clone()),
         }],

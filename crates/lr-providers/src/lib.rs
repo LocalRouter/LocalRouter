@@ -1289,6 +1289,9 @@ pub struct ChatMessage {
     /// Function name (deprecated, use tool_calls instead)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Reasoning/thinking content from reasoning models (e.g., Qwen3, DeepSeek-R1, o1)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 /// Chat completion response
@@ -1465,6 +1468,9 @@ pub struct ChunkDelta {
     /// Tool calls delta (for streaming tool calls)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallDelta>>,
+    /// Reasoning/thinking content delta from reasoning models
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 /// Tool call delta for streaming

@@ -189,6 +189,9 @@ struct OllamaMessage {
     tool_calls: Option<Vec<OllamaToolCall>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    /// Thinking/reasoning content from reasoning models (Qwen3, DeepSeek-R1, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -233,6 +236,7 @@ impl OllamaMessage {
             content: msg.content.as_text(),
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),
+            thinking: msg.reasoning_content.clone(),
         }
     }
 
@@ -266,6 +270,7 @@ impl OllamaMessage {
             name: None,
             tool_calls,
             tool_call_id: None,
+            reasoning_content: self.thinking,
         }
     }
 }
@@ -703,6 +708,7 @@ impl ModelProvider for OllamaProvider {
                                                 None
                                             },
                                             tool_calls: tool_call_deltas,
+                                            reasoning_content: message.reasoning_content,
                                         },
                                         finish_reason,
                                     }],

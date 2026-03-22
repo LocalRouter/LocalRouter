@@ -186,6 +186,10 @@ pub struct ChatMessage {
     /// Tool call ID (only for tool role messages)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+
+    /// Reasoning/thinking content from reasoning models (e.g., o1, Qwen3, DeepSeek-R1)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 /// Tool call in assistant's response
@@ -432,6 +436,10 @@ pub struct ChunkDelta {
     /// Tool calls delta (for streaming tool calls)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallDelta>>,
+
+    /// Reasoning/thinking content from reasoning models
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 /// Tool call delta for streaming

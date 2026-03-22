@@ -327,6 +327,9 @@ struct OpenAIDelta {
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<super::ToolCallDelta>>,
+    /// Reasoning/thinking content from reasoning models (o1, o3, DeepSeek-R1, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
 }
 
 // OpenAI Embeddings API types
@@ -752,6 +755,7 @@ impl ModelProvider for OpenAIProvider {
                                                     role: choice.delta.role,
                                                     content: choice.delta.content,
                                                     tool_calls: choice.delta.tool_calls,
+                                                    reasoning_content: choice.delta.reasoning_content,
                                                 },
                                                 finish_reason: choice.finish_reason,
                                             })

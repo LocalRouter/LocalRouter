@@ -306,6 +306,7 @@ async fn streaming_loop(
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             });
         }
 
@@ -494,6 +495,9 @@ async fn streaming_loop(
                     if let Some(tc_val) = tool_calls_val {
                         message_obj["tool_calls"] = tc_val;
                     }
+                    if let Some(ref rc) = reasoning_content_opt {
+                        message_obj["reasoning_content"] = serde_json::Value::String(rc.clone());
+                    }
                     serde_json::json!({
                         "object": "chat.completion",
                         "model": &model,
@@ -591,6 +595,7 @@ async fn streaming_loop(
                                 tool_calls: None,
                                 tool_call_id: Some(tc.id.clone()),
                                 name: None,
+                                reasoning_content: None,
                             });
                         }
 
@@ -749,6 +754,7 @@ async fn streaming_loop(
                             tool_calls: None,
                             tool_call_id: Some(tool_call.id.clone()),
                             name: None,
+                            reasoning_content: None,
                         });
                         continue;
                     }
@@ -772,6 +778,7 @@ async fn streaming_loop(
                                 tool_calls: None,
                                 tool_call_id: Some(tool_call.id.clone()),
                                 name: None,
+                                reasoning_content: None,
                             });
                             continue;
                         }
@@ -849,6 +856,7 @@ async fn streaming_loop(
                         tool_calls: None,
                         tool_call_id: Some(tool_call.id.clone()),
                         name: None,
+                        reasoning_content: None,
                     });
                 }
 
@@ -928,6 +936,7 @@ async fn streaming_loop(
                     role: None,
                     content: None,
                     tool_calls: None,
+                    reasoning_content: None,
                 },
                 finish_reason,
             }],
@@ -1034,6 +1043,7 @@ fn build_finish_chunk_with_tools(tool_calls: &[&ToolCall], finish_reason: &str) 
                 role: None,
                 content: None,
                 tool_calls: Some(tool_call_deltas),
+                reasoning_content: None,
             },
             finish_reason: Some(finish_reason.to_string()),
         }],

@@ -298,6 +298,7 @@ pub async fn run_agentic_loop(
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             });
         }
 
@@ -487,6 +488,7 @@ pub async fn run_agentic_loop(
                                 tool_calls: None,
                                 tool_call_id: Some(tc.id.clone()),
                                 name: None,
+                                reasoning_content: None,
                             });
                         }
 
@@ -671,6 +673,7 @@ pub async fn run_agentic_loop(
                             tool_calls: None,
                             tool_call_id: Some(tool_call.id.clone()),
                             name: None,
+                            reasoning_content: None,
                         });
                         continue;
                     }
@@ -695,6 +698,7 @@ pub async fn run_agentic_loop(
                                 tool_calls: None,
                                 tool_call_id: Some(tool_call.id.clone()),
                                 name: None,
+                                reasoning_content: None,
                             });
                             mcp_tools_called.push(tool_name.clone());
                             continue;
@@ -740,6 +744,7 @@ pub async fn run_agentic_loop(
                         tool_calls: None,
                         tool_call_id: Some(tool_call.id.clone()),
                         name: None,
+                        reasoning_content: None,
                     });
                 }
 
@@ -872,6 +877,7 @@ pub async fn resume_after_mixed(
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         },
     );
     let mut messages = std::mem::take(&mut pending.messages_before_mixed);
@@ -918,6 +924,7 @@ pub async fn resume_after_mixed(
                     tool_calls: None,
                     tool_call_id: Some(tc.id.clone()),
                     name: None,
+                    reasoning_content: None,
                 });
             } else if let Some(client_result) = client_tool_results
                 .iter()
@@ -973,6 +980,7 @@ pub async fn resume_after_mixed(
                     tool_calls: None,
                     tool_call_id: Some(tc.id.clone()),
                     name: None,
+                    reasoning_content: None,
                 });
             }
         }
@@ -1506,6 +1514,7 @@ pub(crate) fn inject_server_instructions(request: &mut CompletionRequest, instru
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         },
     );
 }

@@ -326,8 +326,13 @@ function LlmResponseContent({ data }: { data: EventData }) {
   const message = firstChoice?.message as Record<string, unknown> | undefined
   const toolCalls = message?.tool_calls as Array<Record<string, unknown>> | undefined
   const hasToolCalls = toolCalls != null && toolCalls.length > 0
+  const reasoningContent = message?.reasoning_content as string | undefined
+  const hasReasoning = reasoningContent != null && reasoningContent.length > 0
 
-  const defaultSubTab = hasToolCalls && !data.content_preview ? 'tool_calls'
+  const hasEmptyResponse = !data.content_preview && !hasToolCalls && !hasReasoning && responseBody != null
+  const defaultSubTab = hasEmptyResponse ? 'empty'
+    : hasReasoning ? 'reasoning'
+    : hasToolCalls && !data.content_preview ? 'tool_calls'
     : data.content_preview ? 'content' : 'overview'
 
   return (
@@ -389,8 +394,14 @@ function LlmResponseContent({ data }: { data: EventData }) {
 
       <Tabs defaultValue={defaultSubTab}>
         <TabsList className={SUB_TABS_LIST}>
+          {hasEmptyResponse && (
+            <TabsTrigger value="empty" className={SUB_TAB}>Response</TabsTrigger>
+          )}
           {data.content_preview && (
             <TabsTrigger value="content" className={SUB_TAB}>Content</TabsTrigger>
+          )}
+          {hasReasoning && (
+            <TabsTrigger value="reasoning" className={SUB_TAB}>Reasoning</TabsTrigger>
           )}
           {hasToolCalls && (
             <TabsTrigger value="tool_calls" className={SUB_TAB}>
@@ -402,10 +413,26 @@ function LlmResponseContent({ data }: { data: EventData }) {
           )}
         </TabsList>
 
+        {hasEmptyResponse && (
+          <TabsContent value="empty">
+            <div className="p-3 rounded border border-yellow-500/30 bg-yellow-500/5 text-xs text-yellow-700 dark:text-yellow-400">
+              The LLM returned no text content.
+            </div>
+          </TabsContent>
+        )}
+
         {data.content_preview && (
           <TabsContent value="content">
             <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
               {data.content_preview as string}
+            </pre>
+          </TabsContent>
+        )}
+
+        {hasReasoning && (
+          <TabsContent value="reasoning">
+            <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
+              {reasoningContent}
             </pre>
           </TabsContent>
         )}

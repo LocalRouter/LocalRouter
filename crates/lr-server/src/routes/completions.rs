@@ -732,6 +732,7 @@ fn convert_prompt_to_messages(prompt: &PromptInput) -> ApiResult<Vec<ProviderCha
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         })
         .collect();
 

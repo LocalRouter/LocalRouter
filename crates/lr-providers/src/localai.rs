@@ -575,6 +575,7 @@ impl ModelProvider for LocalAIProvider {
                                                         role: choice.delta.role,
                                                         content: choice.delta.content,
                                                         tool_calls: choice.delta.tool_calls,
+                                                        reasoning_content: None,
                                                     },
                                                     finish_reason: choice.finish_reason,
                                                 })

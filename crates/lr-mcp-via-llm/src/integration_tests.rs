@@ -413,6 +413,7 @@ mod helpers {
                     tool_calls,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 finish_reason: Some(if text.is_some() {
                     "stop".to_string()
@@ -483,6 +484,7 @@ mod helpers {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1366,6 +1368,7 @@ mod mixed_tool_tests {
             tool_calls: None,
             tool_call_id: Some("client-1".to_string()),
             name: None,
+            reasoning_content: None,
         }];
 
         let cm_config = lr_config::ContextManagementConfig::default();

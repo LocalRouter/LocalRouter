@@ -34,6 +34,7 @@ fn test_tool_call_message_structure() {
         ]),
         tool_call_id: None,
         name: None,
+        reasoning_content: None,
     };
 
     assert_eq!(message.role, "assistant");
@@ -50,6 +51,7 @@ fn test_tool_response_message_structure() {
         tool_calls: None,
         tool_call_id: Some("call_123".to_string()),
         name: Some("get_weather".to_string()),
+        reasoning_content: None,
     };
 
     assert_eq!(message.role, "tool");
@@ -68,6 +70,7 @@ fn test_completion_request_with_tools() {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }],
         temperature: Some(0.7),
         max_tokens: Some(100),
@@ -175,6 +178,7 @@ fn test_message_with_both_content_and_tool_calls() {
         }]),
         tool_call_id: None,
         name: None,
+        reasoning_content: None,
     };
 
     assert!(!message.content.as_text().is_empty());
@@ -192,6 +196,7 @@ fn test_conversation_with_tool_calling_flow() {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         },
         // 2. Assistant decides to use a tool
         ChatMessage {
@@ -207,6 +212,7 @@ fn test_conversation_with_tool_calling_flow() {
             }]),
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         },
         // 3. Tool returns a result
         ChatMessage {
@@ -217,6 +223,7 @@ fn test_conversation_with_tool_calling_flow() {
             tool_calls: None,
             tool_call_id: Some("call_tokyo".to_string()),
             name: Some("get_weather".to_string()),
+            reasoning_content: None,
         },
         // 4. Assistant synthesizes the response
         ChatMessage {
@@ -227,6 +234,7 @@ fn test_conversation_with_tool_calling_flow() {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         },
     ];
 

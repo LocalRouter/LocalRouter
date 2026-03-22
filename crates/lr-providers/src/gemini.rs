@@ -491,6 +491,7 @@ impl ModelProvider for GeminiProvider {
                     },
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 finish_reason: Some(finish_reason.to_string()),
                 logprobs: None, // Gemini does not support logprobs
@@ -702,6 +703,7 @@ impl ModelProvider for GeminiProvider {
                                                 } else {
                                                     Some(tool_call_deltas)
                                                 },
+                                                reasoning_content: None,
                                             },
                                             finish_reason,
                                         }],
@@ -1194,6 +1196,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "user".to_string(),
@@ -1201,6 +1204,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
@@ -1208,6 +1212,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
         ];
 
@@ -1242,6 +1247,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
@@ -1256,6 +1262,7 @@ mod tests {
                 }]),
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
         ];
 
@@ -1289,6 +1296,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
@@ -1303,6 +1311,7 @@ mod tests {
                 }]),
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "tool".to_string(),
@@ -1312,6 +1321,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some("call_123".to_string()),
                 name: Some("get_weather".to_string()),
+                reasoning_content: None,
             },
         ];
 
@@ -1499,6 +1509,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             }],
             temperature: Some(0.7),
             max_tokens: Some(10),

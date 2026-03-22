@@ -331,6 +331,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 crate::ChatMessage {
                     role: "user".to_string(),
@@ -338,6 +339,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
             ],
             temperature: None,
@@ -384,6 +386,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 crate::ChatMessage {
                     role: "user".to_string(),
@@ -391,6 +394,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 crate::ChatMessage {
                     role: "assistant".to_string(),
@@ -398,6 +402,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 crate::ChatMessage {
                     role: "user".to_string(),
@@ -405,6 +410,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
             ],
             temperature: None,
@@ -485,6 +491,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 crate::ChatMessage {
                     role: "user".to_string(),
@@ -492,6 +499,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
             ],
             temperature: None,
@@ -544,6 +552,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,

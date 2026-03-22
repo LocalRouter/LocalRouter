@@ -30,6 +30,7 @@ pub fn convert_sampling_to_chat_request(
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
         );
     }
@@ -88,6 +89,7 @@ fn convert_sampling_message_to_chat(msg: SamplingMessage) -> ChatMessage {
         tool_calls: msg.tool_calls,
         tool_call_id: msg.tool_call_id,
         name: msg.name,
+        reasoning_content: None,
     }
 }
 
@@ -453,6 +455,7 @@ mod tests {
                     }]),
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 finish_reason: Some("tool_calls".to_string()),
                 logprobs: None,
@@ -503,6 +506,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 finish_reason: Some("stop".to_string()),
                 logprobs: None,
@@ -556,6 +560,7 @@ mod tests {
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,
+                        reasoning_content: None,
                     },
                     finish_reason: Some(finish_reason.to_string()),
                     logprobs: None,
@@ -650,6 +655,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 finish_reason: Some("stop".to_string()),
                 logprobs: None,

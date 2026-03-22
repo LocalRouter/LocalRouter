@@ -395,6 +395,7 @@ pub async fn chat_completions(
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             })
             .collect();
     } else if let Err(e) = &compression_result {
@@ -2027,6 +2028,7 @@ fn convert_to_provider_request(
                 tool_calls,
                 tool_call_id: msg.tool_call_id.clone(),
                 name: msg.name.clone(),
+                reasoning_content: None,
             })
         })
         .collect::<ApiResult<Vec<_>>>()?;
@@ -2390,6 +2392,7 @@ async fn handle_mcp_via_llm(
                                                     })
                                                     .collect()
                                             }),
+                                            reasoning_content: c.delta.reasoning_content,
                                         },
                                         finish_reason: c.finish_reason,
                                     })
@@ -2535,38 +2538,11 @@ async fn handle_mcp_via_llm(
                 .to_string(),
             );
 
-            // Complete the LlmCall monitor event with final streaming data
-            super::monitor_helpers::complete_llm_call(
-                &state_clone,
-                &llm_event_id,
-                &provider,
-                &model_clone,
-                200,
-                prompt_tokens as u64,
-                completion_tokens as u64,
-                None,
-                Some(cost),
-                latency_ms,
-                Some(&finish_reason_final),
-                &completion_content,
-                true,
-            );
-
-            // Store reconstructed response body for monitor UI inspection
-            let response_body = super::monitor_helpers::build_streaming_response_body(
-                &gen_id_clone,
-                &model_clone,
-                &completion_content,
-                &finish_reason_final,
-                prompt_tokens as u64,
-                completion_tokens as u64,
-                created_at_clone.timestamp(),
-            );
-            super::monitor_helpers::update_llm_call_response_body(
-                &state_clone,
-                &llm_event_id,
-                &response_body,
-            );
+            // NOTE: Do NOT call complete_llm_call / update_llm_call_response_body here.
+            // The MCP-via-LLM orchestrator (orchestrator_stream.rs) already completes
+            // per-iteration events with the correct model, provider, content_preview,
+            // and response_body (including tool_calls). Calling them here would overwrite
+            // the orchestrator's response_body with a text-only version that lacks tool_calls.
 
             let generation_details = GenerationDetails {
                 id: gen_id_clone,
@@ -2734,6 +2710,7 @@ async fn handle_mcp_via_llm(
                         name: choice.message.name.clone(),
                         tool_calls,
                         tool_call_id: choice.message.tool_call_id.clone(),
+                        reasoning_content: choice.message.reasoning_content.clone(),
                     },
                     finish_reason: choice.finish_reason.clone(),
                     logprobs: None,
@@ -3336,6 +3313,7 @@ async fn build_non_streaming_response(
                         name: choice.message.name,
                         tool_calls,
                         tool_call_id: choice.message.tool_call_id,
+                        reasoning_content: choice.message.reasoning_content,
                     },
                     finish_reason: choice.finish_reason,
                     logprobs: choice
@@ -3644,6 +3622,7 @@ async fn handle_streaming(
                                             role: choice.delta.role,
                                             content: choice.delta.content,
                                             tool_calls,
+                                            reasoning_content: choice.delta.reasoning_content,
                                         },
                                         finish_reason: choice.finish_reason,
                                     }
@@ -4129,6 +4108,7 @@ async fn handle_streaming_parallel(
                                         role: choice.delta.role,
                                         content: choice.delta.content,
                                         tool_calls,
+                                        reasoning_content: choice.delta.reasoning_content,
                                     },
                                     finish_reason: choice.finish_reason,
                                 }
@@ -4548,6 +4528,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -4592,6 +4573,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -4674,6 +4656,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: Some(0.7),
             max_tokens: None,
@@ -4718,6 +4701,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: Some(2.5),
             max_tokens: None,
@@ -4762,6 +4746,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -4806,6 +4791,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -4850,6 +4836,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -4894,6 +4881,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -4938,6 +4926,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -4984,6 +4973,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -5030,6 +5020,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -5082,6 +5073,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -5129,6 +5121,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             temperature: Some(0.7),
             max_tokens: Some(100),
@@ -5180,6 +5173,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
@@ -5187,6 +5181,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             },
         ];
 

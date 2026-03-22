@@ -53,6 +53,7 @@ mod session_tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }];
         history.set_messages(messages);
         assert_eq!(history.full_messages.len(), 1);
@@ -83,6 +84,7 @@ mod session_tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             mcp_handles: vec![handle],
             client_tool_call_ids: vec!["client-1".to_string()],
@@ -121,6 +123,7 @@ mod session_tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             mcp_handles: handles,
             client_tool_call_ids: vec![],
@@ -205,6 +208,7 @@ mod tool_injection_tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -548,6 +552,7 @@ mod manager_tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }];
         for id in tool_call_ids {
             messages.push(ChatMessage {
@@ -556,6 +561,7 @@ mod manager_tests {
                 tool_calls: None,
                 tool_call_id: Some(id.to_string()),
                 name: None,
+                reasoning_content: None,
             });
         }
         CompletionRequest {
@@ -599,6 +605,7 @@ mod manager_tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             mcp_handles: vec![],
             client_tool_call_ids: client_ids.iter().map(|s| s.to_string()).collect(),

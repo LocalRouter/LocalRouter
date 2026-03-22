@@ -25,6 +25,7 @@ pub fn standard_completion_request() -> CompletionRequest {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "user".to_string(),
@@ -32,6 +33,7 @@ pub fn standard_completion_request() -> CompletionRequest {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
         ],
         temperature: Some(0.7),
@@ -74,6 +76,7 @@ pub fn standard_streaming_request() -> CompletionRequest {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }],
         temperature: Some(0.5),
         max_tokens: Some(50),

@@ -57,6 +57,7 @@ fn test_completion_request_with_tools() {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }],
         temperature: Some(0.7),
         max_tokens: Some(100),
@@ -122,6 +123,7 @@ fn test_chat_message_with_tool_calls() {
         tool_calls: Some(vec![tool_call]),
         tool_call_id: None,
         name: None,
+        reasoning_content: None,
     };
 
     assert_eq!(message.role, "assistant");
@@ -141,6 +143,7 @@ fn test_tool_response_message() {
         tool_calls: None,
         tool_call_id: Some("call_abc123".to_string()),
         name: Some("get_weather".to_string()),
+        reasoning_content: None,
     };
 
     assert_eq!(message.role, "tool");
@@ -184,6 +187,7 @@ fn test_parallel_tool_calls() {
         tool_calls: Some(tool_calls),
         tool_call_id: None,
         name: None,
+        reasoning_content: None,
     };
 
     // Verify multiple tool calls are present
@@ -212,6 +216,7 @@ fn test_parallel_tool_responses() {
             tool_calls: None,
             tool_call_id: Some("call_001".to_string()),
             name: Some("get_weather".to_string()),
+            reasoning_content: None,
         },
         ChatMessage {
             role: "tool".to_string(),
@@ -221,6 +226,7 @@ fn test_parallel_tool_responses() {
             tool_calls: None,
             tool_call_id: Some("call_002".to_string()),
             name: Some("get_weather".to_string()),
+            reasoning_content: None,
         },
         ChatMessage {
             role: "tool".to_string(),
@@ -230,6 +236,7 @@ fn test_parallel_tool_responses() {
             tool_calls: None,
             tool_call_id: Some("call_003".to_string()),
             name: Some("get_current_time".to_string()),
+            reasoning_content: None,
         },
     ];
 

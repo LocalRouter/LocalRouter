@@ -51,6 +51,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 ChatMessage {
                     role: "user".to_string(),
@@ -58,6 +59,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
             ],
             temperature: Some(0.0),

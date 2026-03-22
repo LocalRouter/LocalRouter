@@ -625,6 +625,7 @@ impl ModelProvider for AnthropicProvider {
                     tool_calls: tool_calls_opt,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 finish_reason,
                 logprobs: None, // Anthropic does not support logprobs
@@ -816,6 +817,7 @@ impl ModelProvider for AnthropicProvider {
                                                                     arguments: Some(String::new()),
                                                                 }),
                                                             }]),
+                                                            reasoning_content: None,
                                                         },
                                                         finish_reason: None,
                                                     }],
@@ -838,6 +840,7 @@ impl ModelProvider for AnthropicProvider {
                                                             role: None,
                                                             content: Some(text.clone()),
                                                             tool_calls: None,
+                                                            reasoning_content: None,
                                                         },
                                                         finish_reason: None,
                                                     }],
@@ -875,6 +878,7 @@ impl ModelProvider for AnthropicProvider {
                                                                     ),
                                                                 }),
                                                             }]),
+                                                            reasoning_content: None,
                                                         },
                                                         finish_reason: None,
                                                     }],
@@ -903,6 +907,7 @@ impl ModelProvider for AnthropicProvider {
                                                             role: None,
                                                             content: None,
                                                             tool_calls: None,
+                                                            reasoning_content: None,
                                                         },
                                                         finish_reason: Some(finish_reason),
                                                     }],
@@ -1172,6 +1177,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "user".to_string(),
@@ -1179,6 +1185,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
         ];
 
@@ -1202,6 +1209,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
@@ -1209,6 +1217,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
         ];
 
@@ -1250,6 +1259,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
@@ -1265,6 +1275,7 @@ mod tests {
                 }]),
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
         ];
 
@@ -1302,6 +1313,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
@@ -1316,6 +1328,7 @@ mod tests {
                 }]),
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             ChatMessage {
                 role: "tool".to_string(),
@@ -1325,6 +1338,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some("toolu_123".to_string()),
                 name: Some("get_weather".to_string()),
+                reasoning_content: None,
             },
         ];
 

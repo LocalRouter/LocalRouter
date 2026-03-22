@@ -131,6 +131,7 @@ impl FeatureAdapter for JsonModeAdapter {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 };
                 request.messages.insert(0, system_message);
             }
@@ -432,6 +433,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 finish_reason: Some("stop".to_string()),
                 logprobs: None,
@@ -483,6 +485,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 finish_reason: Some("stop".to_string()),
                 logprobs: None,

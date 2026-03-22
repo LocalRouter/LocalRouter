@@ -506,6 +506,7 @@ impl ModelProvider for CohereProvider {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    reasoning_content: None,
                 },
                 finish_reason: Some(cohere_response.finish_reason),
                 logprobs: None, // Cohere does not support logprobs
