@@ -52,8 +52,6 @@ pub struct SkillsSessionState {
     pub context_management_enabled: bool,
     /// Configured tool name for the skill-read meta-tool.
     pub tool_name: String,
-    /// Configured tool name for the internal skill file reader.
-    pub read_file_tool_name: String,
     /// Configured search tool name (e.g. "IndexSearch") for catalog hints.
     pub search_tool_name: String,
 }
@@ -93,7 +91,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
 
     fn owns_tool(&self, tool_name: &str) -> bool {
         let skills_config = self.skills_config.read().unwrap();
-        tool_name == skills_config.tool_name || tool_name == skills_config.read_file_tool_name
+        tool_name == skills_config.tool_name
     }
 
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
@@ -160,37 +158,13 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
-        // Handle skill file reading (internal tool, not listed to LLM)
-        if tool_name == state.read_file_tool_name {
-            let skill_name = arguments
-                .get("skill")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let subpath = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
-
-            return match lr_skills::mcp_tools::read_skill_file(
-                skill_name,
-                subpath,
-                &self.skill_manager,
-                &state.permissions,
-                &state.tool_name,
-                &state.read_file_tool_name,
-            ) {
-                Ok(content) => VirtualToolCallResult::Success(serde_json::json!({
-                    "content": [{ "type": "text", "text": content }]
-                })),
-                Err(e) => VirtualToolCallResult::ToolError(e),
-            };
-        }
-
-        // Handle skill read meta-tool
+        // Handle skill read meta-tool (includes file reading via optional `path` param)
         match lr_skills::mcp_tools::handle_skill_tool_call(
             tool_name,
             &arguments,
             &self.skill_manager,
             &state.permissions,
             &state.tool_name,
-            "ResourceRead",
         )
         .await
         {
@@ -223,7 +197,6 @@ impl VirtualMcpServer for SkillsVirtualServer {
             &state.permissions,
             state.context_management_enabled,
             &state.tool_name,
-            "ResourceRead",
             &state.search_tool_name,
         );
 
@@ -251,7 +224,6 @@ impl VirtualMcpServer for SkillsVirtualServer {
             permissions: client.skills_permissions.clone(),
             context_management_enabled: client.is_context_management_enabled(&config),
             tool_name: skills_config.tool_name.clone(),
-            read_file_tool_name: skills_config.read_file_tool_name.clone(),
             search_tool_name: config.search_tool_name.clone(),
         })
     }
@@ -267,7 +239,6 @@ impl VirtualMcpServer for SkillsVirtualServer {
             s.permissions = client.skills_permissions.clone();
             s.context_management_enabled = client.is_context_management_enabled(&config);
             s.tool_name = skills_config.tool_name.clone();
-            s.read_file_tool_name = skills_config.read_file_tool_name.clone();
             s.search_tool_name = config.search_tool_name.clone();
         }
     }

@@ -1000,16 +1000,77 @@ async fn execute_resource_read_background(
         return Err("missing 'name' parameter".to_string());
     }
 
-    // Try as MCP resource first (by name)
-    let request = JsonRpcRequest {
-        jsonrpc: "2.0".to_string(),
-        id: Some(json!(1)),
-        method: "resources/read".to_string(),
-        params: Some(json!({ "name": name })),
+    let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
+
+    // Helper to send a resources/read request
+    let read_resource = |resource_name: String,
+                         servers: Vec<String>,
+                         rts: Vec<lr_mcp::protocol::Root>| {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "resources/read".to_string(),
+            params: Some(json!({ "name": resource_name })),
+        };
+        gateway.handle_request_with_skills(
+            client_id,
+            Some(&permissions.session_key),
+            servers,
+            rts,
+            permissions.mcp_permissions.clone(),
+            permissions.skills_permissions.clone(),
+            permissions.client_name.clone(),
+            permissions.marketplace_permission.clone(),
+            permissions.coding_agent_permission.clone(),
+            permissions.coding_agent_type,
+            permissions.context_management_overrides.clone(),
+            permissions.mcp_sampling_permission.clone(),
+            permissions.mcp_elicitation_permission.clone(),
+            permissions.memory_enabled,
+            permissions.client_mode.clone(),
+            request,
+            None,
+        )
     };
 
-    let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
+    // Try exact read first
     let response = match tokio::time::timeout(
+        timeout,
+        read_resource(name.to_string(), allowed_servers.clone(), roots.clone()),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(|e| format!("resources/read '{}' failed: {}", name, e))?,
+        Err(_) => return Err(format!("resources/read '{}' timed out", name)),
+    };
+
+    if response.error.is_none() {
+        let result = response.result.unwrap_or(json!({}));
+        if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
+            let texts: Vec<String> = contents
+                .iter()
+                .filter_map(|c| {
+                    c.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect();
+            if !texts.is_empty() {
+                return Ok(texts.join("\n"));
+            }
+        }
+        return Ok(orchestrator::content_to_string(&result));
+    }
+
+    // Exact match failed — try fuzzy matching via resources/list
+    let list_request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(1)),
+        method: "resources/list".to_string(),
+        params: Some(json!({})),
+    };
+
+    let list_response = match tokio::time::timeout(
         timeout,
         gateway.handle_request_with_skills(
             client_id,
@@ -1027,94 +1088,100 @@ async fn execute_resource_read_background(
             permissions.mcp_elicitation_permission.clone(),
             permissions.memory_enabled,
             permissions.client_mode.clone(),
-            request,
-            None, // monitor_session_id
+            list_request,
+            None,
         ),
     )
     .await
     {
-        Ok(result) => result.map_err(|e| format!("resources/read '{}' failed: {}", name, e))?,
-        Err(_) => return Err(format!("resources/read '{}' timed out", name)),
+        Ok(result) => result.map_err(|e| format!("resources/list failed: {}", e))?,
+        Err(_) => return Err(format!("Resource '{}' not found.", name)),
     };
 
-    if response.error.is_none() {
-        let result = response.result.unwrap_or(json!({}));
-        // Extract text content: { contents: [{ uri, text, mimeType }] }
-        if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
-            let texts: Vec<String> = contents
-                .iter()
-                .filter_map(|c| {
-                    c.get("text")
-                        .and_then(|t| t.as_str())
-                        .map(|s| s.to_string())
-                })
-                .collect();
-            if !texts.is_empty() {
-                return Ok(texts.join("\n"));
-            }
-        }
-        return Ok(orchestrator::content_to_string(&result));
-    }
+    let resource_names: Vec<String> = list_response
+        .result
+        .as_ref()
+        .and_then(|r| r.get("resources"))
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| r.get("name")?.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
 
-    // Not found as MCP resource — try as skill file (<skill_name>/<subpath>)
-    if let Some(slash_pos) = name.find('/') {
-        let skill_name = &name[..slash_pos];
-        let subpath = &name[slash_pos + 1..];
-        if !subpath.is_empty() {
-            let skill_request = JsonRpcRequest {
-                jsonrpc: "2.0".to_string(),
-                id: Some(json!(1)),
-                method: "tools/call".to_string(),
-                params: Some(json!({
-                    "name": "SkillReadFile",
-                    "arguments": { "skill": skill_name, "path": subpath }
-                })),
-            };
+    let candidates: Vec<(usize, &str)> = resource_names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (i, n.as_str()))
+        .collect();
 
-            let skill_response = match tokio::time::timeout(
+    match lr_types::fuzzy::find_best_match(name, &candidates) {
+        Some((idx, match_kind)) => {
+            let resolved = &resource_names[idx];
+            let retry_response = match tokio::time::timeout(
                 timeout,
-                gateway.handle_request_with_skills(
-                    client_id,
-                    Some(&permissions.session_key),
-                    allowed_servers,
-                    roots,
-                    permissions.mcp_permissions.clone(),
-                    permissions.skills_permissions.clone(),
-                    permissions.client_name.clone(),
-                    permissions.marketplace_permission.clone(),
-                    permissions.coding_agent_permission.clone(),
-                    permissions.coding_agent_type,
-                    permissions.context_management_overrides.clone(),
-                    permissions.mcp_sampling_permission.clone(),
-                    permissions.mcp_elicitation_permission.clone(),
-                    permissions.memory_enabled,
-                    permissions.client_mode.clone(),
-                    skill_request,
-                    None, // monitor_session_id
-                ),
+                read_resource(resolved.clone(), allowed_servers, roots),
             )
             .await
             {
-                Ok(result) => result.map_err(|e| format!("skill file read failed: {}", e))?,
-                Err(_) => return Err(format!("skill file read '{}' timed out", name)),
+                Ok(result) => {
+                    result.map_err(|e| format!("resources/read '{}' failed: {}", resolved, e))?
+                }
+                Err(_) => return Err(format!("resources/read '{}' timed out", resolved)),
             };
 
-            if let Some(error) = skill_response.error {
+            if let Some(error) = retry_response.error {
                 return Err(format!(
-                    "resource '{}' not found as MCP resource or skill file: {}",
-                    name, error.message
+                    "Error reading resource '{}': {}",
+                    resolved, error.message
                 ));
             }
 
-            let result = skill_response.result.unwrap_or(json!({}));
-            return Ok(orchestrator::content_to_string(&result));
+            let result = retry_response.result.unwrap_or(json!({}));
+            let content = if let Some(contents) = result.get("contents").and_then(|c| c.as_array())
+            {
+                let texts: Vec<String> = contents
+                    .iter()
+                    .filter_map(|c| {
+                        c.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect();
+                if !texts.is_empty() {
+                    texts.join("\n")
+                } else {
+                    orchestrator::content_to_string(&result)
+                }
+            } else {
+                orchestrator::content_to_string(&result)
+            };
+
+            if matches!(match_kind, lr_types::fuzzy::MatchKind::Exact) {
+                Ok(content)
+            } else {
+                Ok(format!(
+                    "Note: No resource named '{}' was found. Reading resource '{}' instead.\n\n{}",
+                    name, resolved, content
+                ))
+            }
+        }
+        None => {
+            if resource_names.is_empty() {
+                Err(format!(
+                    "Resource '{}' not found. No resources are available.",
+                    name
+                ))
+            } else {
+                Err(format!(
+                    "Resource '{}' not found. Available resources: {}",
+                    name,
+                    resource_names.join(", ")
+                ))
+            }
         }
     }
-
-    Err(format!(
-        "resource '{}' not found. Check the welcome message for available resource names.",
-        name
-    ))
 }
 
 /// Execute a PromptRead tool call in the streaming orchestrator.

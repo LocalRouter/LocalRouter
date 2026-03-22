@@ -1202,18 +1202,17 @@ pub(crate) const PROMPT_READ_TOOL_NAME: &str = "PromptRead";
 
 /// Inject a single `resource_read` tool into the request.
 ///
-/// Replaces the old approach of creating N synthetic per-resource tools.
-/// Resource names are listed in the welcome message; the LLM calls this
-/// tool with the name to fetch content.
+/// Resource names are listed in MCP server sections of the welcome message.
+/// The LLM calls this tool with the name to fetch content.
 pub(crate) fn inject_resource_read_tool(request: &mut CompletionRequest) {
     let tool = lr_providers::Tool {
         tool_type: "function".to_string(),
         function: lr_providers::FunctionDefinition {
             name: RESOURCE_READ_TOOL_NAME.to_string(),
             description: Some(
-                "Read a resource by name. MCP resource names are listed in the welcome message. \
-                 Skill files can be read as <skill>/<path> (e.g. \"my-skill/scripts/run.sh\"). \
-                 If resources are hidden due to compression, use ctx_search to discover them."
+                "Read an MCP resource by name. Resource names are listed in MCP server \
+                 sections of the welcome message. If resources are hidden due to compression, \
+                 use IndexSearch to discover them."
                     .to_string(),
             ),
             parameters: json!({
@@ -1221,7 +1220,7 @@ pub(crate) fn inject_resource_read_tool(request: &mut CompletionRequest) {
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Resource name or skill file path"
+                        "description": "Resource name"
                     }
                 },
                 "required": ["name"],
@@ -1236,7 +1235,11 @@ pub(crate) fn inject_resource_read_tool(request: &mut CompletionRequest) {
     }
 }
 
-/// Execute a resource_read call — resolves to MCP resource or skill file.
+/// Execute a resource_read call with fuzzy matching.
+///
+/// Tries exact match first, then fuzzy match against available resources
+/// (lazily fetched on miss). Returns consistent error messages listing
+/// available resource names.
 async fn execute_resource_read(gw_client: &GatewayClient<'_>, name: &str) -> String {
     if name.is_empty() {
         return "Error: missing 'name' parameter".to_string();
@@ -1246,28 +1249,54 @@ async fn execute_resource_read(gw_client: &GatewayClient<'_>, name: &str) -> Str
     match gw_client.read_resource(name).await {
         Ok(content) => content,
         Err(_) => {
-            // Not found as MCP resource — try as skill file
-            // Skill files use the pattern: <skill_name>/<subpath>
-            if let Some(slash_pos) = name.find('/') {
-                let skill_name = &name[..slash_pos];
-                let subpath = &name[slash_pos + 1..];
-                if !subpath.is_empty() {
-                    // Try reading via the gateway's skill file reader
-                    match gw_client.read_skill_file(skill_name, subpath).await {
-                        Ok(content) => return content,
-                        Err(e) => {
-                            return format!(
-                                "Error: resource '{}' not found as MCP resource or skill file: {}",
-                                name, e
-                            );
+            // Exact match failed — try fuzzy matching against available resources
+            let resource_names = match gw_client.list_resources().await {
+                Ok(names) => names,
+                Err(e) => {
+                    tracing::warn!("MCP via LLM: failed to list resources for fuzzy match: {}", e);
+                    return format!(
+                        "Resource '{}' not found.",
+                        name
+                    );
+                }
+            };
+
+            let candidates: Vec<(usize, &str)> = resource_names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (i, n.as_str()))
+                .collect();
+
+            match lr_types::fuzzy::find_best_match(name, &candidates) {
+                Some((idx, match_kind)) => {
+                    let resolved = &resource_names[idx];
+                    match gw_client.read_resource(resolved).await {
+                        Ok(content) => {
+                            if matches!(match_kind, lr_types::fuzzy::MatchKind::Exact) {
+                                content
+                            } else {
+                                format!(
+                                    "Note: No resource named '{}' was found. Reading resource '{}' instead.\n\n{}",
+                                    name, resolved, content
+                                )
+                            }
                         }
+                        Err(e) => format!("Error reading resource '{}': {}", resolved, e),
+                    }
+                }
+                None => {
+                    // No fuzzy match — list available resources
+                    if resource_names.is_empty() {
+                        format!("Resource '{}' not found. No resources are available.", name)
+                    } else {
+                        format!(
+                            "Resource '{}' not found. Available resources: {}",
+                            name,
+                            resource_names.join(", ")
+                        )
                     }
                 }
             }
-            format!(
-                "Error: resource '{}' not found. Check the welcome message for available resource names.",
-                name
-            )
         }
     }
 }

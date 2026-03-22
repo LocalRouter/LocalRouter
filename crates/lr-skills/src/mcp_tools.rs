@@ -17,9 +17,10 @@ use serde_json::json;
 /// Default meta-tool name for skill reading.
 pub const SKILL_META_TOOL_NAME: &str = "SkillRead";
 
-/// Default internal tool name for reading skill files (not exposed to LLM).
-/// Used by the orchestrator's `resource_read` to route skill file reads
-/// through the gateway.
+/// Legacy internal tool name for reading skill files.
+/// Kept for backwards compatibility during config migration.
+/// New code should use SkillRead with the `path` parameter instead.
+#[deprecated(note = "Use SkillRead with path parameter instead")]
 pub const SKILL_READ_FILE_TOOL_NAME: &str = "SkillReadFile";
 
 /// Result of handling a skill tool call.
@@ -46,7 +47,9 @@ fn build_meta_tool(tool_name: &str, skill_names: &[&str]) -> McpTool {
     McpTool {
         name: tool_name.to_string(),
         description: Some(
-            "Read a skill's full instructions, metadata, and file listing.".to_string(),
+            "Read a skill's full instructions, metadata, and file listing. \
+             Pass 'path' to read a specific skill file instead."
+                .to_string(),
         ),
         input_schema: json!({
             "type": "object",
@@ -54,6 +57,10 @@ fn build_meta_tool(tool_name: &str, skill_names: &[&str]) -> McpTool {
                 "name": {
                     "type": "string",
                     "description": name_desc
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Optional: relative file path within the skill (e.g. 'scripts/run.sh'). Omit to get full instructions."
                 }
             },
             "required": ["name"],
@@ -107,14 +114,12 @@ pub fn build_skill_tools(
 /// the listing is truncated with a search hint.
 ///
 /// `tool_name` is the configured skill-read tool name (e.g. "SkillRead").
-/// `resource_read_name` is the name referenced in descriptions (e.g. "ResourceRead").
 /// `search_tool_name` is the configured search tool name (e.g. "IndexSearch").
 pub fn build_skill_catalog(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
     context_management_enabled: bool,
     tool_name: &str,
-    resource_read_name: &str,
     search_tool_name: &str,
 ) -> Option<String> {
     let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
@@ -182,8 +187,8 @@ pub fn build_skill_catalog(
         tool_name
     ));
     text.push_str(&format!(
-        "Read skill files with {}(name=\"<skill>/<path>\").\n",
-        resource_read_name
+        "Read skill files with {}(name=\"<skill>\", path=\"<relative-path>\").\n",
+        tool_name
     ));
 
     Some(text)
@@ -230,13 +235,13 @@ pub fn build_skill_index_entries(
         if file_count > 0 {
             content.push_str(&format!("Files: {}\n", file_count));
             for script in &skill.scripts {
-                content.push_str(&format!("- scripts/{}\n", script));
+                content.push_str(&format!("- {}\n", script));
             }
             for reference in &skill.references {
-                content.push_str(&format!("- references/{}\n", reference));
+                content.push_str(&format!("- {}\n", reference));
             }
             for asset in &skill.assets {
-                content.push_str(&format!("- assets/{}\n", asset));
+                content.push_str(&format!("- {}\n", asset));
             }
         }
 
@@ -268,14 +273,12 @@ pub fn is_skill_tool(
 /// normalized, Levenshtein) and returns the matched skill with a correction note.
 ///
 /// `configured_tool_name` is the configured name for the meta-tool (e.g. "SkillRead").
-/// `resource_read_name` is the name of the resource read tool (e.g. "ResourceRead").
 pub async fn handle_skill_tool_call(
     tool_name: &str,
     arguments: &serde_json::Value,
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
     configured_tool_name: &str,
-    resource_read_name: &str,
 ) -> Result<Option<SkillToolResult>, String> {
     if tool_name != configured_tool_name {
         return Ok(None);
@@ -286,10 +289,29 @@ pub async fn handle_skill_tool_call(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing required 'name' parameter".to_string())?;
 
+    // Check if a specific file path was requested
+    let path = arguments.get("path").and_then(|v| v.as_str());
+
     // Verify the client has any skill access at all
     let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
     if !has_any_access {
         return Err("No skill access".to_string());
+    }
+
+    // If path is provided, delegate to read_skill_file
+    if let Some(subpath) = path {
+        let content = read_skill_file(
+            skill_name,
+            subpath,
+            skill_manager,
+            permissions,
+            configured_tool_name,
+            configured_tool_name, // same tool for both now
+        )?;
+        let response = json!({
+            "content": [{ "type": "text", "text": content }]
+        });
+        return Ok(Some(SkillToolResult::Response(response)));
     }
 
     // Try exact match first (fast path)
@@ -300,7 +322,7 @@ pub async fn handle_skill_tool_call(
         if !skill.enabled {
             return Err(format!("Skill '{}' is disabled", skill_name));
         }
-        let response = build_skill_read_response(&skill, resource_read_name);
+        let response = build_skill_read_response(&skill, configured_tool_name);
         return Ok(Some(SkillToolResult::Response(response)));
     }
 
@@ -314,7 +336,7 @@ pub async fn handle_skill_tool_call(
                 return Err(not_found_error(skill_name, skill_manager, permissions));
             }
 
-            let mut response = build_skill_read_response(&skill, resource_read_name);
+            let mut response = build_skill_read_response(&skill, configured_tool_name);
             prepend_correction_note(&mut response, skill_name, resolved_name, &match_kind);
             Ok(Some(SkillToolResult::Response(response)))
         }
@@ -392,12 +414,20 @@ pub fn read_skill_file(
         .collect();
 
     if !all_files.contains(&subpath) {
-        return Err(format!(
-            "File '{}' is not part of skill '{}'. Available files: {}",
-            subpath,
-            skill.metadata.name,
-            all_files.join(", ")
-        ));
+        return if all_files.is_empty() {
+            Err(format!(
+                "File '{}' is not part of skill '{}'. This skill has no readable files (no scripts/, references/, or assets/ directory).",
+                subpath,
+                skill.metadata.name,
+            ))
+        } else {
+            Err(format!(
+                "File '{}' is not part of skill '{}'. Available files: {}",
+                subpath,
+                skill.metadata.name,
+                all_files.join(", ")
+            ))
+        };
     }
 
     // Read from disk
@@ -474,11 +504,10 @@ fn not_found_error(
 
 /// Build the response for a skill_read tool call.
 ///
-/// Shows skill file paths as resource_read-compatible names
-/// (e.g. `<skill>/scripts/build.sh`) instead of absolute disk paths.
+/// Shows skill file paths with SkillRead(name, path) syntax.
 fn build_skill_read_response(
     skill: &SkillDefinition,
-    resource_read_name: &str,
+    tool_name: &str,
 ) -> serde_json::Value {
     let mut text = String::new();
     let skill_name = &skill.metadata.name;
@@ -504,15 +533,15 @@ fn build_skill_read_response(
 
     text.push('\n');
 
-    // File listings with ResourceRead-compatible paths
+    // File listings with SkillRead(name, path) syntax
     if !skill.scripts.is_empty() {
         text.push_str("## Scripts\n\n");
         text.push_str(&format!(
-            "Read with `{}(name=\"...\")`.\n\n",
-            resource_read_name
+            "Read with `{}(name=\"{}\", path=\"...\")`.\n\n",
+            tool_name, skill_name
         ));
         for script in &skill.scripts {
-            text.push_str(&format!("- `{}/{}`\n", skill_name, script));
+            text.push_str(&format!("- `{}`\n", script));
         }
         text.push('\n');
     }
@@ -520,11 +549,11 @@ fn build_skill_read_response(
     if !skill.references.is_empty() {
         text.push_str("## References\n\n");
         text.push_str(&format!(
-            "Read with `{}(name=\"...\")`.\n\n",
-            resource_read_name
+            "Read with `{}(name=\"{}\", path=\"...\")`.\n\n",
+            tool_name, skill_name
         ));
         for reference in &skill.references {
-            text.push_str(&format!("- `{}/{}`\n", skill_name, reference));
+            text.push_str(&format!("- `{}`\n", reference));
         }
         text.push('\n');
     }
@@ -532,11 +561,11 @@ fn build_skill_read_response(
     if !skill.assets.is_empty() {
         text.push_str("## Assets\n\n");
         text.push_str(&format!(
-            "Read with `{}(name=\"...\")`.\n\n",
-            resource_read_name
+            "Read with `{}(name=\"{}\", path=\"...\")`.\n\n",
+            tool_name, skill_name
         ));
         for asset in &skill.assets {
-            text.push_str(&format!("- `{}/{}`\n", skill_name, asset));
+            text.push_str(&format!("- `{}`\n", asset));
         }
         text.push('\n');
     }

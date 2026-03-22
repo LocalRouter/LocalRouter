@@ -363,61 +363,40 @@ impl<'a> GatewayClient<'a> {
         Ok(result.to_string())
     }
 
-    /// Read a skill file via the gateway's skill virtual server.
+    /// List all available MCP resources.
     ///
-    /// The gateway routes this to the SkillsVirtualServer which reads the
-    /// file from disk after permission checks.
-    pub async fn read_skill_file(
-        &self,
-        skill_name: &str,
-        subpath: &str,
-    ) -> Result<String, McpViaLlmError> {
-        // Use the skill_read tool with a special "__file" action
-        // Actually, we call the skill file reader directly via a tools/call
-        // that the skills virtual server handles
-        let request = self.make_request(
-            "tools/call",
-            Some(json!({
-                "name": "SkillReadFile",
-                "arguments": {
-                    "skill": skill_name,
-                    "path": subpath
-                }
-            })),
-        );
+    /// Returns namespaced resource names (e.g. "filesystem__readme").
+    pub async fn list_resources(&self) -> Result<Vec<String>, McpViaLlmError> {
+        let request = self.make_request("resources/list", Some(json!({})));
 
-        let response = self.send_request(request).await.map_err(|e| {
-            McpViaLlmError::ToolExecution(format!(
-                "skill file read '{}/{}' failed: {}",
-                skill_name, subpath, e
-            ))
-        })?;
+        let response = self
+            .send_request(request)
+            .await
+            .map_err(|e| McpViaLlmError::Gateway(format!("resources/list failed: {}", e)))?;
 
         if let Some(error) = response.error {
-            return Err(McpViaLlmError::ToolExecution(format!(
-                "skill file read '{}/{}' error: {}",
-                skill_name, subpath, error.message
+            return Err(McpViaLlmError::Gateway(format!(
+                "resources/list error: {}",
+                error.message
             )));
         }
 
-        let result = response.result.unwrap_or(json!({}));
+        let result = response.result.unwrap_or(json!({"resources": []}));
+        let resources_value = result
+            .get("resources")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
 
-        // Extract text from tool result content
-        if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
-            let texts: Vec<String> = content
-                .iter()
-                .filter_map(|c| {
-                    c.get("text")
-                        .and_then(|t| t.as_str())
-                        .map(|s| s.to_string())
-                })
-                .collect();
-            if !texts.is_empty() {
-                return Ok(texts.join("\n"));
-            }
-        }
+        let names: Vec<String> = resources_value
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| r.get("name")?.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        Ok(result.to_string())
+        Ok(names)
     }
 
     /// List all available MCP prompts
