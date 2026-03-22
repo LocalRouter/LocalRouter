@@ -64,7 +64,7 @@ impl TranscriptWriter {
     ) -> Result<PathBuf, String> {
         let archive_path = archive_dir.join(format!("{}.md", session_id));
         let sessions_path = sessions_dir.join(format!("{}.md", session_id));
-        let summary_path = sessions_dir.join(format!("{}-summary.md", session_id));
+        let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
 
         if !archive_path.exists() {
             return Err(format!(

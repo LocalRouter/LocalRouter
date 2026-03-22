@@ -334,8 +334,8 @@ Sure! Here are the details...
         let archive_file = archive_dir.join("test-session.md");
         std::fs::write(&archive_file, "---\ntest content\n---\n").unwrap();
 
-        // Create a summary in sessions (should be deleted on restore)
-        let summary_file = sessions_dir.join("test-session-summary.md");
+        // Create a summary in archive (should be deleted on restore)
+        let summary_file = archive_dir.join("test-session-summary.md");
         std::fs::write(&summary_file, "summary content").unwrap();
 
         // Restore
@@ -575,8 +575,9 @@ Sure! Here are the details...
         std::fs::write(sessions_dir.join("expired1.md"), "expired 1").unwrap();
         std::fs::write(sessions_dir.join("expired2.md"), "expired 2").unwrap();
 
-        let result = svc.force_compact("test-client").await.unwrap();
+        let result = svc.force_compact("test-client", |_, _| {}).await.unwrap();
         assert_eq!(result.archived_count, 2);
+        assert_eq!(result.summarized_count, 0);
 
         // Active session should still be in sessions/
         assert!(active_path.exists());
@@ -632,5 +633,255 @@ Sure! Here are the details...
 
         let results = svc.search("test-client", "Redis caching", 5).unwrap();
         assert!(!results.is_empty());
+    }
+
+    // ========================================================================
+    // LLM Compaction tests
+    // ========================================================================
+
+    /// Mock CompactionLlm that returns a fixed summary.
+    struct MockLlm {
+        summary: String,
+    }
+
+    impl MockLlm {
+        fn new(summary: &str) -> Self {
+            Self {
+                summary: summary.to_string(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::compaction::CompactionLlm for MockLlm {
+        async fn summarize(&self, _model: &str, _transcript: &str) -> Result<String, String> {
+            Ok(self.summary.clone())
+        }
+    }
+
+    /// Mock CompactionLlm that always fails.
+    struct FailingLlm;
+
+    #[async_trait::async_trait]
+    impl crate::compaction::CompactionLlm for FailingLlm {
+        async fn summarize(&self, _model: &str, _transcript: &str) -> Result<String, String> {
+            Err("LLM unavailable".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn compact_session_with_llm_creates_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        let archive_dir = dir.path().join("archive");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::create_dir_all(&archive_dir).unwrap();
+
+        let session_path = sessions_dir.join("test-session.md");
+        std::fs::write(&session_path, "full conversation transcript here").unwrap();
+
+        let llm = MockLlm::new("# Summary\nKey points discussed.");
+        let outcome = crate::compaction::compact_session(
+            &session_path,
+            &archive_dir,
+            Some(&llm),
+            Some("test/model"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, crate::compaction::CompactionOutcome::ArchivedAndSummarized);
+        // Raw file moved to archive
+        assert!(!session_path.exists());
+        assert!(archive_dir.join("test-session.md").exists());
+        // Summary file created
+        assert!(archive_dir.join("test-session-summary.md").exists());
+        let summary = std::fs::read_to_string(archive_dir.join("test-session-summary.md")).unwrap();
+        assert!(summary.contains("Key points discussed"));
+    }
+
+    #[tokio::test]
+    async fn compact_session_without_llm_archives_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        let archive_dir = dir.path().join("archive");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::create_dir_all(&archive_dir).unwrap();
+
+        let session_path = sessions_dir.join("test-session.md");
+        std::fs::write(&session_path, "conversation content").unwrap();
+
+        let outcome = crate::compaction::compact_session(
+            &session_path,
+            &archive_dir,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, crate::compaction::CompactionOutcome::ArchivedOnly);
+        assert!(archive_dir.join("test-session.md").exists());
+        assert!(!archive_dir.join("test-session-summary.md").exists());
+    }
+
+    #[tokio::test]
+    async fn compact_session_llm_failure_still_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        let archive_dir = dir.path().join("archive");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::create_dir_all(&archive_dir).unwrap();
+
+        let session_path = sessions_dir.join("test-session.md");
+        std::fs::write(&session_path, "conversation content").unwrap();
+
+        let llm = FailingLlm;
+        let outcome = crate::compaction::compact_session(
+            &session_path,
+            &archive_dir,
+            Some(&llm),
+            Some("test/model"),
+        )
+        .await
+        .unwrap();
+
+        // Should archive but not summarize
+        assert_eq!(outcome, crate::compaction::CompactionOutcome::ArchivedOnly);
+        assert!(archive_dir.join("test-session.md").exists());
+        assert!(!archive_dir.join("test-session-summary.md").exists());
+    }
+
+    #[tokio::test]
+    async fn recompact_session_creates_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_dir = dir.path().join("archive");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+
+        // Create raw transcript in archive
+        std::fs::write(archive_dir.join("abc123.md"), "original transcript").unwrap();
+
+        let llm = MockLlm::new("# Recompacted summary");
+        crate::compaction::recompact_session("abc123", &archive_dir, &llm, "test/model")
+            .await
+            .unwrap();
+
+        // Summary file created
+        assert!(archive_dir.join("abc123-summary.md").exists());
+        let summary = std::fs::read_to_string(archive_dir.join("abc123-summary.md")).unwrap();
+        assert!(summary.contains("Recompacted summary"));
+        // Raw file still exists
+        assert!(archive_dir.join("abc123.md").exists());
+    }
+
+    #[tokio::test]
+    async fn recompact_session_overwrites_existing_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_dir = dir.path().join("archive");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+
+        std::fs::write(archive_dir.join("abc123.md"), "original transcript").unwrap();
+        std::fs::write(archive_dir.join("abc123-summary.md"), "old summary").unwrap();
+
+        let llm = MockLlm::new("# New summary");
+        crate::compaction::recompact_session("abc123", &archive_dir, &llm, "test/model")
+            .await
+            .unwrap();
+
+        let summary = std::fs::read_to_string(archive_dir.join("abc123-summary.md")).unwrap();
+        assert!(summary.contains("New summary"));
+        assert!(!summary.contains("old summary"));
+    }
+
+    #[test]
+    fn compaction_stats_counts_summaries_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        let client_dir = svc.ensure_client_dir("test-client").unwrap();
+
+        // Create archive files: 2 raw + 1 summary
+        std::fs::write(client_dir.join("archive/aaa.md"), "raw 1").unwrap();
+        std::fs::write(client_dir.join("archive/bbb.md"), "raw 2").unwrap();
+        std::fs::write(client_dir.join("archive/aaa-summary.md"), "summary 1").unwrap();
+
+        let stats = svc.get_compaction_stats("test-client").unwrap();
+        assert_eq!(stats.archived_sessions, 2); // only raw files
+        assert_eq!(stats.summarized_sessions, 1); // only summary files
+    }
+
+    #[test]
+    fn reindex_prefers_summary_over_raw_in_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        let client_dir = svc.ensure_client_dir("test-client").unwrap();
+
+        // Archive with both raw and summary
+        std::fs::write(
+            client_dir.join("archive/abc.md"),
+            "Raw: PostgreSQL was chosen for authentication storage.",
+        )
+        .unwrap();
+        std::fs::write(
+            client_dir.join("archive/abc-summary.md"),
+            "Summary: Uses PostgreSQL for auth. Key decision: chose SQL over NoSQL.",
+        )
+        .unwrap();
+
+        // Archive with only raw (no summary)
+        std::fs::write(
+            client_dir.join("archive/def.md"),
+            "Raw: Redis is used for session caching.",
+        )
+        .unwrap();
+
+        let count = svc.reindex("test-client", |_, _| {}).unwrap();
+        // Should index: abc-summary + def (skipping abc raw)
+        assert_eq!(count, 2);
+
+        // Search for content in summary (should find)
+        let results = svc.search("test-client", "Key decision SQL", 5).unwrap();
+        assert!(!results.is_empty());
+
+        // Search for content in raw-only file (should find)
+        let results = svc.search("test-client", "Redis session caching", 5).unwrap();
+        assert!(!results.is_empty());
+
+        // Search for content only in raw file that has a summary (should NOT find)
+        let results = svc.search("test-client", "authentication storage", 5).unwrap();
+        assert!(results.is_empty(), "Raw file should not be indexed when summary exists");
+    }
+
+    #[tokio::test]
+    async fn force_compact_with_llm_summarizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = lr_config::MemoryConfig::default();
+        let svc = crate::MemoryService::new(config, dir.path().to_path_buf());
+
+        let client_dir = svc.ensure_client_dir("test-client").unwrap();
+        let sessions_dir = client_dir.join("sessions");
+
+        // Create expired session
+        std::fs::write(sessions_dir.join("expired1.md"), "conversation about API design").unwrap();
+
+        // Set up compaction LLM
+        let llm = std::sync::Arc::new(MockLlm::new("# API Design Summary"));
+        svc.set_compaction_llm(llm);
+
+        // Set compaction model in config
+        let mut config = svc.config();
+        config.compaction_model = Some("test/model".to_string());
+        svc.update_config(config);
+
+        let result = svc.force_compact("test-client", |_, _| {}).await.unwrap();
+        assert_eq!(result.archived_count, 1);
+        assert_eq!(result.summarized_count, 1);
+
+        // Both raw and summary should exist in archive
+        assert!(client_dir.join("archive/expired1.md").exists());
+        assert!(client_dir.join("archive/expired1-summary.md").exists());
     }
 }

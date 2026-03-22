@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 use lr_config::MemoryConfig;
 use lr_context::ContentStore;
 
+pub use compaction::CompactionLlm;
 pub use session_manager::SessionManager;
 pub use transcript::TranscriptWriter;
 
@@ -45,6 +46,8 @@ pub struct MemoryService {
     stores: DashMap<String, ContentStore>,
     /// Optional embedding service for hybrid (FTS5 + vector) search
     embedding_service: Option<Arc<lr_embeddings::EmbeddingService>>,
+    /// Optional LLM for compaction summarization
+    compaction_llm: RwLock<Option<Arc<dyn CompactionLlm>>>,
 }
 
 impl MemoryService {
@@ -62,6 +65,7 @@ impl MemoryService {
             memory_dir,
             stores: DashMap::new(),
             embedding_service: None,
+            compaction_llm: RwLock::new(None),
         }
     }
 
@@ -74,6 +78,11 @@ impl MemoryService {
         let mut service = Self::new(config, memory_dir);
         service.embedding_service = Some(embedding_service);
         service
+    }
+
+    /// Set the compaction LLM (enables LLM-based summarization during compaction).
+    pub fn set_compaction_llm(&self, llm: Arc<dyn CompactionLlm>) {
+        *self.compaction_llm.write() = Some(llm);
     }
 
     /// Set or replace the embedding service (enables hybrid search for new stores).
@@ -309,14 +318,61 @@ impl MemoryService {
                     if config.compaction_model.is_some() {
                         let client_dir = service.memory_dir.join(&client_id);
                         let archive_dir = client_dir.join("archive");
-                        if let Err(e) =
-                            compaction::compact_session(&session.file_path, &archive_dir).await
+
+                        // Clone the Arc to avoid holding the RwLock across await
+                        let llm_arc = service.compaction_llm.read().clone();
+                        let model = config.compaction_model.as_deref();
+
+                        let session_id = session
+                            .file_path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+
+                        match compaction::compact_session(
+                            &session.file_path,
+                            &archive_dir,
+                            llm_arc.as_deref(),
+                            model,
+                        )
+                        .await
                         {
-                            tracing::warn!(
-                                "Memory compaction failed for client {}: {}",
-                                &client_id[..8.min(client_id.len())],
-                                e
-                            );
+                            Ok(outcome) => {
+                                // Update FTS5 index based on outcome
+                                if let Ok(store) = service.get_or_create_store(&client_id) {
+                                    match outcome {
+                                        compaction::CompactionOutcome::ArchivedAndSummarized => {
+                                            // Read summary and index it
+                                            let summary_path = archive_dir
+                                                .join(format!("{}-summary.md", session_id));
+                                            if let Ok(summary) =
+                                                std::fs::read_to_string(&summary_path)
+                                            {
+                                                let summary_label = format!(
+                                                    "session/{}-summary",
+                                                    session_id
+                                                );
+                                                let _ = store.index(&summary_label, &summary);
+                                            }
+                                            // Remove raw transcript from index
+                                            let raw_label =
+                                                format!("session/{}", session_id);
+                                            let _ = store.delete(&raw_label);
+                                        }
+                                        compaction::CompactionOutcome::ArchivedOnly => {
+                                            // Raw transcript stays indexed as-is
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Memory compaction failed for client {}: {}",
+                                    &client_id[..8.min(client_id.len())],
+                                    e
+                                );
+                            }
                         }
                     }
                 }
@@ -354,7 +410,8 @@ impl MemoryService {
         let session_files = count_md_files(&sessions_dir);
         let active_sessions = if active_path.is_some() { 1 } else { 0 };
         let pending_compaction = session_files.saturating_sub(active_sessions);
-        let archived_sessions = count_md_files(&archive_dir);
+        let archived_sessions = count_raw_archive_files(&archive_dir);
+        let summarized_sessions = count_summary_files(&archive_dir);
 
         let (indexed_sources, total_lines) = match self.list_sources(client_id, None, None) {
             Ok(sources) => {
@@ -368,6 +425,7 @@ impl MemoryService {
             active_sessions,
             pending_compaction,
             archived_sessions,
+            summarized_sessions,
             indexed_sources,
             total_lines,
         })
@@ -375,41 +433,169 @@ impl MemoryService {
 
     /// Force-compact all expired (non-active) sessions for a client.
     ///
-    /// Moves all `.md` files in `sessions/` that are not the active session
-    /// to the `archive/` directory. Does not require `compaction_model` to be set.
-    pub async fn force_compact(&self, client_id: &str) -> Result<CompactResult, String> {
+    /// Archives sessions and optionally summarizes them with the configured LLM.
+    /// Calls `progress_fn(current, total)` after each session is processed.
+    pub async fn force_compact(
+        &self,
+        client_id: &str,
+        mut progress_fn: impl FnMut(usize, usize),
+    ) -> Result<CompactResult, String> {
         let client_dir = self.memory_dir.join(client_id);
         let sessions_dir = client_dir.join("sessions");
         let archive_dir = client_dir.join("archive");
 
         let active_path = self.session_manager.active_session_path(client_id);
 
+        // Collect files to compact
         let entries = std::fs::read_dir(&sessions_dir)
             .map_err(|e| format!("Failed to read sessions dir: {}", e))?;
 
-        let mut archived_count = 0;
+        let mut files_to_compact: Vec<PathBuf> = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
-            // Skip the active session
             if active_path.as_ref().is_some_and(|active| active == &path) {
                 continue;
             }
-            if let Err(e) = compaction::compact_session(&path, &archive_dir).await {
-                tracing::warn!("Force compact failed for {:?}: {}", path, e);
-            } else {
-                archived_count += 1;
-            }
+            files_to_compact.push(path);
         }
 
-        Ok(CompactResult { archived_count })
+        let total = files_to_compact.len();
+        progress_fn(0, total);
+
+        // Clone Arc to avoid holding RwLock across await
+        let config = self.config.read().clone();
+        let llm_arc = self.compaction_llm.read().clone();
+        let model = config.compaction_model.as_deref();
+
+        let mut archived_count = 0;
+        let mut summarized_count = 0;
+
+        for (i, path) in files_to_compact.iter().enumerate() {
+            let session_id = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+
+            match compaction::compact_session(path, &archive_dir, llm_arc.as_deref(), model).await {
+                Ok(outcome) => {
+                    archived_count += 1;
+
+                    // Update FTS5 index based on outcome
+                    if let Ok(store) = self.get_or_create_store(client_id) {
+                        match outcome {
+                            compaction::CompactionOutcome::ArchivedAndSummarized => {
+                                summarized_count += 1;
+                                // Read summary and index it
+                                let summary_path =
+                                    archive_dir.join(format!("{}-summary.md", session_id));
+                                if let Ok(summary) = std::fs::read_to_string(&summary_path) {
+                                    let summary_label =
+                                        format!("session/{}-summary", session_id);
+                                    let _ = store.index(&summary_label, &summary);
+                                }
+                                // Remove raw transcript from index
+                                let raw_label = format!("session/{}", session_id);
+                                let _ = store.delete(&raw_label);
+                            }
+                            compaction::CompactionOutcome::ArchivedOnly => {
+                                // Raw transcript stays indexed as-is
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Force compact failed for {:?}: {}", path, e);
+                }
+            }
+
+            progress_fn(i + 1, total);
+        }
+
+        Ok(CompactResult {
+            archived_count,
+            summarized_count,
+        })
+    }
+
+    /// Re-compact all archived sessions for a client by regenerating LLM summaries.
+    ///
+    /// Calls `progress_fn(current, total)` after each session is processed.
+    pub async fn recompact_all(
+        &self,
+        client_id: &str,
+        mut progress_fn: impl FnMut(usize, usize),
+    ) -> Result<RecompactResult, String> {
+        let config = self.config.read().clone();
+        let model_str = config
+            .compaction_model
+            .clone()
+            .ok_or("No compaction model configured")?;
+
+        // Clone Arc to avoid holding RwLock across await
+        let llm_arc = self.compaction_llm.read().clone();
+        let llm = llm_arc
+            .as_deref()
+            .ok_or("Compaction LLM not available")?;
+
+        let client_dir = self.memory_dir.join(client_id);
+        let archive_dir = client_dir.join("archive");
+
+        // Collect raw transcript files (exclude *-summary.md)
+        let raw_files = collect_raw_archive_files(&archive_dir)?;
+
+        let total = raw_files.len();
+        progress_fn(0, total);
+
+        let mut recompacted_count = 0;
+        let mut failed_count = 0;
+
+        for (i, session_id) in raw_files.iter().enumerate() {
+            match compaction::recompact_session(session_id, &archive_dir, llm, &model_str).await {
+                Ok(()) => {
+                    recompacted_count += 1;
+
+                    // Update FTS5 index: index summary, delete raw
+                    if let Ok(store) = self.get_or_create_store(client_id) {
+                        let summary_path =
+                            archive_dir.join(format!("{}-summary.md", session_id));
+                        if let Ok(summary) = std::fs::read_to_string(&summary_path) {
+                            let summary_label =
+                                format!("session/{}-summary", session_id);
+                            let _ = store.index(&summary_label, &summary);
+                        }
+                        // Remove raw transcript from index (if it was indexed)
+                        let raw_label = format!("session/{}", session_id);
+                        let _ = store.delete(&raw_label);
+                    }
+                }
+                Err(e) => {
+                    failed_count += 1;
+                    tracing::warn!(
+                        "Recompact failed for session {}: {}",
+                        &session_id[..8.min(session_id.len())],
+                        e,
+                    );
+                }
+            }
+
+            progress_fn(i + 1, total);
+        }
+
+        Ok(RecompactResult {
+            recompacted_count,
+            failed_count,
+        })
     }
 
     /// Rebuild the FTS5 index from all session and archive `.md` files on disk.
     ///
     /// Drops the existing store, deletes `memory.db`, and re-indexes everything.
+    /// When a summary file exists alongside a raw transcript in archive/,
+    /// only the summary is indexed.
     /// Calls `progress_fn(current, total)` after each file is indexed.
     pub fn reindex(
         &self,
@@ -434,33 +620,77 @@ impl MemoryService {
             }
         }
 
-        // Collect all .md files from sessions/ and archive/
+        // Collect files to index from sessions/
         let sessions_dir = client_dir.join("sessions");
         let archive_dir = client_dir.join("archive");
-        let mut files: Vec<PathBuf> = Vec::new();
-        for dir in [&sessions_dir, &archive_dir] {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                        files.push(path);
-                    }
+
+        // (label, file_path) pairs to index
+        let mut to_index: Vec<(String, PathBuf)> = Vec::new();
+
+        // Sessions dir: index all .md files normally
+        if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                    let file_name = path.file_stem().unwrap_or_default().to_string_lossy();
+                    let label = format!("session/{}", file_name);
+                    to_index.push((label, path));
                 }
             }
         }
 
-        let total = files.len();
+        // Archive dir: prefer summary files over raw transcripts
+        if let Ok(entries) = std::fs::read_dir(&archive_dir) {
+            // First pass: collect all files
+            let mut raw_files: Vec<(String, PathBuf)> = Vec::new(); // (session_id, path)
+            let mut summary_files: Vec<(String, PathBuf)> = Vec::new(); // (session_id, path)
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                let file_name = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+
+                if let Some(session_id) = file_name.strip_suffix("-summary") {
+                    summary_files.push((session_id.to_string(), path));
+                } else {
+                    raw_files.push((file_name, path));
+                }
+            }
+
+            // Build a set of session IDs that have summaries
+            let summarized_ids: std::collections::HashSet<&str> =
+                summary_files.iter().map(|(id, _)| id.as_str()).collect();
+
+            // Index summary files with their summary label
+            for (session_id, path) in &summary_files {
+                let label = format!("session/{}-summary", session_id);
+                to_index.push((label, path.clone()));
+            }
+
+            // Index raw files only if no summary exists
+            for (session_id, path) in &raw_files {
+                if !summarized_ids.contains(session_id.as_str()) {
+                    let label = format!("session/{}", session_id);
+                    to_index.push((label, path.clone()));
+                }
+            }
+        }
+
+        let total = to_index.len();
         progress_fn(0, total);
 
         // Re-create the store and index each file
         let store = self.get_or_create_store(client_id)?;
-        for (i, file_path) in files.iter().enumerate() {
-            let file_name = file_path.file_stem().unwrap_or_default().to_string_lossy();
-            let label = format!("session/{}", file_name);
-
+        for (i, (label, file_path)) in to_index.iter().enumerate() {
             match std::fs::read_to_string(file_path) {
                 Ok(content) if !content.trim().is_empty() => {
-                    if let Err(e) = store.index(&label, &content) {
+                    if let Err(e) = store.index(label, &content) {
                         tracing::warn!("Reindex failed for {:?}: {}", file_path, e);
                     }
                 }
@@ -505,6 +735,7 @@ pub struct CompactionStats {
     pub active_sessions: usize,
     pub pending_compaction: usize,
     pub archived_sessions: usize,
+    pub summarized_sessions: usize,
     pub indexed_sources: usize,
     pub total_lines: usize,
 }
@@ -513,9 +744,17 @@ pub struct CompactionStats {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CompactResult {
     pub archived_count: usize,
+    pub summarized_count: usize,
 }
 
-/// Count `.md` files in a directory.
+/// Result of a re-compact operation.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecompactResult {
+    pub recompacted_count: usize,
+    pub failed_count: usize,
+}
+
+/// Count `.md` files in a directory (all markdown files).
 fn count_md_files(dir: &Path) -> usize {
     std::fs::read_dir(dir)
         .map(|entries| {
@@ -525,4 +764,68 @@ fn count_md_files(dir: &Path) -> usize {
                 .count()
         })
         .unwrap_or(0)
+}
+
+/// Count raw archive files (`.md` files NOT ending in `-summary.md`).
+fn count_raw_archive_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    let path = e.path();
+                    path.extension().and_then(|ext| ext.to_str()) == Some("md")
+                        && !path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .ends_with("-summary")
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Count summary files (`*-summary.md`) in a directory.
+fn count_summary_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    let path = e.path();
+                    path.extension().and_then(|ext| ext.to_str()) == Some("md")
+                        && path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .ends_with("-summary")
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Collect session IDs of raw archive files (excluding summary files).
+fn collect_raw_archive_files(archive_dir: &Path) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(archive_dir)
+        .map_err(|e| format!("Failed to read archive dir: {}", e))?;
+
+    let mut session_ids = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let file_name = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if !file_name.ends_with("-summary") {
+            session_ids.push(file_name);
+        }
+    }
+
+    Ok(session_ids)
 }
