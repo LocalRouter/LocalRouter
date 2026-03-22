@@ -520,8 +520,6 @@ mod helpers {
             max_concurrent_sessions: 100,
             max_loop_iterations: 10,
             max_loop_timeout_seconds: 300,
-            expose_resources_as_tools: false,
-            inject_prompts: false,
         }
     }
 
@@ -591,6 +589,73 @@ mod agentic_loop_tests {
 
         // LLM called exactly once
         assert_eq!(env.mock_provider.requests_received.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tool_choice_none_skips_agentic_loop() {
+        // MCP tools ARE available, but the client sent tool_choice: "none"
+        // so the orchestrator should skip the agentic loop entirely.
+        let tool = make_mcp_tool("fs__read", "Read a file");
+        let mut results = HashMap::new();
+        results.insert(
+            "fs__read".to_string(),
+            serde_json::json!({"content": [{"type": "text", "text": "file contents"}]}),
+        );
+
+        let env = setup_test_env(
+            vec![make_response(Some("No tools used."), None)],
+            vec![tool],
+            results,
+        )
+        .await;
+
+        let session = make_session();
+        let config = make_config();
+        let mut request = make_request("Hi there");
+        request.tool_choice = Some(lr_providers::ToolChoice::Auto("none".to_string()));
+
+        let result = run_agentic_loop(
+            env.gateway.clone(),
+            &env.router,
+            &env.client,
+            session,
+            request,
+            &config,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("should succeed");
+
+        match result {
+            OrchestratorResult::Complete(resp) => {
+                let text = &resp.choices[0].message.content;
+                assert!(
+                    matches!(text, lr_providers::ChatMessageContent::Text(t) if t == "No tools used."),
+                    "Expected passthrough response"
+                );
+            }
+            OrchestratorResult::PendingMixed { .. } => {
+                panic!("Expected Complete, got PendingMixed")
+            }
+        }
+
+        // LLM called exactly once — no agentic loop iterations
+        assert_eq!(env.mock_provider.requests_received.lock().len(), 1);
+
+        // Verify no MCP tools were injected into the request
+        let sent_request = &env.mock_provider.requests_received.lock()[0];
+        assert!(
+            sent_request.tools.is_none(),
+            "tool_choice 'none' should not inject MCP tools"
+        );
     }
 
     #[tokio::test]
@@ -1188,10 +1253,8 @@ mod mixed_tool_tests {
         let session = make_session();
         let config = make_config();
         // Include client tool definition so the orchestrator classifies it correctly
-        let request = make_request_with_tools(
-            "Mixed tools",
-            Some(vec![make_client_tool("my_tool")]),
-        );
+        let request =
+            make_request_with_tools("Mixed tools", Some(vec![make_client_tool("my_tool")]));
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -1267,10 +1330,8 @@ mod mixed_tool_tests {
         let session = make_session();
         let config = make_config();
         // Include client tool definition so the orchestrator classifies it correctly
-        let request = make_request_with_tools(
-            "Mixed tools",
-            Some(vec![make_client_tool("my_tool")]),
-        );
+        let request =
+            make_request_with_tools("Mixed tools", Some(vec![make_client_tool("my_tool")]));
 
         // Phase 1: get PendingMixed
         let result = run_agentic_loop(

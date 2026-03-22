@@ -2168,7 +2168,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     disabled_skills: ["test-generator"],
     async_enabled: true,
     tool_name: "SkillRead",
-    read_file_tool_name: "SkillReadFile",
   }),
   'update_skills_tool_names': () => {
     toast.success('Skills tool names updated (demo)')

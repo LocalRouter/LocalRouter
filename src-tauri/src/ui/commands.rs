@@ -2435,7 +2435,6 @@ pub async fn get_skills_config(
 #[tauri::command]
 pub async fn update_skills_tool_names(
     tool_name: Option<String>,
-    read_file_tool_name: Option<String>,
     config_manager: State<'_, ConfigManager>,
     skills_vs: State<'_, Arc<lr_mcp::gateway::virtual_skills::SkillsVirtualServer>>,
 ) -> Result<(), String> {
@@ -2444,11 +2443,6 @@ pub async fn update_skills_tool_names(
             if let Some(ref v) = tool_name {
                 if !v.trim().is_empty() {
                     cfg.skills.tool_name = v.trim().to_string();
-                }
-            }
-            if let Some(ref v) = read_file_tool_name {
-                if !v.trim().is_empty() {
-                    cfg.skills.read_file_tool_name = v.trim().to_string();
                 }
             }
         })

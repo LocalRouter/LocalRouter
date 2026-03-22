@@ -704,7 +704,6 @@ export interface SkillsConfig {
   disabled_skills: string[]
   async_enabled: boolean
   tool_name: string
-  read_file_tool_name: string
 }
 
 /**

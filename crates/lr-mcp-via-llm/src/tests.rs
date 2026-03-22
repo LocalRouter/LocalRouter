@@ -540,8 +540,6 @@ mod manager_tests {
             max_concurrent_sessions: 100,
             max_loop_iterations: 4,
             max_loop_timeout_seconds: 300,
-            expose_resources_as_tools: true,
-            inject_prompts: true,
         }
     }
 

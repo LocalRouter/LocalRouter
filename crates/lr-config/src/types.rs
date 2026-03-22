@@ -1381,10 +1381,6 @@ fn default_skill_tool_name() -> String {
     "SkillRead".to_string()
 }
 
-fn default_skill_read_file_tool_name() -> String {
-    "SkillReadFile".to_string()
-}
-
 /// Skills configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SkillsConfig {
@@ -1404,10 +1400,6 @@ pub struct SkillsConfig {
     #[serde(default = "default_skill_tool_name")]
     pub tool_name: String,
 
-    /// Tool name for internal skill file reading (default: "SkillReadFile")
-    #[serde(default = "default_skill_read_file_tool_name")]
-    pub read_file_tool_name: String,
-
     /// Migration shim: old auto_scan_directories (deserialize only)
     #[serde(default, skip_serializing)]
     pub auto_scan_directories: Vec<String>,
@@ -1424,7 +1416,6 @@ impl Default for SkillsConfig {
             disabled_skills: Vec::new(),
             async_enabled: false,
             tool_name: default_skill_tool_name(),
-            read_file_tool_name: default_skill_read_file_tool_name(),
             auto_scan_directories: Vec::new(),
             skill_paths: Vec::new(),
         }
@@ -2467,14 +2458,6 @@ pub struct McpViaLlmConfig {
     /// Maximum total timeout for the agentic loop in seconds (default: 300)
     #[serde(default = "default_mcp_via_llm_max_timeout")]
     pub max_loop_timeout_seconds: u64,
-
-    /// Expose MCP resources as synthetic function tools (default: true)
-    #[serde(default = "default_true")]
-    pub expose_resources_as_tools: bool,
-
-    /// Inject MCP prompts into conversations (default: true)
-    #[serde(default = "default_true")]
-    pub inject_prompts: bool,
 }
 
 fn default_mcp_via_llm_session_ttl() -> u64 {
@@ -2497,8 +2480,6 @@ impl Default for McpViaLlmConfig {
             max_concurrent_sessions: default_mcp_via_llm_max_sessions(),
             max_loop_iterations: default_mcp_via_llm_max_iterations(),
             max_loop_timeout_seconds: default_mcp_via_llm_max_timeout(),
-            expose_resources_as_tools: true,
-            inject_prompts: true,
         }
     }
 }

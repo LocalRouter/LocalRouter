@@ -67,7 +67,6 @@ interface SkillsConfig {
   disabled_skills: string[]
   async_enabled: boolean
   tool_name: string
-  read_file_tool_name: string
 }
 
 interface SkillsViewProps {
@@ -719,28 +718,6 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                                     toast.success("Skill read tool name updated")
                                   } catch (error) {
                                     toast.error("Failed to update skill read tool name")
-                                  }
-                                }
-                              }}
-                              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
-                              className="flex-1"
-                            />
-                          </div>
-                          <div className="flex gap-4 items-center">
-                            <label className="text-sm text-muted-foreground w-28 shrink-0">File read tool:</label>
-                            <Input
-                              defaultValue={skillsConfig?.read_file_tool_name ?? "SkillReadFile"}
-                              key={`skill-read-file-name-${skillsConfig?.read_file_tool_name}`}
-                              onBlur={async (e) => {
-                                const v = e.target.value.trim()
-                                if (v && v !== skillsConfig?.read_file_tool_name) {
-                                  try {
-                                    await invoke("update_skills_tool_names", { readFileToolName: v })
-                                    const config = await invoke<SkillsConfig>("get_skills_config")
-                                    setSkillsConfig(config)
-                                    toast.success("File read tool name updated")
-                                  } catch (error) {
-                                    toast.error("Failed to update file read tool name")
                                   }
                                 }
                               }}
