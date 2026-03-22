@@ -1419,7 +1419,8 @@ async fn execute_prompt_read(
             .map(|a| a.name.as_str())
             .collect();
 
-        if !missing_required.is_empty() || provided_args.is_empty() {
+        let has_any_required = prompt.arguments.iter().any(|a| a.required);
+        if !missing_required.is_empty() || (has_any_required && provided_args.is_empty()) {
             // Return argument documentation
             let mut doc = format!("Prompt '{}' requires arguments:\n", resolved_name);
             for arg in &prompt.arguments {
