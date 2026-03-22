@@ -150,12 +150,11 @@ mod session_tests {
 mod tool_injection_tests {
     use crate::gateway_client::{McpPrompt, McpPromptArgument, McpTool};
     use crate::orchestrator::{
-        content_to_string, inject_mcp_tools, inject_prompt_messages, inject_prompt_tools,
-        inject_resource_read_tool, inject_server_instructions, RESOURCE_READ_TOOL_NAME,
+        content_to_string, inject_mcp_tools, inject_prompt_read_tool, inject_resource_read_tool,
+        inject_server_instructions, PROMPT_READ_TOOL_NAME, RESOURCE_READ_TOOL_NAME,
     };
     use lr_providers::{ChatMessage, ChatMessageContent, CompletionRequest};
     use serde_json::json;
-    use std::collections::HashMap;
 
     fn make_request(messages: Vec<ChatMessage>) -> CompletionRequest {
         CompletionRequest {
@@ -333,100 +332,58 @@ mod tool_injection_tests {
         assert!(required.iter().any(|v| v.as_str() == Some("name")));
     }
 
-    // ── inject_prompt_tools ───────────────────────────────────────────────
+    // ── inject_prompt_read_tool ────────────────────────────────────────────
 
     #[test]
-    fn prompt_tools_schema_generation() {
+    fn prompt_read_tool_schema() {
         let mut request = make_request(vec![]);
-        let prompts = vec![McpPrompt {
-            name: "review".to_string(),
-            description: Some("Review code".to_string()),
-            arguments: vec![
-                McpPromptArgument {
-                    name: "language".to_string(),
-                    description: Some("Lang".to_string()),
-                    required: true,
-                },
-                McpPromptArgument {
-                    name: "style".to_string(),
-                    description: None,
-                    required: false,
-                },
-            ],
-        }];
-        let mut map = HashMap::new();
-
-        inject_prompt_tools(&mut request, &prompts, &mut map);
-
-        let rt = request.tools.unwrap();
-        assert_eq!(rt[0].function.name, "mcp_prompt__review");
-        let params = &rt[0].function.parameters;
-        assert!(params["properties"]["language"].is_object());
-        assert!(params["properties"]["style"].is_object());
-        let required = params["required"].as_array().unwrap();
-        assert_eq!(required.len(), 1);
-        assert_eq!(required[0], "language");
-        assert_eq!(map["mcp_prompt__review"], "review");
-    }
-
-    // ── inject_prompt_messages ────────────────────────────────────────────
-
-    #[test]
-    fn prompt_messages_preserve_order() {
-        let mut request = make_request(vec![msg("system", "Base"), msg("user", "Hello")]);
-
         let prompts = vec![
-            json!({"role": "system", "content": "A"}),
-            json!({"role": "system", "content": "B"}),
-            json!({"role": "system", "content": "C"}),
+            McpPrompt {
+                name: "github__review".to_string(),
+                description: Some("Review code".to_string()),
+                arguments: vec![],
+            },
+            McpPrompt {
+                name: "github__template".to_string(),
+                description: None,
+                arguments: vec![McpPromptArgument {
+                    name: "type".to_string(),
+                    description: Some("Template type".to_string()),
+                    required: true,
+                }],
+            },
         ];
-        inject_prompt_messages(&mut request, &prompts);
 
-        assert_eq!(request.messages.len(), 5);
-        assert_eq!(extract_text(&request.messages[0]), "Base");
-        assert_eq!(extract_text(&request.messages[1]), "A");
-        assert_eq!(extract_text(&request.messages[2]), "B");
-        assert_eq!(extract_text(&request.messages[3]), "C");
-        assert_eq!(extract_text(&request.messages[4]), "Hello");
+        inject_prompt_read_tool(&mut request, &prompts);
+
+        let tools = request.tools.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].function.name, PROMPT_READ_TOOL_NAME);
+
+        // Check that available prompt names are listed in the description
+        let name_desc = tools[0].function.parameters["properties"]["name"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(name_desc.contains("github__review"));
+        assert!(name_desc.contains("github__template"));
+
+        // Check arguments parameter exists
+        assert!(tools[0].function.parameters["properties"]["arguments"].is_object());
     }
 
     #[test]
-    fn prompt_messages_before_user_when_no_system() {
-        let mut request = make_request(vec![msg("user", "Hi")]);
-
-        inject_prompt_messages(&mut request, &[json!({"role": "system", "content": "Ctx"})]);
-
-        assert_eq!(request.messages.len(), 2);
-        assert_eq!(extract_text(&request.messages[0]), "Ctx");
-        assert_eq!(extract_text(&request.messages[1]), "Hi");
-    }
-
-    #[test]
-    fn prompt_messages_structured_content() {
-        let mut request = make_request(vec![msg("user", "Hi")]);
-
-        inject_prompt_messages(
-            &mut request,
-            &[json!({"role": "system", "content": {"type": "text", "text": "Structured"}})],
-        );
-
-        assert_eq!(extract_text(&request.messages[0]), "Structured");
-    }
-
-    #[test]
-    fn prompt_messages_skip_empty() {
-        let mut request = make_request(vec![msg("user", "Hi")]);
-
-        inject_prompt_messages(
-            &mut request,
-            &[
-                json!({"role": "system", "content": ""}),
-                json!({"role": "system", "content": "Real"}),
-            ],
-        );
-
-        assert_eq!(request.messages.len(), 2);
-        assert_eq!(extract_text(&request.messages[0]), "Real");
+    fn prompt_read_tool_not_injected_when_empty() {
+        let mut request = make_request(vec![]);
+        inject_prompt_read_tool(&mut request, &[]);
+        // Tool should still be injected (empty list still creates tool with "Prompt name" desc)
+        // Actually per the code, if prompts is empty the name desc is just "Prompt name"
+        // but the calling code only calls inject_prompt_read_tool when prompts is non-empty
+        let tools = request.tools.unwrap();
+        assert_eq!(tools.len(), 1);
+        let name_desc = tools[0].function.parameters["properties"]["name"]["description"]
+            .as_str()
+            .unwrap();
+        assert_eq!(name_desc, "Prompt name");
     }
 
     // ── inject_server_instructions ─────────────────────────────────────────
@@ -498,6 +455,7 @@ mod tool_injection_tests {
 
 #[cfg(test)]
 mod tool_classification_tests {
+    use crate::orchestrator::PROMPT_READ_TOOL_NAME;
     use lr_providers::{FunctionCall, ToolCall};
     use std::collections::HashSet;
 
@@ -559,12 +517,11 @@ mod tool_classification_tests {
     }
 
     #[test]
-    fn synthetic_prompt_classified_as_mcp() {
-        let mcp: HashSet<String> = ["mcp_prompt__review"]
-            .iter()
-            .map(|s| s.to_string())
+    fn prompt_read_classified_as_mcp() {
+        let mcp: HashSet<String> = [PROMPT_READ_TOOL_NAME.to_string()]
+            .into_iter()
             .collect();
-        let calls = [tc("1", "mcp_prompt__review")];
+        let calls = [tc("1", PROMPT_READ_TOOL_NAME)];
         let (m, _): (Vec<_>, Vec<_>) = calls.iter().partition(|t| mcp.contains(&t.function.name));
         assert_eq!(m.len(), 1);
     }

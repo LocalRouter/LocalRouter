@@ -19,6 +19,7 @@ tracing = { workspace = true }
 regex = { workspace = true }
 parking_lot = { workspace = true }
 once_cell = { workspace = true }
+lr-types = { workspace = true }
 lr-embeddings = { workspace = true, optional = true }
 
 [dev-dependencies]

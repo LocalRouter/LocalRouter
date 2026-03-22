@@ -1,6 +1,7 @@
 //! Shared types, error types, and traits for LocalRouter
 
 pub mod errors;
+pub mod fuzzy;
 pub mod mcp_types;
 
 pub use errors::{AppError, AppResult};

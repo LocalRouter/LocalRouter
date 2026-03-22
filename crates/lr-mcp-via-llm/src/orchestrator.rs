@@ -21,8 +21,6 @@ use lr_providers::{
 };
 use lr_router::Router;
 
-use std::collections::HashMap;
-
 use crate::gateway_client::{GatewayClient, McpTool};
 use crate::manager::McpViaLlmError;
 use crate::session::{McpViaLlmSession, PendingMixedExecution};
@@ -123,6 +121,25 @@ pub async fn run_agentic_loop(
     let started_at = Instant::now();
     let timeout = std::time::Duration::from_secs(config.max_loop_timeout_seconds);
 
+    // Respect tool_choice: "none" — the client explicitly disabled tool use,
+    // so skip the agentic loop entirely and pass through to the provider.
+    if request
+        .tool_choice
+        .as_ref()
+        .is_some_and(|tc| tc.is_none_mode())
+    {
+        tracing::info!(
+            "MCP via LLM: tool_choice is 'none', skipping agentic loop for client {}",
+            &client.id[..8.min(client.id.len())]
+        );
+        request.stream = false;
+        let response = router
+            .complete(&client.id, request)
+            .await
+            .map_err(McpViaLlmError::from)?;
+        return Ok(OrchestratorResult::Complete(response));
+    }
+
     let (gateway_session_key, gateway_initialized) = {
         let s = session.read();
         (s.gateway_session_key.clone(), s.gateway_initialized)
@@ -196,70 +213,33 @@ pub async fn run_agentic_loop(
     // Merge MCP tools into request
     inject_mcp_tools(&mut request, &mcp_tools);
 
-    // Synthetic tool mappings for prompts
-    let mut prompt_tools: HashMap<String, String> = HashMap::new(); // tool_name -> prompt_name
+    // Always inject ResourceRead tool
+    inject_resource_read_tool(&mut request);
+    mcp_tool_names.insert(RESOURCE_READ_TOOL_NAME.to_string());
 
-    // Expose a single resource_read tool (replaces N per-resource synthetic tools)
-    if config.expose_resources_as_tools {
-        inject_resource_read_tool(&mut request);
-        mcp_tool_names.insert(RESOURCE_READ_TOOL_NAME.to_string());
-    }
-
-    // Inject MCP prompts
-    if config.inject_prompts {
-        match gw_client.list_prompts().await {
-            Ok(prompts) => {
-                if !prompts.is_empty() {
-                    tracing::info!(
-                        "MCP via LLM: processing {} prompts ({} no-arg, {} parameterized)",
-                        prompts.len(),
-                        prompts.iter().filter(|p| p.arguments.is_empty()).count(),
-                        prompts.iter().filter(|p| !p.arguments.is_empty()).count(),
-                    );
-
-                    // No-arg prompts: resolve and inject as system messages
-                    for prompt in prompts.iter().filter(|p| p.arguments.is_empty()) {
-                        match gw_client.get_prompt(&prompt.name, json!({})).await {
-                            Ok(messages) => {
-                                inject_prompt_messages(&mut request, &messages);
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "MCP via LLM: failed to get prompt '{}': {}",
-                                    prompt.name,
-                                    e
-                                );
-                            }
-                        }
-                    }
-
-                    // Parameterized prompts: expose as synthetic tools
-                    let param_prompts: Vec<_> = prompts
-                        .into_iter()
-                        .filter(|p| !p.arguments.is_empty())
-                        .collect();
-                    if !param_prompts.is_empty() {
-                        inject_prompt_tools(&mut request, &param_prompts, &mut prompt_tools);
-                        for name in prompt_tools.keys() {
-                            mcp_tool_names.insert(name.clone());
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("MCP via LLM: failed to list prompts: {}", e);
-            }
+    // Inject PromptRead tool (lazy — prompts are only fetched when the LLM calls it)
+    let prompts = match gw_client.list_prompts().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("MCP via LLM: failed to list prompts: {}", e);
+            Vec::new()
         }
+    };
+    if !prompts.is_empty() {
+        tracing::info!(
+            "MCP via LLM: {} prompts available for PromptRead",
+            prompts.len(),
+        );
+        inject_prompt_read_tool(&mut request, &prompts);
+        mcp_tool_names.insert(PROMPT_READ_TOOL_NAME.to_string());
     }
 
     // Emit the transformed request event (after all MCP injections)
     if let Some(callback) = on_transformed_request {
         let mut transformations = vec!["mcp_tool_injection".to_string()];
-        if config.expose_resources_as_tools {
-            transformations.push("mcp_resource_read_tool".to_string());
-        }
-        if config.inject_prompts {
-            transformations.push("mcp_prompt_injection".to_string());
+        transformations.push("mcp_resource_read_tool".to_string());
+        if !prompts.is_empty() {
+            transformations.push("mcp_prompt_read_tool".to_string());
         }
         let request_json = serde_json::to_value(&request).unwrap_or_default();
         callback(request_json, transformations);
@@ -297,6 +277,30 @@ pub async fn run_agentic_loop(
         let mut completion_request = request.clone();
         completion_request.stream = false;
 
+        // On the last allowed iteration, strip tools and force a text response
+        // so the LLM summarizes what it found instead of returning empty content.
+        let is_last_iteration = iteration + 1 >= max_iter;
+        if is_last_iteration {
+            tracing::info!(
+                "MCP via LLM: last iteration ({}), stripping tools to force text response",
+                iteration + 1
+            );
+            completion_request.tools = None;
+            completion_request.tool_choice = None;
+            completion_request.messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: ChatMessageContent::Text(
+                    "You have used all available tool call iterations. You cannot call any more tools. \
+                     Respond to the user now with the information you have gathered so far. \
+                     If you were unable to fully complete the task, explain what you found and what remains."
+                        .to_string(),
+                ),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            });
+        }
+
         // Emit per-iteration LlmCall event (iteration 0 reuses chat.rs event)
         let iter_event_id = if iteration == 0 {
             llm_call_event_id.clone().unwrap_or_default()
@@ -329,6 +333,7 @@ pub async fn run_agentic_loop(
                     finish_reason: None,
                     content_preview: None,
                     streamed: None,
+                    response_body: None,
                     error: None,
                 },
                 lr_monitor::EventStatus::Pending,
@@ -470,7 +475,8 @@ pub async fn run_agentic_loop(
                         request.messages.push(assistant_msg);
 
                         for tc in &unknown_calls {
-                            let available: Vec<&str> = mcp_tool_names.iter().map(|s| s.as_str()).collect();
+                            let available: Vec<&str> =
+                                mcp_tool_names.iter().map(|s| s.as_str()).collect();
                             request.messages.push(ChatMessage {
                                 role: "tool".to_string(),
                                 content: ChatMessageContent::Text(format!(
@@ -532,10 +538,7 @@ pub async fn run_agentic_loop(
 
                         // Unknown/hallucinated tools mixed in: return error result
                         if !mcp_tool_names.contains(&tool_name) {
-                            let err_msg = format!(
-                                "Error: tool '{}' does not exist",
-                                tool_name
-                            );
+                            let err_msg = format!("Error: tool '{}' does not exist", tool_name);
                             let tc_id = tool_call_id.clone();
                             let handle = tokio::spawn(async move { (tc_id, Err(err_msg)) });
                             mcp_handles.push(handle);
@@ -656,7 +659,8 @@ pub async fn run_agentic_loop(
 
                     // Handle unknown/hallucinated tool names that were merged in
                     if !mcp_tool_names.contains(tool_name) {
-                        let available: Vec<&str> = mcp_tool_names.iter().map(|s| s.as_str()).collect();
+                        let available: Vec<&str> =
+                            mcp_tool_names.iter().map(|s| s.as_str()).collect();
                         request.messages.push(ChatMessage {
                             role: "tool".to_string(),
                             content: ChatMessageContent::Text(format!(
@@ -709,42 +713,9 @@ pub async fn run_agentic_loop(
                         // resource_read tool — read MCP resource or skill file
                         let name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
                         execute_resource_read(&gw_client, name).await
-                    } else if let Some(prompt_name) = prompt_tools.get(tool_name.as_str()) {
-                        // Synthetic prompt tool — get the prompt and format as text
-                        match gw_client.get_prompt(prompt_name, arguments.clone()).await {
-                            Ok(messages) => {
-                                // Convert prompt messages to readable text
-                                messages
-                                    .iter()
-                                    .filter_map(|m| {
-                                        let role = m
-                                            .get("role")
-                                            .and_then(|r| r.as_str())
-                                            .unwrap_or("system");
-                                        let text = m
-                                            .get("content")
-                                            .and_then(|c| {
-                                                // Content can be string or { type: "text", text: "..." }
-                                                c.as_str().map(|s| s.to_string()).or_else(|| {
-                                                    c.get("text")
-                                                        .and_then(|t| t.as_str())
-                                                        .map(|s| s.to_string())
-                                                })
-                                            })
-                                            .unwrap_or_default();
-                                        if text.is_empty() {
-                                            None
-                                        } else {
-                                            Some(format!("[{}]: {}", role, text))
-                                        }
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n\n")
-                            }
-                            Err(e) => {
-                                format!("Error getting prompt '{}': {}", tool_name, e)
-                            }
-                        }
+                    } else if tool_name == PROMPT_READ_TOOL_NAME {
+                        // PromptRead tool — lazy prompt fetching with validation
+                        execute_prompt_read(&gw_client, &arguments, &prompts).await
                     } else {
                         // Regular MCP tool
                         match gw_client.call_tool(tool_name, arguments).await {
@@ -1226,6 +1197,9 @@ pub(crate) fn content_to_string(value: &Value) -> String {
 /// The single ResourceRead tool name.
 pub(crate) const RESOURCE_READ_TOOL_NAME: &str = "ResourceRead";
 
+/// The single PromptRead tool name.
+pub(crate) const PROMPT_READ_TOOL_NAME: &str = "PromptRead";
+
 /// Inject a single `resource_read` tool into the request.
 ///
 /// Replaces the old approach of creating N synthetic per-resource tools.
@@ -1298,105 +1272,198 @@ async fn execute_resource_read(gw_client: &GatewayClient<'_>, name: &str) -> Str
     }
 }
 
-/// Inject parameterized MCP prompts as synthetic function tools.
-pub(crate) fn inject_prompt_tools(
+/// Inject a single `PromptRead` tool into the request.
+///
+/// Lists available prompt names in the `name` parameter description.
+/// The tool is lazy — prompts are only fetched when the LLM calls it.
+pub(crate) fn inject_prompt_read_tool(
     request: &mut CompletionRequest,
     prompts: &[crate::gateway_client::McpPrompt],
-    prompt_tools: &mut HashMap<String, String>,
 ) {
-    let tools: Vec<lr_providers::Tool> = prompts
-        .iter()
-        .map(|p| {
-            let tool_name = format!("mcp_prompt__{}", p.name);
-            prompt_tools.insert(tool_name.clone(), p.name.clone());
+    let name_desc = if prompts.is_empty() {
+        "Prompt name".to_string()
+    } else {
+        let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
+        format!("Prompt name. Available: {}", names.join(", "))
+    };
 
-            let description = p
-                .description
-                .clone()
-                .unwrap_or_else(|| format!("Get the '{}' prompt template", p.name));
-
-            // Build JSON Schema properties from prompt arguments
-            let mut properties = serde_json::Map::new();
-            let mut required = Vec::new();
-            for arg in &p.arguments {
-                let mut prop = serde_json::Map::new();
-                prop.insert("type".to_string(), json!("string"));
-                if let Some(ref desc) = arg.description {
-                    prop.insert("description".to_string(), json!(desc));
-                }
-                properties.insert(arg.name.clone(), Value::Object(prop));
-                if arg.required {
-                    required.push(json!(arg.name));
-                }
-            }
-
-            let parameters = json!({
+    let tool = lr_providers::Tool {
+        tool_type: "function".to_string(),
+        function: lr_providers::FunctionDefinition {
+            name: PROMPT_READ_TOOL_NAME.to_string(),
+            description: Some(
+                "Get an MCP prompt by name. Prompt names and descriptions are listed \
+                 in MCP server sections of the welcome message. If resources are hidden \
+                 due to compression, use IndexSearch to discover them."
+                    .to_string(),
+            ),
+            parameters: json!({
                 "type": "object",
-                "properties": properties,
-                "required": required
-            });
-
-            lr_providers::Tool {
-                tool_type: "function".to_string(),
-                function: lr_providers::FunctionDefinition {
-                    name: tool_name,
-                    description: Some(description),
-                    parameters,
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": name_desc
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "Optional arguments for parameterized prompts"
+                    }
                 },
-            }
-        })
-        .collect();
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+        },
+    };
 
     match &mut request.tools {
-        Some(existing) => existing.extend(tools),
-        None => request.tools = Some(tools),
+        Some(existing) => existing.push(tool),
+        None => request.tools = Some(vec![tool]),
     }
 }
 
-/// Inject no-argument prompt messages into the request as system messages.
-/// These are prepended to the conversation before user messages.
-pub(crate) fn inject_prompt_messages(request: &mut CompletionRequest, prompt_messages: &[Value]) {
-    // Find the first non-system message index to insert before it
-    let insert_idx = request
-        .messages
+/// Execute a PromptRead tool call.
+///
+/// Serves as both documentation and execution:
+/// - Fuzzy-matches the name against known prompts
+/// - Validates arguments locally before making network calls
+/// - Returns prompt content or helpful error messages
+async fn execute_prompt_read(
+    gw_client: &GatewayClient<'_>,
+    arguments: &Value,
+    prompts: &[crate::gateway_client::McpPrompt],
+) -> String {
+    let name = match arguments.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return "Error: missing required 'name' parameter".to_string(),
+    };
+
+    // Build candidates for fuzzy matching
+    let candidates: Vec<(usize, &str)> = prompts
         .iter()
-        .position(|m| m.role != "system")
-        .unwrap_or(request.messages.len());
+        .enumerate()
+        .map(|(i, p)| (i, p.name.as_str()))
+        .collect();
 
-    let mut offset = 0;
-    for msg in prompt_messages {
-        let role = msg
-            .get("role")
-            .and_then(|r| r.as_str())
-            .unwrap_or("system")
-            .to_string();
+    let (matched_idx, match_kind) = match lr_types::fuzzy::find_best_match(name, &candidates) {
+        Some(result) => result,
+        None => {
+            // No match found — list available prompts
+            let available: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
+            return if available.is_empty() {
+                format!("Prompt '{}' not found. No prompts are available.", name)
+            } else {
+                format!(
+                    "Prompt '{}' not found. Available prompts: {}",
+                    name,
+                    available.join(", ")
+                )
+            };
+        }
+    };
 
-        let text = msg
-            .get("content")
-            .and_then(|c| {
-                // Content can be a string or { type: "text", text: "..." }
-                c.as_str().map(|s| s.to_string()).or_else(|| {
-                    c.get("text")
-                        .and_then(|t| t.as_str())
-                        .map(|s| s.to_string())
-                })
-            })
+    let prompt = &prompts[matched_idx];
+    let resolved_name = &prompt.name;
+
+    // Build correction note for fuzzy matches
+    let correction_note =
+        if !matches!(match_kind, lr_types::fuzzy::MatchKind::Exact) {
+            Some(format!(
+                "Note: No prompt named '{}' was found. Showing prompt '{}' instead.\n\n",
+                name, resolved_name
+            ))
+        } else {
+            None
+        };
+
+    // If prompt has arguments, validate them locally before making network call
+    if !prompt.arguments.is_empty() {
+        let provided_args = arguments
+            .get("arguments")
+            .and_then(|v| v.as_object())
+            .cloned()
             .unwrap_or_default();
 
-        if !text.is_empty() {
-            request.messages.insert(
-                insert_idx + offset,
-                ChatMessage {
-                    role,
-                    content: ChatMessageContent::Text(text),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    name: None,
-                },
-            );
-            offset += 1;
+        // Check required arguments are present
+        let missing_required: Vec<&str> = prompt
+            .arguments
+            .iter()
+            .filter(|a| a.required && !provided_args.contains_key(&a.name))
+            .map(|a| a.name.as_str())
+            .collect();
+
+        if !missing_required.is_empty() || provided_args.is_empty() {
+            // Return argument documentation
+            let mut doc = format!("Prompt '{}' requires arguments:\n", resolved_name);
+            for arg in &prompt.arguments {
+                let req = if arg.required { " (required)" } else { "" };
+                let desc = arg
+                    .description
+                    .as_deref()
+                    .unwrap_or("No description");
+                doc.push_str(&format!("- {}{}: {}\n", arg.name, req, desc));
+            }
+            doc.push_str(&format!(
+                "\nCall PromptRead(name=\"{}\", arguments={{...}})",
+                resolved_name
+            ));
+            return doc;
+        }
+
+        // Arguments provided — fetch the prompt
+        let args_value = Value::Object(provided_args);
+        match gw_client.get_prompt(resolved_name, args_value).await {
+            Ok(messages) => {
+                let content = format_prompt_messages(&messages);
+                match correction_note {
+                    Some(note) => format!("{}{}", note, content),
+                    None => content,
+                }
+            }
+            Err(e) => format!("Error getting prompt '{}': {}", resolved_name, e),
+        }
+    } else {
+        // No-arg prompt — fetch directly
+        match gw_client.get_prompt(resolved_name, json!({})).await {
+            Ok(messages) => {
+                let content = format_prompt_messages(&messages);
+                match correction_note {
+                    Some(note) => format!("{}{}", note, content),
+                    None => content,
+                }
+            }
+            Err(e) => format!("Error getting prompt '{}': {}", resolved_name, e),
         }
     }
+}
+
+/// Format prompt messages as readable text.
+fn format_prompt_messages(messages: &[Value]) -> String {
+    messages
+        .iter()
+        .filter_map(|m| {
+            let role = m
+                .get("role")
+                .and_then(|r| r.as_str())
+                .unwrap_or("system");
+            let text = m
+                .get("content")
+                .and_then(|c| {
+                    // Content can be string or { type: "text", text: "..." }
+                    c.as_str().map(|s| s.to_string()).or_else(|| {
+                        c.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                    })
+                })
+                .unwrap_or_default();
+            if text.is_empty() {
+                None
+            } else {
+                Some(format!("[{}]: {}", role, text))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Inject the unified MCP gateway instructions as a system message.

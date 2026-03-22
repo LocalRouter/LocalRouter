@@ -5,7 +5,7 @@
 //! and SSE keepalive prevents timeout. Intermediate `finish_reason: "tool_calls"`
 //! events are suppressed when all tools are MCP-only.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -56,6 +56,25 @@ pub async fn run_agentic_loop_streaming(
     let started_at = Instant::now();
     let timeout = std::time::Duration::from_secs(config.max_loop_timeout_seconds);
     let max_iterations = config.max_loop_iterations;
+
+    // Respect tool_choice: "none" — the client explicitly disabled tool use,
+    // so skip the agentic loop entirely and pass through to the provider.
+    if request
+        .tool_choice
+        .as_ref()
+        .is_some_and(|tc| tc.is_none_mode())
+    {
+        tracing::info!(
+            "MCP via LLM streaming: tool_choice is 'none', skipping agentic loop for client {}",
+            &client.id[..8.min(client.id.len())]
+        );
+        request.stream = true;
+        let stream = router
+            .stream_complete(&client.id, request)
+            .await
+            .map_err(|e| McpViaLlmError::Gateway(format!("stream passthrough failed: {}", e)))?;
+        return Ok(stream);
+    }
 
     let (gateway_session_key, gateway_initialized) = {
         let s = session.read();
@@ -127,67 +146,33 @@ pub async fn run_agentic_loop_streaming(
     // Merge MCP tools into request
     orchestrator::inject_mcp_tools(&mut request, &mcp_tools);
 
-    // Synthetic tool mappings for prompts
-    let mut prompt_tools: HashMap<String, String> = HashMap::new();
+    // Always inject ResourceRead tool
+    orchestrator::inject_resource_read_tool(&mut request);
+    mcp_tool_names.insert(orchestrator::RESOURCE_READ_TOOL_NAME.to_string());
 
-    // Expose a single resource_read tool
-    if config.expose_resources_as_tools {
-        orchestrator::inject_resource_read_tool(&mut request);
-        mcp_tool_names.insert(orchestrator::RESOURCE_READ_TOOL_NAME.to_string());
-    }
-
-    // Inject MCP prompts
-    if config.inject_prompts {
-        match gw_client.list_prompts().await {
-            Ok(prompts) => {
-                if !prompts.is_empty() {
-                    // No-arg prompts: resolve and inject as system messages
-                    for prompt in prompts.iter().filter(|p| p.arguments.is_empty()) {
-                        match gw_client.get_prompt(&prompt.name, json!({})).await {
-                            Ok(messages) => {
-                                orchestrator::inject_prompt_messages(&mut request, &messages);
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "MCP via LLM streaming: failed to get prompt '{}': {}",
-                                    prompt.name,
-                                    e
-                                );
-                            }
-                        }
-                    }
-
-                    // Parameterized prompts: expose as synthetic tools
-                    let param_prompts: Vec<_> = prompts
-                        .into_iter()
-                        .filter(|p| !p.arguments.is_empty())
-                        .collect();
-                    if !param_prompts.is_empty() {
-                        orchestrator::inject_prompt_tools(
-                            &mut request,
-                            &param_prompts,
-                            &mut prompt_tools,
-                        );
-                        for name in prompt_tools.keys() {
-                            mcp_tool_names.insert(name.clone());
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("MCP via LLM streaming: failed to list prompts: {}", e);
-            }
+    // Inject PromptRead tool (lazy — prompts are only fetched when the LLM calls it)
+    let prompts = match gw_client.list_prompts().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("MCP via LLM streaming: failed to list prompts: {}", e);
+            Vec::new()
         }
+    };
+    if !prompts.is_empty() {
+        tracing::info!(
+            "MCP via LLM streaming: {} prompts available for PromptRead",
+            prompts.len(),
+        );
+        orchestrator::inject_prompt_read_tool(&mut request, &prompts);
+        mcp_tool_names.insert(orchestrator::PROMPT_READ_TOOL_NAME.to_string());
     }
 
     // Emit the transformed request event (after all MCP injections)
     if let Some(callback) = on_transformed_request {
         let mut transformations = vec!["mcp_tool_injection".to_string()];
-        if config.expose_resources_as_tools {
-            transformations.push("mcp_resource_read_tool".to_string());
-        }
-        if config.inject_prompts {
-            transformations.push("mcp_prompt_injection".to_string());
+        transformations.push("mcp_resource_read_tool".to_string());
+        if !prompts.is_empty() {
+            transformations.push("mcp_prompt_read_tool".to_string());
         }
         let request_json = serde_json::to_value(&request).unwrap_or_default();
         callback(request_json, transformations);
@@ -215,7 +200,7 @@ pub async fn run_agentic_loop_streaming(
             &client_name,
             &mcp_tool_names,
             &client_tool_names,
-            &prompt_tools,
+            &prompts,
             roots,
             servers,
             &perms,
@@ -258,7 +243,7 @@ async fn streaming_loop(
     client_name: &str,
     mcp_tool_names: &HashSet<String>,
     client_tool_names: &HashSet<String>,
-    prompt_tools: &HashMap<String, String>,
+    prompts: &[crate::gateway_client::McpPrompt],
     roots: Vec<lr_mcp::protocol::Root>,
     servers: Vec<String>,
     permissions: &orchestrator::GatewayPermissions,
@@ -300,6 +285,30 @@ async fn streaming_loop(
         let mut stream_request = request.clone();
         stream_request.stream = true;
 
+        // On the last allowed iteration, strip tools and force a text response
+        // so the LLM summarizes what it found instead of returning empty content.
+        let is_last_iteration = iteration + 1 >= max_iterations.max(1);
+        if is_last_iteration {
+            tracing::info!(
+                "MCP via LLM streaming: last iteration ({}), stripping tools to force text response",
+                iteration + 1
+            );
+            stream_request.tools = None;
+            stream_request.tool_choice = None;
+            stream_request.messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: ChatMessageContent::Text(
+                    "You have used all available tool call iterations. You cannot call any more tools. \
+                     Respond to the user now with the information you have gathered so far. \
+                     If you were unable to fully complete the task, explain what you found and what remains."
+                        .to_string(),
+                ),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            });
+        }
+
         // Emit per-iteration LlmCall event (iteration 0 reuses chat.rs event)
         let iter_event_id = if iteration == 0 {
             llm_call_event_id.clone().unwrap_or_default()
@@ -332,6 +341,7 @@ async fn streaming_loop(
                     finish_reason: None,
                     content_preview: None,
                     streamed: None,
+                    response_body: None,
                     error: None,
                 },
                 lr_monitor::EventStatus::Pending,
@@ -510,7 +520,8 @@ async fn streaming_loop(
                         request.messages.push(msg);
 
                         for tc in &unknown_calls {
-                            let available: Vec<&str> = mcp_tool_names.iter().map(|s| s.as_str()).collect();
+                            let available: Vec<&str> =
+                                mcp_tool_names.iter().map(|s| s.as_str()).collect();
                             request.messages.push(ChatMessage {
                                 role: "tool".to_string(),
                                 content: ChatMessageContent::Text(format!(
@@ -556,10 +567,7 @@ async fn streaming_loop(
 
                         // Unknown/hallucinated tools mixed in: return error result
                         if !mcp_tool_names.contains(&tool_name) {
-                            let err_msg = format!(
-                                "Error: tool '{}' does not exist",
-                                tool_name
-                            );
+                            let err_msg = format!("Error: tool '{}' does not exist", tool_name);
                             let tc_id = tool_call_id.clone();
                             let handle = tokio::spawn(async move { (tc_id, Err(err_msg)) });
                             mcp_handles.push(handle);
@@ -670,7 +678,8 @@ async fn streaming_loop(
 
                     // Handle unknown/hallucinated tool names that were merged in
                     if !mcp_tool_names.contains(tool_name) {
-                        let available: Vec<&str> = mcp_tool_names.iter().map(|s| s.as_str()).collect();
+                        let available: Vec<&str> =
+                            mcp_tool_names.iter().map(|s| s.as_str()).collect();
                         request.messages.push(ChatMessage {
                             role: "tool".to_string(),
                             content: ChatMessageContent::Text(format!(
@@ -734,24 +743,18 @@ async fn streaming_loop(
                                 format!("Error reading resource '{}': {}", name, e)
                             }
                         }
-                    } else if let Some(prompt_name) = prompt_tools.get(tool_name.as_str()) {
-                        // Synthetic prompt tool — get the prompt via gateway
-                        match execute_prompt_get_background(
+                    } else if tool_name == orchestrator::PROMPT_READ_TOOL_NAME {
+                        // PromptRead tool — lazy prompt fetching with validation
+                        execute_prompt_read_background(
                             &gateway,
                             client_id,
                             servers.clone(),
                             roots.clone(),
                             permissions,
-                            prompt_name,
-                            arguments.clone(),
+                            &arguments,
+                            &prompts,
                         )
                         .await
-                        {
-                            Ok(content) => content,
-                            Err(e) => {
-                                format!("Error getting prompt '{}': {}", tool_name, e)
-                            }
-                        }
                     } else {
                         // Regular MCP tool
                         match orchestrator::execute_mcp_tool_background(
@@ -1112,6 +1115,127 @@ async fn execute_resource_read_background(
         "resource '{}' not found. Check the welcome message for available resource names.",
         name
     ))
+}
+
+/// Execute a PromptRead tool call in the streaming orchestrator.
+///
+/// Performs fuzzy matching and argument validation locally, then delegates
+/// the actual prompts/get to `execute_prompt_get_background`.
+async fn execute_prompt_read_background(
+    gateway: &lr_mcp::McpGateway,
+    client_id: &str,
+    allowed_servers: Vec<String>,
+    roots: Vec<lr_mcp::protocol::Root>,
+    permissions: &orchestrator::GatewayPermissions,
+    arguments: &Value,
+    prompts: &[crate::gateway_client::McpPrompt],
+) -> String {
+    let name = match arguments.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return "Error: missing required 'name' parameter".to_string(),
+    };
+
+    // Fuzzy match
+    let candidates: Vec<(usize, &str)> = prompts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i, p.name.as_str()))
+        .collect();
+
+    let (matched_idx, match_kind) = match lr_types::fuzzy::find_best_match(name, &candidates) {
+        Some(result) => result,
+        None => {
+            let available: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
+            return if available.is_empty() {
+                format!("Prompt '{}' not found. No prompts are available.", name)
+            } else {
+                format!(
+                    "Prompt '{}' not found. Available prompts: {}",
+                    name,
+                    available.join(", ")
+                )
+            };
+        }
+    };
+
+    let prompt = &prompts[matched_idx];
+    let resolved_name = &prompt.name;
+
+    let correction_note = if !matches!(match_kind, lr_types::fuzzy::MatchKind::Exact) {
+        Some(format!(
+            "Note: No prompt named '{}' was found. Showing prompt '{}' instead.\n\n",
+            name, resolved_name
+        ))
+    } else {
+        None
+    };
+
+    // Validate arguments for parameterized prompts
+    if !prompt.arguments.is_empty() {
+        let provided_args = arguments
+            .get("arguments")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+
+        let missing_required: Vec<&str> = prompt
+            .arguments
+            .iter()
+            .filter(|a| a.required && !provided_args.contains_key(&a.name))
+            .map(|a| a.name.as_str())
+            .collect();
+
+        if !missing_required.is_empty() || provided_args.is_empty() {
+            let mut doc = format!("Prompt '{}' requires arguments:\n", resolved_name);
+            for arg in &prompt.arguments {
+                let req = if arg.required { " (required)" } else { "" };
+                let desc = arg.description.as_deref().unwrap_or("No description");
+                doc.push_str(&format!("- {}{}: {}\n", arg.name, req, desc));
+            }
+            doc.push_str(&format!(
+                "\nCall PromptRead(name=\"{}\", arguments={{...}})",
+                resolved_name
+            ));
+            return doc;
+        }
+
+        let args_value = Value::Object(provided_args);
+        match execute_prompt_get_background(
+            gateway,
+            client_id,
+            allowed_servers,
+            roots,
+            permissions,
+            resolved_name,
+            args_value,
+        )
+        .await
+        {
+            Ok(content) => match correction_note {
+                Some(note) => format!("{}{}", note, content),
+                None => content,
+            },
+            Err(e) => format!("Error getting prompt '{}': {}", resolved_name, e),
+        }
+    } else {
+        match execute_prompt_get_background(
+            gateway,
+            client_id,
+            allowed_servers,
+            roots,
+            permissions,
+            resolved_name,
+            json!({}),
+        )
+        .await
+        {
+            Ok(content) => match correction_note {
+                Some(note) => format!("{}{}", note, content),
+                None => content,
+            },
+            Err(e) => format!("Error getting prompt '{}': {}", resolved_name, e),
+        }
+    }
 }
 
 /// Execute a prompt get in the background via the gateway.
