@@ -16,7 +16,10 @@ use lr_router::Router;
 
 use crate::orchestrator::{self, OrchestratorResult};
 use crate::orchestrator_stream;
-use crate::session::{McpViaLlmSession, PendingMixedExecution};
+use crate::session::{
+    compute_message_hashes, reconstruct_history, score_session_match, McpViaLlmSession,
+    PendingMixedExecution,
+};
 
 /// Manages MCP via LLM sessions and orchestrates agentic tool execution
 /// Callback type for emitting monitor events from the orchestrator.
@@ -137,8 +140,17 @@ impl McpViaLlmManager {
     }
 
     /// Get an existing session or create a new one for this client.
-    /// Phase 1: one session per client (simplest matching strategy).
-    pub(crate) fn get_or_create_session(&self, client_id: &str) -> Arc<RwLock<McpViaLlmSession>> {
+    ///
+    /// When `incoming_messages` is provided, sessions are matched by comparing
+    /// normalized message hashes against stored client-visible hashes (fuzzy-resilient
+    /// to whitespace changes, Unicode normalization, and message truncation).
+    ///
+    /// When `None` (e.g., preview), falls back to the first available session.
+    pub(crate) fn get_or_create_session(
+        &self,
+        client_id: &str,
+        incoming_messages: Option<&[ChatMessage]>,
+    ) -> Arc<RwLock<McpViaLlmSession>> {
         let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
 
         let mut sessions = self
@@ -149,12 +161,69 @@ impl McpViaLlmManager {
         // Clean expired sessions
         sessions.retain(|s| !s.read().is_expired(ttl));
 
-        // Return existing session or create new
-        if let Some(session) = sessions.first() {
-            session.write().touch();
-            return session.clone();
+        // If no messages provided (preview) or empty, return first available or create new
+        let incoming_messages = match incoming_messages {
+            Some(msgs) if !msgs.is_empty() => msgs,
+            _ => {
+                if let Some(session) = sessions.first() {
+                    session.write().touch();
+                    return session.clone();
+                }
+                return self.create_new_session(&mut sessions, client_id);
+            }
+        };
+
+        // Compute incoming hashes for matching
+        let incoming_hashes = compute_message_hashes(incoming_messages);
+
+        // Score each session and find best match
+        const MATCH_THRESHOLD: f64 = 0.5;
+        let mut best_score = 0.0f64;
+        let mut best_idx: Option<usize> = None;
+
+        for (i, session) in sessions.iter().enumerate() {
+            let s = session.read();
+            if s.client_message_hashes.is_empty() {
+                continue;
+            }
+            let score = score_session_match(&s.client_message_hashes, &incoming_hashes);
+            if score > best_score || (score == best_score && score >= MATCH_THRESHOLD) {
+                best_score = score;
+                best_idx = Some(i);
+            }
         }
 
+        if best_score >= MATCH_THRESHOLD {
+            if let Some(idx) = best_idx {
+                let session = sessions[idx].clone();
+                session.write().touch();
+                tracing::debug!(
+                    "MCP via LLM: matched session for client {} (score={:.2}, {} stored hashes, {} incoming)",
+                    &client_id[..8.min(client_id.len())],
+                    best_score,
+                    sessions[idx].read().client_message_hashes.len(),
+                    incoming_hashes.len()
+                );
+                return session;
+            }
+        }
+
+        // No match — create new session
+        tracing::info!(
+            "MCP via LLM: creating new session for client {} (best score={:.2}, {} existing sessions)",
+            &client_id[..8.min(client_id.len())],
+            best_score,
+            sessions.len()
+        );
+        self.create_new_session(&mut sessions, client_id)
+    }
+
+    /// Create a new session and add it to the sessions list.
+    fn create_new_session(
+        &self,
+        sessions: &mut Vec<Arc<RwLock<McpViaLlmSession>>>,
+        client_id: &str,
+    ) -> Arc<RwLock<McpViaLlmSession>> {
         let session_id = uuid::Uuid::new_v4().to_string();
         let session = Arc::new(RwLock::new(McpViaLlmSession::new(
             session_id,
@@ -162,6 +231,20 @@ impl McpViaLlmManager {
         )));
         sessions.push(session.clone());
         session
+    }
+
+    /// Find a session by its gateway session key.
+    pub(crate) fn find_session_by_gateway_key(
+        &self,
+        client_id: &str,
+        gateway_key: &str,
+    ) -> Option<Arc<RwLock<McpViaLlmSession>>> {
+        self.sessions_by_client.get(client_id).and_then(|sessions| {
+            sessions
+                .iter()
+                .find(|s| s.read().gateway_session_key == gateway_key)
+                .cloned()
+        })
     }
 
     /// Check if the incoming request contains tool results that match a pending
@@ -209,7 +292,7 @@ impl McpViaLlmManager {
         client: &Client,
         allowed_servers: Vec<String>,
     ) -> Result<serde_json::Value, McpViaLlmError> {
-        let session = self.get_or_create_session(&client.id);
+        let session = self.get_or_create_session(&client.id, None);
 
         let (gateway_session_key, gateway_initialized) = {
             let s = session.read();
@@ -263,15 +346,19 @@ impl McpViaLlmManager {
         gateway: Arc<McpGateway>,
         router: &Router,
         client: &Client,
-        request: CompletionRequest,
+        mut request: CompletionRequest,
         allowed_servers: Vec<String>,
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
         monitor_session_id: Option<String>,
     ) -> Result<lr_providers::CompletionResponse, McpViaLlmError> {
         let config = self.config();
-        let session = self.get_or_create_session(&client.id);
+        let session = self.get_or_create_session(&client.id, Some(&request.messages));
         let memory_svc = self.memory_service();
+
+        // Store client message hashes for future session matching (BEFORE reconstruction)
+        let incoming_hashes = compute_message_hashes(&request.messages);
+        session.write().client_message_hashes = incoming_hashes;
 
         // Store monitor session_id so gateway tool calls get grouped
         if let Some(ref sid) = monitor_session_id {
@@ -286,21 +373,30 @@ impl McpViaLlmManager {
             if client.memory_enabled.unwrap_or(false) {
                 let needs_init = session.read().transcript_path.is_none();
                 if needs_init {
-                    if let Ok(client_dir) = svc.ensure_client_dir(&client.id) {
-                        let sessions_dir = client_dir.join("sessions");
-                        let (session_id, file_path, is_new) = svc
-                            .session_manager
-                            .get_or_create_session(&client.id, &sessions_dir);
+                    let memory_folder = client.memory_folder_name();
+                    if let Ok(client_dir) = svc.ensure_client_dir(memory_folder) {
+                        let active_dir = client_dir.join("active");
+                        let content_hint = request
+                            .messages
+                            .iter()
+                            .rev()
+                            .find(|m| m.role == "user")
+                            .map(|m| m.content.as_text())
+                            .unwrap_or_default();
+                        let (file_path, is_new) = svc.session_manager.get_or_create_session(
+                            &client.id,
+                            &active_dir,
+                            &content_hint,
+                            memory_folder,
+                        );
                         if is_new {
-                            if let Err(e) = svc
-                                .transcript
-                                .create_session_file(&sessions_dir, &session_id)
-                                .await
-                            {
+                            if let Err(e) = svc.transcript.create_session_file(&file_path).await {
                                 tracing::warn!("Failed to create memory transcript: {}", e);
                             }
                         }
-                        session.write().transcript_path = Some(file_path);
+                        let mut s = session.write();
+                        s.transcript_path = Some(file_path);
+                        s.memory_folder = Some(memory_folder.to_string());
                     }
                 }
             }
@@ -310,6 +406,11 @@ impl McpViaLlmManager {
         if let Some((pending, client_tool_results)) =
             self.take_pending_if_matching(&client.id, &request)
         {
+            // Use the session that created the pending execution
+            let resume_session = self
+                .find_session_by_gateway_key(&client.id, &pending.gateway_session_key)
+                .unwrap_or_else(|| session.clone());
+
             tracing::info!(
                 "MCP via LLM: resuming pending mixed execution for client {} ({} client tool results)",
                 &client.id[..8.min(client.id.len())],
@@ -321,7 +422,7 @@ impl McpViaLlmManager {
                 gateway,
                 router,
                 client,
-                session,
+                resume_session,
                 pending,
                 request,
                 client_tool_results,
@@ -332,6 +433,20 @@ impl McpViaLlmManager {
             .await?;
 
             return self.handle_orchestrator_result(&client.id, result);
+        }
+
+        // Reconstruct history: inject hidden MCP messages from previous turns
+        {
+            let s = session.read();
+            if !s.history.full_messages.is_empty() {
+                let reconstructed = reconstruct_history(
+                    &s.history.full_messages,
+                    &request.messages,
+                    s.gateway_instructions.as_deref(),
+                );
+                drop(s);
+                request.messages = reconstructed;
+            }
         }
 
         // Build monitor callback for transformed request — updates the parent LlmCall event
@@ -432,7 +547,7 @@ impl McpViaLlmManager {
         gateway: Arc<McpGateway>,
         router: Arc<Router>,
         client: &Client,
-        request: CompletionRequest,
+        mut request: CompletionRequest,
         allowed_servers: Vec<String>,
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
@@ -447,29 +562,42 @@ impl McpViaLlmManager {
         McpViaLlmError,
     > {
         let config = self.config();
-        let session = self.get_or_create_session(&client.id);
+        let session = self.get_or_create_session(&client.id, Some(&request.messages));
         let memory_svc = self.memory_service();
+
+        // Store client message hashes for future session matching (BEFORE reconstruction)
+        let incoming_hashes = compute_message_hashes(&request.messages);
+        session.write().client_message_hashes = incoming_hashes;
 
         // Initialize memory transcript for streaming (same logic as non-streaming)
         if let Some(ref svc) = memory_svc {
             if client.memory_enabled.unwrap_or(false) {
                 let needs_init = session.read().transcript_path.is_none();
                 if needs_init {
-                    if let Ok(client_dir) = svc.ensure_client_dir(&client.id) {
-                        let sessions_dir = client_dir.join("sessions");
-                        let (session_id, file_path, is_new) = svc
-                            .session_manager
-                            .get_or_create_session(&client.id, &sessions_dir);
+                    let memory_folder = client.memory_folder_name();
+                    if let Ok(client_dir) = svc.ensure_client_dir(memory_folder) {
+                        let active_dir = client_dir.join("active");
+                        let content_hint = request
+                            .messages
+                            .iter()
+                            .rev()
+                            .find(|m| m.role == "user")
+                            .map(|m| m.content.as_text())
+                            .unwrap_or_default();
+                        let (file_path, is_new) = svc.session_manager.get_or_create_session(
+                            &client.id,
+                            &active_dir,
+                            &content_hint,
+                            memory_folder,
+                        );
                         if is_new {
-                            if let Err(e) = svc
-                                .transcript
-                                .create_session_file(&sessions_dir, &session_id)
-                                .await
-                            {
+                            if let Err(e) = svc.transcript.create_session_file(&file_path).await {
                                 tracing::warn!("Failed to create memory transcript: {}", e);
                             }
                         }
-                        session.write().transcript_path = Some(file_path);
+                        let mut s = session.write();
+                        s.transcript_path = Some(file_path);
+                        s.memory_folder = Some(memory_folder.to_string());
                     }
                 }
             }
@@ -479,6 +607,11 @@ impl McpViaLlmManager {
         if let Some((pending, client_tool_results)) =
             self.take_pending_if_matching(&client.id, &request)
         {
+            // Use the session that created the pending execution
+            let resume_session = self
+                .find_session_by_gateway_key(&client.id, &pending.gateway_session_key)
+                .unwrap_or_else(|| session.clone());
+
             tracing::info!(
                 "MCP via LLM streaming: resuming pending mixed execution for client {} ({} client tool results)",
                 &client.id[..8.min(client.id.len())],
@@ -491,7 +624,7 @@ impl McpViaLlmManager {
                 gateway.clone(),
                 &router,
                 client,
-                session.clone(),
+                resume_session,
                 pending,
                 request,
                 client_tool_results,
@@ -516,6 +649,20 @@ impl McpViaLlmManager {
                     let chunk = response_to_chunk(&client_response);
                     return Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })));
                 }
+            }
+        }
+
+        // Reconstruct history: inject hidden MCP messages from previous turns
+        {
+            let s = session.read();
+            if !s.history.full_messages.is_empty() {
+                let reconstructed = reconstruct_history(
+                    &s.history.full_messages,
+                    &request.messages,
+                    s.gateway_instructions.as_deref(),
+                );
+                drop(s);
+                request.messages = reconstructed;
             }
         }
 
@@ -643,8 +790,7 @@ fn response_to_chunk(response: &lr_providers::CompletionResponse) -> lr_provider
                             .collect()
                     })
                 }),
-                reasoning_content: choice
-                    .and_then(|c| c.message.reasoning_content.clone()),
+                reasoning_content: choice.and_then(|c| c.message.reasoning_content.clone()),
             },
             finish_reason: choice.and_then(|c| c.finish_reason.clone()),
         }],

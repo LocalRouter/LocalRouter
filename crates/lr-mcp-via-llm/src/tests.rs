@@ -94,6 +94,7 @@ mod session_tests {
             messages_before_mixed: vec![],
             started_at: std::time::Instant::now(),
             accumulated_usage_entries: vec![],
+            gateway_session_key: String::new(),
         };
 
         drop(pending);
@@ -133,6 +134,7 @@ mod session_tests {
             messages_before_mixed: vec![],
             started_at: std::time::Instant::now(),
             accumulated_usage_entries: vec![],
+            gateway_session_key: String::new(),
         };
 
         // Insert first pending
@@ -615,6 +617,7 @@ mod manager_tests {
             messages_before_mixed: vec![],
             started_at: std::time::Instant::now(),
             accumulated_usage_entries: vec![],
+            gateway_session_key: String::new(),
         }
     }
 
@@ -673,7 +676,7 @@ mod manager_tests {
         let mgr = McpViaLlmManager::new(config);
 
         // Create and backdate a session
-        let session = mgr.get_or_create_session("c1");
+        let session = mgr.get_or_create_session("c1", None);
         session.write().last_activity =
             std::time::Instant::now() - std::time::Duration::from_secs(10);
 
@@ -712,11 +715,11 @@ mod manager_tests {
     }
 
     #[test]
-    fn session_reuse_same_client() {
+    fn session_reuse_same_client_no_messages() {
         let mgr = McpViaLlmManager::new(cfg());
-        let s1 = mgr.get_or_create_session("c1");
+        let s1 = mgr.get_or_create_session("c1", None);
         let id1 = s1.read().gateway_session_key.clone();
-        let s2 = mgr.get_or_create_session("c1");
+        let s2 = mgr.get_or_create_session("c1", None);
         let id2 = s2.read().gateway_session_key.clone();
         assert_eq!(id1, id2);
     }
@@ -724,8 +727,8 @@ mod manager_tests {
     #[test]
     fn session_different_per_client() {
         let mgr = McpViaLlmManager::new(cfg());
-        let s1 = mgr.get_or_create_session("c1");
-        let s2 = mgr.get_or_create_session("c2");
+        let s1 = mgr.get_or_create_session("c1", None);
+        let s2 = mgr.get_or_create_session("c2", None);
         assert_ne!(s1.read().gateway_session_key, s2.read().gateway_session_key);
     }
 }
@@ -888,5 +891,446 @@ mod streaming_accumulator_tests {
         assert_eq!(accs[2].name, "tool_c");
         assert!(accs[0].name.is_empty());
         assert!(accs[1].name.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod session_matching_tests {
+    use crate::session::{
+        compute_message_hashes, normalize_for_hash, reconstruct_history, score_session_match,
+    };
+    use lr_providers::{ChatMessage, ChatMessageContent};
+
+    fn msg(role: &str, text: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_string(),
+            content: ChatMessageContent::Text(text.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+        }
+    }
+
+    // ── normalize_for_hash ────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_trims_whitespace() {
+        assert_eq!(normalize_for_hash("  hello  "), "hello");
+    }
+
+    #[test]
+    fn normalize_collapses_interior_whitespace() {
+        assert_eq!(normalize_for_hash("hello   world"), "hello world");
+        assert_eq!(normalize_for_hash("a\t\nb\r\nc"), "a b c");
+    }
+
+    #[test]
+    fn normalize_unicode_nfc() {
+        // é as combining (e + ́) vs precomposed (é)
+        let combining = "e\u{0301}"; // e + combining acute
+        let precomposed = "\u{00e9}"; // é precomposed
+        assert_eq!(
+            normalize_for_hash(combining),
+            normalize_for_hash(precomposed)
+        );
+    }
+
+    #[test]
+    fn normalize_empty_string() {
+        assert_eq!(normalize_for_hash(""), "");
+        assert_eq!(normalize_for_hash("   "), "");
+    }
+
+    // ── compute_message_hashes ────────────────────────────────────────────
+
+    #[test]
+    fn hashes_are_deterministic() {
+        let msgs = vec![msg("user", "hello"), msg("assistant", "hi")];
+        let h1 = compute_message_hashes(&msgs);
+        let h2 = compute_message_hashes(&msgs);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn hashes_differ_by_role() {
+        let m1 = vec![msg("user", "hello")];
+        let m2 = vec![msg("assistant", "hello")];
+        assert_ne!(compute_message_hashes(&m1), compute_message_hashes(&m2));
+    }
+
+    #[test]
+    fn hashes_differ_by_content() {
+        let m1 = vec![msg("user", "hello")];
+        let m2 = vec![msg("user", "world")];
+        assert_ne!(compute_message_hashes(&m1), compute_message_hashes(&m2));
+    }
+
+    #[test]
+    fn hashes_resilient_to_whitespace() {
+        let m1 = vec![msg("user", "hello  world")];
+        let m2 = vec![msg("user", "hello world")];
+        assert_eq!(compute_message_hashes(&m1), compute_message_hashes(&m2));
+    }
+
+    #[test]
+    fn hashes_resilient_to_trailing_whitespace() {
+        let m1 = vec![msg("user", "hello ")];
+        let m2 = vec![msg("user", "hello")];
+        assert_eq!(compute_message_hashes(&m1), compute_message_hashes(&m2));
+    }
+
+    // ── score_session_match ───────────────────────────────────────────────
+
+    #[test]
+    fn score_empty_stored() {
+        assert_eq!(score_session_match(&[], &[1, 2, 3]), 0.0);
+    }
+
+    #[test]
+    fn score_empty_incoming() {
+        assert_eq!(score_session_match(&[1, 2], &[]), 0.0);
+    }
+
+    #[test]
+    fn score_exact_prefix_match() {
+        // stored = [A, B], incoming = [A, B, C] → 1.0
+        assert_eq!(score_session_match(&[1, 2], &[1, 2, 3]), 1.0);
+    }
+
+    #[test]
+    fn score_exact_match() {
+        // stored = [A, B], incoming = [A, B] → 1.0
+        assert_eq!(score_session_match(&[1, 2], &[1, 2]), 1.0);
+    }
+
+    #[test]
+    fn score_no_match() {
+        assert_eq!(score_session_match(&[1, 2, 3], &[4, 5, 6]), 0.0);
+    }
+
+    #[test]
+    fn score_suffix_anchored_match() {
+        // stored = [A, B, C, D], incoming = [C, D, E] → client dropped A, B
+        // suffix [C, D] of stored matches prefix [C, D] of incoming → 2/4 = 0.5
+        assert_eq!(score_session_match(&[1, 2, 3, 4], &[3, 4, 5]), 0.5);
+    }
+
+    #[test]
+    fn score_suffix_full_stored_suffix_matches() {
+        // stored = [A, B, C], incoming = [B, C, D] → client dropped A
+        // suffix [B, C] matches prefix [B, C] of incoming → 2/3 ≈ 0.667
+        let score = score_session_match(&[1, 2, 3], &[2, 3, 4]);
+        assert!((score - 2.0 / 3.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn score_partial_no_count() {
+        // stored = [A, B, C], incoming = [A, X, C] → only A matches as prefix but
+        // the suffix match requires the entire suffix or entire incoming to match
+        // No complete suffix match → 0.0
+        // Actually [C] suffix of stored matches... no, incoming starts with A not C.
+        // Let me think: suffix [C] of stored, compare with incoming prefix [A] → no match
+        // suffix [B, C], compare with incoming prefix [A, X] → no match
+        // suffix [A, B, C], compare with incoming prefix [A, X, C] → A matches, B≠X stops → count=1
+        // count=1, suffix len=3, incoming len=3 → 1 != 3 and 1 != 3 → not counted
+        assert_eq!(score_session_match(&[1, 2, 3], &[1, 99, 3]), 0.0);
+    }
+
+    // ── reconstruct_history ───────────────────────────────────────────────
+
+    #[test]
+    fn reconstruct_empty_full_returns_incoming() {
+        let incoming = vec![msg("user", "hello")];
+        let result = reconstruct_history(&[], &incoming, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content.as_text(), "hello");
+    }
+
+    #[test]
+    fn reconstruct_no_anchor_returns_incoming() {
+        let full = vec![msg("assistant", "xyz")];
+        let incoming = vec![msg("user", "hello")];
+        let result = reconstruct_history(&full, &incoming, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content.as_text(), "hello");
+    }
+
+    #[test]
+    fn reconstruct_injects_hidden_mcp_messages() {
+        // Turn 1 full history: [sys, user1, asst_tools, tool_result, asst_final]
+        let full = vec![
+            msg("system", "You are helpful"),
+            msg("user", "What files are there?"),
+            msg("assistant", "I'll check"), // has tool_calls in reality
+            msg("tool", "file1.txt\nfile2.txt"),
+            msg("assistant", "There are file1.txt and file2.txt"),
+        ];
+
+        // Turn 2 client sends: [sys, user1, asst_final, user2]
+        let incoming = vec![
+            msg("system", "You are helpful"),
+            msg("user", "What files are there?"),
+            msg("assistant", "There are file1.txt and file2.txt"),
+            msg("user", "Read file1.txt"),
+        ];
+
+        let result = reconstruct_history(&full, &incoming, None);
+
+        // Should be: full history + new user message
+        assert_eq!(result.len(), 6);
+        assert_eq!(result[0].content.as_text(), "You are helpful");
+        assert_eq!(result[1].content.as_text(), "What files are there?");
+        assert_eq!(result[2].content.as_text(), "I'll check"); // hidden MCP interaction
+        assert_eq!(result[3].content.as_text(), "file1.txt\nfile2.txt"); // hidden tool result
+        assert_eq!(
+            result[4].content.as_text(),
+            "There are file1.txt and file2.txt"
+        ); // anchor
+        assert_eq!(result[5].content.as_text(), "Read file1.txt"); // new message
+    }
+
+    #[test]
+    fn reconstruct_strips_server_instructions() {
+        let instructions = "MCP Gateway: Use tools to help the user.";
+        let full = vec![
+            msg("system", "You are helpful"),
+            msg("system", instructions),
+            msg("user", "Hello"),
+            msg("assistant", "Hi there"),
+        ];
+
+        let incoming = vec![
+            msg("system", "You are helpful"),
+            msg("assistant", "Hi there"),
+            msg("user", "How are you?"),
+        ];
+
+        let result = reconstruct_history(&full, &incoming, Some(instructions));
+
+        // Server instructions should be stripped (will be re-injected by orchestrator)
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0].content.as_text(), "You are helpful");
+        assert_eq!(result[1].role, "user");
+        assert_eq!(result[2].content.as_text(), "Hi there");
+        assert_eq!(result[3].content.as_text(), "How are you?");
+    }
+
+    #[test]
+    fn reconstruct_updates_system_message() {
+        let full = vec![
+            msg("system", "Old system prompt"),
+            msg("user", "Hello"),
+            msg("assistant", "Hi"),
+        ];
+
+        let incoming = vec![
+            msg("system", "New system prompt"),
+            msg("assistant", "Hi"),
+            msg("user", "More"),
+        ];
+
+        let result = reconstruct_history(&full, &incoming, None);
+
+        // System message should be updated to client's current version
+        assert_eq!(result[0].content.as_text(), "New system prompt");
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn reconstruct_with_only_anchor_no_new_messages() {
+        // Client sends same messages as full (exact continuation, nothing new yet)
+        let full = vec![msg("user", "Hello"), msg("assistant", "Hi")];
+        let incoming = vec![msg("user", "Hello"), msg("assistant", "Hi")];
+
+        let result = reconstruct_history(&full, &incoming, None);
+        assert_eq!(result.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod session_matching_manager_tests {
+    use crate::manager::McpViaLlmManager;
+    use crate::session::compute_message_hashes;
+    use lr_config::McpViaLlmConfig;
+    use lr_providers::{ChatMessage, ChatMessageContent};
+
+    fn cfg() -> McpViaLlmConfig {
+        McpViaLlmConfig {
+            session_ttl_seconds: 3600,
+            max_concurrent_sessions: 100,
+            max_loop_iterations: 4,
+            max_loop_timeout_seconds: 300,
+        }
+    }
+
+    fn msg(role: &str, text: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_string(),
+            content: ChatMessageContent::Text(text.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+        }
+    }
+
+    #[test]
+    fn matching_creates_new_session_for_new_messages() {
+        let mgr = McpViaLlmManager::new(cfg());
+        let msgs = vec![msg("user", "hello")];
+
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs));
+        let key1 = s1.read().gateway_session_key.clone();
+
+        // No hashes stored yet, so a new session should be created
+        let msgs2 = vec![msg("user", "different")];
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        let key2 = s2.read().gateway_session_key.clone();
+
+        // Both should be the same since first session has no stored hashes
+        // and second call with no hashes stored falls through to first available
+        // Wait - actually with no stored hashes, it skips and creates new.
+        // Let me re-check the logic...
+        // The first session has empty client_message_hashes, so score is 0.
+        // No match >= 0.5, so new session is created.
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn matching_reuses_session_for_continuation() {
+        let mgr = McpViaLlmManager::new(cfg());
+        let msgs1 = vec![msg("user", "hello")];
+
+        // Create first session and store hashes
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs1));
+        let key1 = s1.read().gateway_session_key.clone();
+        s1.write().client_message_hashes = compute_message_hashes(&msgs1);
+
+        // Continue with same prefix + new message → should match
+        let msgs2 = vec![
+            msg("user", "hello"),
+            msg("assistant", "Hi"),
+            msg("user", "How?"),
+        ];
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        let key2 = s2.read().gateway_session_key.clone();
+
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn matching_creates_new_for_unrelated_messages() {
+        let mgr = McpViaLlmManager::new(cfg());
+        let msgs1 = vec![msg("user", "hello")];
+
+        // Create first session and store hashes
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs1));
+        let key1 = s1.read().gateway_session_key.clone();
+        s1.write().client_message_hashes = compute_message_hashes(&msgs1);
+
+        // Completely different messages → should NOT match (score = 0)
+        let msgs2 = vec![msg("user", "totally different conversation")];
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        let key2 = s2.read().gateway_session_key.clone();
+
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn matching_handles_truncated_history() {
+        let mgr = McpViaLlmManager::new(cfg());
+
+        // Session with 4-message history
+        let msgs1 = vec![
+            msg("user", "msg1"),
+            msg("assistant", "r1"),
+            msg("user", "msg2"),
+            msg("assistant", "r2"),
+        ];
+
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs1));
+        let key1 = s1.read().gateway_session_key.clone();
+        s1.write().client_message_hashes = compute_message_hashes(&msgs1);
+
+        // Client drops first 2 messages, keeps last 2 + adds new
+        let msgs2 = vec![
+            msg("user", "msg2"),
+            msg("assistant", "r2"),
+            msg("user", "msg3"),
+        ];
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        let key2 = s2.read().gateway_session_key.clone();
+
+        // Should match: suffix [msg2, r2] of stored matches prefix of incoming → 2/4 = 0.5
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn multiple_concurrent_sessions() {
+        let mgr = McpViaLlmManager::new(cfg());
+
+        // Create two sessions with different conversations
+        let msgs_a = vec![msg("user", "conversation A")];
+        let s_a = mgr.get_or_create_session("c1", Some(&msgs_a));
+        let key_a = s_a.read().gateway_session_key.clone();
+        s_a.write().client_message_hashes = compute_message_hashes(&msgs_a);
+
+        let msgs_b = vec![msg("user", "conversation B")];
+        let s_b = mgr.get_or_create_session("c1", Some(&msgs_b));
+        let key_b = s_b.read().gateway_session_key.clone();
+        s_b.write().client_message_hashes = compute_message_hashes(&msgs_b);
+
+        assert_ne!(key_a, key_b);
+
+        // Continue conversation A → should match session A
+        let msgs_a2 = vec![
+            msg("user", "conversation A"),
+            msg("assistant", "Reply A"),
+            msg("user", "Follow up A"),
+        ];
+        let s = mgr.get_or_create_session("c1", Some(&msgs_a2));
+        assert_eq!(s.read().gateway_session_key, key_a);
+
+        // Continue conversation B → should match session B
+        let msgs_b2 = vec![
+            msg("user", "conversation B"),
+            msg("assistant", "Reply B"),
+            msg("user", "Follow up B"),
+        ];
+        let s = mgr.get_or_create_session("c1", Some(&msgs_b2));
+        assert_eq!(s.read().gateway_session_key, key_b);
+    }
+
+    #[test]
+    fn find_session_by_gateway_key() {
+        let mgr = McpViaLlmManager::new(cfg());
+        let s1 = mgr.get_or_create_session("c1", None);
+        let key = s1.read().gateway_session_key.clone();
+
+        let found = mgr.find_session_by_gateway_key("c1", &key);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().read().gateway_session_key, key);
+
+        assert!(mgr
+            .find_session_by_gateway_key("c1", "nonexistent")
+            .is_none());
+        assert!(mgr.find_session_by_gateway_key("c2", &key).is_none());
+    }
+
+    #[test]
+    fn fuzzy_matching_whitespace_resilience() {
+        let mgr = McpViaLlmManager::new(cfg());
+
+        // Create session with normal whitespace
+        let msgs1 = vec![msg("user", "hello world")];
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs1));
+        let key1 = s1.read().gateway_session_key.clone();
+        s1.write().client_message_hashes = compute_message_hashes(&msgs1);
+
+        // Same message but with different whitespace → should still match
+        let msgs2 = vec![msg("user", "hello  world"), msg("assistant", "response")];
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        assert_eq!(s2.read().gateway_session_key, key1);
     }
 }

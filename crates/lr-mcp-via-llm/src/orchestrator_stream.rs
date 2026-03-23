@@ -471,7 +471,9 @@ async fn streaming_loop(
                 let finish = finish_reason.clone();
                 // Use the resolved model from the stream (includes provider prefix),
                 // falling back to the request model if no chunks were received.
-                let resolved = resolved_model.clone().unwrap_or_else(|| request.model.clone());
+                let resolved = resolved_model
+                    .clone()
+                    .unwrap_or_else(|| request.model.clone());
                 // Extract provider name from "provider/model" format
                 let provider = resolved
                     .split_once('/')
@@ -689,6 +691,7 @@ async fn streaming_loop(
                         messages_before_mixed: request.messages.clone(),
                         started_at,
                         accumulated_usage_entries: Vec::new(),
+                        gateway_session_key: session.read().gateway_session_key.clone(),
                     };
 
                     // Store pending execution for later resume
@@ -890,8 +893,12 @@ async fn streaming_loop(
                 let assistant_text = accumulated_message.content.as_text();
                 if !user_text.is_empty() && !assistant_text.is_empty() {
                     let svc = svc.clone();
-                    let cid = client_id.to_string();
-                    let session_id = path
+                    let memory_folder = session
+                        .read()
+                        .memory_folder
+                        .clone()
+                        .unwrap_or_else(|| client_id.to_string());
+                    let file_stem = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_default();
@@ -906,7 +913,8 @@ async fn streaming_loop(
                             tracing::warn!("Memory: failed to write streaming transcript: {}", e);
                         }
                         svc.touch_session(&path);
-                        if let Err(e) = svc.index_transcript(&cid, &session_id, &exchange) {
+                        if let Err(e) = svc.index_transcript(&memory_folder, &file_stem, &exchange)
+                        {
                             tracing::warn!("Memory: FTS5 index failed: {}", e);
                         }
                     });

@@ -181,6 +181,9 @@ utoipa-scalar = { version = "0.2", features = ["axum"] }
 # JSON Schema validation
 jsonschema = "0.18"
 
+# Unicode normalization
+unicode-normalization = "0.1"
+
 # ML - RouteLLM
 tokenizers = "0.22"
 hf-hub = { version = "0.4", features = ["tokio"] }

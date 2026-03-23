@@ -26,6 +26,7 @@ parking_lot = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
 tokio-stream = { workspace = true }
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

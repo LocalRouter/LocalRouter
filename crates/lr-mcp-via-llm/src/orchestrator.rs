@@ -597,6 +597,7 @@ pub async fn run_agentic_loop(
                         messages_before_mixed: request.messages.clone(),
                         started_at,
                         accumulated_usage_entries: usage_entries.clone(),
+                        gateway_session_key: session.read().gateway_session_key.clone(),
                     };
 
                     // Build response with only client tool calls
@@ -788,8 +789,12 @@ pub async fn run_agentic_loop(
                 let assistant_text = choice.message.content.as_text();
                 if !user_text.is_empty() && !assistant_text.is_empty() {
                     let svc = svc.clone();
-                    let client_id = session.read().client_id.clone();
-                    let session_id = path
+                    let memory_folder = session
+                        .read()
+                        .memory_folder
+                        .clone()
+                        .unwrap_or_else(|| session.read().client_id.clone());
+                    let file_stem = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_default();
@@ -804,7 +809,8 @@ pub async fn run_agentic_loop(
                             tracing::warn!("Memory: failed to write transcript: {}", e);
                         }
                         svc.touch_session(&path);
-                        if let Err(e) = svc.index_transcript(&client_id, &session_id, &exchange) {
+                        if let Err(e) = svc.index_transcript(&memory_folder, &file_stem, &exchange)
+                        {
                             tracing::warn!("Memory: FTS5 index failed: {}", e);
                         }
                     });
