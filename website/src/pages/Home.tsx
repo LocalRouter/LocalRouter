@@ -260,6 +260,7 @@ export default function Home() {
             className="w-full bg-[#235cdc] rounded-xl overflow-hidden"
             style={{ height: '700px' }}
             title="LocalRouter Windows XP Demo"
+            loading="lazy"
           />
           <p className="mt-2 text-[11px] text-muted-foreground/60 text-right">
             Desktop powered by <a href="https://github.com/ShizukuIchi/winXP" target="_blank" rel="noopener noreferrer" className="underline hover:text-muted-foreground">WinXP</a> theme
