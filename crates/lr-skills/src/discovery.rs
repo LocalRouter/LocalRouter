@@ -511,9 +511,7 @@ Body"#,
 
         let result = discover_skills(skill_dir);
         assert_eq!(result.skills.len(), 1);
-        assert!(result.skills[0]
-            .scripts
-            .contains(&"sysinfo.sh".to_string()));
+        assert!(result.skills[0].scripts.contains(&"sysinfo.sh".to_string()));
     }
 
     #[test]

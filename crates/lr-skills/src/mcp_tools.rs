@@ -522,11 +522,8 @@ fn resolve_skill_file_path<'a>(
     }
 
     // Layer 4: Fuzzy match using shared fuzzy matching
-    let candidates: Vec<(usize, &str)> = all_files
-        .iter()
-        .enumerate()
-        .map(|(i, &f)| (i, f))
-        .collect();
+    let candidates: Vec<(usize, &str)> =
+        all_files.iter().enumerate().map(|(i, &f)| (i, f)).collect();
     if let Some((idx, kind)) = crate::fuzzy::find_best_match(requested, &candidates) {
         if !matches!(kind, crate::fuzzy::MatchKind::Exact) {
             let resolved = all_files[idx];

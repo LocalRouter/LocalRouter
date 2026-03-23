@@ -349,7 +349,11 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             }
             EventStatus::Error => {
                 let err = error.as_deref().unwrap_or("unknown error");
-                format!("compaction failed for {}: {}", session_id, truncate(err, 40))
+                format!(
+                    "compaction failed for {}: {}",
+                    session_id,
+                    truncate(err, 40)
+                )
             }
         },
         MonitorEventData::FirewallDecision {

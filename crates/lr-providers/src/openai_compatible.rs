@@ -503,7 +503,9 @@ impl ModelProvider for OpenAICompatibleProvider {
                                                     role: choice.delta.role,
                                                     content: choice.delta.content,
                                                     tool_calls: choice.delta.tool_calls,
-                                                    reasoning_content: choice.delta.reasoning_content,
+                                                    reasoning_content: choice
+                                                        .delta
+                                                        .reasoning_content,
                                                 },
                                                 finish_reason: choice.finish_reason,
                                             })

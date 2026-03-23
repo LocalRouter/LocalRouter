@@ -92,7 +92,11 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
             modalities: None,
             audio: None,
             prediction: None,
-            reasoning_effort: if thinking { None } else { Some("none".to_string()) },
+            reasoning_effort: if thinking {
+                None
+            } else {
+                Some("none".to_string())
+            },
             pre_computed_routing: None,
         };
 
