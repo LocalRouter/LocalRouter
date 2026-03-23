@@ -74,6 +74,23 @@ pub async fn image_generations(
     let started_at = Instant::now();
 
     // Parse model to get provider (format: provider/model or just model)
+    // Auto-routing is not supported for image generation
+    if request.model == "localrouter/auto" {
+        super::monitor_helpers::emit_validation_error(
+            &state,
+            None,
+            Some(&session_id),
+            "/v1/images/generations",
+            Some("model"),
+            "Auto-routing is not supported for image generation. Use provider/model format (e.g. openai/dall-e-3)",
+            400,
+        );
+        return Err(ApiErrorResponse::bad_request(
+            "Auto-routing is not supported for image generation. Use provider/model format (e.g. openai/dall-e-3)",
+        )
+        .with_param("model"));
+    }
+
     let (provider_name, model_name) = if let Some((prov, model)) = request.model.split_once('/') {
         (prov.to_string(), model.to_string())
     } else {
