@@ -91,7 +91,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
             modalities: None,
             audio: None,
             prediction: None,
-            reasoning_effort: None,
+            reasoning_effort: Some("none".to_string()),
             pre_computed_routing: None,
         };
 

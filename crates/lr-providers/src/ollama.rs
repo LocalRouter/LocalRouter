@@ -130,6 +130,12 @@ struct OllamaChatRequest {
     options: Option<OllamaOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<Tool>>,
+    /// Control thinking/reasoning for models that support it (Qwen3, DeepSeek-R1, etc.)
+    /// None = model default (thinking enabled for supported models)
+    /// Some(false) = disable thinking
+    /// Some(true) = enable thinking
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -454,6 +460,11 @@ impl ModelProvider for OllamaProvider {
                 stop: request.stop.clone(),
             }),
             tools: request.tools.clone(),
+            // Map reasoning_effort to Ollama's think parameter:
+            // "none" → disable thinking, any other value → enable, absent → model default
+            think: request.reasoning_effort.as_ref().map(|effort| {
+                !effort.eq_ignore_ascii_case("none")
+            }),
         };
 
         let response = self
@@ -575,6 +586,9 @@ impl ModelProvider for OllamaProvider {
                 stop: request.stop.clone(),
             }),
             tools: request.tools.clone(),
+            think: request.reasoning_effort.as_ref().map(|effort| {
+                !effort.eq_ignore_ascii_case("none")
+            }),
         };
 
         debug!("Ollama streaming request body: {:?}", ollama_request);
