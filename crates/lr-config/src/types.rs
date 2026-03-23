@@ -3326,6 +3326,27 @@ pub enum ProviderType {
     /// Local llama.cpp server instance
     #[serde(rename = "llamacpp")]
     LlamaCpp,
+    /// GitHub Models inference
+    #[serde(rename = "github_models")]
+    GitHubModels,
+    /// NVIDIA NIM inference
+    #[serde(rename = "nvidia_nim")]
+    NvidiaNim,
+    /// Cloudflare Workers AI
+    #[serde(rename = "cloudflare_ai")]
+    CloudflareAI,
+    /// LLM7.io inference
+    #[serde(rename = "llm7")]
+    Llm7,
+    /// Kluster AI inference
+    #[serde(rename = "kluster_ai")]
+    KlusterAI,
+    /// Hugging Face Inference
+    #[serde(rename = "huggingface")]
+    HuggingFace,
+    /// Zhipu AI (GLM models)
+    #[serde(rename = "zhipu")]
+    Zhipu,
     /// Custom provider
     Custom,
 }

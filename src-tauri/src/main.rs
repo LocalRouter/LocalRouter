@@ -19,13 +19,15 @@ use localrouter::{
 };
 
 use lr_providers::factory::{
-    AnthropicProviderFactory, CerebrasProviderFactory, CohereProviderFactory,
-    DeepInfraProviderFactory, GPT4AllProviderFactory, GeminiProviderFactory,
-    GitHubCopilotProviderFactory, GroqProviderFactory, JanProviderFactory, LMStudioProviderFactory,
-    LlamaCppProviderFactory, LocalAIProviderFactory, MistralProviderFactory, OllamaProviderFactory,
+    AnthropicProviderFactory, CerebrasProviderFactory, CloudflareAIProviderFactory,
+    CohereProviderFactory, DeepInfraProviderFactory, GPT4AllProviderFactory, GeminiProviderFactory,
+    GitHubCopilotProviderFactory, GitHubModelsProviderFactory, GroqProviderFactory,
+    HuggingFaceProviderFactory, JanProviderFactory, KlusterAIProviderFactory,
+    LMStudioProviderFactory, LlamaCppProviderFactory, Llm7ProviderFactory, LocalAIProviderFactory,
+    MistralProviderFactory, NvidiaNimProviderFactory, OllamaProviderFactory,
     OpenAICodexProviderFactory, OpenAICompatibleProviderFactory, OpenAIProviderFactory,
     OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
-    XAIProviderFactory,
+    XAIProviderFactory, ZhipuProviderFactory,
 };
 use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;
@@ -314,6 +316,14 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(GPT4AllProviderFactory));
     provider_registry.register_factory(Arc::new(LocalAIProviderFactory));
     provider_registry.register_factory(Arc::new(LlamaCppProviderFactory));
+    // New free-tier providers
+    provider_registry.register_factory(Arc::new(GitHubModelsProviderFactory));
+    provider_registry.register_factory(Arc::new(NvidiaNimProviderFactory));
+    provider_registry.register_factory(Arc::new(CloudflareAIProviderFactory));
+    provider_registry.register_factory(Arc::new(Llm7ProviderFactory));
+    provider_registry.register_factory(Arc::new(KlusterAIProviderFactory));
+    provider_registry.register_factory(Arc::new(HuggingFaceProviderFactory));
+    provider_registry.register_factory(Arc::new(ZhipuProviderFactory));
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -378,6 +388,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::GPT4All => "gpt4all",
             config::ProviderType::LocalAI => "localai",
             config::ProviderType::LlamaCpp => "llamacpp",
+            config::ProviderType::GitHubModels => "github_models",
+            config::ProviderType::NvidiaNim => "nvidia_nim",
+            config::ProviderType::CloudflareAI => "cloudflare_ai",
+            config::ProviderType::Llm7 => "llm7",
+            config::ProviderType::KlusterAI => "kluster_ai",
+            config::ProviderType::HuggingFace => "huggingface",
+            config::ProviderType::Zhipu => "zhipu",
             config::ProviderType::Custom => "openai_compatible",
         };
 

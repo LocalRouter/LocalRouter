@@ -450,6 +450,13 @@ fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
         "gpt4all" => lr_config::ProviderType::GPT4All,
         "localai" => lr_config::ProviderType::LocalAI,
         "llamacpp" => lr_config::ProviderType::LlamaCpp,
+        "github_models" => lr_config::ProviderType::GitHubModels,
+        "nvidia_nim" => lr_config::ProviderType::NvidiaNim,
+        "cloudflare_ai" => lr_config::ProviderType::CloudflareAI,
+        "llm7" => lr_config::ProviderType::Llm7,
+        "kluster_ai" => lr_config::ProviderType::KlusterAI,
+        "huggingface" => lr_config::ProviderType::HuggingFace,
+        "zhipu" => lr_config::ProviderType::Zhipu,
         "openai_compatible" => lr_config::ProviderType::Custom,
         _ => lr_config::ProviderType::Custom,
     }

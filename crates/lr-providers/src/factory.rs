@@ -110,6 +110,12 @@ pub trait ProviderFactory: Send + Sync {
     fn default_free_tier(&self) -> FreeTierKind {
         FreeTierKind::None
     }
+
+    /// Optional provider-specific notes about free tier caveats.
+    /// Appended to the auto-generated long description text.
+    fn free_tier_notes(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Trait for providers that can be automatically discovered on the local system
@@ -458,12 +464,16 @@ impl ProviderFactory for GeminiProviderFactory {
     fn default_free_tier(&self) -> FreeTierKind {
         FreeTierKind::RateLimitedFree {
             max_rpm: 10,
-            max_rpd: 250,
+            max_rpd: 20,
             max_tpm: 250_000,
             max_tpd: 0,
             max_monthly_calls: 0,
             max_monthly_tokens: 0,
         }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Rate limits vary significantly by model: Flash models allow up to 250 RPD while Pro models are limited to 20 RPD. Limits may also vary by region.")
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -523,11 +533,14 @@ impl ProviderFactory for OpenRouterProviderFactory {
     }
 
     fn default_free_tier(&self) -> FreeTierKind {
-        FreeTierKind::CreditBased {
-            budget_usd: 0.0,
-            reset_period: lr_config::FreeTierResetPeriod::Never,
-            detection: lr_config::CreditDetection::ProviderApi,
+        FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec![":free".to_string()],
+            max_rpm: 20,
         }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Free tier provides access to 25+ free models (model IDs ending in ':free') at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.")
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -707,6 +720,10 @@ impl ProviderFactory for GroqProviderFactory {
         }
     }
 
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Rate limits vary by model. Some models (e.g. Llama 3.3 70B) have lower daily limits (1K RPD). Token limits also vary per model.")
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![SetupParameter::required(
             "api_key",
@@ -768,6 +785,10 @@ impl ProviderFactory for MistralProviderFactory {
             max_monthly_calls: 0,
             max_monthly_tokens: 1_000_000_000,
         }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Free tier (experiment plan) allows 1 request/second and 1 billion tokens/month. All models are accessible.")
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -833,6 +854,10 @@ impl ProviderFactory for CohereProviderFactory {
         }
     }
 
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Trial API keys are limited to 1,000 API calls/month and 20 RPM. Contact support for production increases.")
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![SetupParameter::required(
             "api_key",
@@ -890,6 +915,10 @@ impl ProviderFactory for TogetherAIProviderFactory {
             free_model_patterns: vec!["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string()],
             max_rpm: 3,
         }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Only specific models are free (currently Llama 3.3 70B Instruct Turbo Free). Rate limited to 3 RPM on free models.")
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -986,6 +1015,10 @@ impl ProviderFactory for PerplexityProviderFactory {
     fn default_free_tier(&self) -> FreeTierKind {
         FreeTierKind::None
     }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("No free API tier. All API usage requires payment.")
+    }
 }
 
 /// Factory for DeepInfra providers
@@ -1014,6 +1047,10 @@ impl ProviderFactory for DeepInfraProviderFactory {
             reset_period: lr_config::FreeTierResetPeriod::Monthly,
             detection: lr_config::CreditDetection::LocalOnly,
         }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("$5 monthly free credits for inference. Credits reset monthly.")
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -1079,6 +1116,10 @@ impl ProviderFactory for CerebrasProviderFactory {
         }
     }
 
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Developer tier offers 10x higher limits. Exact free tier limits are not publicly documented and may change.")
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![SetupParameter::required(
             "api_key",
@@ -1137,6 +1178,10 @@ impl ProviderFactory for XAIProviderFactory {
             reset_period: lr_config::FreeTierResetPeriod::Never,
             detection: lr_config::CreditDetection::LocalOnly,
         }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("$25 one-time signup credits. No recurring free tier.")
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -1669,6 +1714,548 @@ impl DiscoverableProvider for LlamaCppProviderFactory {
 
     fn default_instance_name(&self) -> &str {
         "llama.cpp"
+    }
+}
+
+// ==================== NEW FREE-TIER PROVIDER FACTORIES ====================
+
+/// Factory for GitHub Models providers
+pub struct GitHubModelsProviderFactory;
+
+impl ProviderFactory for GitHubModelsProviderFactory {
+    fn provider_type(&self) -> &str {
+        "github_models"
+    }
+
+    fn display_name(&self) -> &str {
+        "GitHub Models"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "GitHub Models free inference API"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 10,
+            max_rpd: 50,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Limits vary by model tier: Low models get 15 RPM / 150 RPD, High models get 10 RPM / 50 RPD. Uses GitHub Personal Access Token for auth.")
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "GitHub Personal Access Token",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "github_models".to_string(),
+            "https://models.inference.ai.azure.com".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Factory for NVIDIA NIM providers
+pub struct NvidiaNimProviderFactory;
+
+impl ProviderFactory for NvidiaNimProviderFactory {
+    fn provider_type(&self) -> &str {
+        "nvidia_nim"
+    }
+
+    fn display_name(&self) -> &str {
+        "NVIDIA NIM"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "NVIDIA NIM inference API for 100+ models"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 40,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("40 RPM on free tier. Access to 100+ models including Llama, Mistral, Qwen. Daily limits undocumented.")
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "NVIDIA API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "nvidia_nim".to_string(),
+            "https://integrate.api.nvidia.com/v1".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Factory for Cloudflare Workers AI providers
+pub struct CloudflareAIProviderFactory;
+
+impl ProviderFactory for CloudflareAIProviderFactory {
+    fn provider_type(&self) -> &str {
+        "cloudflare_ai"
+    }
+
+    fn display_name(&self) -> &str {
+        "Cloudflare Workers AI"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "Cloudflare Workers AI inference platform"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("10,000 neurons/day free allowance. Neuron cost varies by model and input size. Requires Cloudflare account ID in base URL.")
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::required(
+                "api_key",
+                ParameterType::ApiKey,
+                "Cloudflare API token",
+                true,
+            ),
+            SetupParameter::required(
+                "base_url",
+                ParameterType::BaseUrl,
+                "Cloudflare AI Gateway URL (includes your account ID)",
+                false,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        let base_url = config
+            .get("base_url")
+            .ok_or_else(|| AppError::Config("base_url is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "cloudflare_ai".to_string(),
+            base_url,
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        if !config.contains_key("base_url") {
+            return Err(AppError::Config("base_url is required".to_string()));
+        }
+        if let Some(url) = config.get("base_url") {
+            if !url.starts_with("https://") {
+                return Err(AppError::Config(
+                    "base_url must start with https://".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Factory for LLM7.io providers
+pub struct Llm7ProviderFactory;
+
+impl ProviderFactory for Llm7ProviderFactory {
+    fn provider_type(&self) -> &str {
+        "llm7"
+    }
+
+    fn display_name(&self) -> &str {
+        "LLM7.io"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "LLM7.io free inference API for open-source models"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 30,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("30 RPM without token, 120 RPM with token. Access to DeepSeek R1, Qwen2.5 Coder, and 27+ more models.")
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::optional(
+            "api_key",
+            ParameterType::ApiKey,
+            "LLM7 API token (optional, increases rate limits)",
+            None::<String>,
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config.get("api_key").cloned();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "llm7".to_string(),
+            "https://api.llm7.io/v1".to_string(),
+            api_key,
+        )))
+    }
+
+    fn validate_config(&self, _config: &HashMap<String, String>) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Factory for Kluster AI providers
+pub struct KlusterAIProviderFactory;
+
+impl ProviderFactory for KlusterAIProviderFactory {
+    fn provider_type(&self) -> &str {
+        "kluster_ai"
+    }
+
+    fn display_name(&self) -> &str {
+        "Kluster AI"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "Kluster AI inference for DeepSeek, Llama, and Qwen models"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 30,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Free tier limits are undocumented. Supports DeepSeek-R1, Llama 4 Maverick, Qwen3-235B.")
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Kluster AI API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "kluster_ai".to_string(),
+            "https://api.kluster.ai/v1".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Factory for Hugging Face Inference providers
+pub struct HuggingFaceProviderFactory;
+
+impl ProviderFactory for HuggingFaceProviderFactory {
+    fn provider_type(&self) -> &str {
+        "huggingface"
+    }
+
+    fn display_name(&self) -> &str {
+        "Hugging Face"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "Hugging Face Inference API for thousands of models"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::CreditBased {
+            budget_usd: 0.10,
+            reset_period: lr_config::FreeTierResetPeriod::Monthly,
+            detection: lr_config::CreditDetection::LocalOnly,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("$0.10/month free credits for all users. PRO users get $2/month. No markup — provider costs passed through directly. Uses HF User Access Token.")
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Hugging Face User Access Token",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "huggingface".to_string(),
+            "https://router.huggingface.co/v1".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Factory for Zhipu AI providers
+pub struct ZhipuProviderFactory;
+
+impl ProviderFactory for ZhipuProviderFactory {
+    fn provider_type(&self) -> &str {
+        "zhipu"
+    }
+
+    fn display_name(&self) -> &str {
+        "Zhipu AI"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
+    }
+
+    fn description(&self) -> &str {
+        "Zhipu AI GLM models for Chinese-language focused inference"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Free tier limits are undocumented. Supports GLM-4.7-Flash, GLM-4.5-Flash, GLM-4.6V-Flash. Chinese-language focused provider.")
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Zhipu API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "zhipu".to_string(),
+            "https://open.bigmodel.cn/api/paas/v4".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
     }
 }
 

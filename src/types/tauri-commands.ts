@@ -413,6 +413,7 @@ export interface ProviderTypeInfo {
   default_free_tier: FreeTierKind
   free_tier_short_text: string
   free_tier_long_text: string
+  free_tier_notes: string | null
 }
 
 /**

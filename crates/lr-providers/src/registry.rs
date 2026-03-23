@@ -267,6 +267,8 @@ pub struct ProviderTypeInfo {
     pub default_free_tier: FreeTierKind,
     pub free_tier_short_text: String,
     pub free_tier_long_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_tier_notes: Option<String>,
 }
 
 /// Information about a provider instance (for listing)
@@ -344,6 +346,12 @@ impl ProviderRegistry {
             .map(|factory| {
                 let free_tier = factory.default_free_tier();
                 let (short_text, long_text) = free_tier_description_texts(&free_tier);
+                let notes = factory.free_tier_notes().map(|s| s.to_string());
+                let long_text = if let Some(ref notes) = notes {
+                    format!("{}\n\n{}", long_text, notes)
+                } else {
+                    long_text
+                };
                 ProviderTypeInfo {
                     provider_type: factory.provider_type().to_string(),
                     display_name: factory.display_name().to_string(),
@@ -353,6 +361,7 @@ impl ProviderRegistry {
                     default_free_tier: free_tier,
                     free_tier_short_text: short_text,
                     free_tier_long_text: long_text,
+                    free_tier_notes: notes,
                 }
             })
             .collect()

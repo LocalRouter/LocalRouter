@@ -166,6 +166,7 @@ export const mockData = {
       default_free_tier: { kind: "none" },
       free_tier_short_text: "",
       free_tier_long_text: "No free tier available. All API usage is billed.",
+      free_tier_notes: null,
     },
     {
       provider_type: "anthropic",
@@ -179,6 +180,7 @@ export const mockData = {
       default_free_tier: { kind: "none" },
       free_tier_short_text: "",
       free_tier_long_text: "No free tier available. All API usage is billed.",
+      free_tier_notes: null,
     },
     {
       provider_type: "ollama",
@@ -191,6 +193,7 @@ export const mockData = {
       default_free_tier: { kind: "always_free_local" },
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
     },
     {
       provider_type: "gemini",
@@ -200,9 +203,10 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Google AI API key", sensitive: true },
       ],
-      default_free_tier: { kind: "rate_limited_free", max_rpm: 10, max_rpd: 250, max_tpm: 250000, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
-      free_tier_short_text: "Free tier: 10 req/min, 250 req/day",
-      free_tier_long_text: "Free access within rate limits: 10 req/min, 250 req/day, 250K tokens/min. Router auto-skips when exhausted.",
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 10, max_rpd: 20, max_tpm: 250000, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier: 10 req/min, 20 req/day",
+      free_tier_long_text: "Free access within rate limits: 10 req/min, 20 req/day, 250K tokens/min. Router auto-skips when exhausted.\n\nRate limits vary significantly by model: Flash models allow up to 250 RPD while Pro models are limited to 20 RPD. Limits may also vary by region.",
+      free_tier_notes: "Rate limits vary significantly by model: Flash models allow up to 250 RPD while Pro models are limited to 20 RPD. Limits may also vary by region.",
     },
     {
       provider_type: "groq",
@@ -214,7 +218,8 @@ export const mockData = {
       ],
       default_free_tier: { kind: "rate_limited_free", max_rpm: 30, max_rpd: 14400, max_tpm: 6000, max_tpd: 500000, max_monthly_calls: 0, max_monthly_tokens: 0 },
       free_tier_short_text: "Free tier: 30 req/min, 14.4K req/day",
-      free_tier_long_text: "Free access within rate limits: 30 req/min, 14.4K req/day, 6K tokens/min, 500K tokens/day. Router auto-skips when exhausted.",
+      free_tier_long_text: "Free access within rate limits: 30 req/min, 14.4K req/day, 6K tokens/min, 500K tokens/day. Router auto-skips when exhausted.\n\nRate limits vary by model. Some models (e.g. Llama 3.3 70B) have lower daily limits (1K RPD). Token limits also vary per model.",
+      free_tier_notes: "Rate limits vary by model. Some models (e.g. Llama 3.3 70B) have lower daily limits (1K RPD). Token limits also vary per model.",
     },
     {
       provider_type: "mistral",
@@ -226,7 +231,8 @@ export const mockData = {
       ],
       default_free_tier: { kind: "rate_limited_free", max_rpm: 60, max_rpd: 0, max_tpm: 500000, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 1000000000 },
       free_tier_short_text: "Free tier: 60 req/min, 500K tokens/min",
-      free_tier_long_text: "Free access within rate limits: 60 req/min, 500K tokens/min, 1B tokens/mo. Router auto-skips when exhausted.",
+      free_tier_long_text: "Free access within rate limits: 60 req/min, 500K tokens/min, 1B tokens/mo. Router auto-skips when exhausted.\n\nFree tier (experiment plan) allows 1 request/second and 1 billion tokens/month. All models are accessible.",
+      free_tier_notes: "Free tier (experiment plan) allows 1 request/second and 1 billion tokens/month. All models are accessible.",
     },
     {
       provider_type: "openrouter",
@@ -236,9 +242,10 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "OpenRouter API key", sensitive: true },
       ],
-      default_free_tier: { kind: "credit_based", budget_usd: 0, reset_period: "never", detection: { type: "provider_api" } },
-      free_tier_short_text: "Free models available",
-      free_tier_long_text: "Some models available for free via provider API.",
+      default_free_tier: { kind: "free_models_only", free_model_patterns: [":free"], max_rpm: 20 },
+      free_tier_short_text: "Free models: 20 req/min",
+      free_tier_long_text: "1 free model. Rate-limited to 20 req/min.\n\nFree tier provides access to 25+ free models (model IDs ending in ':free') at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.",
+      free_tier_notes: "Free tier provides access to 25+ free models (model IDs ending in ':free') at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.",
     },
     {
       provider_type: "together",
@@ -250,7 +257,8 @@ export const mockData = {
       ],
       default_free_tier: { kind: "free_models_only", free_model_patterns: ["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"], max_rpm: 3 },
       free_tier_short_text: "Free models: 3 req/min",
-      free_tier_long_text: "1 free model. Rate-limited to 3 req/min.",
+      free_tier_long_text: "1 free model. Rate-limited to 3 req/min.\n\nOnly specific models are free (currently Llama 3.3 70B Instruct Turbo Free). Rate limited to 3 RPM on free models.",
+      free_tier_notes: "Only specific models are free (currently Llama 3.3 70B Instruct Turbo Free). Rate limited to 3 RPM on free models.",
     },
     {
       provider_type: "deepinfra",
@@ -262,7 +270,8 @@ export const mockData = {
       ],
       default_free_tier: { kind: "credit_based", budget_usd: 5, reset_period: "monthly", detection: { type: "local_only" } },
       free_tier_short_text: "$5/mo free credits",
-      free_tier_long_text: "$5 in monthly free credits. Router auto-skips when exhausted.",
+      free_tier_long_text: "$5 in monthly free credits. Router auto-skips when exhausted.\n\n$5 monthly free credits for inference. Credits reset monthly.",
+      free_tier_notes: "$5 monthly free credits for inference. Credits reset monthly.",
     },
     {
       provider_type: "perplexity",
@@ -272,9 +281,10 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Perplexity API key", sensitive: true },
       ],
-      default_free_tier: { kind: "credit_based", budget_usd: 5, reset_period: "monthly", detection: { type: "local_only" } },
-      free_tier_short_text: "$5/mo free credits",
-      free_tier_long_text: "$5 in monthly free credits. Router auto-skips when exhausted.",
+      default_free_tier: { kind: "none" },
+      free_tier_short_text: "",
+      free_tier_long_text: "No free tier available. All API usage is billed.\n\nNo free API tier. All API usage requires payment.",
+      free_tier_notes: "No free API tier. All API usage requires payment.",
     },
     {
       provider_type: "xai",
@@ -286,7 +296,8 @@ export const mockData = {
       ],
       default_free_tier: { kind: "credit_based", budget_usd: 25, reset_period: "never", detection: { type: "local_only" } },
       free_tier_short_text: "$25 free credits",
-      free_tier_long_text: "$25 in one-time free credits. Router auto-skips when exhausted.",
+      free_tier_long_text: "$25 in one-time free credits. Router auto-skips when exhausted.\n\n$25 one-time signup credits. No recurring free tier.",
+      free_tier_notes: "$25 one-time signup credits. No recurring free tier.",
     },
     {
       provider_type: "cerebras",
@@ -298,7 +309,8 @@ export const mockData = {
       ],
       default_free_tier: { kind: "rate_limited_free", max_rpm: 30, max_rpd: 14400, max_tpm: 60000, max_tpd: 1000000, max_monthly_calls: 0, max_monthly_tokens: 0 },
       free_tier_short_text: "Free tier: 30 req/min, 14.4K req/day",
-      free_tier_long_text: "Free access within rate limits: 30 req/min, 14.4K req/day, 60K tokens/min, 1M tokens/day. Router auto-skips when exhausted.",
+      free_tier_long_text: "Free access within rate limits: 30 req/min, 14.4K req/day, 60K tokens/min, 1M tokens/day. Router auto-skips when exhausted.\n\nDeveloper tier offers 10x higher limits. Exact free tier limits are not publicly documented and may change.",
+      free_tier_notes: "Developer tier offers 10x higher limits. Exact free tier limits are not publicly documented and may change.",
     },
     {
       provider_type: "cohere",
@@ -310,7 +322,8 @@ export const mockData = {
       ],
       default_free_tier: { kind: "rate_limited_free", max_rpm: 20, max_rpd: 0, max_tpm: 100000, max_tpd: 0, max_monthly_calls: 1000, max_monthly_tokens: 0 },
       free_tier_short_text: "Free tier: 20 req/min, 100K tokens/min",
-      free_tier_long_text: "Free access within rate limits: 20 req/min, 100K tokens/min, 1K calls/mo. Router auto-skips when exhausted.",
+      free_tier_long_text: "Free access within rate limits: 20 req/min, 100K tokens/min, 1K calls/mo. Router auto-skips when exhausted.\n\nTrial API keys are limited to 1,000 API calls/month and 20 RPM. Contact support for production increases.",
+      free_tier_notes: "Trial API keys are limited to 1,000 API calls/month and 20 RPM. Contact support for production increases.",
     },
     {
       provider_type: "lmstudio",
@@ -323,6 +336,7 @@ export const mockData = {
       default_free_tier: { kind: "always_free_local" },
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
     },
     {
       provider_type: "jan",
@@ -335,6 +349,7 @@ export const mockData = {
       default_free_tier: { kind: "always_free_local" },
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
     },
     {
       provider_type: "gpt4all",
@@ -347,6 +362,7 @@ export const mockData = {
       default_free_tier: { kind: "always_free_local" },
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
     },
     {
       provider_type: "localai",
@@ -359,6 +375,7 @@ export const mockData = {
       default_free_tier: { kind: "always_free_local" },
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
     },
     {
       provider_type: "llamacpp",
@@ -371,6 +388,99 @@ export const mockData = {
       default_free_tier: { kind: "always_free_local" },
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
+    },
+    {
+      provider_type: "github_models",
+      display_name: "GitHub Models",
+      category: "third_party",
+      description: "GitHub Models free inference API",
+      setup_parameters: [
+        { key: "api_key", param_type: "string", required: true, description: "GitHub Personal Access Token", sensitive: true },
+      ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 10, max_rpd: 50, max_tpm: 0, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier: 10 req/min, 50 req/day",
+      free_tier_long_text: "Free access within rate limits: 10 req/min, 50 req/day. Router auto-skips when exhausted.\n\nLimits vary by model tier: Low models get 15 RPM / 150 RPD, High models get 10 RPM / 50 RPD. Uses GitHub Personal Access Token for auth.",
+      free_tier_notes: "Limits vary by model tier: Low models get 15 RPM / 150 RPD, High models get 10 RPM / 50 RPD. Uses GitHub Personal Access Token for auth.",
+    },
+    {
+      provider_type: "nvidia_nim",
+      display_name: "NVIDIA NIM",
+      category: "third_party",
+      description: "NVIDIA NIM inference API for 100+ models",
+      setup_parameters: [
+        { key: "api_key", param_type: "string", required: true, description: "NVIDIA API key", sensitive: true },
+      ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 40, max_rpd: 0, max_tpm: 0, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier: 40 req/min",
+      free_tier_long_text: "Free access within rate limits: 40 req/min. Router auto-skips when exhausted.\n\n40 RPM on free tier. Access to 100+ models including Llama, Mistral, Qwen. Daily limits undocumented.",
+      free_tier_notes: "40 RPM on free tier. Access to 100+ models including Llama, Mistral, Qwen. Daily limits undocumented.",
+    },
+    {
+      provider_type: "cloudflare_ai",
+      display_name: "Cloudflare Workers AI",
+      category: "third_party",
+      description: "Cloudflare Workers AI inference platform",
+      setup_parameters: [
+        { key: "api_key", param_type: "string", required: true, description: "Cloudflare API token", sensitive: true },
+        { key: "base_url", param_type: "string", required: true, description: "Cloudflare AI Gateway URL (includes your account ID)", sensitive: false },
+      ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 0, max_rpd: 0, max_tpm: 0, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier available",
+      free_tier_long_text: "Free access within rate limits. Router auto-skips when exhausted.\n\n10,000 neurons/day free allowance. Neuron cost varies by model and input size. Requires Cloudflare account ID in base URL.",
+      free_tier_notes: "10,000 neurons/day free allowance. Neuron cost varies by model and input size. Requires Cloudflare account ID in base URL.",
+    },
+    {
+      provider_type: "llm7",
+      display_name: "LLM7.io",
+      category: "third_party",
+      description: "LLM7.io free inference API for open-source models",
+      setup_parameters: [
+        { key: "api_key", param_type: "string", required: false, description: "LLM7 API token (optional, increases rate limits)", sensitive: true },
+      ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 30, max_rpd: 0, max_tpm: 0, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier: 30 req/min",
+      free_tier_long_text: "Free access within rate limits: 30 req/min. Router auto-skips when exhausted.\n\n30 RPM without token, 120 RPM with token. Access to DeepSeek R1, Qwen2.5 Coder, and 27+ more models.",
+      free_tier_notes: "30 RPM without token, 120 RPM with token. Access to DeepSeek R1, Qwen2.5 Coder, and 27+ more models.",
+    },
+    {
+      provider_type: "kluster_ai",
+      display_name: "Kluster AI",
+      category: "third_party",
+      description: "Kluster AI inference for DeepSeek, Llama, and Qwen models",
+      setup_parameters: [
+        { key: "api_key", param_type: "string", required: true, description: "Kluster AI API key", sensitive: true },
+      ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 30, max_rpd: 0, max_tpm: 0, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier: 30 req/min",
+      free_tier_long_text: "Free access within rate limits: 30 req/min. Router auto-skips when exhausted.\n\nFree tier limits are undocumented. Supports DeepSeek-R1, Llama 4 Maverick, Qwen3-235B.",
+      free_tier_notes: "Free tier limits are undocumented. Supports DeepSeek-R1, Llama 4 Maverick, Qwen3-235B.",
+    },
+    {
+      provider_type: "huggingface",
+      display_name: "Hugging Face",
+      category: "third_party",
+      description: "Hugging Face Inference API for thousands of models",
+      setup_parameters: [
+        { key: "api_key", param_type: "string", required: true, description: "Hugging Face User Access Token", sensitive: true },
+      ],
+      default_free_tier: { kind: "credit_based", budget_usd: 0.10, reset_period: "monthly", detection: { type: "local_only" } },
+      free_tier_short_text: "$0.10/mo free credits",
+      free_tier_long_text: "$0.10 in monthly free credits. Router auto-skips when exhausted.\n\n$0.10/month free credits for all users. PRO users get $2/month. No markup — provider costs passed through directly. Uses HF User Access Token.",
+      free_tier_notes: "$0.10/month free credits for all users. PRO users get $2/month. No markup — provider costs passed through directly. Uses HF User Access Token.",
+    },
+    {
+      provider_type: "zhipu",
+      display_name: "Zhipu AI",
+      category: "first_party",
+      description: "Zhipu AI GLM models for Chinese-language focused inference",
+      setup_parameters: [
+        { key: "api_key", param_type: "string", required: true, description: "Zhipu API key", sensitive: true },
+      ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 0, max_rpd: 0, max_tpm: 0, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier available",
+      free_tier_long_text: "Free access within rate limits. Router auto-skips when exhausted.\n\nFree tier limits are undocumented. Supports GLM-4.7-Flash, GLM-4.5-Flash, GLM-4.6V-Flash. Chinese-language focused provider.",
+      free_tier_notes: "Free tier limits are undocumented. Supports GLM-4.7-Flash, GLM-4.5-Flash, GLM-4.6V-Flash. Chinese-language focused provider.",
     },
   ],
 
