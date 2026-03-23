@@ -300,6 +300,46 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           </CardContent>
         </Card>
 
+        {/* Catalog Compression Section */}
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <FEATURES.catalogCompression.icon className={`h-4 w-4 ${FEATURES.catalogCompression.color}`} />
+              <CardTitle className="text-base">{FEATURES.catalogCompression.name}</CardTitle>
+            </div>
+            <CardDescription>
+              Compress MCP tool catalogs to reduce token usage when tools are injected into LLM context.
+              Indexes tool descriptions and schemas for efficient retrieval.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("catalog-compression")}>
+              Configure
+              <ArrowRight className="h-3 w-3" />
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Response RAG Section */}
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <FEATURES.responseRag.icon className={`h-4 w-4 ${FEATURES.responseRag.color}`} />
+              <CardTitle className="text-base">{FEATURES.responseRag.name}</CardTitle>
+            </div>
+            <CardDescription>
+              Index MCP tool responses for retrieval-augmented generation. Large tool outputs are
+              compressed and stored, with relevant content retrieved on subsequent requests.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("response-rag")}>
+              Configure
+              <ArrowRight className="h-3 w-3" />
+            </Button>
+          </CardContent>
+        </Card>
+
       </div>
     </div>
   )
