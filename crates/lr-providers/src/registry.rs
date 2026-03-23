@@ -1367,4 +1367,104 @@ mod tests {
         assert!(!types[0].free_tier_short_text.is_empty());
         assert!(!types[0].free_tier_long_text.is_empty());
     }
+
+    #[tokio::test]
+    async fn test_provider_type_info_no_notes_for_local() {
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(OllamaProviderFactory));
+        let types = registry.list_provider_types();
+        assert_eq!(types[0].free_tier_notes, None);
+    }
+
+    #[tokio::test]
+    async fn test_provider_notes_appended_to_long_text() {
+        use crate::factory::GeminiProviderFactory;
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(GeminiProviderFactory));
+        let types = registry.list_provider_types();
+        assert_eq!(types.len(), 1);
+        // Notes should be present
+        assert!(types[0].free_tier_notes.is_some());
+        let notes = types[0].free_tier_notes.as_ref().unwrap();
+        // Notes should also be appended to long_text
+        assert!(
+            types[0].free_tier_long_text.contains(notes.as_str()),
+            "long_text should contain the notes"
+        );
+        // Long text should contain both the auto-generated part and the notes
+        assert!(types[0].free_tier_long_text.contains("Router auto-skips"));
+        assert!(types[0].free_tier_long_text.contains("Flash models"));
+    }
+
+    #[tokio::test]
+    async fn test_new_providers_register_in_registry() {
+        use crate::factory::{
+            CloudflareAIProviderFactory, GitHubModelsProviderFactory, HuggingFaceProviderFactory,
+            KlusterAIProviderFactory, Llm7ProviderFactory, NvidiaNimProviderFactory,
+            ZhipuProviderFactory,
+        };
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(GitHubModelsProviderFactory));
+        registry.register_factory(Arc::new(NvidiaNimProviderFactory));
+        registry.register_factory(Arc::new(CloudflareAIProviderFactory));
+        registry.register_factory(Arc::new(Llm7ProviderFactory));
+        registry.register_factory(Arc::new(KlusterAIProviderFactory));
+        registry.register_factory(Arc::new(HuggingFaceProviderFactory));
+        registry.register_factory(Arc::new(ZhipuProviderFactory));
+
+        let types = registry.list_provider_types();
+        assert_eq!(types.len(), 7);
+
+        let type_names: Vec<&str> = types.iter().map(|t| t.provider_type.as_str()).collect();
+        assert!(type_names.contains(&"github_models"));
+        assert!(type_names.contains(&"nvidia_nim"));
+        assert!(type_names.contains(&"cloudflare_ai"));
+        assert!(type_names.contains(&"llm7"));
+        assert!(type_names.contains(&"kluster_ai"));
+        assert!(type_names.contains(&"huggingface"));
+        assert!(type_names.contains(&"zhipu"));
+
+        // All should have notes
+        for t in &types {
+            assert!(
+                t.free_tier_notes.is_some(),
+                "{} should have notes in ProviderTypeInfo",
+                t.provider_type
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_provider_type_info_serialization_with_notes() {
+        use crate::factory::GeminiProviderFactory;
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(GeminiProviderFactory));
+        let types = registry.list_provider_types();
+
+        // Should serialize without error
+        let json = serde_json::to_string(&types[0]).unwrap();
+        assert!(json.contains("free_tier_notes"));
+        assert!(json.contains("Flash models"));
+
+        // Should deserialize back
+        let deserialized: ProviderTypeInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.free_tier_notes, types[0].free_tier_notes);
+    }
+
+    #[test]
+    fn test_provider_type_info_deserialize_without_notes() {
+        // Backward compat: old JSON without free_tier_notes should deserialize
+        let json = r#"{
+            "provider_type": "test",
+            "display_name": "Test",
+            "category": "local",
+            "description": "Test provider",
+            "setup_parameters": [],
+            "default_free_tier": {"kind": "none"},
+            "free_tier_short_text": "",
+            "free_tier_long_text": "No free tier."
+        }"#;
+        let info: ProviderTypeInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.free_tier_notes, None);
+    }
 }

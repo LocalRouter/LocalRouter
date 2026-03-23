@@ -2466,4 +2466,596 @@ mod tests {
         let json = serde_json::to_string(&ParameterType::BaseUrl).unwrap();
         assert_eq!(json, "\"base_url\"");
     }
+
+    // ==================== Updated defaults tests ====================
+
+    #[test]
+    fn test_gemini_free_tier_rpd_updated() {
+        let factory = GeminiProviderFactory;
+        match factory.default_free_tier() {
+            FreeTierKind::RateLimitedFree {
+                max_rpm,
+                max_rpd,
+                max_tpm,
+                ..
+            } => {
+                assert_eq!(max_rpm, 10);
+                assert_eq!(max_rpd, 20); // Was 250, now 20 for conservative Pro-tier limit
+                assert_eq!(max_tpm, 250_000);
+            }
+            other => panic!("Expected RateLimitedFree, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_gemini_has_free_tier_notes() {
+        let factory = GeminiProviderFactory;
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains("Flash models"));
+        assert!(notes.unwrap().contains("Pro models"));
+    }
+
+    #[test]
+    fn test_openrouter_free_tier_is_free_models_only() {
+        let factory = OpenRouterProviderFactory;
+        match factory.default_free_tier() {
+            FreeTierKind::FreeModelsOnly {
+                free_model_patterns,
+                max_rpm,
+            } => {
+                assert_eq!(max_rpm, 20);
+                assert_eq!(free_model_patterns, vec![":free".to_string()]);
+            }
+            other => panic!("Expected FreeModelsOnly, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_openrouter_has_free_tier_notes() {
+        let factory = OpenRouterProviderFactory;
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains(":free"));
+        assert!(notes.unwrap().contains("BYOK"));
+    }
+
+    // ==================== Existing provider notes tests ====================
+
+    #[test]
+    fn test_groq_has_free_tier_notes() {
+        let factory = GroqProviderFactory;
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains("vary by model"));
+    }
+
+    #[test]
+    fn test_mistral_has_free_tier_notes() {
+        let factory = MistralProviderFactory;
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains("experiment plan"));
+    }
+
+    #[test]
+    fn test_cohere_has_free_tier_notes() {
+        let factory = CohereProviderFactory;
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains("Trial API keys"));
+    }
+
+    #[test]
+    fn test_togetherai_has_free_tier_notes() {
+        let factory = TogetherAIProviderFactory;
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains("3 RPM"));
+    }
+
+    #[test]
+    fn test_perplexity_has_free_tier_notes() {
+        let factory = PerplexityProviderFactory;
+        assert_eq!(factory.default_free_tier(), FreeTierKind::None);
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains("No free API tier"));
+    }
+
+    #[test]
+    fn test_deepinfra_has_free_tier_notes() {
+        let factory = DeepInfraProviderFactory;
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains("$5 monthly"));
+    }
+
+    #[test]
+    fn test_cerebras_has_free_tier_notes() {
+        let factory = CerebrasProviderFactory;
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains("Developer tier"));
+    }
+
+    #[test]
+    fn test_xai_has_free_tier_notes() {
+        let factory = XAIProviderFactory;
+        let notes = factory.free_tier_notes();
+        assert!(notes.is_some());
+        assert!(notes.unwrap().contains("$25 one-time"));
+    }
+
+    #[test]
+    fn test_local_providers_have_no_notes() {
+        assert!(OllamaProviderFactory.free_tier_notes().is_none());
+        assert!(LMStudioProviderFactory.free_tier_notes().is_none());
+        assert!(JanProviderFactory.free_tier_notes().is_none());
+        assert!(GPT4AllProviderFactory.free_tier_notes().is_none());
+        assert!(LocalAIProviderFactory.free_tier_notes().is_none());
+        assert!(LlamaCppProviderFactory.free_tier_notes().is_none());
+    }
+
+    // ==================== New provider factory tests ====================
+
+    // --- GitHub Models ---
+
+    #[test]
+    fn test_github_models_factory_metadata() {
+        let factory = GitHubModelsProviderFactory;
+        assert_eq!(factory.provider_type(), "github_models");
+        assert_eq!(factory.display_name(), "GitHub Models");
+        assert_eq!(factory.category(), ProviderCategory::ThirdParty);
+        assert!(factory.catalog_provider_id().is_none());
+    }
+
+    #[test]
+    fn test_github_models_free_tier() {
+        let factory = GitHubModelsProviderFactory;
+        match factory.default_free_tier() {
+            FreeTierKind::RateLimitedFree {
+                max_rpm, max_rpd, ..
+            } => {
+                assert_eq!(max_rpm, 10);
+                assert_eq!(max_rpd, 50);
+            }
+            other => panic!("Expected RateLimitedFree, got {:?}", other),
+        }
+        assert!(factory.free_tier_notes().is_some());
+        assert!(factory
+            .free_tier_notes()
+            .unwrap()
+            .contains("GitHub Personal Access Token"));
+    }
+
+    #[test]
+    fn test_github_models_create_success() {
+        let factory = GitHubModelsProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "ghp_test123".to_string());
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "github_models");
+    }
+
+    #[test]
+    fn test_github_models_validate_missing_key() {
+        let factory = GitHubModelsProviderFactory;
+        let config = HashMap::new();
+        assert!(factory.validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_github_models_setup_params() {
+        let factory = GitHubModelsProviderFactory;
+        let params = factory.setup_parameters();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].key, "api_key");
+        assert!(params[0].required);
+        assert!(params[0].sensitive);
+    }
+
+    // --- NVIDIA NIM ---
+
+    #[test]
+    fn test_nvidia_nim_factory_metadata() {
+        let factory = NvidiaNimProviderFactory;
+        assert_eq!(factory.provider_type(), "nvidia_nim");
+        assert_eq!(factory.display_name(), "NVIDIA NIM");
+        assert_eq!(factory.category(), ProviderCategory::ThirdParty);
+        assert!(factory.catalog_provider_id().is_none());
+    }
+
+    #[test]
+    fn test_nvidia_nim_free_tier() {
+        let factory = NvidiaNimProviderFactory;
+        match factory.default_free_tier() {
+            FreeTierKind::RateLimitedFree { max_rpm, .. } => {
+                assert_eq!(max_rpm, 40);
+            }
+            other => panic!("Expected RateLimitedFree, got {:?}", other),
+        }
+        assert!(factory.free_tier_notes().unwrap().contains("40 RPM"));
+    }
+
+    #[test]
+    fn test_nvidia_nim_create_success() {
+        let factory = NvidiaNimProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "nvapi-test123".to_string());
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "nvidia_nim");
+    }
+
+    #[test]
+    fn test_nvidia_nim_validate_missing_key() {
+        let factory = NvidiaNimProviderFactory;
+        let config = HashMap::new();
+        assert!(factory.validate_config(&config).is_err());
+    }
+
+    // --- Cloudflare Workers AI ---
+
+    #[test]
+    fn test_cloudflare_ai_factory_metadata() {
+        let factory = CloudflareAIProviderFactory;
+        assert_eq!(factory.provider_type(), "cloudflare_ai");
+        assert_eq!(factory.display_name(), "Cloudflare Workers AI");
+        assert_eq!(factory.category(), ProviderCategory::ThirdParty);
+        assert!(factory.catalog_provider_id().is_none());
+    }
+
+    #[test]
+    fn test_cloudflare_ai_free_tier() {
+        let factory = CloudflareAIProviderFactory;
+        // Cloudflare uses neurons not RPM/RPD, so all limits are 0
+        match factory.default_free_tier() {
+            FreeTierKind::RateLimitedFree {
+                max_rpm,
+                max_rpd,
+                max_tpm,
+                max_tpd,
+                ..
+            } => {
+                assert_eq!(max_rpm, 0);
+                assert_eq!(max_rpd, 0);
+                assert_eq!(max_tpm, 0);
+                assert_eq!(max_tpd, 0);
+            }
+            other => panic!("Expected RateLimitedFree, got {:?}", other),
+        }
+        assert!(factory.free_tier_notes().unwrap().contains("neurons"));
+    }
+
+    #[test]
+    fn test_cloudflare_ai_requires_both_params() {
+        let factory = CloudflareAIProviderFactory;
+        let params = factory.setup_parameters();
+        assert_eq!(params.len(), 2);
+        assert!(params.iter().all(|p| p.required));
+
+        // Missing both
+        let config = HashMap::new();
+        assert!(factory.validate_config(&config).is_err());
+
+        // Missing base_url
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "test".to_string());
+        assert!(factory.validate_config(&config).is_err());
+
+        // Missing api_key
+        let mut config = HashMap::new();
+        config.insert(
+            "base_url".to_string(),
+            "https://api.cloudflare.com/client/v4/accounts/123/ai/v1".to_string(),
+        );
+        assert!(factory.validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_cloudflare_ai_rejects_http_base_url() {
+        let factory = CloudflareAIProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "test".to_string());
+        config.insert(
+            "base_url".to_string(),
+            "http://insecure.example.com".to_string(),
+        );
+        assert!(factory.validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_cloudflare_ai_create_success() {
+        let factory = CloudflareAIProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "cf-test123".to_string());
+        config.insert(
+            "base_url".to_string(),
+            "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1".to_string(),
+        );
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "cloudflare_ai");
+    }
+
+    // --- LLM7.io ---
+
+    #[test]
+    fn test_llm7_factory_metadata() {
+        let factory = Llm7ProviderFactory;
+        assert_eq!(factory.provider_type(), "llm7");
+        assert_eq!(factory.display_name(), "LLM7.io");
+        assert_eq!(factory.category(), ProviderCategory::ThirdParty);
+        assert!(factory.catalog_provider_id().is_none());
+    }
+
+    #[test]
+    fn test_llm7_free_tier() {
+        let factory = Llm7ProviderFactory;
+        match factory.default_free_tier() {
+            FreeTierKind::RateLimitedFree { max_rpm, .. } => {
+                assert_eq!(max_rpm, 30);
+            }
+            other => panic!("Expected RateLimitedFree, got {:?}", other),
+        }
+        assert!(factory
+            .free_tier_notes()
+            .unwrap()
+            .contains("120 RPM with token"));
+    }
+
+    #[test]
+    fn test_llm7_api_key_is_optional() {
+        let factory = Llm7ProviderFactory;
+        let params = factory.setup_parameters();
+        assert_eq!(params.len(), 1);
+        assert!(!params[0].required); // API key is optional
+        assert!(params[0].sensitive);
+
+        // Should create successfully without API key
+        let config = HashMap::new();
+        assert!(factory.validate_config(&config).is_ok());
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "llm7");
+    }
+
+    #[test]
+    fn test_llm7_create_with_optional_key() {
+        let factory = Llm7ProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "llm7-token".to_string());
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+    }
+
+    // --- Kluster AI ---
+
+    #[test]
+    fn test_kluster_ai_factory_metadata() {
+        let factory = KlusterAIProviderFactory;
+        assert_eq!(factory.provider_type(), "kluster_ai");
+        assert_eq!(factory.display_name(), "Kluster AI");
+        assert_eq!(factory.category(), ProviderCategory::ThirdParty);
+        assert!(factory.catalog_provider_id().is_none());
+    }
+
+    #[test]
+    fn test_kluster_ai_free_tier() {
+        let factory = KlusterAIProviderFactory;
+        match factory.default_free_tier() {
+            FreeTierKind::RateLimitedFree { max_rpm, .. } => {
+                assert_eq!(max_rpm, 30);
+            }
+            other => panic!("Expected RateLimitedFree, got {:?}", other),
+        }
+        assert!(factory.free_tier_notes().unwrap().contains("undocumented"));
+    }
+
+    #[test]
+    fn test_kluster_ai_create_success() {
+        let factory = KlusterAIProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "kluster-test".to_string());
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "kluster_ai");
+    }
+
+    #[test]
+    fn test_kluster_ai_validate_missing_key() {
+        let factory = KlusterAIProviderFactory;
+        let config = HashMap::new();
+        assert!(factory.validate_config(&config).is_err());
+    }
+
+    // --- Hugging Face ---
+
+    #[test]
+    fn test_huggingface_factory_metadata() {
+        let factory = HuggingFaceProviderFactory;
+        assert_eq!(factory.provider_type(), "huggingface");
+        assert_eq!(factory.display_name(), "Hugging Face");
+        assert_eq!(factory.category(), ProviderCategory::ThirdParty);
+        assert!(factory.catalog_provider_id().is_none());
+    }
+
+    #[test]
+    fn test_huggingface_free_tier() {
+        let factory = HuggingFaceProviderFactory;
+        match factory.default_free_tier() {
+            FreeTierKind::CreditBased {
+                budget_usd,
+                reset_period,
+                ..
+            } => {
+                assert!((budget_usd - 0.10).abs() < f64::EPSILON);
+                assert_eq!(reset_period, lr_config::FreeTierResetPeriod::Monthly);
+            }
+            other => panic!("Expected CreditBased, got {:?}", other),
+        }
+        assert!(factory.free_tier_notes().unwrap().contains("$0.10/month"));
+        assert!(factory.free_tier_notes().unwrap().contains("PRO users"));
+    }
+
+    #[test]
+    fn test_huggingface_create_success() {
+        let factory = HuggingFaceProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "hf_test123".to_string());
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "huggingface");
+    }
+
+    #[test]
+    fn test_huggingface_validate_missing_key() {
+        let factory = HuggingFaceProviderFactory;
+        let config = HashMap::new();
+        assert!(factory.validate_config(&config).is_err());
+    }
+
+    // --- Zhipu AI ---
+
+    #[test]
+    fn test_zhipu_factory_metadata() {
+        let factory = ZhipuProviderFactory;
+        assert_eq!(factory.provider_type(), "zhipu");
+        assert_eq!(factory.display_name(), "Zhipu AI");
+        assert_eq!(factory.category(), ProviderCategory::FirstParty);
+        assert!(factory.catalog_provider_id().is_none());
+    }
+
+    #[test]
+    fn test_zhipu_free_tier() {
+        let factory = ZhipuProviderFactory;
+        // Undocumented limits, all zero
+        match factory.default_free_tier() {
+            FreeTierKind::RateLimitedFree {
+                max_rpm,
+                max_rpd,
+                max_tpm,
+                max_tpd,
+                ..
+            } => {
+                assert_eq!(max_rpm, 0);
+                assert_eq!(max_rpd, 0);
+                assert_eq!(max_tpm, 0);
+                assert_eq!(max_tpd, 0);
+            }
+            other => panic!("Expected RateLimitedFree, got {:?}", other),
+        }
+        assert!(factory.free_tier_notes().unwrap().contains("GLM"));
+        assert!(factory.free_tier_notes().unwrap().contains("Chinese"));
+    }
+
+    #[test]
+    fn test_zhipu_create_success() {
+        let factory = ZhipuProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "zhipu-test123".to_string());
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "zhipu");
+    }
+
+    #[test]
+    fn test_zhipu_validate_missing_key() {
+        let factory = ZhipuProviderFactory;
+        let config = HashMap::new();
+        assert!(factory.validate_config(&config).is_err());
+    }
+
+    // ==================== Cross-cutting tests ====================
+
+    #[test]
+    fn test_all_new_providers_have_notes() {
+        let factories: Vec<Box<dyn ProviderFactory>> = vec![
+            Box::new(GitHubModelsProviderFactory),
+            Box::new(NvidiaNimProviderFactory),
+            Box::new(CloudflareAIProviderFactory),
+            Box::new(Llm7ProviderFactory),
+            Box::new(KlusterAIProviderFactory),
+            Box::new(HuggingFaceProviderFactory),
+            Box::new(ZhipuProviderFactory),
+        ];
+        for factory in &factories {
+            assert!(
+                factory.free_tier_notes().is_some(),
+                "{} should have free tier notes",
+                factory.provider_type()
+            );
+            assert!(
+                !factory.free_tier_notes().unwrap().is_empty(),
+                "{} notes should not be empty",
+                factory.provider_type()
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_new_providers_have_no_catalog() {
+        let factories: Vec<Box<dyn ProviderFactory>> = vec![
+            Box::new(GitHubModelsProviderFactory),
+            Box::new(NvidiaNimProviderFactory),
+            Box::new(CloudflareAIProviderFactory),
+            Box::new(Llm7ProviderFactory),
+            Box::new(KlusterAIProviderFactory),
+            Box::new(HuggingFaceProviderFactory),
+            Box::new(ZhipuProviderFactory),
+        ];
+        for factory in &factories {
+            assert!(
+                factory.catalog_provider_id().is_none(),
+                "{} should have no catalog mapping",
+                factory.provider_type()
+            );
+        }
+    }
+
+    #[test]
+    fn test_new_provider_type_strings_are_unique() {
+        let factories: Vec<Box<dyn ProviderFactory>> = vec![
+            Box::new(GitHubModelsProviderFactory),
+            Box::new(NvidiaNimProviderFactory),
+            Box::new(CloudflareAIProviderFactory),
+            Box::new(Llm7ProviderFactory),
+            Box::new(KlusterAIProviderFactory),
+            Box::new(HuggingFaceProviderFactory),
+            Box::new(ZhipuProviderFactory),
+        ];
+        let types: Vec<&str> = factories.iter().map(|f| f.provider_type()).collect();
+        let mut deduped = types.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(
+            types.len(),
+            deduped.len(),
+            "Provider type strings must be unique"
+        );
+    }
+
+    #[test]
+    fn test_new_providers_use_default_model_list_source() {
+        // All new providers should use the default (ApiWithCatalogFallback)
+        let factories: Vec<Box<dyn ProviderFactory>> = vec![
+            Box::new(GitHubModelsProviderFactory),
+            Box::new(NvidiaNimProviderFactory),
+            Box::new(CloudflareAIProviderFactory),
+            Box::new(Llm7ProviderFactory),
+            Box::new(KlusterAIProviderFactory),
+            Box::new(HuggingFaceProviderFactory),
+            Box::new(ZhipuProviderFactory),
+        ];
+        for factory in &factories {
+            assert_eq!(
+                factory.model_list_source(),
+                ModelListSource::ApiWithCatalogFallback,
+                "{} should use default model list source",
+                factory.provider_type()
+            );
+        }
+    }
 }

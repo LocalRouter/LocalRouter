@@ -4430,4 +4430,66 @@ sampling_permission: "off"
     fn test_client_mode_defaults() {
         assert_eq!(ClientMode::default(), ClientMode::Both);
     }
+
+    #[test]
+    fn test_new_provider_type_serde_roundtrip() {
+        let variants = vec![
+            (ProviderType::GitHubModels, "github_models"),
+            (ProviderType::NvidiaNim, "nvidia_nim"),
+            (ProviderType::CloudflareAI, "cloudflare_ai"),
+            (ProviderType::Llm7, "llm7"),
+            (ProviderType::KlusterAI, "kluster_ai"),
+            (ProviderType::HuggingFace, "huggingface"),
+            (ProviderType::Zhipu, "zhipu"),
+        ];
+        for (variant, expected_str) in &variants {
+            // Serialize to JSON string
+            let json = serde_json::to_string(variant).unwrap();
+            assert_eq!(
+                json,
+                format!("\"{}\"", expected_str),
+                "Serialize {:?}",
+                variant
+            );
+
+            // Deserialize back
+            let deserialized: ProviderType = serde_json::from_str(&json).unwrap();
+            assert_eq!(&deserialized, variant, "Roundtrip {:?}", variant);
+        }
+    }
+
+    #[test]
+    fn test_new_provider_type_yaml_roundtrip() {
+        let variants = vec![
+            ProviderType::GitHubModels,
+            ProviderType::NvidiaNim,
+            ProviderType::CloudflareAI,
+            ProviderType::Llm7,
+            ProviderType::KlusterAI,
+            ProviderType::HuggingFace,
+            ProviderType::Zhipu,
+        ];
+        for variant in &variants {
+            let yaml = serde_yaml::to_string(variant).unwrap();
+            let deserialized: ProviderType = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(&deserialized, variant, "YAML roundtrip {:?}", variant);
+        }
+    }
+
+    #[test]
+    fn test_provider_config_with_new_types() {
+        // Ensure ProviderConfig with new provider types serializes/deserializes
+        let config = ProviderConfig {
+            name: "my-github-models".to_string(),
+            provider_type: ProviderType::GitHubModels,
+            enabled: true,
+            provider_config: Some(serde_json::json!({"api_key": "ghp_test"})),
+            api_key_ref: None,
+            free_tier: None,
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("github_models"));
+        let deserialized: ProviderConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(deserialized.provider_type, ProviderType::GitHubModels);
+    }
 }
