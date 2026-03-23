@@ -41,6 +41,8 @@ pub trait CompactionLlm: Send + Sync + 'static {
 pub enum CompactionOutcome {
     /// Session was archived without LLM summarization.
     ArchivedOnly,
+    /// LLM responded but returned an empty summary — metadata preserved for debugging.
+    ArchivedEmptyResponse(CompactionResult),
     /// Session was archived and an LLM summary was generated.
     ArchivedAndSummarized(CompactionResult),
 }
@@ -128,13 +130,15 @@ pub async fn compact_session(
 
         match llm.summarize(model, &content).await {
             Ok(result) => {
-                // Guard against empty summaries
+                // Guard against empty summaries — preserve metadata for debugging
                 if result.summary.trim().is_empty() {
                     tracing::warn!(
-                        "LLM returned empty summary for session {}, keeping raw archive",
+                        "LLM returned empty summary for session {}, keeping raw archive (output_tokens={}, reasoning_tokens={:?})",
                         &session_id[..8.min(session_id.len())],
+                        result.output_tokens,
+                        result.reasoning_tokens,
                     );
-                    return Ok(CompactionOutcome::ArchivedOnly);
+                    return Ok(CompactionOutcome::ArchivedEmptyResponse(result));
                 }
 
                 let summary_path = archive_dir.join(format!("{}-summary.md", session_id));

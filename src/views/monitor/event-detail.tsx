@@ -1292,10 +1292,10 @@ function CompactionResponseContent({ data }: { data: EventData }) {
       </table>
 
       {data.summary_path && (
-        <ArchiveFileField
-          label="Summary"
-          path={data.summary_path as string}
-        />
+        <div className="text-xs">
+          <span className="text-muted-foreground">Summary: </span>
+          <code className="font-mono text-[11px]">{data.summary_path as string}</code>
+        </div>
       )}
 
       <Tabs defaultValue={data.content_preview ? 'content' : 'body'}>

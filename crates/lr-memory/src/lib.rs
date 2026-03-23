@@ -416,6 +416,21 @@ impl MemoryService {
                                         let raw_label = format!("session/{}", session_id);
                                         let _ = store.delete(&raw_label);
                                     }
+                                    compaction::CompactionOutcome::ArchivedEmptyResponse(
+                                        result,
+                                    ) => {
+                                        // LLM responded but summary was empty — preserve metadata for debugging
+                                        if let Some(event_id) = &monitor_event_id {
+                                            error_compaction_event_with_result(
+                                                &service.monitor_store,
+                                                event_id,
+                                                "LLM returned empty summary",
+                                                &result,
+                                                transcript_bytes,
+                                                started.elapsed().as_millis() as u64,
+                                            );
+                                        }
+                                    }
                                     compaction::CompactionOutcome::ArchivedOnly => {
                                         // Raw transcript stays indexed as-is.
                                         // If we expected summarization, mark as error
@@ -623,6 +638,18 @@ impl MemoryService {
                                 // Remove raw transcript from index
                                 let raw_label = format!("session/{}", session_id);
                                 let _ = store.delete(&raw_label);
+                            }
+                            compaction::CompactionOutcome::ArchivedEmptyResponse(result) => {
+                                if let Some(event_id) = &monitor_event_id {
+                                    error_compaction_event_with_result(
+                                        &self.monitor_store,
+                                        event_id,
+                                        "LLM returned empty summary",
+                                        &result,
+                                        transcript_bytes,
+                                        started.elapsed().as_millis() as u64,
+                                    );
+                                }
                             }
                             compaction::CompactionOutcome::ArchivedOnly => {
                                 // Raw transcript stays indexed as-is.
@@ -1051,6 +1078,55 @@ fn error_compaction_event(
         event.duration_ms = Some(duration_ms);
         if let lr_monitor::MonitorEventData::MemoryCompaction { error, .. } = &mut event.data {
             *error = Some(error_msg.to_string());
+        }
+    });
+}
+
+/// Update a MemoryCompaction monitor event to Error, preserving the LLM response metadata.
+///
+/// Used when the LLM responded but the summary was empty — we still want the full
+/// request/response bodies and token counts for debugging.
+fn error_compaction_event_with_result(
+    monitor_store: &RwLock<Option<Arc<MonitorEventStore>>>,
+    event_id: &str,
+    error_msg: &str,
+    result: &compaction::CompactionResult,
+    transcript_bytes: u64,
+    duration_ms: u64,
+) {
+    let Some(store) = monitor_store.read().clone() else {
+        return;
+    };
+    let ratio = if transcript_bytes > 0 {
+        (1.0 - (result.summary.len() as f64 / transcript_bytes as f64)) * 100.0
+    } else {
+        0.0
+    };
+    store.update(event_id, |event| {
+        event.status = lr_monitor::EventStatus::Error;
+        event.duration_ms = Some(duration_ms);
+        if let lr_monitor::MonitorEventData::MemoryCompaction {
+            summary_bytes: sb,
+            compression_ratio: cr,
+            input_tokens: it,
+            output_tokens: ot,
+            reasoning_tokens: rt,
+            finish_reason: fr,
+            request_body: req,
+            response_body: resp,
+            error: err,
+            ..
+        } = &mut event.data
+        {
+            *sb = Some(result.summary.len() as u64);
+            *cr = Some(ratio);
+            *it = Some(result.input_tokens as u64);
+            *ot = Some(result.output_tokens as u64);
+            *rt = result.reasoning_tokens.map(|t| t as u64);
+            *fr = result.finish_reason.clone();
+            *req = result.request_body.clone();
+            *resp = result.response_body.clone();
+            *err = Some(error_msg.to_string());
         }
     });
 }
