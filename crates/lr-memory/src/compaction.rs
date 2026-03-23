@@ -30,8 +30,9 @@ pub trait CompactionLlm: Send + Sync + 'static {
     /// Summarize a conversation transcript using the given model.
     ///
     /// `model` is in "provider/model" format (e.g., "anthropic/claude-haiku-4-5-20251001").
+    /// `thinking` controls whether reasoning/thinking is allowed (false = disable).
     /// Returns the summary text along with full response metadata.
-    async fn summarize(&self, model: &str, transcript: &str)
+    async fn summarize(&self, model: &str, transcript: &str, thinking: bool)
         -> Result<CompactionResult, String>;
 }
 
@@ -64,8 +65,9 @@ async fn summarize_and_write(
     content: &str,
     summary_path: &Path,
     short_id: &str,
+    thinking: bool,
 ) -> SummarizeOutcome {
-    let result = match llm.summarize(model, content).await {
+    let result = match llm.summarize(model, content, thinking).await {
         Ok(r) => r,
         Err(e) => return SummarizeOutcome::Failed(e),
     };
@@ -131,6 +133,7 @@ pub async fn compact_session(
     archive_dir: &Path,
     llm: Option<&dyn CompactionLlm>,
     model: Option<&str>,
+    thinking: bool,
 ) -> Result<CompactionOutcome, String> {
     let file_name = session_path
         .file_name()
@@ -171,7 +174,7 @@ pub async fn compact_session(
         }
 
         let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
-        match summarize_and_write(llm, model, &content, &summary_path, short_id).await {
+        match summarize_and_write(llm, model, &content, &summary_path, short_id, thinking).await {
             SummarizeOutcome::Written(result) => {
                 return Ok(CompactionOutcome::ArchivedAndSummarized(result));
             }
@@ -209,6 +212,7 @@ pub async fn recompact_session(
     archive_dir: &Path,
     llm: &dyn CompactionLlm,
     model: &str,
+    thinking: bool,
 ) -> Result<RecompactOutcome, String> {
     let short_id = &session_id[..8.min(session_id.len())];
     let raw_path = archive_dir.join(format!("{}.md", session_id));
@@ -226,7 +230,7 @@ pub async fn recompact_session(
     }
 
     let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
-    match summarize_and_write(llm, model, &content, &summary_path, short_id).await {
+    match summarize_and_write(llm, model, &content, &summary_path, short_id, thinking).await {
         SummarizeOutcome::Written(result) => Ok(RecompactOutcome::Summarized(result)),
         SummarizeOutcome::Empty(result) => Ok(RecompactOutcome::EmptyResponse(result)),
         SummarizeOutcome::Failed(e) => Err(e),

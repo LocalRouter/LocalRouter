@@ -26,6 +26,7 @@ import type { MemoryConfig, UpdateMemoryConfigParams, ClientFeatureStatus, GetFe
 const defaultConfig: MemoryConfig = {
   compaction_enabled: false,
   compaction_model: null,
+  compaction_thinking: false,
   search_top_k: 5,
   session_inactivity_minutes: 180,
   max_session_minutes: 480,
@@ -453,6 +454,21 @@ export function MemoryView({ activeSubTab, onTabChange }: MemoryViewProps) {
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  {/* Thinking toggle */}
+                  <div className="flex items-center justify-between pt-2 border-t">
+                    <div>
+                      <Label className="text-sm">Thinking</Label>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Allow reasoning models to use thinking tokens. Off by default — reasoning models may exhaust their token budget on thinking, producing empty summaries.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={config.compaction_thinking}
+                      onCheckedChange={(checked) => saveConfig({ ...config, compaction_thinking: checked })}
+                      disabled={!config.compaction_enabled}
+                    />
                   </div>
                 </div>
               </CardContent>

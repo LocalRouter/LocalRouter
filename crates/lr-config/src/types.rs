@@ -2378,6 +2378,13 @@ pub struct MemoryConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_model: Option<String>,
 
+    /// Allow the compaction model to use thinking/reasoning (default: false).
+    /// When false, sends think=false to providers that support it (e.g., Ollama).
+    /// Reasoning models may spend their entire token budget on thinking, leaving
+    /// the summary empty, so this is off by default.
+    #[serde(default)]
+    pub compaction_thinking: bool,
+
     /// Number of search results to return (default: 5)
     #[serde(default = "default_memory_top_k")]
     pub search_top_k: usize,
@@ -2413,6 +2420,7 @@ impl Default for MemoryConfig {
         Self {
             compaction_enabled: false,
             compaction_model: None,
+            compaction_thinking: false,
             search_top_k: default_memory_top_k(),
             session_inactivity_minutes: default_session_inactivity_minutes(),
             max_session_minutes: default_max_session_minutes(),

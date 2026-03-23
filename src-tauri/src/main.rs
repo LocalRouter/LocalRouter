@@ -41,6 +41,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
         &self,
         model: &str,
         transcript: &str,
+        thinking: bool,
     ) -> Result<lr_memory::compaction::CompactionResult, String> {
         use lr_providers::{ChatMessage, ChatMessageContent, CompletionRequest};
 
@@ -91,7 +92,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
             modalities: None,
             audio: None,
             prediction: None,
-            reasoning_effort: Some("none".to_string()),
+            reasoning_effort: if thinking { None } else { Some("none".to_string()) },
             pre_computed_routing: None,
         };
 

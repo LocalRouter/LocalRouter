@@ -2737,6 +2737,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_memory_config': () => ({
     compaction_enabled: false,
     compaction_model: null,
+    compaction_thinking: false,
     search_top_k: 5,
     session_inactivity_minutes: 180,
     max_session_minutes: 480,

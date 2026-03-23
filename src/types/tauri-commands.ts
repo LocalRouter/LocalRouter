@@ -3217,6 +3217,8 @@ export interface MemoryConfig {
   compaction_enabled: boolean
   /** Compaction LLM model routed through LocalRouter (e.g., "anthropic/claude-haiku-4-5-20251001") */
   compaction_model: string | null
+  /** Allow the compaction model to use thinking/reasoning (default: false) */
+  compaction_thinking: boolean
   search_top_k: number
   session_inactivity_minutes: number
   max_session_minutes: number

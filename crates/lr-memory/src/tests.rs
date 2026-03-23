@@ -656,6 +656,7 @@ Sure! Here are the details...
             &self,
             _model: &str,
             _transcript: &str,
+            _thinking: bool,
         ) -> Result<crate::compaction::CompactionResult, String> {
             Ok(crate::compaction::CompactionResult {
                 summary: self.summary.clone(),
@@ -678,6 +679,7 @@ Sure! Here are the details...
             &self,
             _model: &str,
             _transcript: &str,
+            _thinking: bool,
         ) -> Result<crate::compaction::CompactionResult, String> {
             Err("LLM unavailable".to_string())
         }
@@ -700,6 +702,7 @@ Sure! Here are the details...
             &archive_dir,
             Some(&llm),
             Some("test/model"),
+            false,
         )
         .await
         .unwrap();
@@ -728,7 +731,7 @@ Sure! Here are the details...
         let session_path = sessions_dir.join("test-session.md");
         std::fs::write(&session_path, "conversation content").unwrap();
 
-        let outcome = crate::compaction::compact_session(&session_path, &archive_dir, None, None)
+        let outcome = crate::compaction::compact_session(&session_path, &archive_dir, None, None, false)
             .await
             .unwrap();
 
@@ -754,6 +757,7 @@ Sure! Here are the details...
             &archive_dir,
             Some(&llm),
             Some("test/model"),
+            false,
         )
         .await
         .unwrap();
@@ -774,7 +778,7 @@ Sure! Here are the details...
         std::fs::write(archive_dir.join("abc123.md"), "original transcript").unwrap();
 
         let llm = MockLlm::new("# Recompacted summary");
-        crate::compaction::recompact_session("abc123", &archive_dir, &llm, "test/model")
+        crate::compaction::recompact_session("abc123", &archive_dir, &llm, "test/model", false)
             .await
             .unwrap();
 
@@ -796,7 +800,7 @@ Sure! Here are the details...
         std::fs::write(archive_dir.join("abc123-summary.md"), "old summary").unwrap();
 
         let llm = MockLlm::new("# New summary");
-        crate::compaction::recompact_session("abc123", &archive_dir, &llm, "test/model")
+        crate::compaction::recompact_session("abc123", &archive_dir, &llm, "test/model", false)
             .await
             .unwrap();
 

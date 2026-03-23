@@ -384,6 +384,7 @@ impl MemoryService {
                         &archive_dir,
                         llm_arc.as_deref(),
                         model.as_deref(),
+                        config.compaction_thinking,
                     )
                     .await
                     {
@@ -609,7 +610,7 @@ impl MemoryService {
 
             let started = std::time::Instant::now();
 
-            match compaction::compact_session(path, &archive_dir, llm_arc.as_deref(), model.as_deref()).await {
+            match compaction::compact_session(path, &archive_dir, llm_arc.as_deref(), model.as_deref(), config.compaction_thinking).await {
                 Ok(outcome) => {
                     archived_count += 1;
 
@@ -752,7 +753,7 @@ impl MemoryService {
 
             let started = std::time::Instant::now();
 
-            match compaction::recompact_session(session_id, &archive_dir, llm, &model_str).await {
+            match compaction::recompact_session(session_id, &archive_dir, llm, &model_str, config.compaction_thinking).await {
                 Ok(compaction::RecompactOutcome::Summarized(result)) => {
                     recompacted_count += 1;
 
