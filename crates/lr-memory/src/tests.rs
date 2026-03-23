@@ -652,8 +652,20 @@ Sure! Here are the details...
 
     #[async_trait::async_trait]
     impl crate::compaction::CompactionLlm for MockLlm {
-        async fn summarize(&self, _model: &str, _transcript: &str) -> Result<String, String> {
-            Ok(self.summary.clone())
+        async fn summarize(
+            &self,
+            _model: &str,
+            _transcript: &str,
+        ) -> Result<crate::compaction::CompactionResult, String> {
+            Ok(crate::compaction::CompactionResult {
+                summary: self.summary.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                reasoning_tokens: None,
+                finish_reason: Some("stop".to_string()),
+                request_body: None,
+                response_body: None,
+            })
         }
     }
 
@@ -662,7 +674,11 @@ Sure! Here are the details...
 
     #[async_trait::async_trait]
     impl crate::compaction::CompactionLlm for FailingLlm {
-        async fn summarize(&self, _model: &str, _transcript: &str) -> Result<String, String> {
+        async fn summarize(
+            &self,
+            _model: &str,
+            _transcript: &str,
+        ) -> Result<crate::compaction::CompactionResult, String> {
             Err("LLM unavailable".to_string())
         }
     }
@@ -688,10 +704,10 @@ Sure! Here are the details...
         .await
         .unwrap();
 
-        assert_eq!(
+        assert!(matches!(
             outcome,
-            crate::compaction::CompactionOutcome::ArchivedAndSummarized
-        );
+            crate::compaction::CompactionOutcome::ArchivedAndSummarized(_)
+        ));
         // Raw file moved to archive
         assert!(!session_path.exists());
         assert!(archive_dir.join("test-session.md").exists());
@@ -716,7 +732,7 @@ Sure! Here are the details...
             .await
             .unwrap();
 
-        assert_eq!(outcome, crate::compaction::CompactionOutcome::ArchivedOnly);
+        assert!(matches!(outcome, crate::compaction::CompactionOutcome::ArchivedOnly));
         assert!(archive_dir.join("test-session.md").exists());
         assert!(!archive_dir.join("test-session-summary.md").exists());
     }
@@ -743,7 +759,7 @@ Sure! Here are the details...
         .unwrap();
 
         // Should archive but not summarize
-        assert_eq!(outcome, crate::compaction::CompactionOutcome::ArchivedOnly);
+        assert!(matches!(outcome, crate::compaction::CompactionOutcome::ArchivedOnly));
         assert!(archive_dir.join("test-session.md").exists());
         assert!(!archive_dir.join("test-session-summary.md").exists());
     }

@@ -37,7 +37,11 @@ struct RouterCompactionLlm {
 
 #[async_trait::async_trait]
 impl lr_memory::CompactionLlm for RouterCompactionLlm {
-    async fn summarize(&self, model: &str, transcript: &str) -> Result<String, String> {
+    async fn summarize(
+        &self,
+        model: &str,
+        transcript: &str,
+    ) -> Result<lr_memory::compaction::CompactionResult, String> {
         use lr_providers::{ChatMessage, ChatMessageContent, CompletionRequest};
 
         let request = CompletionRequest {
@@ -91,17 +95,39 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
             pre_computed_routing: None,
         };
 
+        // Serialize request for monitor event observability
+        let request_body = serde_json::to_value(&request).ok();
+
         let response = self
             .router
             .complete("memory-service", request)
             .await
             .map_err(|e| format!("LLM compaction failed: {}", e))?;
 
-        response
+        // Serialize response for monitor event observability
+        let response_body = serde_json::to_value(&response).ok();
+
+        let choice = response
             .choices
             .first()
-            .map(|c| c.message.content.as_text())
-            .ok_or_else(|| "Empty LLM response".to_string())
+            .ok_or_else(|| "Empty LLM response: no choices".to_string())?;
+
+        let summary = choice.message.content.as_text();
+        let reasoning_tokens = response
+            .usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens));
+
+        Ok(lr_memory::compaction::CompactionResult {
+            summary,
+            input_tokens: response.usage.prompt_tokens,
+            output_tokens: response.usage.completion_tokens,
+            reasoning_tokens,
+            finish_reason: choice.finish_reason.clone(),
+            request_body,
+            response_body,
+        })
     }
 }
 
@@ -2120,6 +2146,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::force_compact_memory,
             ui::commands::recompact_memory,
             ui::commands::reindex_client_memory,
+            ui::commands::read_memory_archive_file,
             // Secret Scanning commands
             ui::commands::rebuild_secret_scanner,
             ui::commands::get_secret_scanning_config,

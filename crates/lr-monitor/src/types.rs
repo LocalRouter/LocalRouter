@@ -497,15 +497,35 @@ pub enum MonitorEventData {
         session_id: String,
         model: String,
         transcript_bytes: u64,
+        /// Relative path to archived transcript (e.g., "{client_id}/archive/{uuid}.md")
+        #[serde(skip_serializing_if = "Option::is_none")]
+        transcript_path: Option<String>,
+        /// Full request body JSON (model, messages, params)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_body: Option<serde_json::Value>,
+
         // Response fields (filled on completion)
         #[serde(skip_serializing_if = "Option::is_none")]
         summary_bytes: Option<u64>,
+        /// Relative path to summary file
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary_path: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         compression_ratio: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        request_body: Option<String>,
+        input_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        response_body: Option<String>,
+        output_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
+        /// Full response body JSON
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_body: Option<serde_json::Value>,
+        /// First N chars of summary text
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_preview: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },

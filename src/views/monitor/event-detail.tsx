@@ -4,9 +4,10 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
 import { cn } from '@/lib/utils'
-import { Clock, User, Server, Copy, Check } from 'lucide-react'
+import { Clock, User, Server, Copy, Check, FileText } from 'lucide-react'
 import { useState, useCallback } from 'react'
-import type { MonitorEvent } from '@/types/tauri-commands'
+import { invoke } from '@tauri-apps/api/core'
+import type { MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
 
 interface EventDetailProps {
   event: MonitorEvent | null
@@ -1172,30 +1173,215 @@ function PromptCompressionDetail({ data }: { data: EventData }) {
 }
 
 function MemoryCompactionDetail({ data }: { data: EventData }) {
+  const hasResponse = data.summary_bytes != null || data.response_body != null || data.content_preview != null
+  const hasError = data.error != null
+  const requestBody = data.request_body as Record<string, unknown> | undefined
+  const messages = requestBody?.messages as Array<Record<string, unknown>> | undefined
+
+  return (
+    <Tabs defaultValue="request">
+      <TabsList className="w-full">
+        <TabsTrigger value="request">Request</TabsTrigger>
+        <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
+        <TabsTrigger value="error" disabled={!hasError}>Error</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="request" className="space-y-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Session" value={data.session_id as string} />
+          <Field label="Model" value={data.model as string} />
+          <Field label="Transcript Size" value={`${data.transcript_bytes} bytes`} />
+        </div>
+
+        {data.transcript_path && (
+          <ArchiveFileField
+            label="Transcript"
+            path={data.transcript_path as string}
+          />
+        )}
+
+        <Tabs defaultValue={messages && messages.length > 0 ? 'messages' : 'body'}>
+          <TabsList className={SUB_TABS_LIST}>
+            {messages && messages.length > 0 && (
+              <TabsTrigger value="messages" className={SUB_TAB}>
+                Messages ({messages.length})
+              </TabsTrigger>
+            )}
+            <TabsTrigger value="body" className={SUB_TAB}>Full Body</TabsTrigger>
+          </TabsList>
+
+          {messages && messages.length > 0 && (
+            <TabsContent value="messages">
+              <div className="space-y-1.5">
+                {messages.map((msg, i) => (
+                  <MessageItem key={i} message={msg} />
+                ))}
+              </div>
+            </TabsContent>
+          )}
+
+          <TabsContent value="body">
+            <JsonBlock data={requestBody} />
+          </TabsContent>
+        </Tabs>
+      </TabsContent>
+
+      {hasResponse && (
+        <TabsContent value="response" className="space-y-2">
+          <CompactionResponseContent data={data} />
+        </TabsContent>
+      )}
+
+      {hasError && (
+        <TabsContent value="error">
+          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
+            {data.error as string}
+          </pre>
+        </TabsContent>
+      )}
+    </Tabs>
+  )
+}
+
+function CompactionResponseContent({ data }: { data: EventData }) {
   const summaryBytes = data.summary_bytes as number | undefined
   const ratio = data.compression_ratio as number | undefined
+  const responseBody = data.response_body as Record<string, unknown> | undefined
+
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <Field label="Session" value={data.session_id as string} />
-        <Field label="Model" value={data.model as string} />
-        <Field label="Transcript Size" value={`${data.transcript_bytes} bytes`} />
-        {summaryBytes != null && <Field label="Summary Size" value={`${summaryBytes} bytes`} />}
-        {ratio != null && <Field label="Compression" value={`${ratio.toFixed(1)}% reduction`} />}
-      </div>
-      {data.error && (
-        <div className="text-xs">
-          <span className="font-medium text-destructive">Error: </span>
-          <span className="text-muted-foreground">{data.error as string}</span>
-        </div>
+    <div className="space-y-2">
+      <table className="w-full text-xs">
+        <tbody>
+          {(data.input_tokens != null || data.output_tokens != null) && (
+            <tr className="border-b border-border/30">
+              <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Input</td>
+              <td className="py-0.5 font-medium">{String(data.input_tokens ?? 0)}</td>
+              <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Output</td>
+              <td className="py-0.5 font-medium">{String(data.output_tokens ?? 0)}</td>
+              {summaryBytes != null && (
+                <>
+                  <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Summary</td>
+                  <td className="py-0.5 font-medium">{summaryBytes} bytes</td>
+                </>
+              )}
+            </tr>
+          )}
+          {(data.reasoning_tokens != null && (data.reasoning_tokens as number) > 0) && (
+            <tr className="border-b border-border/30">
+              <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Reasoning</td>
+              <td className="py-0.5 font-medium" colSpan={5}>{String(data.reasoning_tokens)}</td>
+            </tr>
+          )}
+          {(ratio != null || data.finish_reason) && (
+            <tr>
+              {ratio != null && (
+                <>
+                  <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Compression</td>
+                  <td className="py-0.5 font-medium">{ratio.toFixed(1)}%</td>
+                </>
+              )}
+              {data.finish_reason && (
+                <>
+                  <td className="text-muted-foreground py-0.5 pr-2 pl-4 whitespace-nowrap">Finish</td>
+                  <td className="py-0.5 font-medium">{data.finish_reason as string}</td>
+                </>
+              )}
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      {data.summary_path && (
+        <ArchiveFileField
+          label="Summary"
+          path={data.summary_path as string}
+        />
       )}
-      {data.response_body && (
-        <div>
-          <div className="text-xs font-medium mb-1">Summary</div>
-          <pre className="text-xs whitespace-pre-wrap font-mono bg-muted/50 p-2 rounded max-h-64 overflow-y-auto">
-            {data.response_body as string}
-          </pre>
-        </div>
+
+      <Tabs defaultValue={data.content_preview ? 'content' : 'body'}>
+        <TabsList className={SUB_TABS_LIST}>
+          {data.content_preview && (
+            <TabsTrigger value="content" className={SUB_TAB}>Content</TabsTrigger>
+          )}
+          {responseBody && (
+            <TabsTrigger value="body" className={SUB_TAB}>Full Body</TabsTrigger>
+          )}
+        </TabsList>
+
+        {data.content_preview && (
+          <TabsContent value="content">
+            <pre className="text-xs whitespace-pre-wrap font-mono bg-muted/50 p-2 rounded max-h-64 overflow-y-auto">
+              {data.content_preview as string}
+            </pre>
+          </TabsContent>
+        )}
+
+        {responseBody && (
+          <TabsContent value="body">
+            <JsonBlock data={responseBody} />
+          </TabsContent>
+        )}
+      </Tabs>
+    </div>
+  )
+}
+
+/** Displays an archive file path with an inline "Read" button that fetches and shows content. */
+function ArchiveFileField({ label, path }: { label: string; path: string }) {
+  const [content, setContent] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
+
+  // Extract client_id and filename from relative path like "{client_id}/archive/{filename}"
+  const parts = path.split('/')
+  const clientId = parts[0] || ''
+  const filename = parts[parts.length - 1] || ''
+
+  const handleRead = useCallback(async () => {
+    if (content !== null) {
+      setExpanded(!expanded)
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await invoke<string>('read_memory_archive_file', {
+        clientId,
+        filename,
+      } satisfies ReadMemoryArchiveFileParams)
+      setContent(result)
+      setExpanded(true)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [clientId, filename, content, expanded])
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-muted-foreground">{label}:</span>
+        <code className="font-mono text-[11px] truncate flex-1">{path}</code>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-5 px-1.5 text-[10px]"
+          onClick={handleRead}
+          disabled={loading}
+        >
+          <FileText className="h-3 w-3 mr-1" />
+          {loading ? '...' : expanded ? 'Hide' : 'Read'}
+        </Button>
+      </div>
+      {error && (
+        <div className="text-[10px] text-destructive">{error}</div>
+      )}
+      {expanded && content !== null && (
+        <pre className="text-xs whitespace-pre-wrap font-mono bg-muted/50 p-2 rounded max-h-64 overflow-y-auto">
+          {content}
+        </pre>
       )}
     </div>
   )

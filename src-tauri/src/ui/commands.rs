@@ -5168,3 +5168,38 @@ pub async fn reindex_client_memory(
 
     Ok(())
 }
+
+/// Read a file from a client's memory archive directory.
+///
+/// Restricted to the archive directory for security — validates that the filename
+/// contains no path traversal characters.
+#[tauri::command]
+pub async fn read_memory_archive_file(
+    client_id: String,
+    filename: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<String, String> {
+    // Validate filename to prevent path traversal
+    if filename.contains("..")
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains('\0')
+    {
+        return Err("Invalid filename: path traversal not allowed".to_string());
+    }
+
+    let svc = {
+        let guard = state.memory_service.read();
+        guard.clone().ok_or("Memory service not initialized")?
+    };
+
+    let archive_path = svc
+        .memory_dir()
+        .join(&client_id)
+        .join("archive")
+        .join(&filename);
+
+    tokio::fs::read_to_string(&archive_path)
+        .await
+        .map_err(|e| format!("Failed to read archive file '{}': {}", filename, e))
+}

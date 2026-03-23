@@ -2799,6 +2799,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'force_compact_memory': () => null,
   'recompact_memory': () => null,
   'reindex_client_memory': () => null,
+  'read_memory_archive_file': () => '# Demo Archive File\n\nThis is a demo archive file content for the memory compaction feature.',
 
   // ============================================================================
   // GuardRails - LLM-based Safety Models

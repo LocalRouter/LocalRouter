@@ -3267,6 +3267,12 @@ export interface ReindexClientMemoryParams {
   clientId: string
 }
 
+/** Params for read_memory_archive_file */
+export interface ReadMemoryArchiveFileParams {
+  clientId: string
+  filename: string
+}
+
 /** Event payload for memory-compact-progress */
 export interface MemoryCompactProgress {
   client_id: string

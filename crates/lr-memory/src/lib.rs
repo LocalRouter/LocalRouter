@@ -352,6 +352,16 @@ impl MemoryService {
                         .map(|m| m.len())
                         .unwrap_or(0);
 
+                    // Compute file paths for monitor event
+                    let transcript_rel_path = format!(
+                        "{}/archive/{}.md",
+                        &client_id, session_id
+                    );
+                    let summary_rel_path = format!(
+                        "{}/archive/{}-summary.md",
+                        &client_id, session_id
+                    );
+
                     // Emit monitor event if LLM compaction will happen
                     let monitor_event_id = if model.is_some() {
                         emit_compaction_event(
@@ -360,6 +370,7 @@ impl MemoryService {
                             model.as_deref().unwrap_or(""),
                             transcript_bytes,
                             &client_id,
+                            Some(&transcript_rel_path),
                         )
                     } else {
                         None
@@ -380,40 +391,27 @@ impl MemoryService {
                             // Update FTS5 index based on outcome
                             if let Ok(store) = service.get_or_create_store(&client_id) {
                                 match outcome {
-                                    compaction::CompactionOutcome::ArchivedAndSummarized => {
-                                        // Read summary and index it
-                                        let summary_path = archive_dir
-                                            .join(format!("{}-summary.md", session_id));
-                                        match std::fs::read_to_string(&summary_path) {
-                                            Ok(summary) => {
-                                                let summary_label =
-                                                    format!("session/{}-summary", session_id);
-                                                let _ =
-                                                    store.index(&summary_label, &summary);
+                                    compaction::CompactionOutcome::ArchivedAndSummarized(
+                                        result,
+                                    ) => {
+                                        // Index the summary
+                                        let summary_label =
+                                            format!("session/{}-summary", session_id);
+                                        let _ =
+                                            store.index(&summary_label, &result.summary);
 
-                                                // Complete monitor event
-                                                if let Some(event_id) = &monitor_event_id {
-                                                    complete_compaction_event(
-                                                        &service.monitor_store,
-                                                        event_id,
-                                                        summary.len() as u64,
-                                                        transcript_bytes,
-                                                        Some(&summary),
-                                                        started.elapsed().as_millis() as u64,
-                                                    );
-                                                }
-                                            }
-                                            Err(e) => {
-                                                if let Some(event_id) = &monitor_event_id {
-                                                    error_compaction_event(
-                                                        &service.monitor_store,
-                                                        event_id,
-                                                        &format!("Failed to read summary: {}", e),
-                                                        started.elapsed().as_millis() as u64,
-                                                    );
-                                                }
-                                            }
+                                        // Complete monitor event with full metadata
+                                        if let Some(event_id) = &monitor_event_id {
+                                            complete_compaction_event(
+                                                &service.monitor_store,
+                                                event_id,
+                                                &result,
+                                                transcript_bytes,
+                                                &summary_rel_path,
+                                                started.elapsed().as_millis() as u64,
+                                            );
                                         }
+
                                         // Remove raw transcript from index
                                         let raw_label = format!("session/{}", session_id);
                                         let _ = store.delete(&raw_label);
@@ -570,6 +568,16 @@ impl MemoryService {
                 .map(|m| m.len())
                 .unwrap_or(0);
 
+            // Compute file paths for monitor event
+            let transcript_rel_path = format!(
+                "{}/archive/{}.md",
+                client_id, session_id
+            );
+            let summary_rel_path = format!(
+                "{}/archive/{}-summary.md",
+                client_id, session_id
+            );
+
             // Emit monitor event if LLM compaction will happen
             let monitor_event_id = if model.is_some() {
                 emit_compaction_event(
@@ -578,6 +586,7 @@ impl MemoryService {
                     model.as_deref().unwrap_or(""),
                     transcript_bytes,
                     client_id,
+                    Some(&transcript_rel_path),
                 )
             } else {
                 None
@@ -592,40 +601,25 @@ impl MemoryService {
                     // Update FTS5 index based on outcome
                     if let Ok(store) = self.get_or_create_store(client_id) {
                         match outcome {
-                            compaction::CompactionOutcome::ArchivedAndSummarized => {
+                            compaction::CompactionOutcome::ArchivedAndSummarized(result) => {
                                 summarized_count += 1;
-                                // Read summary and index it
-                                let summary_path =
-                                    archive_dir.join(format!("{}-summary.md", session_id));
-                                match std::fs::read_to_string(&summary_path) {
-                                    Ok(summary) => {
-                                        let summary_label =
-                                            format!("session/{}-summary", session_id);
-                                        let _ = store.index(&summary_label, &summary);
+                                // Index the summary
+                                let summary_label =
+                                    format!("session/{}-summary", session_id);
+                                let _ = store.index(&summary_label, &result.summary);
 
-                                        // Complete monitor event
-                                        if let Some(event_id) = &monitor_event_id {
-                                            complete_compaction_event(
-                                                &self.monitor_store,
-                                                event_id,
-                                                summary.len() as u64,
-                                                transcript_bytes,
-                                                Some(&summary),
-                                                started.elapsed().as_millis() as u64,
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        if let Some(event_id) = &monitor_event_id {
-                                            error_compaction_event(
-                                                &self.monitor_store,
-                                                event_id,
-                                                &format!("Failed to read summary: {}", e),
-                                                started.elapsed().as_millis() as u64,
-                                            );
-                                        }
-                                    }
+                                // Complete monitor event with full metadata
+                                if let Some(event_id) = &monitor_event_id {
+                                    complete_compaction_event(
+                                        &self.monitor_store,
+                                        event_id,
+                                        &result,
+                                        transcript_bytes,
+                                        &summary_rel_path,
+                                        started.elapsed().as_millis() as u64,
+                                    );
                                 }
+
                                 // Remove raw transcript from index
                                 let raw_label = format!("session/{}", session_id);
                                 let _ = store.delete(&raw_label);
@@ -710,51 +704,48 @@ impl MemoryService {
                 .map(|m| m.len())
                 .unwrap_or(0);
 
+            // Compute file paths for monitor event
+            let transcript_rel_path = format!(
+                "{}/archive/{}.md",
+                client_id, session_id
+            );
+            let summary_rel_path = format!(
+                "{}/archive/{}-summary.md",
+                client_id, session_id
+            );
+
             let monitor_event_id = emit_compaction_event(
                 &self.monitor_store,
                 short_id,
                 &model_str,
                 transcript_bytes,
                 client_id,
+                Some(&transcript_rel_path),
             );
 
             let started = std::time::Instant::now();
 
             match compaction::recompact_session(session_id, &archive_dir, llm, &model_str).await {
-                Ok(()) => {
+                Ok(result) => {
                     recompacted_count += 1;
 
                     // Update FTS5 index: index summary, delete raw
                     if let Ok(store) = self.get_or_create_store(client_id) {
-                        let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
-                        match std::fs::read_to_string(&summary_path) {
-                            Ok(summary) => {
-                                let summary_label =
-                                    format!("session/{}-summary", session_id);
-                                let _ = store.index(&summary_label, &summary);
+                        let summary_label =
+                            format!("session/{}-summary", session_id);
+                        let _ = store.index(&summary_label, &result.summary);
 
-                                if let Some(event_id) = &monitor_event_id {
-                                    complete_compaction_event(
-                                        &self.monitor_store,
-                                        event_id,
-                                        summary.len() as u64,
-                                        transcript_bytes,
-                                        Some(&summary),
-                                        started.elapsed().as_millis() as u64,
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                if let Some(event_id) = &monitor_event_id {
-                                    error_compaction_event(
-                                        &self.monitor_store,
-                                        event_id,
-                                        &format!("Failed to read summary: {}", e),
-                                        started.elapsed().as_millis() as u64,
-                                    );
-                                }
-                            }
+                        if let Some(event_id) = &monitor_event_id {
+                            complete_compaction_event(
+                                &self.monitor_store,
+                                event_id,
+                                &result,
+                                transcript_bytes,
+                                &summary_rel_path,
+                                started.elapsed().as_millis() as u64,
+                            );
                         }
+
                         // Remove raw transcript from index (if it was indexed)
                         let raw_label = format!("session/{}", session_id);
                         let _ = store.delete(&raw_label);
@@ -961,6 +952,7 @@ fn emit_compaction_event(
     model: &str,
     transcript_bytes: u64,
     client_id: &str,
+    transcript_path: Option<&str>,
 ) -> Option<String> {
     let store = monitor_store.read().clone()?;
     Some(store.push(
@@ -972,10 +964,17 @@ fn emit_compaction_event(
             session_id: short_session_id.to_string(),
             model: model.to_string(),
             transcript_bytes,
-            summary_bytes: None,
-            compression_ratio: None,
+            transcript_path: transcript_path.map(|s| s.to_string()),
             request_body: None,
+            summary_bytes: None,
+            summary_path: None,
+            compression_ratio: None,
+            input_tokens: None,
+            output_tokens: None,
+            reasoning_tokens: None,
+            finish_reason: None,
             response_body: None,
+            content_preview: None,
             error: None,
         },
         lr_monitor::EventStatus::Pending,
@@ -983,43 +982,56 @@ fn emit_compaction_event(
     ))
 }
 
-/// Update a MemoryCompaction monitor event to Complete.
+/// Update a MemoryCompaction monitor event to Complete with full response metadata.
 fn complete_compaction_event(
     monitor_store: &RwLock<Option<Arc<MonitorEventStore>>>,
     event_id: &str,
-    summary_bytes: u64,
+    result: &compaction::CompactionResult,
     transcript_bytes: u64,
-    summary_preview: Option<&str>,
+    summary_path: &str,
     duration_ms: u64,
 ) {
     let Some(store) = monitor_store.read().clone() else {
         return;
     };
+    let summary_bytes = result.summary.len() as u64;
     let ratio = if transcript_bytes > 0 {
         (1.0 - (summary_bytes as f64 / transcript_bytes as f64)) * 100.0
     } else {
         0.0
     };
-    let preview = summary_preview.map(|s| {
-        if s.len() > 10_000 {
-            format!("{}...", &s[..10_000])
-        } else {
-            s.to_string()
-        }
-    });
+    let content_preview = if result.summary.len() > 10_000 {
+        Some(format!("{}...", &result.summary[..10_000]))
+    } else {
+        Some(result.summary.clone())
+    };
     store.update(event_id, |event| {
         event.status = lr_monitor::EventStatus::Complete;
         event.duration_ms = Some(duration_ms);
         if let lr_monitor::MonitorEventData::MemoryCompaction {
             summary_bytes: sb,
+            summary_path: sp,
             compression_ratio: cr,
-            response_body: rb,
+            input_tokens: it,
+            output_tokens: ot,
+            reasoning_tokens: rt,
+            finish_reason: fr,
+            request_body: req,
+            response_body: resp,
+            content_preview: cp,
             ..
         } = &mut event.data
         {
             *sb = Some(summary_bytes);
+            *sp = Some(summary_path.to_string());
             *cr = Some(ratio);
-            *rb = preview.clone();
+            *it = Some(result.input_tokens as u64);
+            *ot = Some(result.output_tokens as u64);
+            *rt = result.reasoning_tokens.map(|t| t as u64);
+            *fr = result.finish_reason.clone();
+            *req = result.request_body.clone();
+            *resp = result.response_body.clone();
+            *cp = content_preview.clone();
         }
     });
 }

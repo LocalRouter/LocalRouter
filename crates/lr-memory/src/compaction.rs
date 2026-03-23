@@ -6,6 +6,21 @@
 
 use std::path::Path;
 
+/// Result of a successful LLM compaction call, carrying full response metadata
+/// for monitor event observability.
+#[derive(Debug, Clone)]
+pub struct CompactionResult {
+    pub summary: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub reasoning_tokens: Option<u32>,
+    pub finish_reason: Option<String>,
+    /// Serialized CompletionRequest (for monitor event)
+    pub request_body: Option<serde_json::Value>,
+    /// Serialized CompletionResponse (for monitor event)
+    pub response_body: Option<serde_json::Value>,
+}
+
 /// Trait for calling an LLM to summarize a transcript.
 ///
 /// Implemented at the application level (e.g., via the Router) to avoid
@@ -15,17 +30,19 @@ pub trait CompactionLlm: Send + Sync + 'static {
     /// Summarize a conversation transcript using the given model.
     ///
     /// `model` is in "provider/model" format (e.g., "anthropic/claude-haiku-4-5-20251001").
-    /// Returns the summary text.
-    async fn summarize(&self, model: &str, transcript: &str) -> Result<String, String>;
+    /// Returns the summary text along with full response metadata.
+    async fn summarize(&self, model: &str, transcript: &str)
+        -> Result<CompactionResult, String>;
 }
 
 /// Outcome of a compaction operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum CompactionOutcome {
     /// Session was archived without LLM summarization.
     ArchivedOnly,
     /// Session was archived and an LLM summary was generated.
-    ArchivedAndSummarized,
+    ArchivedAndSummarized(CompactionResult),
 }
 
 const COMPACTION_SYSTEM_PROMPT: &str = "\
@@ -110,9 +127,18 @@ pub async fn compact_session(
         }
 
         match llm.summarize(model, &content).await {
-            Ok(summary) => {
+            Ok(result) => {
+                // Guard against empty summaries
+                if result.summary.trim().is_empty() {
+                    tracing::warn!(
+                        "LLM returned empty summary for session {}, keeping raw archive",
+                        &session_id[..8.min(session_id.len())],
+                    );
+                    return Ok(CompactionOutcome::ArchivedOnly);
+                }
+
                 let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
-                tokio::fs::write(&summary_path, &summary)
+                tokio::fs::write(&summary_path, &result.summary)
                     .await
                     .map_err(|e| format!("Failed to write summary: {}", e))?;
 
@@ -120,10 +146,10 @@ pub async fn compact_session(
                     "Session {} summarized ({} bytes → {} bytes)",
                     &session_id[..8.min(session_id.len())],
                     content.len(),
-                    summary.len(),
+                    result.summary.len(),
                 );
 
-                return Ok(CompactionOutcome::ArchivedAndSummarized);
+                return Ok(CompactionOutcome::ArchivedAndSummarized(result));
             }
             Err(e) => {
                 tracing::warn!(
@@ -148,7 +174,7 @@ pub async fn recompact_session(
     archive_dir: &Path,
     llm: &dyn CompactionLlm,
     model: &str,
-) -> Result<(), String> {
+) -> Result<CompactionResult, String> {
     let raw_path = archive_dir.join(format!("{}.md", session_id));
 
     if !raw_path.exists() {
@@ -163,10 +189,14 @@ pub async fn recompact_session(
         return Err("Raw transcript is empty".to_string());
     }
 
-    let summary = llm.summarize(model, &content).await?;
+    let result = llm.summarize(model, &content).await?;
+
+    if result.summary.trim().is_empty() {
+        return Err("LLM returned empty summary".to_string());
+    }
 
     let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
-    tokio::fs::write(&summary_path, &summary)
+    tokio::fs::write(&summary_path, &result.summary)
         .await
         .map_err(|e| format!("Failed to write summary: {}", e))?;
 
@@ -174,10 +204,10 @@ pub async fn recompact_session(
         "Session {} re-compacted ({} bytes → {} bytes)",
         &session_id[..8.min(session_id.len())],
         content.len(),
-        summary.len(),
+        result.summary.len(),
     );
 
-    Ok(())
+    Ok(result)
 }
 
 /// Return the system prompt used for compaction summarization.

@@ -159,6 +159,12 @@ struct OllamaChatResponse {
     message: OllamaMessage,
     #[serde(default)]
     done: bool,
+    /// Token counts — top-level in Ollama non-streaming responses
+    #[serde(default)]
+    prompt_eval_count: Option<i64>,
+    #[serde(default)]
+    eval_count: Option<i64>,
+    /// Legacy nested field (kept for backward compat, unused in practice)
     #[serde(default)]
     final_data: Option<OllamaFinalData>,
 }
@@ -482,15 +488,25 @@ impl ModelProvider for OllamaProvider {
             .await
             .map_err(|e| AppError::Provider(format!("Failed to parse Ollama response: {}", e)))?;
 
-        let (prompt_tokens, completion_tokens) =
-            if let Some(ref final_data) = ollama_response.final_data {
-                (
-                    final_data.prompt_eval_count.unwrap_or(0) as u32,
-                    final_data.eval_count.unwrap_or(0) as u32,
-                )
-            } else {
-                (0, 0)
-            };
+        // Token counts: prefer top-level fields (non-streaming), fall back to final_data (streaming)
+        let prompt_tokens = ollama_response
+            .prompt_eval_count
+            .or_else(|| {
+                ollama_response
+                    .final_data
+                    .as_ref()
+                    .and_then(|fd| fd.prompt_eval_count)
+            })
+            .unwrap_or(0) as u32;
+        let completion_tokens = ollama_response
+            .eval_count
+            .or_else(|| {
+                ollama_response
+                    .final_data
+                    .as_ref()
+                    .and_then(|fd| fd.eval_count)
+            })
+            .unwrap_or(0) as u32;
 
         // Convert Ollama message to standard ChatMessage
         let message = ollama_response.message.into_chat_message();
