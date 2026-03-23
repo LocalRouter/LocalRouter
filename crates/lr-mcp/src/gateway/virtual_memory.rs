@@ -36,6 +36,8 @@ pub struct MemorySessionState {
     pub enabled: bool,
     pub search_tool_name: String,
     pub read_tool_name: String,
+    /// Memory folder slug (for resolving client dir)
+    pub memory_folder: String,
 }
 
 impl VirtualSessionState for MemorySessionState {
@@ -177,14 +179,21 @@ impl VirtualMcpServer for MemoryVirtualServer {
 
     async fn handle_tool_call(
         &self,
-        _state: Box<dyn VirtualSessionState>,
+        state: Box<dyn VirtualSessionState>,
         tool_name: &str,
         arguments: Value,
         client_id: &str,
         _client_name: &str,
     ) -> VirtualToolCallResult {
+        // Resolve memory folder from session state
+        let memory_folder = state
+            .as_any()
+            .downcast_ref::<MemorySessionState>()
+            .map(|s| s.memory_folder.as_str())
+            .unwrap_or(client_id);
+
         // Ensure client directory exists
-        if let Err(e) = self.memory_service.ensure_client_dir(client_id) {
+        if let Err(e) = self.memory_service.ensure_client_dir(memory_folder) {
             return VirtualToolCallResult::ToolError(format!(
                 "Failed to initialize memory directory: {}",
                 e
@@ -195,9 +204,9 @@ impl VirtualMcpServer for MemoryVirtualServer {
         let read_tool_name = derive_read_tool_name(&config.recall_tool_name);
 
         if tool_name == read_tool_name || tool_name == DEFAULT_READ_TOOL {
-            self.handle_memory_read(arguments, client_id)
+            self.handle_memory_read(arguments, memory_folder)
         } else {
-            self.handle_memory_search(arguments, client_id)
+            self.handle_memory_search(arguments, memory_folder)
         }
     }
 
@@ -239,6 +248,7 @@ impl VirtualMcpServer for MemoryVirtualServer {
             enabled: client.memory_enabled.unwrap_or(false),
             search_tool_name: search_name,
             read_tool_name: read_name,
+            memory_folder: client.memory_folder_name().to_string(),
         })
     }
 

@@ -20,6 +20,47 @@ pub fn client_strategy_name(client_name: &str) -> String {
     format!("{}{}", client_name, CLIENT_STRATEGY_NAME_SUFFIX)
 }
 
+/// Convert a string to a filesystem-safe slug.
+/// "This is My Client!" → "this-is-my-client"
+pub fn slugify(name: &str) -> String {
+    let mut result = String::new();
+    let mut last_was_hyphen = true; // trim leading hyphens
+    for c in name.chars() {
+        if c.is_alphanumeric() {
+            result.push(c.to_ascii_lowercase());
+            last_was_hyphen = false;
+        } else if !last_was_hyphen {
+            result.push('-');
+            last_was_hyphen = true;
+        }
+    }
+    if result.ends_with('-') {
+        result.pop();
+    }
+    result
+}
+
+/// Generate a unique memory folder slug, appending `-2`, `-3`, etc. if needed.
+pub fn unique_memory_folder(name: &str, existing: &[String]) -> String {
+    let base = slugify(name);
+    let base = if base.is_empty() {
+        "unnamed".to_string()
+    } else {
+        base
+    };
+    if !existing.contains(&base) {
+        return base;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{}-{}", base, n);
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 /// Time window for rate limits
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -2738,6 +2779,19 @@ pub struct Client {
     /// When enabled, conversations are recorded and stored locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_enabled: Option<bool>,
+
+    /// Folder name for persistent memory storage (slug derived from client name).
+    /// Persisted so renaming the client doesn't lose memory data.
+    /// Generated once at creation; never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_folder: Option<String>,
+}
+
+impl Client {
+    /// Memory folder name (slug if set, falls back to UUID for legacy clients).
+    pub fn memory_folder_name(&self) -> &str {
+        self.memory_folder.as_deref().unwrap_or(&self.id)
+    }
 }
 
 /// MCP server configuration
@@ -3618,6 +3672,7 @@ impl Client {
             coding_agent_permission: PermissionState::default(),
             coding_agent_type: None,
             memory_enabled: None,
+            memory_folder: None,
         }
     }
 

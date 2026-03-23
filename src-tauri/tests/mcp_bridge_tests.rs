@@ -56,6 +56,7 @@ fn test_config() -> AppConfig {
                 catalog_compression_enabled: None,
                 client_tools_indexing: None,
                 memory_enabled: None,
+                memory_folder: None,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -95,6 +96,7 @@ fn test_config() -> AppConfig {
                 catalog_compression_enabled: None,
                 client_tools_indexing: None,
                 memory_enabled: None,
+                memory_folder: None,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -134,6 +136,7 @@ fn test_config() -> AppConfig {
                 catalog_compression_enabled: None,
                 client_tools_indexing: None,
                 memory_enabled: None,
+                memory_folder: None,
             },
         ],
         ..Default::default()

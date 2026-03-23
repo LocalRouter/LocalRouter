@@ -307,6 +307,16 @@ pub async fn clone_client(
         lr_config::Strategy::new_for_client(new_client_id.clone(), clone_name.clone())
     };
 
+    // Generate unique memory folder for the clone
+    let new_memory_folder = {
+        let existing_folders: Vec<String> = config
+            .clients
+            .iter()
+            .filter_map(|c| c.memory_folder.clone())
+            .collect();
+        lr_config::unique_memory_folder(&clone_name, &existing_folders)
+    };
+
     // Clone the client with modifications
     let new_client = lr_config::Client {
         id: new_client_id.clone(),
@@ -346,6 +356,7 @@ pub async fn clone_client(
         json_repair: source_client.json_repair.clone(),
         secret_scanning: source_client.secret_scanning.clone(),
         memory_enabled: source_client.memory_enabled,
+        memory_folder: Some(new_memory_folder),
     };
 
     // Add to config
@@ -3397,12 +3408,7 @@ mod tests {
     #[test]
     fn test_skill_allow_permanent_stores_correct_key() {
         let mut client = test_client("c1");
-        let info = make_info(
-            "c1",
-            "SkillRead",
-            "_skills",
-            Some(r#"{"name": "weather"}"#),
-        );
+        let info = make_info("c1", "SkillRead", "_skills", Some(r#"{"name": "weather"}"#));
 
         apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
 
@@ -3420,12 +3426,7 @@ mod tests {
     #[test]
     fn test_skill_deny_permanent_stores_correct_key() {
         let mut client = test_client("c1");
-        let info = make_info(
-            "c1",
-            "SkillRead",
-            "_skills",
-            Some(r#"{"name": "weather"}"#),
-        );
+        let info = make_info("c1", "SkillRead", "_skills", Some(r#"{"name": "weather"}"#));
 
         apply_tool_permission_to_client(&mut client, &info, PermissionState::Off);
 
@@ -3484,12 +3485,7 @@ mod tests {
     fn test_skill_permission_resolves_correctly() {
         let mut client = test_client("c1");
         client.skills_permissions.global = PermissionState::Ask;
-        let info = make_info(
-            "c1",
-            "SkillRead",
-            "_skills",
-            Some(r#"{"name": "weather"}"#),
-        );
+        let info = make_info("c1", "SkillRead", "_skills", Some(r#"{"name": "weather"}"#));
 
         apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
 
@@ -3587,10 +3583,7 @@ mod tests {
         apply_tool_permission_to_client(&mut client, &info, PermissionState::Allow);
 
         assert_eq!(
-            client
-                .mcp_permissions
-                .tools
-                .get("srv-uuid-123__read_file"),
+            client.mcp_permissions.tools.get("srv-uuid-123__read_file"),
             Some(&PermissionState::Allow),
             "Should use server UUID and original tool name (after __) as key"
         );
@@ -3604,10 +3597,7 @@ mod tests {
         apply_tool_permission_to_client(&mut client, &info, PermissionState::Off);
 
         assert_eq!(
-            client
-                .mcp_permissions
-                .tools
-                .get("srv-uuid-123__write_file"),
+            client.mcp_permissions.tools.get("srv-uuid-123__write_file"),
             Some(&PermissionState::Off),
         );
     }

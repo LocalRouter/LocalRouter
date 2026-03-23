@@ -81,6 +81,7 @@ fn create_test_config(
         catalog_compression_enabled: None,
         client_tools_indexing: None,
         memory_enabled: None,
+        memory_folder: None,
     };
 
     AppConfig {
@@ -541,6 +542,7 @@ async fn test_disabled_client_returns_unauthorized() {
         catalog_compression_enabled: None,
         client_tools_indexing: None,
         memory_enabled: None,
+        memory_folder: None,
     };
 
     let config = AppConfig {
@@ -601,6 +603,7 @@ async fn test_client_with_missing_strategy() {
         catalog_compression_enabled: None,
         client_tools_indexing: None,
         memory_enabled: None,
+        memory_folder: None,
     };
 
     let config = AppConfig {
@@ -1200,6 +1203,7 @@ fn create_free_tier_config(
         catalog_compression_enabled: None,
         client_tools_indexing: None,
         memory_enabled: None,
+        memory_folder: None,
     };
 
     AppConfig {

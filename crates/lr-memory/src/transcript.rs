@@ -21,21 +21,14 @@ impl TranscriptWriter {
         Self
     }
 
-    /// Create an empty session file.
-    /// Returns the path to the created file.
-    pub async fn create_session_file(
-        &self,
-        sessions_dir: &Path,
-        session_id: &str,
-    ) -> Result<PathBuf, String> {
-        let file_path = sessions_dir.join(format!("{}.md", session_id));
-
-        fs::write(&file_path, "")
+    /// Create an empty session file at the given path.
+    pub async fn create_session_file(&self, file_path: &Path) -> Result<(), String> {
+        fs::write(file_path, "")
             .await
             .map_err(|e| format!("Failed to create session file: {}", e))?;
 
         tracing::debug!("Created session file: {}", file_path.display());
-        Ok(file_path)
+        Ok(())
     }
 
     /// Append a user/assistant exchange to the session file.
@@ -53,18 +46,19 @@ impl TranscriptWriter {
         self.append_raw(path, &exchange).await
     }
 
-    /// Restore a session file from the archive directory back to the sessions directory.
+    /// Restore a session file from the archive directory back to the active directory.
     /// Deletes any existing summary file for that session.
+    /// `file_stem` is the filename without extension (e.g., "2026-03-22T14-30-00-topic-x7k2m").
     /// Returns the restored file path.
     pub async fn restore_from_archive(
         &self,
-        session_id: &str,
-        sessions_dir: &Path,
+        file_stem: &str,
+        active_dir: &Path,
         archive_dir: &Path,
     ) -> Result<PathBuf, String> {
-        let archive_path = archive_dir.join(format!("{}.md", session_id));
-        let sessions_path = sessions_dir.join(format!("{}.md", session_id));
-        let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
+        let archive_path = archive_dir.join(format!("{}.md", file_stem));
+        let active_path = active_dir.join(format!("{}.md", file_stem));
+        let summary_path = archive_dir.join(format!("{}-summary.md", file_stem));
 
         if !archive_path.exists() {
             return Err(format!(
@@ -81,16 +75,13 @@ impl TranscriptWriter {
             tracing::debug!("Deleted summary: {}", summary_path.display());
         }
 
-        // Move archive back to sessions
-        fs::rename(&archive_path, &sessions_path)
+        // Move archive back to active
+        fs::rename(&archive_path, &active_path)
             .await
             .map_err(|e| format!("Failed to restore from archive: {}", e))?;
 
-        tracing::info!(
-            "Restored session {} from archive",
-            &session_id[..8.min(session_id.len())]
-        );
-        Ok(sessions_path)
+        tracing::info!("Restored session {} from archive", file_stem);
+        Ok(active_path)
     }
 
     /// Build a complete session transcript in memory (no file I/O).

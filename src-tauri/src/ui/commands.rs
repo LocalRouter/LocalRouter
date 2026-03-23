@@ -4838,6 +4838,17 @@ pub async fn open_memory_folder(
 // Memory Sessions commands (per-client memory management)
 // ============================================================================
 
+/// Resolve the memory folder name for a client, falling back to UUID for legacy clients.
+fn resolve_memory_folder(config_manager: &ConfigManager, client_id: &str) -> String {
+    config_manager
+        .get()
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .map(|c| c.memory_folder_name().to_string())
+        .unwrap_or_else(|| client_id.to_string())
+}
+
 /// Info about a client's memory for the Sessions tab
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MemoryClientInfo {
@@ -4866,7 +4877,7 @@ pub async fn list_memory_clients(
         }
 
         let (source_count, total_lines) = match &memory_svc {
-            Some(svc) => match svc.list_sources(&client.id, None, None) {
+            Some(svc) => match svc.list_sources(client.memory_folder_name(), None, None) {
                 Ok(sources) => {
                     let lines: usize = sources.iter().map(|s| s.total_lines).sum();
                     (sources.len(), lines)
@@ -4893,15 +4904,17 @@ pub async fn search_client_memory(
     client_id: String,
     query: String,
     limit: Option<usize>,
+    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<Vec<lr_context::SearchResult>, String> {
     let svc = {
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
+    let folder = resolve_memory_folder(&config_manager, &client_id);
 
     svc.search_combined(
-        &client_id,
+        &folder,
         Some(&query),
         None,
         limit.unwrap_or(5),
@@ -4918,34 +4931,39 @@ pub async fn read_client_memory(
     label: String,
     offset: Option<String>,
     limit: Option<usize>,
+    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<lr_context::ReadResult, String> {
     let svc = {
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
+    let folder = resolve_memory_folder(&config_manager, &client_id);
 
-    svc.read(&client_id, &label, offset.as_deref(), limit)
+    svc.read(&folder, &label, offset.as_deref(), limit)
 }
 
 /// Clear all memory for a specific client
 #[tauri::command]
 pub async fn clear_client_memory(
     client_id: String,
+    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
     let svc = {
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
+    let folder = resolve_memory_folder(&config_manager, &client_id);
 
-    svc.clear_memory(&client_id)
+    svc.clear_memory(&folder)
 }
 
 /// Open a specific client's memory folder in the system file manager
 #[tauri::command]
 pub async fn open_client_memory_folder(
     client_id: String,
+    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -4953,8 +4971,9 @@ pub async fn open_client_memory_folder(
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
+    let folder = resolve_memory_folder(&config_manager, &client_id);
 
-    let path = svc.memory_dir().join(&client_id);
+    let path = svc.memory_dir().join(&folder);
     std::fs::create_dir_all(&path).map_err(|e| format!("Failed to create directory: {}", e))?;
 
     open_path(path.to_string_lossy().to_string(), app).await
@@ -4979,14 +4998,16 @@ pub struct CompactionStatsResult {
 #[tauri::command]
 pub async fn get_memory_compaction_stats(
     client_id: String,
+    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<CompactionStatsResult, String> {
     let svc = {
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
+    let folder = resolve_memory_folder(&config_manager, &client_id);
 
-    let stats = svc.get_compaction_stats(&client_id)?;
+    let stats = svc.get_compaction_stats(&folder)?;
     Ok(CompactionStatsResult {
         active_sessions: stats.active_sessions,
         pending_compaction: stats.pending_compaction,
@@ -5003,6 +5024,7 @@ pub async fn get_memory_compaction_stats(
 #[tauri::command]
 pub async fn force_compact_memory(
     client_id: String,
+    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -5010,16 +5032,18 @@ pub async fn force_compact_memory(
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
+    let folder = resolve_memory_folder(&config_manager, &client_id);
 
     let cid = client_id.clone();
     let app_handle = app.clone();
 
     tokio::spawn(async move {
+        let folder_ref = folder.as_str();
         let cid_ref = cid.as_str();
         let app_ref = &app_handle;
 
         let result = svc
-            .force_compact(cid_ref, |current, total| {
+            .force_compact(folder_ref, |current, total| {
                 let _ = app_ref.emit(
                     "memory-compact-progress",
                     serde_json::json!({
@@ -5062,6 +5086,7 @@ pub async fn force_compact_memory(
 #[tauri::command]
 pub async fn recompact_memory(
     client_id: String,
+    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -5069,16 +5094,18 @@ pub async fn recompact_memory(
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
+    let folder = resolve_memory_folder(&config_manager, &client_id);
 
     let cid = client_id.clone();
     let app_handle = app.clone();
 
     tokio::spawn(async move {
+        let folder_ref = folder.as_str();
         let cid_ref = cid.as_str();
         let app_ref = &app_handle;
 
         let result = svc
-            .recompact_all(cid_ref, |current, total| {
+            .recompact_all(folder_ref, |current, total| {
                 let _ = app_ref.emit(
                     "memory-recompact-progress",
                     serde_json::json!({
@@ -5120,6 +5147,7 @@ pub async fn recompact_memory(
 #[tauri::command]
 pub async fn reindex_client_memory(
     client_id: String,
+    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -5127,13 +5155,15 @@ pub async fn reindex_client_memory(
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
+    let folder = resolve_memory_folder(&config_manager, &client_id);
 
     let cid = client_id.clone();
     let app_handle = app.clone();
 
     tokio::task::spawn_blocking(move || {
+        let folder_ref = &folder;
         let cid_ref = &cid;
-        let result = svc.reindex(cid_ref, |current, total| {
+        let result = svc.reindex(folder_ref, |current, total| {
             let _ = app_handle.emit(
                 "memory-reindex-progress",
                 serde_json::json!({
@@ -5177,6 +5207,7 @@ pub async fn reindex_client_memory(
 pub async fn read_memory_archive_file(
     client_id: String,
     filename: String,
+    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<String, String> {
     // Validate filename to prevent path traversal
@@ -5192,10 +5223,11 @@ pub async fn read_memory_archive_file(
         let guard = state.memory_service.read();
         guard.clone().ok_or("Memory service not initialized")?
     };
+    let folder = resolve_memory_folder(&config_manager, &client_id);
 
     let archive_path = svc
         .memory_dir()
-        .join(&client_id)
+        .join(&folder)
         .join("archive")
         .join(&filename);
 

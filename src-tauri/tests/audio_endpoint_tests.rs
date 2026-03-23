@@ -69,6 +69,7 @@ fn create_test_client(id: &str, strategy_id: &str) -> Client {
         catalog_compression_enabled: None,
         client_tools_indexing: None,
         memory_enabled: None,
+        memory_folder: None,
     }
 }
 

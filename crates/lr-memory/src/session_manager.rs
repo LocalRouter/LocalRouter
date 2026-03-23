@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use rand::seq::SliceRandom;
 
 /// Configuration for session timeouts.
 #[derive(Debug, Clone)]
@@ -39,8 +40,9 @@ pub struct SessionManager {
 
 /// An active session for a client — groups conversations within a time window.
 pub struct ActiveSession {
-    pub session_id: String,
     pub file_path: PathBuf,
+    /// Memory folder slug (for resolving client dir on session expiry)
+    pub memory_folder: String,
     pub started_at: Instant,
     pub last_activity: Instant,
     /// Current conversation key (for detecting new conversations)
@@ -59,11 +61,63 @@ pub struct ConversationState {
 /// Context returned when detecting/creating a conversation.
 pub struct ConversationContext {
     pub client_id: String,
-    pub session_id: String,
     pub conversation_key: String,
     pub file_path: PathBuf,
     /// Whether this is a new conversation (needs a header)
     pub is_new_conversation: bool,
+}
+
+/// Slugify a content string for use in filenames.
+/// "What database should we use?" → "what-database-should-we-use"
+/// Truncates at approximately `max_len` chars on a word boundary.
+pub fn slugify_content(text: &str, max_len: usize) -> String {
+    let mut result = String::new();
+    let mut last_was_hyphen = true; // trim leading hyphens
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            result.push(c.to_ascii_lowercase());
+            last_was_hyphen = false;
+        } else if !last_was_hyphen {
+            result.push('-');
+            last_was_hyphen = true;
+        }
+        if result.len() >= max_len {
+            break;
+        }
+    }
+    // Trim trailing hyphen
+    if result.ends_with('-') {
+        result.pop();
+    }
+    // Try to truncate at last hyphen for a clean word boundary
+    if result.len() >= max_len {
+        if let Some(pos) = result.rfind('-') {
+            result.truncate(pos);
+        }
+    }
+    result
+}
+
+/// Generate a random 5-character alphanumeric suffix.
+fn random_suffix() -> String {
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..5)
+        .map(|_| *CHARS.choose(&mut rng).unwrap() as char)
+        .collect()
+}
+
+/// Generate a session filename stem: `{timestamp}-{content-slug}-{random}`
+/// Example: `2026-03-22T14-30-00-explain-how-auth-works-x7k2m`
+pub fn generate_session_file_stem(content_hint: &str) -> String {
+    let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
+    let slug = slugify_content(content_hint, 50);
+    let suffix = random_suffix();
+    if slug.is_empty() {
+        format!("{}-{}", timestamp, suffix)
+    } else {
+        format!("{}-{}-{}", timestamp, slug, suffix)
+    }
 }
 
 impl SessionManager {
@@ -83,12 +137,20 @@ impl SessionManager {
     /// If the existing session has expired, returns None for the old session
     /// (caller should close it) and a new session will be created on next call.
     ///
-    /// Returns (session_id, file_path, is_new_session)
+    /// `content_hint` is used to generate a human-readable filename for new sessions
+    /// (e.g., the first user message). Ignored for existing sessions.
+    ///
+    /// `memory_folder` is the slug folder name, stored on the session for later use
+    /// by the session monitor when constructing archive paths.
+    ///
+    /// Returns (file_path, is_new_session)
     pub fn get_or_create_session(
         &self,
         client_id: &str,
-        sessions_dir: &Path,
-    ) -> (String, PathBuf, bool) {
+        active_dir: &Path,
+        content_hint: &str,
+        memory_folder: &str,
+    ) -> (PathBuf, bool) {
         let config = self.config.read().clone();
 
         // Check if existing session is still valid
@@ -98,7 +160,7 @@ impl SessionManager {
 
             if !expired_inactivity && !expired_duration {
                 session.last_activity = Instant::now();
-                return (session.session_id.clone(), session.file_path.clone(), false);
+                return (session.file_path.clone(), false);
             }
 
             // Drop the mutable ref before removing
@@ -107,14 +169,14 @@ impl SessionManager {
             self.active_sessions.remove(client_id);
         }
 
-        // Create new session
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let file_path = sessions_dir.join(format!("{}.md", session_id));
+        // Create new session with human-readable filename
+        let file_stem = generate_session_file_stem(content_hint);
+        let file_path = active_dir.join(format!("{}.md", file_stem));
         let now = Instant::now();
 
         let session = ActiveSession {
-            session_id: session_id.clone(),
             file_path: file_path.clone(),
+            memory_folder: memory_folder.to_string(),
             started_at: now,
             last_activity: now,
             current_conversation_key: None,
@@ -123,7 +185,7 @@ impl SessionManager {
         };
 
         self.active_sessions.insert(client_id.to_string(), session);
-        (session_id, file_path, true)
+        (file_path, true)
     }
 
     /// Record a new exchange in a session, handling conversation detection.
@@ -156,13 +218,15 @@ impl SessionManager {
         &self,
         client_id: &str,
         messages: &[impl MessageHashable],
-        sessions_dir: &Path,
+        active_dir: &Path,
+        content_hint: &str,
+        memory_folder: &str,
     ) -> Option<ConversationContext> {
         // Compute hashes for all incoming messages
         let incoming_hashes: Vec<u64> = messages.iter().map(|m| m.compute_hash()).collect();
 
-        let (session_id, file_path, is_new_session) =
-            self.get_or_create_session(client_id, sessions_dir);
+        let (file_path, is_new_session) =
+            self.get_or_create_session(client_id, active_dir, content_hint, memory_folder);
 
         let mut session = self.active_sessions.get_mut(client_id)?;
         session.last_activity = Instant::now();
@@ -206,7 +270,6 @@ impl SessionManager {
 
         Some(ConversationContext {
             client_id: client_id.to_string(),
-            session_id,
             conversation_key,
             file_path,
             is_new_conversation: is_new_conversation || is_new_session,
@@ -261,10 +324,17 @@ impl SessionManager {
                 let still_expired = session.last_activity.elapsed() > config.inactivity_timeout
                     || session.started_at.elapsed() > config.max_duration;
                 if still_expired {
+                    let display_name = short_display_id(
+                        &session
+                            .file_path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy(),
+                    );
                     tracing::info!(
                         "Memory session expired for client {} (session={}, age={:.0}s, idle={:.0}s)",
                         &client_id[..8.min(client_id.len())],
-                        &session.session_id[..8.min(session.session_id.len())],
+                        display_name,
                         session.started_at.elapsed().as_secs_f64(),
                         session.last_activity.elapsed().as_secs_f64(),
                     );
@@ -277,6 +347,18 @@ impl SessionManager {
         }
 
         expired
+    }
+}
+
+/// Get a short display ID from a file stem for logging.
+/// "2026-03-22T14-30-00-explain-auth-x7k2m" → "explain-auth-x7k2m"
+/// "87286ef5-abcd-1234" → "87286ef5" (legacy UUID)
+pub fn short_display_id(file_stem: &str) -> String {
+    // Timestamp format: YYYY-MM-DDTHH-MM-SS- = 20 chars
+    if file_stem.len() > 20 && file_stem.as_bytes()[19] == b'-' {
+        file_stem[20..].to_string()
+    } else {
+        file_stem[..8.min(file_stem.len())].to_string()
     }
 }
 

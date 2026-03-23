@@ -285,6 +285,15 @@ impl ConfigManager {
         let client_id = Uuid::new_v4().to_string();
         let strategy = Strategy::new_for_client(client_id.clone(), name.clone());
 
+        // Generate unique memory folder slug
+        let existing_folders: Vec<String> = self
+            .get()
+            .clients
+            .iter()
+            .filter_map(|c| c.memory_folder.clone())
+            .collect();
+        let memory_folder = unique_memory_folder(&name, &existing_folders);
+
         let client = Client {
             id: client_id,
             name,
@@ -323,6 +332,7 @@ impl ConfigManager {
             mcp_sampling_permission: PermissionState::Ask,
             mcp_elicitation_permission: PermissionState::Ask,
             memory_enabled: None,
+            memory_folder: Some(memory_folder),
         };
 
         self.update(|cfg| {

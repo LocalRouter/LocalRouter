@@ -6,6 +6,8 @@
 
 use std::path::Path;
 
+use crate::session_manager::short_display_id;
+
 /// Result of a successful LLM compaction call, carrying full response metadata
 /// for monitor event observability.
 #[derive(Debug, Clone)]
@@ -32,8 +34,12 @@ pub trait CompactionLlm: Send + Sync + 'static {
     /// `model` is in "provider/model" format (e.g., "anthropic/claude-haiku-4-5-20251001").
     /// `thinking` controls whether reasoning/thinking is allowed (false = disable).
     /// Returns the summary text along with full response metadata.
-    async fn summarize(&self, model: &str, transcript: &str, thinking: bool)
-        -> Result<CompactionResult, String>;
+    async fn summarize(
+        &self,
+        model: &str,
+        transcript: &str,
+        thinking: bool,
+    ) -> Result<CompactionResult, String>;
 }
 
 /// Outcome of a compaction operation.
@@ -64,7 +70,7 @@ async fn summarize_and_write(
     model: &str,
     content: &str,
     summary_path: &Path,
-    short_id: &str,
+    display_id: &str,
     thinking: bool,
 ) -> SummarizeOutcome {
     let result = match llm.summarize(model, content, thinking).await {
@@ -75,7 +81,7 @@ async fn summarize_and_write(
     if result.summary.trim().is_empty() {
         tracing::warn!(
             "LLM returned empty summary for session {} (output_tokens={}, reasoning_tokens={:?})",
-            short_id,
+            display_id,
             result.output_tokens,
             result.reasoning_tokens,
         );
@@ -83,13 +89,13 @@ async fn summarize_and_write(
     }
 
     if let Err(e) = tokio::fs::write(summary_path, &result.summary).await {
-        tracing::warn!("Failed to write summary for session {}: {}", short_id, e);
+        tracing::warn!("Failed to write summary for session {}: {}", display_id, e);
         return SummarizeOutcome::Failed(format!("Failed to write summary: {}", e));
     }
 
     tracing::info!(
         "Session {} summarized ({} bytes)",
-        short_id,
+        display_id,
         result.summary.len(),
     );
 
@@ -125,9 +131,9 @@ or incomplete work, add a `## Open Items` section at the end.";
 
 /// Archive an expired session transcript and optionally summarize it with an LLM.
 ///
-/// 1. Moves the session file from `session_path` to `archive_dir/{uuid}.md`
+/// 1. Moves the session file from `session_path` to `archive_dir/{file_stem}.md`
 /// 2. If `llm` and `model` are provided, generates an LLM summary and saves it
-///    as `archive_dir/{uuid}-summary.md`
+///    as `archive_dir/{file_stem}-summary.md`
 pub async fn compact_session(
     session_path: &Path,
     archive_dir: &Path,
@@ -140,10 +146,10 @@ pub async fn compact_session(
         .ok_or("Invalid session path")?
         .to_string_lossy();
 
-    let session_id = file_name.trim_end_matches(".md");
-    let short_id = &session_id[..8.min(session_id.len())];
+    let file_stem = file_name.trim_end_matches(".md");
+    let display_id = short_display_id(file_stem);
 
-    tracing::info!("Archiving session {}", short_id);
+    tracing::info!("Archiving session {}", display_id);
 
     std::fs::create_dir_all(archive_dir)
         .map_err(|e| format!("Failed to create archive dir: {}", e))?;
@@ -159,13 +165,13 @@ pub async fn compact_session(
         None
     };
 
-    // Move original to archive
-    let archive_path = archive_dir.join(format!("{}.md", session_id));
+    // Move original to archive (preserving full filename with timestamp)
+    let archive_path = archive_dir.join(format!("{}.md", file_stem));
     tokio::fs::rename(session_path, &archive_path)
         .await
         .map_err(|e| format!("Failed to archive session: {}", e))?;
 
-    tracing::info!("Session {} archived", short_id);
+    tracing::info!("Session {} archived", display_id);
 
     // Summarize with LLM if available
     if let (Some(llm), Some(model), Some(content)) = (llm, model, content) {
@@ -173,8 +179,9 @@ pub async fn compact_session(
             return Ok(CompactionOutcome::ArchivedOnly);
         }
 
-        let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
-        match summarize_and_write(llm, model, &content, &summary_path, short_id, thinking).await {
+        let summary_path = archive_dir.join(format!("{}-summary.md", file_stem));
+        match summarize_and_write(llm, model, &content, &summary_path, &display_id, thinking).await
+        {
             SummarizeOutcome::Written(result) => {
                 return Ok(CompactionOutcome::ArchivedAndSummarized(result));
             }
@@ -184,7 +191,8 @@ pub async fn compact_session(
             SummarizeOutcome::Failed(e) => {
                 tracing::warn!(
                     "LLM summarization failed for session {}, keeping raw archive: {}",
-                    short_id, e,
+                    display_id,
+                    e,
                 );
                 // Fall through to ArchivedOnly
             }
@@ -205,17 +213,17 @@ pub enum RecompactOutcome {
 
 /// Re-compact an already-archived session by regenerating its LLM summary.
 ///
-/// Reads the raw transcript from `archive_dir/{session_id}.md`, calls the LLM
-/// to generate a new summary, and writes/overwrites `archive_dir/{session_id}-summary.md`.
+/// Reads the raw transcript from `archive_dir/{file_stem}.md`, calls the LLM
+/// to generate a new summary, and writes/overwrites `archive_dir/{file_stem}-summary.md`.
 pub async fn recompact_session(
-    session_id: &str,
+    file_stem: &str,
     archive_dir: &Path,
     llm: &dyn CompactionLlm,
     model: &str,
     thinking: bool,
 ) -> Result<RecompactOutcome, String> {
-    let short_id = &session_id[..8.min(session_id.len())];
-    let raw_path = archive_dir.join(format!("{}.md", session_id));
+    let display_id = short_display_id(file_stem);
+    let raw_path = archive_dir.join(format!("{}.md", file_stem));
 
     if !raw_path.exists() {
         return Err(format!("Raw transcript not found: {}", raw_path.display()));
@@ -229,8 +237,8 @@ pub async fn recompact_session(
         return Err("Raw transcript is empty".to_string());
     }
 
-    let summary_path = archive_dir.join(format!("{}-summary.md", session_id));
-    match summarize_and_write(llm, model, &content, &summary_path, short_id, thinking).await {
+    let summary_path = archive_dir.join(format!("{}-summary.md", file_stem));
+    match summarize_and_write(llm, model, &content, &summary_path, &display_id, thinking).await {
         SummarizeOutcome::Written(result) => Ok(RecompactOutcome::Summarized(result)),
         SummarizeOutcome::Empty(result) => Ok(RecompactOutcome::EmptyResponse(result)),
         SummarizeOutcome::Failed(e) => Err(e),

@@ -23,7 +23,7 @@ use lr_context::ContentStore;
 use lr_monitor::MonitorEventStore;
 
 pub use compaction::CompactionLlm;
-pub use session_manager::SessionManager;
+pub use session_manager::{short_display_id, SessionManager};
 pub use transcript::TranscriptWriter;
 
 /// A single search result from memory FTS5 search.
@@ -119,7 +119,7 @@ impl MemoryService {
     /// Ensure the per-client memory directory exists with proper structure.
     pub fn ensure_client_dir(&self, client_id: &str) -> std::io::Result<PathBuf> {
         let client_dir = self.memory_dir.join(client_id);
-        std::fs::create_dir_all(client_dir.join("sessions"))?;
+        std::fs::create_dir_all(client_dir.join("active"))?;
         std::fs::create_dir_all(client_dir.join("archive"))?;
         Ok(client_dir)
     }
@@ -324,7 +324,7 @@ impl MemoryService {
                 let expired = service.session_manager.close_expired_sessions();
                 for (client_id, session) in expired {
                     let config = service.config.read().clone();
-                    let client_dir = service.memory_dir.join(&client_id);
+                    let client_dir = service.memory_dir.join(&session.memory_folder);
                     let archive_dir = client_dir.join("archive");
 
                     // Only provide LLM when compaction is explicitly enabled + model configured
@@ -338,13 +338,13 @@ impl MemoryService {
                             (None, None)
                         };
 
-                    let session_id = session
+                    let file_stem = session
                         .file_path
                         .file_stem()
                         .unwrap_or_default()
                         .to_string_lossy()
                         .to_string();
-                    let short_id = &session_id[..8.min(session_id.len())];
+                    let display_id = session_manager::short_display_id(&file_stem);
 
                     // Read transcript size for monitor event (before archiving moves the file)
                     let transcript_bytes = tokio::fs::metadata(&session.file_path)
@@ -353,20 +353,18 @@ impl MemoryService {
                         .unwrap_or(0);
 
                     // Compute file paths for monitor event
-                    let transcript_rel_path = format!(
-                        "{}/archive/{}.md",
-                        &client_id, session_id
-                    );
+                    let transcript_rel_path =
+                        format!("{}/archive/{}.md", &session.memory_folder, file_stem);
                     let summary_rel_path = format!(
                         "{}/archive/{}-summary.md",
-                        &client_id, session_id
+                        &session.memory_folder, file_stem
                     );
 
                     // Emit monitor event if LLM compaction will happen
                     let monitor_event_id = if model.is_some() {
                         emit_compaction_event(
                             &service.monitor_store,
-                            short_id,
+                            &display_id,
                             model.as_deref().unwrap_or(""),
                             transcript_bytes,
                             &client_id,
@@ -390,16 +388,15 @@ impl MemoryService {
                     {
                         Ok(outcome) => {
                             // Update FTS5 index based on outcome
-                            if let Ok(store) = service.get_or_create_store(&client_id) {
+                            if let Ok(store) = service.get_or_create_store(&session.memory_folder) {
                                 match outcome {
                                     compaction::CompactionOutcome::ArchivedAndSummarized(
                                         result,
                                     ) => {
                                         // Index the summary
                                         let summary_label =
-                                            format!("session/{}-summary", session_id);
-                                        let _ =
-                                            store.index(&summary_label, &result.summary);
+                                            format!("session/{}-summary", file_stem);
+                                        let _ = store.index(&summary_label, &result.summary);
 
                                         // Complete monitor event with full metadata
                                         if let Some(event_id) = &monitor_event_id {
@@ -414,7 +411,7 @@ impl MemoryService {
                                         }
 
                                         // Remove raw transcript from index
-                                        let raw_label = format!("session/{}", session_id);
+                                        let raw_label = format!("session/{}", file_stem);
                                         let _ = store.delete(&raw_label);
                                     }
                                     compaction::CompactionOutcome::ArchivedEmptyResponse(
@@ -493,11 +490,11 @@ impl MemoryService {
     /// Get compaction statistics for a client.
     pub fn get_compaction_stats(&self, client_id: &str) -> Result<CompactionStats, String> {
         let client_dir = self.memory_dir.join(client_id);
-        let sessions_dir = client_dir.join("sessions");
+        let active_dir = client_dir.join("active");
         let archive_dir = client_dir.join("archive");
 
         let active_path = self.session_manager.active_session_path(client_id);
-        let session_files = count_md_files(&sessions_dir);
+        let session_files = count_md_files(&active_dir);
         let active_sessions = if active_path.is_some() { 1 } else { 0 };
         let pending_compaction = session_files.saturating_sub(active_sessions);
         let archived_sessions = count_raw_archive_files(&archive_dir);
@@ -531,14 +528,14 @@ impl MemoryService {
         mut progress_fn: impl FnMut(usize, usize),
     ) -> Result<CompactResult, String> {
         let client_dir = self.memory_dir.join(client_id);
-        let sessions_dir = client_dir.join("sessions");
+        let active_dir = client_dir.join("active");
         let archive_dir = client_dir.join("archive");
 
         let active_path = self.session_manager.active_session_path(client_id);
 
         // Collect files to compact
-        let entries = std::fs::read_dir(&sessions_dir)
-            .map_err(|e| format!("Failed to read sessions dir: {}", e))?;
+        let entries = std::fs::read_dir(&active_dir)
+            .map_err(|e| format!("Failed to read active dir: {}", e))?;
 
         let mut files_to_compact: Vec<PathBuf> = Vec::new();
         for entry in entries.flatten() {
@@ -557,26 +554,25 @@ impl MemoryService {
 
         // Clone Arc to avoid holding RwLock across await
         let config = self.config.read().clone();
-        let (llm_arc, model) =
-            if config.compaction_enabled && config.compaction_model.is_some() {
-                (
-                    self.compaction_llm.read().clone(),
-                    config.compaction_model.clone(),
-                )
-            } else {
-                (None, None)
-            };
+        let (llm_arc, model) = if config.compaction_enabled && config.compaction_model.is_some() {
+            (
+                self.compaction_llm.read().clone(),
+                config.compaction_model.clone(),
+            )
+        } else {
+            (None, None)
+        };
 
         let mut archived_count = 0;
         let mut summarized_count = 0;
 
         for (i, path) in files_to_compact.iter().enumerate() {
-            let session_id = path
+            let file_stem = path
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            let short_id = &session_id[..8.min(session_id.len())];
+            let display_id = session_manager::short_display_id(&file_stem);
 
             // Read transcript size for monitor event
             let transcript_bytes = tokio::fs::metadata(path)
@@ -585,20 +581,14 @@ impl MemoryService {
                 .unwrap_or(0);
 
             // Compute file paths for monitor event
-            let transcript_rel_path = format!(
-                "{}/archive/{}.md",
-                client_id, session_id
-            );
-            let summary_rel_path = format!(
-                "{}/archive/{}-summary.md",
-                client_id, session_id
-            );
+            let transcript_rel_path = format!("{}/archive/{}.md", client_id, file_stem);
+            let summary_rel_path = format!("{}/archive/{}-summary.md", client_id, file_stem);
 
             // Emit monitor event if LLM compaction will happen
             let monitor_event_id = if model.is_some() {
                 emit_compaction_event(
                     &self.monitor_store,
-                    short_id,
+                    &display_id,
                     model.as_deref().unwrap_or(""),
                     transcript_bytes,
                     client_id,
@@ -610,7 +600,15 @@ impl MemoryService {
 
             let started = std::time::Instant::now();
 
-            match compaction::compact_session(path, &archive_dir, llm_arc.as_deref(), model.as_deref(), config.compaction_thinking).await {
+            match compaction::compact_session(
+                path,
+                &archive_dir,
+                llm_arc.as_deref(),
+                model.as_deref(),
+                config.compaction_thinking,
+            )
+            .await
+            {
                 Ok(outcome) => {
                     archived_count += 1;
 
@@ -620,8 +618,7 @@ impl MemoryService {
                             compaction::CompactionOutcome::ArchivedAndSummarized(result) => {
                                 summarized_count += 1;
                                 // Index the summary
-                                let summary_label =
-                                    format!("session/{}-summary", session_id);
+                                let summary_label = format!("session/{}-summary", file_stem);
                                 let _ = store.index(&summary_label, &result.summary);
 
                                 // Complete monitor event with full metadata
@@ -637,7 +634,7 @@ impl MemoryService {
                                 }
 
                                 // Remove raw transcript from index
-                                let raw_label = format!("session/{}", session_id);
+                                let raw_label = format!("session/{}", file_stem);
                                 let _ = store.delete(&raw_label);
                             }
                             compaction::CompactionOutcome::ArchivedEmptyResponse(result) => {
@@ -723,28 +720,20 @@ impl MemoryService {
         let mut recompacted_count = 0;
         let mut failed_count = 0;
 
-        for (i, session_id) in raw_files.iter().enumerate() {
-            let short_id = &session_id[..8.min(session_id.len())];
+        for (i, file_stem) in raw_files.iter().enumerate() {
+            let display_id = session_manager::short_display_id(file_stem);
 
             // Read transcript size for monitor event
-            let raw_path = archive_dir.join(format!("{}.md", session_id));
-            let transcript_bytes = std::fs::metadata(&raw_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let raw_path = archive_dir.join(format!("{}.md", file_stem));
+            let transcript_bytes = std::fs::metadata(&raw_path).map(|m| m.len()).unwrap_or(0);
 
             // Compute file paths for monitor event
-            let transcript_rel_path = format!(
-                "{}/archive/{}.md",
-                client_id, session_id
-            );
-            let summary_rel_path = format!(
-                "{}/archive/{}-summary.md",
-                client_id, session_id
-            );
+            let transcript_rel_path = format!("{}/archive/{}.md", client_id, file_stem);
+            let summary_rel_path = format!("{}/archive/{}-summary.md", client_id, file_stem);
 
             let monitor_event_id = emit_compaction_event(
                 &self.monitor_store,
-                short_id,
+                &display_id,
                 &model_str,
                 transcript_bytes,
                 client_id,
@@ -753,14 +742,21 @@ impl MemoryService {
 
             let started = std::time::Instant::now();
 
-            match compaction::recompact_session(session_id, &archive_dir, llm, &model_str, config.compaction_thinking).await {
+            match compaction::recompact_session(
+                file_stem,
+                &archive_dir,
+                llm,
+                &model_str,
+                config.compaction_thinking,
+            )
+            .await
+            {
                 Ok(compaction::RecompactOutcome::Summarized(result)) => {
                     recompacted_count += 1;
 
                     // Update FTS5 index: index summary, delete raw
                     if let Ok(store) = self.get_or_create_store(client_id) {
-                        let summary_label =
-                            format!("session/{}-summary", session_id);
+                        let summary_label = format!("session/{}-summary", file_stem);
                         let _ = store.index(&summary_label, &result.summary);
 
                         if let Some(event_id) = &monitor_event_id {
@@ -775,7 +771,7 @@ impl MemoryService {
                         }
 
                         // Remove raw transcript from index (if it was indexed)
-                        let raw_label = format!("session/{}", session_id);
+                        let raw_label = format!("session/{}", file_stem);
                         let _ = store.delete(&raw_label);
                     }
                 }
@@ -791,10 +787,7 @@ impl MemoryService {
                             started.elapsed().as_millis() as u64,
                         );
                     }
-                    tracing::warn!(
-                        "Recompact empty summary for session {}",
-                        short_id,
-                    );
+                    tracing::warn!("Recompact empty summary for session {}", display_id,);
                 }
                 Err(e) => {
                     failed_count += 1;
@@ -806,11 +799,7 @@ impl MemoryService {
                             started.elapsed().as_millis() as u64,
                         );
                     }
-                    tracing::warn!(
-                        "Recompact failed for session {}: {}",
-                        short_id,
-                        e,
-                    );
+                    tracing::warn!("Recompact failed for session {}: {}", display_id, e,);
                 }
             }
 
@@ -852,15 +841,15 @@ impl MemoryService {
             }
         }
 
-        // Collect files to index from sessions/
-        let sessions_dir = client_dir.join("sessions");
+        // Collect files to index from active/ and archive/
+        let active_dir = client_dir.join("active");
         let archive_dir = client_dir.join("archive");
 
         // (label, file_path) pairs to index
         let mut to_index: Vec<(String, PathBuf)> = Vec::new();
 
-        // Sessions dir: index all .md files normally
-        if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        // Active dir: index all .md files normally
+        if let Ok(entries) = std::fs::read_dir(&active_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("md") {
