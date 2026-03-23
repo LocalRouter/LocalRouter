@@ -120,6 +120,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@app": path.resolve(__dirname, "../src"),       // Main Tauri app src
+      // Force single reactflow instance (main app components import from root node_modules,
+      // website imports from website/node_modules — two instances = two zustand stores = crash)
+      "reactflow": path.resolve(__dirname, "node_modules/reactflow"),
       // Stub Tauri plugins for demo mode
       "@tauri-apps/api/core": path.resolve(__dirname, "./src/stubs/tauri-api-core.ts"),
       "@tauri-apps/api/event": path.resolve(__dirname, "./src/stubs/tauri-api-event.ts"),
