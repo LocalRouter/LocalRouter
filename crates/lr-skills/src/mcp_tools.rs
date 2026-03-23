@@ -396,6 +396,33 @@ pub fn read_skill_file(
         }
     };
 
+    // Treat ".", "", "/" as directory-listing requests — return the file listing
+    if matches!(subpath, "." | "" | "/") {
+        let all_files: Vec<&str> = skill
+            .scripts
+            .iter()
+            .chain(skill.references.iter())
+            .chain(skill.assets.iter())
+            .map(|s| s.as_str())
+            .collect();
+        if all_files.is_empty() {
+            return Ok("This skill has no readable files.".to_string());
+        }
+        let mut listing = format!("Files in skill '{}':\n", skill.metadata.name);
+        for f in &all_files {
+            listing.push_str(&format!("- {}\n", f));
+        }
+        let mut prefix = String::new();
+        if let Some(note) = correction_note {
+            prefix.push_str(&note);
+        }
+        return if prefix.is_empty() {
+            Ok(listing)
+        } else {
+            Ok(format!("{}{}", prefix, listing))
+        };
+    }
+
     // Block access to SKILL.md — that's only returned by the skill-read meta-tool
     if subpath == "SKILL.md" || subpath == "skill.md" {
         return Err(format!(
