@@ -462,9 +462,10 @@ impl ModelProvider for OllamaProvider {
             tools: request.tools.clone(),
             // Map reasoning_effort to Ollama's think parameter:
             // "none" → disable thinking, any other value → enable, absent → model default
-            think: request.reasoning_effort.as_ref().map(|effort| {
-                !effort.eq_ignore_ascii_case("none")
-            }),
+            think: request
+                .reasoning_effort
+                .as_ref()
+                .map(|effort| !effort.eq_ignore_ascii_case("none")),
         };
 
         let response = self
@@ -586,9 +587,10 @@ impl ModelProvider for OllamaProvider {
                 stop: request.stop.clone(),
             }),
             tools: request.tools.clone(),
-            think: request.reasoning_effort.as_ref().map(|effort| {
-                !effort.eq_ignore_ascii_case("none")
-            }),
+            think: request
+                .reasoning_effort
+                .as_ref()
+                .map(|effort| !effort.eq_ignore_ascii_case("none")),
         };
 
         debug!("Ollama streaming request body: {:?}", ollama_request);
@@ -899,6 +901,65 @@ impl ModelProvider for OllamaProvider {
                 total_tokens: 0,
             },
         })
+    }
+
+    async fn generate_image(
+        &self,
+        request: super::ImageGenerationRequest,
+    ) -> AppResult<super::ImageGenerationResponse> {
+        // Ollama exposes an OpenAI-compatible image generation endpoint
+        let mut body = serde_json::json!({
+            "model": request.model,
+            "prompt": request.prompt,
+            "n": request.n.unwrap_or(1),
+        });
+
+        if let Some(size) = &request.size {
+            body["size"] = serde_json::json!(size);
+        }
+        if let Some(response_format) = &request.response_format {
+            body["response_format"] = serde_json::json!(response_format);
+        }
+
+        let url = format!("{}/v1/images/generations", self.base_url);
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Ollama image request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Ollama image API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let api_response: serde_json::Value = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Ollama image response: {}", e))
+        })?;
+
+        let created = api_response["created"]
+            .as_i64()
+            .unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+        let data: Vec<super::GeneratedImage> = api_response["data"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|item| super::GeneratedImage {
+                url: item["url"].as_str().map(|s| s.to_string()),
+                b64_json: item["b64_json"].as_str().map(|s| s.to_string()),
+                revised_prompt: item["revised_prompt"].as_str().map(|s| s.to_string()),
+            })
+            .collect();
+
+        Ok(super::ImageGenerationResponse { created, data })
     }
 }
 
