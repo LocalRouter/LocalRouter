@@ -257,7 +257,7 @@ function Sidebar({
   activeSubsection: string
   mobileOpen: boolean
   onMobileClose: () => void
-  sidebarRef: React.RefObject<HTMLElement | null>
+  sidebarRef: React.Ref<HTMLElement>
 }) {
   return (
     <>

@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
-import { Button } from '@/components/ui/button'
-import Logo from '@/components/Logo'
+import { Button } from '@/components/ui/Button'
+import { Logo } from '@/components/Logo'
 import { FirewallApprovalDemo } from '@/components/FirewallApprovalDemo'
 import { GuardrailApprovalDemo } from '@/components/GuardrailApprovalDemo'
 import { SecretScanApprovalDemo } from '@/components/SecretScanApprovalDemo'
@@ -19,7 +19,6 @@ import {
   Blocks,
   Store,
   Search,
-  Download,
   Terminal,
   Coins,
   Database,
@@ -31,8 +30,6 @@ import {
   Brain,
   Activity,
   Bug,
-  Layers,
-  Eye,
   Settings2,
   RefreshCw,
 } from 'lucide-react'
@@ -671,12 +668,12 @@ export default function Home() {
 
                   {/* Strong Models Box */}
                   <rect x="20" y="134" width="120" height="32" rx="6" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.4)" strokeWidth="1.5" />
-                  <text x="80" y="145" textAnchor="middle" fill="#34d399" fontSize="8" fontWeight="600" textTransform="uppercase">STRONG</text>
+                  <text x="80" y="145" textAnchor="middle" fill="#34d399" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>STRONG</text>
                   <text x="80" y="158" textAnchor="middle" fill="white" fontSize="10">GPT-5.2 / Opus</text>
 
                   {/* Weak Models Box */}
                   <rect x="260" y="134" width="120" height="32" rx="6" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.4)" strokeWidth="1.5" />
-                  <text x="320" y="145" textAnchor="middle" fill="#fbbf24" fontSize="8" fontWeight="600" textTransform="uppercase">WEAK</text>
+                  <text x="320" y="145" textAnchor="middle" fill="#fbbf24" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>WEAK</text>
                   <text x="320" y="158" textAnchor="middle" fill="white" fontSize="10">GPT-4o mini / Haiku</text>
 
                   {/* Fallback arrows from Strong/Weak to Secondary Provider */}
@@ -690,12 +687,12 @@ export default function Home() {
 
                   {/* Secondary Provider - Strong side */}
                   <rect x="20" y="198" width="120" height="32" rx="6" fill="rgba(59,130,246,0.15)" stroke="rgba(59,130,246,0.4)" strokeWidth="1.5" />
-                  <text x="80" y="209" textAnchor="middle" fill="#60a5fa" fontSize="8" fontWeight="600" textTransform="uppercase">FALLBACK PROVIDER</text>
+                  <text x="80" y="209" textAnchor="middle" fill="#60a5fa" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>FALLBACK PROVIDER</text>
                   <text x="80" y="222" textAnchor="middle" fill="white" fontSize="10">Anthropic / Gemini</text>
 
                   {/* Secondary Provider - Weak side */}
                   <rect x="260" y="198" width="120" height="32" rx="6" fill="rgba(59,130,246,0.15)" stroke="rgba(59,130,246,0.4)" strokeWidth="1.5" />
-                  <text x="320" y="209" textAnchor="middle" fill="#60a5fa" fontSize="8" fontWeight="600" textTransform="uppercase">FALLBACK PROVIDER</text>
+                  <text x="320" y="209" textAnchor="middle" fill="#60a5fa" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>FALLBACK PROVIDER</text>
                   <text x="320" y="222" textAnchor="middle" fill="white" fontSize="10">Anthropic / Groq</text>
 
                   {/* Fallback arrows to Offline */}
@@ -709,12 +706,12 @@ export default function Home() {
 
                   {/* Offline Models - Strong side */}
                   <rect x="20" y="262" width="120" height="32" rx="6" fill="rgba(100,116,139,0.2)" stroke="rgba(100,116,139,0.4)" strokeWidth="1.5" />
-                  <text x="80" y="273" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="600" textTransform="uppercase">OFFLINE FALLBACK</text>
+                  <text x="80" y="273" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>OFFLINE FALLBACK</text>
                   <text x="80" y="286" textAnchor="middle" fill="white" fontSize="10">Llama 4 405B (local)</text>
 
                   {/* Offline Models - Weak side */}
                   <rect x="260" y="262" width="120" height="32" rx="6" fill="rgba(100,116,139,0.2)" stroke="rgba(100,116,139,0.4)" strokeWidth="1.5" />
-                  <text x="320" y="273" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="600" textTransform="uppercase">OFFLINE FALLBACK</text>
+                  <text x="320" y="273" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>OFFLINE FALLBACK</text>
                   <text x="320" y="286" textAnchor="middle" fill="white" fontSize="10">Llama 3.2 3B (local)</text>
 
                   {/* Success checkmarks */}

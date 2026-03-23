@@ -32,7 +32,6 @@ import {
   Zap,
   ScanSearch,
   Brain,
-  MessagesSquare,
 } from 'lucide-react'
 
 // --- Section data ---
@@ -538,7 +537,7 @@ function Sidebar({
   activeSubsection: string
   mobileOpen: boolean
   onMobileClose: () => void
-  sidebarRef: React.RefObject<HTMLElement | null>
+  sidebarRef: React.Ref<HTMLElement>
 }) {
   return (
     <>

@@ -255,14 +255,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Client mode, template, and guardrails
   'get_client_guardrails_config': (args) => {
     const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
-    const guardrails = client ? (client as Record<string, unknown>).guardrails : undefined
+    const guardrails = client ? (client as unknown as Record<string, unknown>).guardrails : undefined
     return guardrails || { category_actions: null }
   },
   'update_client_guardrails_config': (args) => {
     const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
     if (client && args?.configJson) {
       try {
-        (client as Record<string, unknown>).guardrails = JSON.parse(args.configJson)
+        (client as unknown as Record<string, unknown>).guardrails = JSON.parse(args.configJson)
       } catch { /* ignore */ }
       setTimeout(() => emit('clients-changed', {}), 10)
     }
@@ -272,7 +272,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_client_mode': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client && args?.mode) {
-      (client as Record<string, unknown>).client_mode = args.mode
+      (client as unknown as Record<string, unknown>).client_mode = args.mode
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
@@ -280,7 +280,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_client_template': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
-      (client as Record<string, unknown>).template_id = args?.templateId || null
+      (client as unknown as Record<string, unknown>).template_id = args?.templateId || null
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
@@ -318,7 +318,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'toggle_client_sync_config': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
-      (client as Record<string, unknown>).sync_config = args?.enabled ?? false
+      (client as unknown as Record<string, unknown>).sync_config = args?.enabled ?? false
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     if (args?.enabled) {
@@ -1441,6 +1441,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         routellm_config: null,
       },
       rate_limits: args?.rateLimits || [],
+      free_tier_only: args?.freeTierOnly ?? false,
     }
     mockData.strategies.push(newStrategy)
     toast.success(`Strategy "${args?.name}" created (demo)`)
@@ -1922,11 +1923,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       cm_catalog_threshold_bytes: 50000,
     },
   ]),
-  'update_context_management_config': (args) => {
+  'update_context_management_config': (_args) => {
     toast.success('Context management config updated (demo)')
     return null
   },
-  'set_gateway_indexing_permission': (args) => {
+  'set_gateway_indexing_permission': (_args) => {
     toast.success('Gateway indexing permission updated (demo)')
     return null
   },
@@ -1950,7 +1951,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'get_seen_client_tools': () => [],
   'get_client_tools_indexing': () => null,
-  'set_client_tools_indexing': (args) => {
+  'set_client_tools_indexing': (_args) => {
     toast.success('Client tools indexing updated (demo)')
     return null
   },
@@ -2086,7 +2087,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success(`Session ${args?.sessionId || 'unknown'} terminated (demo)`)
     return null
   },
-  'get_session_context_sources': (args) => ([
+  'get_session_context_sources': (_args) => ([
     { source_label: 'catalog:filesystem', item_type: 'ServerWelcome', activated: true },
     { source_label: 'catalog:filesystem__read_file', item_type: 'Tool', activated: true },
     { source_label: 'catalog:filesystem__write_file', item_type: 'Tool', activated: true },
@@ -2246,14 +2247,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_client_coding_agent_permission': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId)
     if (client) {
-      (client as Record<string, unknown>).coding_agent_permission = args?.permission ?? 'off'
+      (client as unknown as Record<string, unknown>).coding_agent_permission = args?.permission ?? 'off'
     }
     return null
   },
   'set_client_coding_agent_type': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId)
     if (client) {
-      (client as Record<string, unknown>).coding_agent_type = args?.agentType ?? null
+      (client as unknown as Record<string, unknown>).coding_agent_type = args?.agentType ?? null
     }
     return null
   },
@@ -2366,7 +2367,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return null
   },
   'routellm_unload': () => {
-    mockData.routellmStatus.model_loaded = false
+    mockData.routellmStatus.state = 'downloaded_not_running'
     toast.success('RouteLLM model unloaded (demo)')
     return null
   },
@@ -2995,7 +2996,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       }
     }
 
-    const protectedSet = new Set(protectedIndices)
     const keptIndices = Array.from({ length: keepCount }, (_, i) => i)
     // Union with protected
     for (const pi of protectedIndices) {
@@ -3279,7 +3279,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     total: mockData.monitorEvents.length,
   }),
   'get_monitor_event_detail': (args) =>
-    mockData.monitorEvents.find((e: { id: string }) => e.id === args?.eventId) ?? null,
+    (mockData.monitorEvents as { id: string }[]).find(e => e.id === args?.eventId) ?? null,
   'clear_monitor_events': () => null,
   'get_monitor_stats': () => ({
     total_events: mockData.monitorEvents.length,

@@ -1,7 +1,4 @@
 // Stub for @tauri-apps/api/mocks in demo mode
-type MockHandler = (args: unknown) => unknown
-
-const handlers: Record<string, MockHandler> = {}
 
 export const mockIPC = (handler: (cmd: string, args: unknown) => unknown) => {
   // Store a generic handler that will be called for all commands

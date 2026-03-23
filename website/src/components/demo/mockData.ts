@@ -6,7 +6,7 @@
  */
 
 // Types for mock data validation - see src/types/tauri-commands.ts for full definitions
-import type { RouteLLMStatus } from '@app/types/tauri-commands'
+import type { ClientInfo, RouteLLMStatus, SkillInfo } from '@app/types/tauri-commands'
 
 // MCP Server interface - simplified for mock data
 // Full type: McpServerInfo from @app/types/tauri-commands
@@ -104,7 +104,7 @@ export const mockData = {
       guardrails_active: false,
       json_repair_active: true,
     },
-  ] as Client[],
+  ] as unknown as ClientInfo[],
 
   providers: [
     {

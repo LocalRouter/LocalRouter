@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/components/ui/Button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -8,7 +8,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Github, Menu, X, Sun, Moon, Monitor } from 'lucide-react'
 import { useState } from 'react'
-import Logo from './Logo'
+import { Logo } from './Logo'
 import { useTheme } from '@/hooks/use-theme'
 
 export default function Navigation() {
