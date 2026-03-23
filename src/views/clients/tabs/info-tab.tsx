@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { FEATURES } from "@/constants/features"
 import ReactFlow, {
+  ReactFlowProvider,
   Background,
   Controls,
   useNodesState,
@@ -214,31 +215,33 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
         <Skeleton className="w-full h-[150px] rounded-lg" />
       ) : graphNodes.length > 0 ? (
         <div style={{ height: containerHeight }} className="w-full rounded-lg border overflow-hidden">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            nodeTypes={nodeTypes}
-            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-            minZoom={0.5}
-            maxZoom={1.5}
-            nodesDraggable={false}
-            nodesConnectable={false}
-            elementsSelectable={false}
-            panOnDrag={true}
-            zoomOnScroll={true}
-            preventScrolling={false}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background color="#94a3b8" gap={16} size={1} />
-            <Controls
-              showZoom={true}
-              showFitView={true}
-              showInteractive={false}
-              position="bottom-right"
-            />
-          </ReactFlow>
+          <ReactFlowProvider>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              nodeTypes={nodeTypes}
+              defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+              minZoom={0.5}
+              maxZoom={1.5}
+              nodesDraggable={false}
+              nodesConnectable={false}
+              elementsSelectable={false}
+              panOnDrag={true}
+              zoomOnScroll={true}
+              preventScrolling={false}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background color="#94a3b8" gap={16} size={1} />
+              <Controls
+                showZoom={true}
+                showFitView={true}
+                showInteractive={false}
+                position="bottom-right"
+              />
+            </ReactFlow>
+          </ReactFlowProvider>
         </div>
       ) : null}
 

@@ -7,6 +7,7 @@
 
 import { useMemo, useState } from 'react'
 import ReactFlow, {
+  ReactFlowProvider,
   Background,
   type NodeTypes,
   type Node,
@@ -137,28 +138,30 @@ export default function McpViaLlmDiagram() {
   return (
     <div className="w-full">
       <div style={{ height: containerHeight }}>
-        <ReactFlow
-          key={mode}
-          nodes={nodes as Node<GraphNodeData>[]}
-          edges={edges as Edge[]}
-          nodeTypes={nodeTypes}
-          defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-          fitView
-          fitViewOptions={{ padding: 0.15 }}
-          minZoom={0.5}
-          maxZoom={1.5}
-          nodesDraggable={false}
-          nodesConnectable={false}
-          elementsSelectable={false}
-          panOnDrag={false}
-          zoomOnScroll={false}
-          zoomOnPinch={false}
-          zoomOnDoubleClick={false}
-          preventScrolling={true}
-          proOptions={{ hideAttribution: true }}
-        >
-          <Background color="#94a3b8" gap={16} size={1} />
-        </ReactFlow>
+        <ReactFlowProvider>
+          <ReactFlow
+            key={mode}
+            nodes={nodes as Node<GraphNodeData>[]}
+            edges={edges as Edge[]}
+            nodeTypes={nodeTypes}
+            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+            fitView
+            fitViewOptions={{ padding: 0.15 }}
+            minZoom={0.5}
+            maxZoom={1.5}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            elementsSelectable={false}
+            panOnDrag={false}
+            zoomOnScroll={false}
+            zoomOnPinch={false}
+            zoomOnDoubleClick={false}
+            preventScrolling={true}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background color="#94a3b8" gap={16} size={1} />
+          </ReactFlow>
+        </ReactFlowProvider>
       </div>
       <div className="flex justify-center py-3 border-t border-border/50">
         <div className="inline-flex rounded-lg bg-muted p-0.5 text-sm">

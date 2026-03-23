@@ -1,5 +1,6 @@
 import { useMemo, useEffect, useCallback } from 'react'
 import ReactFlow, {
+  ReactFlowProvider,
   Background,
   Controls,
   useNodesState,
@@ -171,32 +172,34 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
       </CardHeader>
       <CardContent className="p-0">
         <div style={{ height: containerHeight }} className="w-full rounded-b-lg overflow-hidden">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodeClick={handleNodeClick}
-            nodeTypes={nodeTypes}
-            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-            minZoom={0.5}
-            maxZoom={1.5}
-            nodesDraggable={false}
-            nodesConnectable={false}
-            elementsSelectable={false}
-            panOnDrag={true}
-            zoomOnScroll={true}
-            preventScrolling={false}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background color="#94a3b8" gap={16} size={1} />
-            <Controls
-              showZoom={true}
-              showFitView={true}
-              showInteractive={false}
-              position="bottom-right"
-            />
-          </ReactFlow>
+          <ReactFlowProvider>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeClick={handleNodeClick}
+              nodeTypes={nodeTypes}
+              defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+              minZoom={0.5}
+              maxZoom={1.5}
+              nodesDraggable={false}
+              nodesConnectable={false}
+              elementsSelectable={false}
+              panOnDrag={true}
+              zoomOnScroll={true}
+              preventScrolling={false}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background color="#94a3b8" gap={16} size={1} />
+              <Controls
+                showZoom={true}
+                showFitView={true}
+                showInteractive={false}
+                position="bottom-right"
+              />
+            </ReactFlow>
+          </ReactFlowProvider>
         </div>
       </CardContent>
     </Card>

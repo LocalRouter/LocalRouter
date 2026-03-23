@@ -1,4 +1,5 @@
 import ReactFlow, {
+  ReactFlowProvider,
   Node,
   Edge,
   Position,
@@ -417,23 +418,25 @@ export default function ArchitectureDiagram() {
   return (
     <div className="w-full" style={{ height: '420px' }}>
       <style>{hideHandlesStyle}</style>
-      <ReactFlow
-        nodes={initialNodes}
-        edges={initialEdges}
-        fitView
-        fitViewOptions={{ padding: 0.12 }}
-        proOptions={{ hideAttribution: true }}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable={false}
-        panOnDrag={false}
-        zoomOnScroll={false}
-        zoomOnPinch={false}
-        zoomOnDoubleClick={false}
-        preventScrolling={true}
-        minZoom={1}
-        maxZoom={1}
-      />
+      <ReactFlowProvider>
+        <ReactFlow
+          nodes={initialNodes}
+          edges={initialEdges}
+          fitView
+          fitViewOptions={{ padding: 0.12 }}
+          proOptions={{ hideAttribution: true }}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          panOnDrag={false}
+          zoomOnScroll={false}
+          zoomOnPinch={false}
+          zoomOnDoubleClick={false}
+          preventScrolling={true}
+          minZoom={1}
+          maxZoom={1}
+        />
+      </ReactFlowProvider>
     </div>
   )
 }
