@@ -753,7 +753,7 @@ impl MemoryService {
             let started = std::time::Instant::now();
 
             match compaction::recompact_session(session_id, &archive_dir, llm, &model_str).await {
-                Ok(result) => {
+                Ok(compaction::RecompactOutcome::Summarized(result)) => {
                     recompacted_count += 1;
 
                     // Update FTS5 index: index summary, delete raw
@@ -777,6 +777,23 @@ impl MemoryService {
                         let raw_label = format!("session/{}", session_id);
                         let _ = store.delete(&raw_label);
                     }
+                }
+                Ok(compaction::RecompactOutcome::EmptyResponse(result)) => {
+                    failed_count += 1;
+                    if let Some(event_id) = &monitor_event_id {
+                        error_compaction_event_with_result(
+                            &self.monitor_store,
+                            event_id,
+                            "LLM returned empty summary",
+                            &result,
+                            transcript_bytes,
+                            started.elapsed().as_millis() as u64,
+                        );
+                    }
+                    tracing::warn!(
+                        "Recompact empty summary for session {}",
+                        short_id,
+                    );
                 }
                 Err(e) => {
                     failed_count += 1;
