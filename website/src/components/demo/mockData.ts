@@ -423,7 +423,7 @@ export const mockData = {
       description: "Cloudflare Workers AI inference platform",
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Cloudflare API token", sensitive: true },
-        { key: "base_url", param_type: "string", required: true, description: "Cloudflare AI Gateway URL (includes your account ID)", sensitive: false },
+        { key: "base_url", param_type: "string", required: true, description: "Cloudflare AI Gateway URL (find it on the AI Gateway page)", sensitive: false },
       ],
       default_free_tier: { kind: "rate_limited_free", max_rpm: 0, max_rpd: 0, max_tpm: 0, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
       free_tier_short_text: "Free tier available",

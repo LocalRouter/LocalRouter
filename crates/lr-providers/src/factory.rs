@@ -1915,7 +1915,7 @@ impl ProviderFactory for CloudflareAIProviderFactory {
             SetupParameter::required(
                 "base_url",
                 ParameterType::BaseUrl,
-                "Cloudflare AI Gateway URL (includes your account ID)",
+                "Cloudflare AI Gateway URL (find it on the AI Gateway page)",
                 false,
             ),
         ]
