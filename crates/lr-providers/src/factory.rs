@@ -1790,7 +1790,7 @@ impl ProviderFactory for GitHubModelsProviderFactory {
     }
 
     fn catalog_provider_id(&self) -> Option<&str> {
-        None
+        Some("github-models") // models.dev uses "github-models" not "github_models"
     }
 }
 
@@ -1865,7 +1865,7 @@ impl ProviderFactory for NvidiaNimProviderFactory {
     }
 
     fn catalog_provider_id(&self) -> Option<&str> {
-        None
+        Some("nvidia") // models.dev uses "nvidia" not "nvidia_nim"
     }
 }
 
@@ -1963,7 +1963,7 @@ impl ProviderFactory for CloudflareAIProviderFactory {
     }
 
     fn catalog_provider_id(&self) -> Option<&str> {
-        None
+        Some("cloudflare-workers-ai") // models.dev uses "cloudflare-workers-ai"
     }
 }
 
@@ -2180,7 +2180,7 @@ impl ProviderFactory for HuggingFaceProviderFactory {
     }
 
     fn catalog_provider_id(&self) -> Option<&str> {
-        None
+        Some("huggingface")
     }
 }
 
@@ -2607,7 +2607,7 @@ mod tests {
         assert_eq!(factory.provider_type(), "github_models");
         assert_eq!(factory.display_name(), "GitHub Models");
         assert_eq!(factory.category(), ProviderCategory::ThirdParty);
-        assert!(factory.catalog_provider_id().is_none());
+        assert_eq!(factory.catalog_provider_id(), Some("github-models"));
     }
 
     #[test]
@@ -2664,7 +2664,7 @@ mod tests {
         assert_eq!(factory.provider_type(), "nvidia_nim");
         assert_eq!(factory.display_name(), "NVIDIA NIM");
         assert_eq!(factory.category(), ProviderCategory::ThirdParty);
-        assert!(factory.catalog_provider_id().is_none());
+        assert_eq!(factory.catalog_provider_id(), Some("nvidia"));
     }
 
     #[test]
@@ -2704,7 +2704,7 @@ mod tests {
         assert_eq!(factory.provider_type(), "cloudflare_ai");
         assert_eq!(factory.display_name(), "Cloudflare Workers AI");
         assert_eq!(factory.category(), ProviderCategory::ThirdParty);
-        assert!(factory.catalog_provider_id().is_none());
+        assert_eq!(factory.catalog_provider_id(), Some("cloudflare-workers-ai"));
     }
 
     #[test]
@@ -2879,7 +2879,7 @@ mod tests {
         assert_eq!(factory.provider_type(), "huggingface");
         assert_eq!(factory.display_name(), "Hugging Face");
         assert_eq!(factory.category(), ProviderCategory::ThirdParty);
-        assert!(factory.catalog_provider_id().is_none());
+        assert_eq!(factory.catalog_provider_id(), Some("huggingface"));
     }
 
     #[test]
@@ -2996,17 +2996,32 @@ mod tests {
     }
 
     #[test]
-    fn test_all_new_providers_have_no_catalog() {
-        let factories: Vec<Box<dyn ProviderFactory>> = vec![
-            Box::new(GitHubModelsProviderFactory),
-            Box::new(NvidiaNimProviderFactory),
-            Box::new(CloudflareAIProviderFactory),
+    fn test_new_providers_catalog_mappings() {
+        // Providers with catalog data should have correct catalog_provider_id
+        assert_eq!(
+            GitHubModelsProviderFactory.catalog_provider_id(),
+            Some("github-models")
+        );
+        assert_eq!(
+            NvidiaNimProviderFactory.catalog_provider_id(),
+            Some("nvidia")
+        );
+        assert_eq!(
+            CloudflareAIProviderFactory.catalog_provider_id(),
+            Some("cloudflare-workers-ai")
+        );
+        assert_eq!(
+            HuggingFaceProviderFactory.catalog_provider_id(),
+            Some("huggingface")
+        );
+
+        // Providers without catalog data should return None
+        let no_catalog: Vec<Box<dyn ProviderFactory>> = vec![
             Box::new(Llm7ProviderFactory),
             Box::new(KlusterAIProviderFactory),
-            Box::new(HuggingFaceProviderFactory),
             Box::new(ZhipuProviderFactory),
         ];
-        for factory in &factories {
+        for factory in &no_catalog {
             assert!(
                 factory.catalog_provider_id().is_none(),
                 "{} should have no catalog mapping",

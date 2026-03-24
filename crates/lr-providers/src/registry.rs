@@ -243,6 +243,9 @@ pub struct ProviderInstance {
     /// Provider type (e.g., "ollama", "openai", "anthropic")
     pub provider_type: String,
 
+    /// Catalog provider ID for models.dev lookup (may differ from provider_type)
+    pub catalog_provider_id: Option<String>,
+
     /// The provider implementation
     pub provider: Arc<dyn ModelProvider>,
 
@@ -403,6 +406,7 @@ impl ProviderRegistry {
             .ok_or_else(|| AppError::Config(format!("Unknown provider type: {}", provider_type)))?;
 
         // Create provider
+        let catalog_provider_id = factory.catalog_provider_id().map(|s| s.to_string());
         let provider = factory.create(instance_name.clone(), config.clone())?;
 
         // Register with health check manager
@@ -414,6 +418,7 @@ impl ProviderRegistry {
         let instance = ProviderInstance {
             instance_name: instance_name.clone(),
             provider_type,
+            catalog_provider_id,
             provider,
             config,
             created_at: Utc::now(),
@@ -518,6 +523,7 @@ impl ProviderRegistry {
             .ok_or_else(|| AppError::Config(format!("Unknown provider type: {}", provider_type)))?;
 
         // Create new provider with updated config
+        let catalog_provider_id = factory.catalog_provider_id().map(|s| s.to_string());
         let provider = factory.create(instance_name.clone(), config.clone())?;
 
         // Register with health check manager
@@ -529,6 +535,7 @@ impl ProviderRegistry {
         let instance = ProviderInstance {
             instance_name: instance_name.clone(),
             provider_type,
+            catalog_provider_id,
             provider,
             config,
             created_at, // Preserve original creation time
@@ -731,12 +738,13 @@ impl ProviderRegistry {
             Err(e) => {
                 warn!("Failed to fetch models from '{}': {}", instance_name, e);
 
-                // 3. Fallback strategy
-                self.fallback_to_catalog_or_stale_cache(
-                    instance_name,
-                    &provider_instance.provider_type,
-                )
-                .await
+                // 3. Fallback strategy - use catalog_provider_id if available, else provider_type
+                let catalog_id = provider_instance
+                    .catalog_provider_id
+                    .as_deref()
+                    .unwrap_or(&provider_instance.provider_type);
+                self.fallback_to_catalog_or_stale_cache(instance_name, catalog_id)
+                    .await
             }
         }
     }
