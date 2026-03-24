@@ -4,21 +4,13 @@
  * Streamlined wizard for creating a new client:
  * 0. Welcome - Introduction to LocalRouter (first launch only, optional)
  * 1. Template - Select an app template (Claude Code, Cursor, etc.)
- * 2. Name + Mode - Name the client and select LLM / MCP / Both
- * 3. Models - Configure model access using StrategyModelConfiguration (skipped for mcp_only)
- * 4. Extensions - MCP servers, Skills, Coding Agents, Marketplace (skipped for llm_only)
- * 5. Credentials - View and copy the generated credentials
- *
- * The client is created after step 2 (Name + Mode) so that step 3 (Models)
- * can use the real StrategyModelConfiguration component which saves directly
- * to the backend - fixing the auto router bug and staying in sync with the
- * rest of the app.
+ * 2. Name + Mode - Name the client and select LLM / MCP / Both (creates client)
  */
 
-import { useState, useMemo, useEffect, useCallback, useRef } from "react"
+import { useState, useMemo, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react"
+import { ChevronLeft, Loader2 } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -31,15 +23,11 @@ import { Button } from "@/components/ui/Button"
 import { StepWelcome } from "./steps/StepWelcome"
 import { StepTemplate } from "./steps/StepTemplate"
 import { StepNameAndMode } from "./steps/StepNameAndMode"
-import { StepCredentials } from "./steps/StepCredentials"
-import { StepExtensions } from "./steps/StepExtensions"
-import { StrategyModelConfiguration } from "@/components/strategy/StrategyModelConfiguration"
 import { CLIENT_TEMPLATES, type ClientTemplate } from "@/components/client/ClientTemplates"
-import type { ClientMode, CodingAgentType, SetClientModeParams, SetClientTemplateParams } from "@/types/tauri-commands"
-import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions/types"
+import type { ClientMode, SetClientModeParams, SetClientTemplateParams } from "@/types/tauri-commands"
 
 // Logical step identifiers
-type StepId = "welcome" | "template" | "name_mode" | "models" | "extensions" | "credentials"
+type StepId = "welcome" | "template" | "name_mode"
 
 interface StepDef {
   id: StepId
@@ -48,22 +36,9 @@ interface StepDef {
 }
 
 interface WizardState {
-  // Template & Mode
   selectedTemplate: ClientTemplate | null
   clientMode: ClientMode
   clientName: string
-
-  // After creation (set after step 2)
-  clientId?: string
-  clientUuid?: string
-  clientSecret?: string
-  strategyId?: string
-  modelPermissions?: ModelPermissions
-  mcpPermissions?: McpPermissions
-  skillsPermissions?: SkillsPermissions
-  codingAgentPermission?: PermissionState
-  codingAgentType?: CodingAgentType | null
-  marketplacePermission?: PermissionState
 }
 
 interface ClientCreationWizardProps {
@@ -79,14 +54,7 @@ interface ClientCreationWizardProps {
 interface ClientInfo {
   id: string
   client_id: string
-  strategy_id: string
   name: string
-  model_permissions: ModelPermissions
-  mcp_permissions: McpPermissions
-  skills_permissions: SkillsPermissions
-  coding_agent_permission: PermissionState
-  coding_agent_type: CodingAgentType | null
-  marketplace_permission: PermissionState
 }
 
 const INITIAL_STATE: WizardState = {
@@ -158,25 +126,12 @@ export function ClientCreationWizard({
       { id: "name_mode", title: "Setup", description: "Name your client and choose what it can access." },
     )
 
-    // Models step: skipped for mcp_only
-    if (state.clientMode !== "mcp_only") {
-      steps.push({ id: "models", title: "Configure Models", description: "Choose how models are selected and accessed." })
-    }
-
-    // Extensions step: skipped for llm_only
-    if (state.clientMode !== "llm_only") {
-      steps.push({ id: "extensions", title: "Extensions", description: "Configure MCP servers, skills, and more." })
-    }
-
-    steps.push({ id: "credentials", title: "Your Credentials", description: "Save your credentials securely." })
-
     return steps
-  }, [showWelcome, state.clientMode])
+  }, [showWelcome])
 
   const currentStepDef = visibleSteps[currentStep]
   const isFirstStep = currentStep === 0
   const isLastStep = currentStep === visibleSteps.length - 1
-  const isCredentialsStep = currentStepDef?.id === "credentials"
   const isTemplateStep = currentStepDef?.id === "template"
   const isNameModeStep = currentStepDef?.id === "name_mode"
   const canProceed = () => {
@@ -185,16 +140,12 @@ export function ClientCreationWizard({
       case "welcome": return true
       case "template": return false // Auto-advances on selection
       case "name_mode": return state.clientName.trim().length > 0
-      case "models": return true
-      case "extensions": return true
-      case "credentials": return true
       default: return false
     }
   }
 
   const handleNext = async () => {
     if (isNameModeStep) {
-      // Create client after name+mode step, before models/extensions
       await createClient()
     } else if (!isLastStep) {
       setCurrentStep((prev) => prev + 1)
@@ -202,10 +153,7 @@ export function ClientCreationWizard({
   }
 
   const handleBack = () => {
-    if (!isFirstStep && !isCredentialsStep) {
-      // If going back from models step, we already created the client.
-      // That's fine - user can still modify settings, and re-advancing
-      // won't re-create (we check for existing clientId).
+    if (!isFirstStep) {
       setCurrentStep((prev) => prev - 1)
     }
   }
@@ -222,27 +170,12 @@ export function ClientCreationWizard({
     setCurrentStep((prev) => prev + 1)
   }
 
-  // Find the first post-creation step
-  const findNextStepAfterCreation = () => {
-    const modelsIdx = visibleSteps.findIndex(s => s.id === "models")
-    if (modelsIdx !== -1) return modelsIdx
-    const extIdx = visibleSteps.findIndex(s => s.id === "extensions")
-    if (extIdx !== -1) return extIdx
-    return visibleSteps.findIndex(s => s.id === "credentials")
-  }
-
   const createClient = async () => {
-    // Skip if client already created (user went back and forward again)
-    if (state.clientId) {
-      setCurrentStep(findNextStepAfterCreation())
-      return
-    }
-
     try {
       setCreating(true)
 
       // Step 1: Create the client
-      const [secret, clientInfo] = await invoke<[string, ClientInfo]>("create_client", {
+      const [, clientInfo] = await invoke<[string, ClientInfo]>("create_client", {
         name: state.clientName.trim(),
       })
 
@@ -262,60 +195,15 @@ export function ClientCreationWizard({
         } satisfies SetClientTemplateParams)
       }
 
-      // Update state with created client info
-      setState((prev) => ({
-        ...prev,
-        clientId: clientInfo.client_id,
-        clientUuid: clientInfo.id,
-        clientSecret: secret,
-        strategyId: clientInfo.strategy_id,
-        modelPermissions: clientInfo.model_permissions,
-        mcpPermissions: clientInfo.mcp_permissions,
-        skillsPermissions: clientInfo.skills_permissions,
-        codingAgentPermission: clientInfo.coding_agent_permission,
-        codingAgentType: clientInfo.coding_agent_type,
-        marketplacePermission: clientInfo.marketplace_permission,
-      }))
-
-      // Advance to first post-creation step
-      setCurrentStep(findNextStepAfterCreation())
+      // Complete the wizard
+      onComplete(clientInfo.id)
+      handleClose()
     } catch (error) {
       console.error("Failed to create client:", error)
       toast.error(`Failed to create client: ${error}`)
     } finally {
       setCreating(false)
     }
-  }
-
-  const handleClientUpdate = useCallback(() => {
-    // Reload permissions after shared components make changes
-    if (state.clientUuid) {
-      invoke<ClientInfo[]>("list_clients")
-        .then((clients) => {
-          const client = clients.find(c => c.id === state.clientUuid)
-          if (client) {
-            setState((prev) => ({
-              ...prev,
-              modelPermissions: client.model_permissions,
-              mcpPermissions: client.mcp_permissions,
-              skillsPermissions: client.skills_permissions,
-              codingAgentPermission: client.coding_agent_permission,
-              codingAgentType: client.coding_agent_type,
-              marketplacePermission: client.marketplace_permission,
-            }))
-          }
-        })
-        .catch(() => {
-          // Non-critical, permissions will be correct on next load
-        })
-    }
-  }, [state.clientUuid])
-
-  const handleComplete = () => {
-    if (state.clientUuid) {
-      onComplete(state.clientUuid)
-    }
-    handleClose()
   }
 
   const handleClose = () => {
@@ -342,44 +230,6 @@ export function ClientCreationWizard({
             template={state.selectedTemplate}
           />
         )
-      case "models":
-        if (!state.strategyId || !state.clientId) return null
-        return (
-          <div className="wizard-compact-cards [&>div>div]:ml-0">
-            <StrategyModelConfiguration
-              strategyId={state.strategyId}
-              clientContext={state.modelPermissions ? {
-                clientId: state.clientId,
-                modelPermissions: state.modelPermissions,
-                onClientUpdate: handleClientUpdate,
-              } : undefined}
-              inDialog
-            />
-          </div>
-        )
-      case "extensions":
-        if (!state.clientId || !state.mcpPermissions || !state.skillsPermissions) return null
-        return (
-          <StepExtensions
-            clientId={state.clientId}
-            mcpPermissions={state.mcpPermissions}
-            skillsPermissions={state.skillsPermissions}
-            codingAgentPermission={state.codingAgentPermission || "off"}
-            codingAgentType={state.codingAgentType ?? null}
-            marketplacePermission={state.marketplacePermission || "off"}
-            onUpdate={handleClientUpdate}
-          />
-        )
-      case "credentials":
-        return (
-          <StepCredentials
-            clientId={state.clientId || ""}
-            clientUuid={state.clientUuid || ""}
-            secret={state.clientSecret || null}
-            templateId={state.selectedTemplate?.id !== "custom" ? state.selectedTemplate?.id : null}
-            clientMode={state.clientMode}
-          />
-        )
       default:
         return null
     }
@@ -389,7 +239,7 @@ export function ClientCreationWizard({
   const showNextButton = !isTemplateStep
 
   return (
-    <Dialog open={open} onOpenChange={isCredentialsStep ? undefined : handleClose}>
+    <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-[600px]">
         <DialogHeader>
           <div className="flex items-center gap-2 mb-1">
@@ -411,7 +261,7 @@ export function ClientCreationWizard({
 
         <DialogFooter className="flex justify-between sm:justify-between">
           <div>
-            {!isFirstStep && !isCredentialsStep && (
+            {!isFirstStep && (
               <Button variant="outline" onClick={handleBack} disabled={creating}>
                 <ChevronLeft className="mr-1 h-4 w-4" />
                 Back
@@ -419,32 +269,18 @@ export function ClientCreationWizard({
             )}
           </div>
           <div className="flex gap-2">
-            {isCredentialsStep ? (
-              <Button onClick={handleComplete}>Done</Button>
-            ) : showNextButton ? (
-              <>
-                {state.clientId && (
-                  <Button variant="outline" onClick={handleComplete}>
-                    Done
-                  </Button>
+            {showNextButton && (
+              <Button onClick={handleNext} disabled={!canProceed() || creating}>
+                {creating ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  "Create Client"
                 )}
-                <Button onClick={handleNext} disabled={!canProceed() || creating}>
-                  {creating ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Creating...
-                    </>
-                  ) : isNameModeStep ? (
-                    "Create Client"
-                  ) : (
-                    <>
-                      Next
-                      <ChevronRight className="ml-1 h-4 w-4" />
-                    </>
-                  )}
-                </Button>
-              </>
-            ) : null}
+              </Button>
+            )}
           </div>
         </DialogFooter>
       </DialogContent>
