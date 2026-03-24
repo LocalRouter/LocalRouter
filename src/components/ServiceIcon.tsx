@@ -43,6 +43,15 @@ const ICON_MAP: Record<string, string> = {
   openrouter: 'openrouter.png',
   'openai_compatible': 'openai.png',
   'openai-compatible': 'openai.png',
+  github_models: 'github.png',
+  nvidia_nim: 'nvidia.svg',
+  nvidia: 'nvidia.svg',
+  cloudflare_ai: 'cloudflare.svg',
+  llm7: 'llm7.png',
+  kluster_ai: 'kluster.svg',
+  huggingface: 'huggingface.svg',
+  'hugging-face': 'huggingface.svg',
+  zhipu: 'zhipu.svg',
 
   // OAuth/Subscription Providers
   'github-copilot': 'github.png',
@@ -135,6 +144,15 @@ const EMOJI_MAP: Record<string, string> = {
   openrouter: '🌐',
   'openai_compatible': '🔌',
   'openai-compatible': '🔌',
+  github_models: '🐙',
+  nvidia_nim: '💚',
+  nvidia: '💚',
+  cloudflare_ai: '🔶',
+  llm7: '🐴',
+  kluster_ai: '🔗',
+  huggingface: '🤗',
+  'hugging-face': '🤗',
+  zhipu: '🇨🇳',
 
   // OAuth Providers
   'github-copilot': '🐙',
