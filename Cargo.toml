@@ -30,7 +30,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.97"
+version = "0.0.98"
 edition = "2021"
 authors = ["Matus Faro"]
 license = "AGPL-3.0-or-later"
