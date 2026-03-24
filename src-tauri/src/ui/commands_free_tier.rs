@@ -37,6 +37,12 @@ pub struct ProviderFreeTierStatus {
     pub is_backed_off: bool,
     pub backoff_retry_after_secs: Option<u64>,
     pub backoff_reason: Option<String>,
+    // Cost backoff (cost watchdog)
+    pub cost_backoff_active: bool,
+    pub cost_backoff_retry_after_secs: Option<u64>,
+    pub cost_backoff_duration_secs: Option<u64>,
+    pub cost_backoff_last_trigger: Option<String>,
+    pub cost_backoff_trigger_count: u32,
     // Summary
     pub has_capacity: bool,
     pub status_message: String,
@@ -90,6 +96,11 @@ pub async fn get_free_tier_status(
             is_backed_off: false,
             backoff_retry_after_secs: None,
             backoff_reason: None,
+            cost_backoff_active: false,
+            cost_backoff_retry_after_secs: None,
+            cost_backoff_duration_secs: None,
+            cost_backoff_last_trigger: None,
+            cost_backoff_trigger_count: 0,
             has_capacity: true,
             status_message: "Available".to_string(),
         };
@@ -200,6 +211,18 @@ pub async fn get_free_tier_status(
             status.backoff_reason = Some(backoff.reason);
         }
 
+        // Check cost backoff
+        let cost_status = free_tier_manager.get_cost_backoff_status(&provider.name);
+        status.cost_backoff_active = cost_status.in_backoff;
+        status.cost_backoff_retry_after_secs = cost_status.retry_after_secs;
+        status.cost_backoff_duration_secs = if cost_status.backoff_secs > 0 {
+            Some(cost_status.backoff_secs)
+        } else {
+            None
+        };
+        status.cost_backoff_last_trigger = cost_status.last_trigger.map(|t| t.to_rfc3339());
+        status.cost_backoff_trigger_count = cost_status.trigger_count;
+
         statuses.push(status);
     }
 
@@ -301,6 +324,23 @@ pub async fn set_provider_free_tier_usage(
         tracing::error!("Failed to persist free tier state: {}", e);
     }
 
+    Ok(())
+}
+
+/// Reset cost backoff for a provider (clears the cost watchdog flag)
+#[tauri::command]
+pub async fn reset_cost_backoff(
+    provider_instance: String,
+    free_tier_manager: State<'_, Arc<FreeTierManager>>,
+) -> Result<(), String> {
+    tracing::info!(
+        "Resetting cost backoff for provider '{}'",
+        provider_instance
+    );
+    free_tier_manager.reset_cost_backoff(&provider_instance);
+    if let Err(e) = free_tier_manager.persist() {
+        tracing::error!("Failed to persist free tier state: {}", e);
+    }
     Ok(())
 }
 

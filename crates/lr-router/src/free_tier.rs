@@ -322,11 +322,55 @@ impl Default for CreditTracker {
     }
 }
 
+// ============================================================
+// Cost Backoff (cost watchdog for free tier)
+// ============================================================
+
+/// Initial backoff duration when a paid request is first detected (5 minutes)
+const COST_BACKOFF_INITIAL_SECS: u64 = 300;
+/// Maximum backoff duration (24 hours)
+const COST_BACKOFF_MAX_SECS: u64 = 86400;
+/// How much backoff decreases per successful free probe (5 minutes)
+const COST_BACKOFF_RECOVERY_SECS: u64 = 300;
+
+/// Cost-based backoff state for a provider.
+///
+/// When a free-tier provider silently starts charging (instead of returning 429),
+/// this watchdog detects the cost and enters exponential backoff. After the backoff
+/// expires, a single probe request is allowed. If the probe is free, the backoff
+/// shrinks linearly. If the probe costs money, the backoff doubles.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CostBackoff {
+    /// When the last paid request was detected (None = never flagged / fully recovered)
+    pub last_trigger: Option<DateTime<Utc>>,
+    /// Current backoff duration in seconds
+    pub backoff_secs: u64,
+    /// Total times this provider has been flagged (lifetime counter)
+    pub trigger_count: u32,
+}
+
+/// Status returned by cost backoff check
+#[derive(Debug, Clone)]
+pub struct CostBackoffStatus {
+    /// Whether the provider is currently in backoff
+    pub in_backoff: bool,
+    /// Seconds remaining until backoff expires (None if not in backoff)
+    pub retry_after_secs: Option<u64>,
+    /// Current backoff duration in seconds
+    pub backoff_secs: u64,
+    /// When last flagged
+    pub last_trigger: Option<DateTime<Utc>>,
+    /// Lifetime trigger count
+    pub trigger_count: u32,
+}
+
 /// Full persisted state for the FreeTierManager
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FreeTierState {
     pub rate_trackers: Vec<(String, RateLimitTracker)>,
     pub credit_trackers: Vec<(String, CreditTracker)>,
+    #[serde(default)]
+    pub cost_backoffs: Vec<(String, CostBackoff)>,
 }
 
 // ============================================================
@@ -342,6 +386,8 @@ pub struct FreeTierManager {
     credit_trackers: DashMap<String, RwLock<CreditTracker>>,
     /// Per provider-model backoff tracking (in-memory only)
     backoffs: DashMap<String, RwLock<ProviderBackoff>>,
+    /// Per-provider cost-based backoff (persisted)
+    cost_backoffs: DashMap<String, RwLock<CostBackoff>>,
     /// Persistence path
     persist_path: Option<PathBuf>,
 }
@@ -353,6 +399,7 @@ impl FreeTierManager {
             rate_trackers: DashMap::new(),
             credit_trackers: DashMap::new(),
             backoffs: DashMap::new(),
+            cost_backoffs: DashMap::new(),
             persist_path,
         }
     }
@@ -369,6 +416,9 @@ impl FreeTierManager {
                 }
                 for (key, tracker) in state.credit_trackers {
                     manager.credit_trackers.insert(key, RwLock::new(tracker));
+                }
+                for (key, backoff) in state.cost_backoffs {
+                    manager.cost_backoffs.insert(key, RwLock::new(backoff));
                 }
                 debug!("Loaded free tier state from {:?}", path);
             } else {
@@ -393,6 +443,11 @@ impl FreeTierManager {
                 .collect(),
             credit_trackers: self
                 .credit_trackers
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().read().clone()))
+                .collect(),
+            cost_backoffs: self
+                .cost_backoffs
                 .iter()
                 .map(|entry| (entry.key().clone(), entry.value().read().clone()))
                 .collect(),
@@ -1002,6 +1057,8 @@ impl FreeTierManager {
         // Clear all backoffs for this provider
         let prefix = format!("{}::", provider_instance);
         self.backoffs.retain(|k, _| !k.starts_with(&prefix));
+        // Clear cost backoff
+        self.cost_backoffs.remove(provider_instance);
     }
 
     /// Manually set credit usage for a provider (from UI)
@@ -1095,6 +1152,130 @@ impl FreeTierManager {
         }
 
         best
+    }
+
+    // ============================================================
+    // Cost Backoff (cost watchdog for free tier)
+    // ============================================================
+
+    /// Before hook: check if a provider is in cost-based backoff.
+    ///
+    /// Returns `None` if the provider is allowed (not flagged, or backoff expired).
+    /// Returns `Some(retry_after_secs)` if the provider should be skipped.
+    pub fn check_cost_backoff(&self, provider_instance: &str) -> Option<u64> {
+        let entry = self.cost_backoffs.get(provider_instance)?;
+        let backoff = entry.read();
+
+        let last_trigger = backoff.last_trigger?;
+        let elapsed = Utc::now()
+            .signed_duration_since(last_trigger)
+            .num_seconds()
+            .max(0) as u64;
+
+        if elapsed < backoff.backoff_secs {
+            Some(backoff.backoff_secs - elapsed)
+        } else {
+            // Backoff expired — allow as a probe
+            None
+        }
+    }
+
+    /// After hook: a request cost money. Flag the provider and enter/escalate backoff.
+    ///
+    /// - First offense: 5 minute backoff
+    /// - Repeat offense: double the previous backoff (capped at 24 hours)
+    pub fn record_cost_trigger(&self, provider_instance: &str) {
+        let entry = self
+            .cost_backoffs
+            .entry(provider_instance.to_string())
+            .or_insert_with(|| RwLock::new(CostBackoff::default()));
+        let mut backoff = entry.write();
+
+        if backoff.last_trigger.is_none() {
+            // First offense
+            backoff.backoff_secs = COST_BACKOFF_INITIAL_SECS;
+        } else {
+            // Repeat offense — double the backoff
+            backoff.backoff_secs = (backoff.backoff_secs * 2).min(COST_BACKOFF_MAX_SECS);
+        }
+
+        backoff.last_trigger = Some(Utc::now());
+        backoff.trigger_count += 1;
+
+        debug!(
+            "Cost backoff triggered for '{}': {}s backoff ({} total triggers)",
+            provider_instance, backoff.backoff_secs, backoff.trigger_count,
+        );
+    }
+
+    /// After hook: a request was free. Reduce backoff if the provider was flagged.
+    ///
+    /// Reduces backoff by 5 minutes (linear recovery). If backoff reaches zero,
+    /// fully clears the flag so the provider is no longer watched.
+    pub fn record_cost_free(&self, provider_instance: &str) {
+        let Some(entry) = self.cost_backoffs.get(provider_instance) else {
+            return; // Never flagged — nothing to do
+        };
+        let mut backoff = entry.write();
+
+        if backoff.last_trigger.is_none() {
+            return; // Already fully recovered
+        }
+
+        if backoff.backoff_secs <= COST_BACKOFF_RECOVERY_SECS {
+            // Fully recovered
+            backoff.backoff_secs = 0;
+            backoff.last_trigger = None;
+            debug!("Cost backoff fully recovered for '{}'", provider_instance,);
+        } else {
+            backoff.backoff_secs -= COST_BACKOFF_RECOVERY_SECS;
+            debug!(
+                "Cost backoff reduced for '{}': {}s remaining",
+                provider_instance, backoff.backoff_secs,
+            );
+        }
+    }
+
+    /// Reset cost backoff for a provider (user-initiated).
+    pub fn reset_cost_backoff(&self, provider_instance: &str) {
+        self.cost_backoffs.remove(provider_instance);
+        debug!("Cost backoff reset for '{}'", provider_instance);
+    }
+
+    /// Get cost backoff status for a provider (for UI display).
+    pub fn get_cost_backoff_status(&self, provider_instance: &str) -> CostBackoffStatus {
+        let Some(entry) = self.cost_backoffs.get(provider_instance) else {
+            return CostBackoffStatus {
+                in_backoff: false,
+                retry_after_secs: None,
+                backoff_secs: 0,
+                last_trigger: None,
+                trigger_count: 0,
+            };
+        };
+        let backoff = entry.read();
+
+        let (in_backoff, retry_after) = if let Some(last_trigger) = backoff.last_trigger {
+            let elapsed = Utc::now()
+                .signed_duration_since(last_trigger)
+                .num_seconds()
+                .max(0) as u64;
+            if elapsed < backoff.backoff_secs {
+                (true, Some(backoff.backoff_secs - elapsed))
+            } else {
+                (false, None)
+            }
+        } else {
+            (false, None)
+        };
+
+        CostBackoffStatus {
+            in_backoff,
+            retry_after_secs: retry_after,
+            backoff_secs: backoff.backoff_secs,
+            last_trigger: backoff.last_trigger,
+            trigger_count: backoff.trigger_count,
+        }
     }
 }
 
@@ -2299,5 +2480,162 @@ mod tests {
         assert!(cap.has_capacity);
         // API remaining takes priority, so should show $1.00
         assert_eq!(cap.remaining_usd, Some(1.0));
+    }
+
+    // ============================================================
+    // Cost Backoff (cost watchdog) tests
+    // ============================================================
+
+    #[test]
+    fn test_cost_backoff_initially_none() {
+        let manager = FreeTierManager::new(None);
+        assert!(manager.check_cost_backoff("groq").is_none());
+    }
+
+    #[test]
+    fn test_cost_backoff_first_trigger() {
+        let manager = FreeTierManager::new(None);
+
+        manager.record_cost_trigger("groq");
+
+        // Should be in backoff
+        let retry = manager.check_cost_backoff("groq");
+        assert!(retry.is_some());
+        // Initial backoff is 5 minutes = 300s
+        assert!(retry.unwrap() <= COST_BACKOFF_INITIAL_SECS);
+        assert!(retry.unwrap() > 0);
+
+        // Status should reflect it
+        let status = manager.get_cost_backoff_status("groq");
+        assert!(status.in_backoff);
+        assert_eq!(status.trigger_count, 1);
+        assert_eq!(status.backoff_secs, COST_BACKOFF_INITIAL_SECS);
+    }
+
+    #[test]
+    fn test_cost_backoff_doubles_on_repeat() {
+        let manager = FreeTierManager::new(None);
+
+        // First trigger: 5 min
+        manager.record_cost_trigger("groq");
+        assert_eq!(
+            manager.get_cost_backoff_status("groq").backoff_secs,
+            COST_BACKOFF_INITIAL_SECS
+        );
+
+        // Manually expire the backoff by setting last_trigger in the past
+        {
+            let entry = manager.cost_backoffs.get("groq").unwrap();
+            let mut backoff = entry.write();
+            backoff.last_trigger = Some(Utc::now() - chrono::Duration::seconds(400));
+        }
+
+        // Probe allowed (backoff expired)
+        assert!(manager.check_cost_backoff("groq").is_none());
+
+        // Second trigger: should double to 10 min
+        manager.record_cost_trigger("groq");
+        assert_eq!(
+            manager.get_cost_backoff_status("groq").backoff_secs,
+            COST_BACKOFF_INITIAL_SECS * 2
+        );
+        assert_eq!(manager.get_cost_backoff_status("groq").trigger_count, 2);
+    }
+
+    #[test]
+    fn test_cost_backoff_caps_at_max() {
+        let manager = FreeTierManager::new(None);
+
+        // Trigger many times to reach max
+        for _ in 0..20 {
+            manager.record_cost_trigger("groq");
+            // Expire backoff
+            let entry = manager.cost_backoffs.get("groq").unwrap();
+            let mut backoff = entry.write();
+            backoff.last_trigger =
+                Some(Utc::now() - chrono::Duration::seconds(COST_BACKOFF_MAX_SECS as i64 + 1));
+        }
+
+        assert!(manager.get_cost_backoff_status("groq").backoff_secs <= COST_BACKOFF_MAX_SECS);
+    }
+
+    #[test]
+    fn test_cost_backoff_free_probe_reduces() {
+        let manager = FreeTierManager::new(None);
+
+        // Trigger twice to get 10 min backoff
+        manager.record_cost_trigger("groq");
+        {
+            let entry = manager.cost_backoffs.get("groq").unwrap();
+            entry.write().last_trigger = Some(Utc::now() - chrono::Duration::seconds(400));
+        }
+        manager.record_cost_trigger("groq");
+        assert_eq!(
+            manager.get_cost_backoff_status("groq").backoff_secs,
+            COST_BACKOFF_INITIAL_SECS * 2 // 600s
+        );
+
+        // Free probe: reduce by 5 min (300s)
+        manager.record_cost_free("groq");
+        assert_eq!(
+            manager.get_cost_backoff_status("groq").backoff_secs,
+            COST_BACKOFF_INITIAL_SECS // 300s
+        );
+
+        // Another free probe: should fully recover
+        manager.record_cost_free("groq");
+        let status = manager.get_cost_backoff_status("groq");
+        assert_eq!(status.backoff_secs, 0);
+        assert!(status.last_trigger.is_none());
+        assert!(!status.in_backoff);
+    }
+
+    #[test]
+    fn test_cost_backoff_free_on_unflagged_is_noop() {
+        let manager = FreeTierManager::new(None);
+        // Should not panic or create entry
+        manager.record_cost_free("groq");
+        assert!(manager.check_cost_backoff("groq").is_none());
+    }
+
+    #[test]
+    fn test_cost_backoff_reset() {
+        let manager = FreeTierManager::new(None);
+
+        manager.record_cost_trigger("groq");
+        assert!(manager.check_cost_backoff("groq").is_some());
+
+        manager.reset_cost_backoff("groq");
+        assert!(manager.check_cost_backoff("groq").is_none());
+        assert_eq!(manager.get_cost_backoff_status("groq").trigger_count, 0);
+    }
+
+    #[test]
+    fn test_cost_backoff_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("free_tier_state.json");
+
+        // Create manager with cost backoff
+        let manager = FreeTierManager::new(Some(path.clone()));
+        manager.record_cost_trigger("groq");
+        manager.persist().unwrap();
+
+        // Load into new manager
+        let manager2 = FreeTierManager::load(&path);
+        let status = manager2.get_cost_backoff_status("groq");
+        assert_eq!(status.trigger_count, 1);
+        assert_eq!(status.backoff_secs, COST_BACKOFF_INITIAL_SECS);
+        assert!(status.last_trigger.is_some());
+    }
+
+    #[test]
+    fn test_cost_backoff_reset_usage_clears() {
+        let manager = FreeTierManager::new(None);
+        manager.record_cost_trigger("groq");
+        assert!(manager.check_cost_backoff("groq").is_some());
+
+        // reset_usage should also clear cost backoff
+        manager.reset_usage("groq");
+        assert!(manager.check_cost_backoff("groq").is_none());
     }
 }

@@ -379,6 +379,11 @@ export interface ProviderFreeTierStatus {
   is_backed_off: boolean
   backoff_retry_after_secs: number | null
   backoff_reason: string | null
+  cost_backoff_active: boolean
+  cost_backoff_retry_after_secs: number | null
+  cost_backoff_duration_secs: number | null
+  cost_backoff_last_trigger: string | null
+  cost_backoff_trigger_count: number
   has_capacity: boolean
   status_message: string
 }

@@ -3144,6 +3144,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         rate_monthly_tokens_used: null, rate_monthly_tokens_limit: null,
         credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
         is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
+        cost_backoff_active: false, cost_backoff_retry_after_secs: null, cost_backoff_duration_secs: null, cost_backoff_last_trigger: null, cost_backoff_trigger_count: 0,
         has_capacity: true, status_message: 'Always free',
       },
       {
@@ -3161,6 +3162,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         rate_monthly_tokens_used: null, rate_monthly_tokens_limit: null,
         credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
         is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
+        cost_backoff_active: false, cost_backoff_retry_after_secs: null, cost_backoff_duration_secs: null, cost_backoff_last_trigger: null, cost_backoff_trigger_count: 0,
         has_capacity: true, status_message: 'Available',
       },
       {
@@ -3178,6 +3180,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         rate_monthly_tokens_used: null, rate_monthly_tokens_limit: null,
         credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
         is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
+        cost_backoff_active: false, cost_backoff_retry_after_secs: null, cost_backoff_duration_secs: null, cost_backoff_last_trigger: null, cost_backoff_trigger_count: 0,
         has_capacity: false, status_message: 'No free tier',
       },
     ]

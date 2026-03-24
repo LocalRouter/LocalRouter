@@ -164,6 +164,7 @@ impl RouterError {
 ///
 /// The `resolved_model` parameter should be in `provider/model` format (e.g., "openai/gpt-4o")
 /// and will be set on each chunk to ensure clients know which model actually processed the request.
+#[allow(clippy::too_many_arguments)]
 async fn wrap_stream_with_usage_tracking(
     stream: Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
     client_id: String,
@@ -172,6 +173,7 @@ async fn wrap_stream_with_usage_tracking(
     free_tier_manager: Arc<FreeTierManager>,
     free_tier: FreeTierKind,
     pricing: lr_providers::PricingInfo,
+    free_tier_only: bool,
 ) -> Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -258,6 +260,15 @@ async fn wrap_stream_with_usage_tracking(
                 let provider = resolved_model.split('/').next().unwrap_or("");
                 if !provider.is_empty() {
                     free_tier_manager.record_usage(provider, &free_tier, est_prompt + est_completion, est_cost);
+
+                    // Cost watchdog: track whether this stream cost money
+                    if free_tier_only {
+                        if est_cost > 0.0 {
+                            free_tier_manager.record_cost_trigger(provider);
+                        } else {
+                            free_tier_manager.record_cost_free(provider);
+                        }
+                    }
                 }
             }
 
@@ -442,7 +453,7 @@ impl Router {
             } else {
                 (provider, model)
             };
-            self.execute_request(client_id, &final_provider, &final_model, request)
+            self.execute_request(client_id, &final_provider, &final_model, request, false)
                 .await
         }
     }
@@ -498,6 +509,7 @@ impl Router {
                 self.free_tier_manager.clone(),
                 free_tier,
                 pricing,
+                strategy.free_tier_only,
             )
             .await)
         }
@@ -740,6 +752,7 @@ impl Router {
         provider: &str,
         model: &str,
         request: CompletionRequest,
+        free_tier_only: bool,
     ) -> AppResult<CompletionResponse> {
         // Get provider instance from registry
         let provider_instance = self
@@ -878,6 +891,15 @@ impl Router {
         self.free_tier_manager
             .record_usage(provider, &free_tier, total_tokens, cost);
 
+        // Cost watchdog: track whether this request cost money (free tier mode only)
+        if free_tier_only {
+            if cost > 0.0 {
+                self.free_tier_manager.record_cost_trigger(provider);
+            } else {
+                self.free_tier_manager.record_cost_free(provider);
+            }
+        }
+
         Ok(response)
     }
 
@@ -1005,6 +1027,20 @@ impl Router {
                         continue;
                     }
                 }
+
+                // Cost watchdog: skip provider if in cost-based backoff
+                if let Some(retry_secs) = self.free_tier_manager.check_cost_backoff(provider) {
+                    debug!(
+                        "Skipping {}/{}: cost backoff ({}s remaining)",
+                        provider, model, retry_secs
+                    );
+                    last_error = Some(RouterError::RateLimited {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        retry_after_secs: retry_secs,
+                    });
+                    continue;
+                }
             }
 
             // Check strategy rate limits before trying this model
@@ -1022,7 +1058,13 @@ impl Router {
             }
 
             match self
-                .execute_request(client_id, provider, model, request.clone())
+                .execute_request(
+                    client_id,
+                    provider,
+                    model,
+                    request.clone(),
+                    strategy.free_tier_only,
+                )
                 .await
             {
                 Ok(mut response) => {
@@ -1171,6 +1213,20 @@ impl Router {
                         continue;
                     }
                 }
+
+                // Cost watchdog: skip provider if in cost-based backoff
+                if let Some(retry_secs) = self.free_tier_manager.check_cost_backoff(provider) {
+                    debug!(
+                        "Skipping {}/{}: cost backoff ({}s remaining)",
+                        provider, model, retry_secs
+                    );
+                    last_error = Some(RouterError::RateLimited {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        retry_after_secs: retry_secs,
+                    });
+                    continue;
+                }
             }
 
             // Check strategy rate limits before trying this model
@@ -1225,6 +1281,7 @@ impl Router {
                         self.free_tier_manager.clone(),
                         free_tier,
                         pricing,
+                        strategy.free_tier_only,
                     )
                     .await);
                 }
@@ -1453,7 +1510,7 @@ impl Router {
                 ));
             }
             return self
-                .execute_request(client_id, &provider, &model, request)
+                .execute_request(client_id, &provider, &model, request, false)
                 .await;
         }
 
@@ -1528,8 +1585,14 @@ impl Router {
             client_id, final_provider, final_model
         );
 
-        self.execute_request(client_id, &final_provider, &final_model, request)
-            .await
+        self.execute_request(
+            client_id,
+            &final_provider,
+            &final_model,
+            request,
+            strategy.free_tier_only,
+        )
+        .await
     }
 
     /// Route a streaming completion request based on API key configuration
@@ -1582,6 +1645,7 @@ impl Router {
                 self.free_tier_manager.clone(),
                 free_tier,
                 pricing,
+                false, // internal test — not free tier mode
             )
             .await);
         }
@@ -1681,6 +1745,7 @@ impl Router {
             self.free_tier_manager.clone(),
             free_tier,
             pricing,
+            strategy.free_tier_only,
         )
         .await)
     }
