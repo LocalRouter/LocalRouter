@@ -12,6 +12,12 @@ pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
 /// Keyring service name for MCP server secrets
 pub const MCP_KEYRING_SERVICE: &str = "LocalRouter-McpServers";
 
+/// Keyring service name for client secrets
+pub const CLIENT_KEYRING_SERVICE: &str = "LocalRouter-Clients";
+
+/// Keyring service name for OAuth client secrets
+pub const OAUTH_CLIENT_KEYRING_SERVICE: &str = "LocalRouter-OAuthClients";
+
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
 

@@ -2,14 +2,14 @@
 
 #![allow(deprecated)]
 
-use super::{AppConfig, McpAuthConfig, McpServerConfig, McpTransportConfig, ProviderConfig};
+use super::{
+    AppConfig, McpAuthConfig, McpServerConfig, McpTransportConfig, ProviderConfig,
+    CLIENT_KEYRING_SERVICE,
+};
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_api_keys::CachedKeychain;
 use lr_types::{AppError, AppResult};
 use std::collections::HashSet;
-
-/// Service name for LocalRouter client secrets in keychain
-const CLIENT_SERVICE: &str = "LocalRouter-Clients";
 
 /// LocalRouter client API keys start with this prefix
 const LOCALROUTER_KEY_PREFIX: &str = "lr-";
@@ -187,7 +187,7 @@ fn validate_providers_not_self_referential(config: &AppConfig) -> AppResult<()> 
     let client_secrets: HashSet<String> = config
         .clients
         .iter()
-        .filter_map(|client| keychain.get(CLIENT_SERVICE, &client.id).ok().flatten())
+        .filter_map(|client| keychain.get(CLIENT_KEYRING_SERVICE, &client.id).ok().flatten())
         .collect();
 
     // Check if any suspect provider key matches an actual client secret

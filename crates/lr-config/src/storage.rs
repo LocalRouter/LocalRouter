@@ -119,6 +119,11 @@ async fn load_config_from_file(path: &Path) -> AppResult<AppConfig> {
     // Validate configuration
     validation::validate_config(&config)?;
 
+    // In production, migrate any plaintext secrets file to the system keychain.
+    // This runs on every config load so the user can copy dev config to prod at any time.
+    #[cfg(not(debug_assertions))]
+    migrate_secrets_file_to_keychain(&config);
+
     Ok(config)
 }
 
@@ -287,6 +292,221 @@ async fn cleanup_old_backups(dir: &Path) {
                 );
             } else {
                 debug!("Removed old backup: {:?}", backup_path);
+            }
+        }
+    }
+}
+
+/// Migrate secrets from a plaintext secrets.json file to the system keychain.
+///
+/// When the user copies their dev config directory to production, the file-based
+/// keychain (`secrets.json`) comes along. This function cross-references the secrets
+/// against the loaded config, stores referenced secrets in the OS keychain, and
+/// deletes the file (and any backup copies).
+///
+/// Runs on every config load (not a one-time migration) so the user can re-copy
+/// dev config to prod at any time.
+///
+/// No-op if:
+/// - `LOCALROUTER_KEYCHAIN` is set to `"file"`
+/// - The secrets file does not exist
+#[cfg(not(debug_assertions))]
+fn migrate_secrets_file_to_keychain(config: &super::AppConfig) {
+    use lr_api_keys::keychain_trait::{KeychainStorage, SystemKeychain};
+    use std::collections::HashSet;
+    use super::{
+        McpAuthConfig, CLIENT_KEYRING_SERVICE, MCP_KEYRING_SERVICE,
+        OAUTH_CLIENT_KEYRING_SERVICE, PROVIDER_KEYRING_SERVICE,
+    };
+
+    // If the user explicitly wants file-based storage, don't migrate
+    if matches!(
+        std::env::var("LOCALROUTER_KEYCHAIN").as_deref(),
+        Ok("file")
+    ) {
+        return;
+    }
+
+    let secrets_path = match lr_utils::paths::secrets_file() {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("Could not resolve secrets file path: {}", e);
+            return;
+        }
+    };
+
+    if !secrets_path.exists() {
+        return;
+    }
+
+    info!(
+        "Found plaintext secrets file at {}, migrating to system keychain...",
+        secrets_path.display()
+    );
+
+    // Read and parse the secrets file
+    let contents = match std::fs::read_to_string(&secrets_path) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to read secrets file: {}", e);
+            return;
+        }
+    };
+
+    if contents.trim().is_empty() {
+        cleanup_secrets_files(&secrets_path);
+        info!("Removed empty secrets file");
+        return;
+    }
+
+    let secrets: std::collections::HashMap<String, String> =
+        match serde_json::from_str(&contents) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to parse secrets file: {}", e);
+                return;
+            }
+        };
+
+    if secrets.is_empty() {
+        cleanup_secrets_files(&secrets_path);
+        info!("Removed empty secrets file");
+        return;
+    }
+
+    // Build the set of secret keys that are actually referenced by the config.
+    // Key format in secrets.json is "service:account".
+    let mut referenced_keys: HashSet<String> = HashSet::new();
+
+    // Providers: "LocalRouter-Providers:{provider_name}"
+    for provider in &config.providers {
+        referenced_keys.insert(format!("{}:{}", PROVIDER_KEYRING_SERVICE, provider.name));
+    }
+
+    // MCP servers: "LocalRouter-McpServers:{ref_uuid}"
+    for server in &config.mcp_servers {
+        if let Some(ref auth_config) = server.auth_config {
+            match auth_config {
+                McpAuthConfig::BearerToken { token_ref } => {
+                    referenced_keys
+                        .insert(format!("{}:{}", MCP_KEYRING_SERVICE, token_ref));
+                }
+                McpAuthConfig::CustomHeaders { header_refs } => {
+                    for ref_key in header_refs.values() {
+                        referenced_keys
+                            .insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
+                    }
+                }
+                McpAuthConfig::EnvVars { env_refs } => {
+                    for ref_key in env_refs.values() {
+                        referenced_keys
+                            .insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
+                    }
+                }
+                McpAuthConfig::OAuth {
+                    client_secret_ref, ..
+                }
+                | McpAuthConfig::OAuthBrowser {
+                    client_secret_ref, ..
+                } => {
+                    referenced_keys.insert(format!(
+                        "{}:{}",
+                        MCP_KEYRING_SERVICE, client_secret_ref
+                    ));
+                }
+                McpAuthConfig::None => {}
+            }
+        }
+    }
+
+    // Clients: "LocalRouter-Clients:{client_id}"
+    for client in &config.clients {
+        referenced_keys.insert(format!("{}:{}", CLIENT_KEYRING_SERVICE, client.id));
+    }
+
+    // OAuth clients: "LocalRouter-OAuthClients:{oauth_client_id}"
+    for oauth_client in &config.oauth_clients {
+        referenced_keys
+            .insert(format!("{}:{}", OAUTH_CLIENT_KEYRING_SERVICE, oauth_client.id));
+    }
+
+    // Migrate referenced secrets to system keychain
+    let system_keychain = SystemKeychain;
+    let mut migrated = 0u32;
+    let mut skipped = 0u32;
+    let mut errors = 0u32;
+
+    for (key, secret) in &secrets {
+        if !referenced_keys.contains(key) {
+            skipped += 1;
+            continue;
+        }
+
+        let Some((service, account)) = key.split_once(':') else {
+            warn!("Skipping secret with invalid key format: {}", key);
+            continue;
+        };
+
+        match system_keychain.store(service, account, secret) {
+            Ok(()) => {
+                info!("Migrated secret {}:{} to system keychain", service, account);
+                migrated += 1;
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to migrate secret {}:{} to system keychain: {}",
+                    service, account, e
+                );
+                errors += 1;
+            }
+        }
+    }
+
+    info!(
+        "Secrets migration: {} migrated, {} skipped (not in config), {} errors (total {} in file)",
+        migrated,
+        skipped,
+        errors,
+        secrets.len()
+    );
+
+    if errors > 0 {
+        warn!(
+            "Some secrets failed to migrate ({} errors). Keeping secrets file for retry on next launch.",
+            errors
+        );
+        return;
+    }
+
+    cleanup_secrets_files(&secrets_path);
+    info!(
+        "Deleted secrets file and backups: {}",
+        secrets_path.display()
+    );
+}
+
+/// Delete the secrets file and any backup/leftover copies in the same directory.
+#[cfg(not(debug_assertions))]
+fn cleanup_secrets_files(secrets_path: &Path) {
+    // Delete the main file
+    if let Err(e) = std::fs::remove_file(secrets_path) {
+        warn!("Failed to delete secrets file: {}", e);
+    }
+
+    // Clean up any backup files (e.g. secrets.json.bak, secrets.json.backup.*)
+    if let Some(dir) = secrets_path.parent() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                // Match secrets.json.* but not the main file itself (already deleted)
+                if name_str.starts_with("secrets.json.") {
+                    if let Err(e) = std::fs::remove_file(entry.path()) {
+                        warn!("Failed to delete secrets backup {}: {}", name_str, e);
+                    } else {
+                        debug!("Deleted secrets backup: {}", name_str);
+                    }
+                }
             }
         }
     }

@@ -238,13 +238,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         )
     });
 
-    // Migrate plaintext secrets file to system keychain (production only)
-    // This handles the case where a user copies their dev config to production
-    #[cfg(not(debug_assertions))]
-    if let Err(e) = api_keys::migrate_secrets_file_to_keychain() {
-        warn!("Failed to migrate secrets file to system keychain: {}", e);
-    }
-
     // Initialize unified client manager
     // Replaces both API key manager and OAuth client manager
     // Client secrets are stored in OS keychain, only metadata in config
