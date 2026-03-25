@@ -28,7 +28,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { GripVertical, Zap, Ban, Search, ChevronRight, ChevronDown, ArrowUpDown, Brain } from "lucide-react"
+import { GripVertical, Zap, Ban, Search, ChevronRight, ChevronDown, ArrowUpDown, Brain, Eye, Wrench, Layers, Gift, SlidersHorizontal } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
 import type { FreeTierKind } from "@/types/tauri-commands"
@@ -40,7 +40,7 @@ const parseModelKey = (key: string): [string, string] => {
   return [provider, modelId]
 }
 
-type SortOption = 'name' | 'provider' | 'price-asc' | 'price-desc' | 'params-asc' | 'params-desc'
+type SortOption = 'name' | 'provider' | 'price-asc' | 'price-desc' | 'params-asc' | 'params-desc' | 'context-asc' | 'context-desc'
 
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'name', label: 'Name' },
@@ -49,6 +49,15 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'price-desc', label: 'Price: High \u2192 Low' },
   { value: 'params-asc', label: 'Params: Small \u2192 Large' },
   { value: 'params-desc', label: 'Params: Large \u2192 Small' },
+  { value: 'context-desc', label: 'Context: Large \u2192 Small' },
+  { value: 'context-asc', label: 'Context: Small \u2192 Large' },
+]
+
+/** Capability filters shown as toggle chips */
+const CAPABILITY_FILTERS: { value: string; label: string; icon: typeof Eye }[] = [
+  { value: 'vision', label: 'Vision', icon: Eye },
+  { value: 'functioncalling', label: 'Functions', icon: Wrench },
+  { value: 'embedding', label: 'Embedding', icon: Layers },
 ]
 
 /** Parse formatted parameter count string (e.g. "7.0B", "13.5M") to a numeric value for sorting */
@@ -77,6 +86,8 @@ interface ThreeZoneModelSelectorProps {
   modelPricing?: Record<string, ModelPricingInfo>
   modelParamCounts?: Record<string, string>
   freeTierKinds?: Record<string, FreeTierKind>
+  modelCapabilities?: Record<string, string[]>
+  modelContextWindows?: Record<string, number>
 }
 
 // Sortable row component
@@ -376,12 +387,18 @@ export function ThreeZoneModelSelector({
   modelPricing,
   modelParamCounts,
   freeTierKinds,
+  modelCapabilities,
+  modelContextWindows,
 }: ThreeZoneModelSelectorProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overZone, setOverZone] = useState<string | null>(null)
   const [disabledSearch, setDisabledSearch] = useState("")
   const [disabledSort, setDisabledSort] = useState<SortOption>('name')
   const [collapsedProviders, setCollapsedProviders] = useState<Set<string> | "all">("all")
+  const [groupByProvider, setGroupByProvider] = useState(true)
+  const [freeTierOnly, setFreeTierOnly] = useState(false)
+  const [capabilityFilters, setCapabilityFilters] = useState<Set<string>>(new Set())
+  const [showFilters, setShowFilters] = useState(false)
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -473,10 +490,32 @@ export function ThreeZoneModelSelector({
     return (input + output) / 2
   }
 
+  // Helper: check if a model's provider has free tier
+  const isFreeTierProvider = (provider: string): boolean => {
+    const kind = freeTierKinds?.[provider]?.kind
+    return kind != null && kind !== 'none'
+  }
+
+  // Helper: check if a model has all required capabilities
+  const hasCapabilities = (provider: string, modelId: string, required: Set<string>): boolean => {
+    if (required.size === 0) return true
+    const caps = modelCapabilities?.[`${provider}/${modelId}`]
+    if (!caps) return false
+    for (const req of required) {
+      if (!caps.includes(req)) return false
+    }
+    return true
+  }
+
+  // Count active filters for the badge
+  const activeFilterCount = (freeTierOnly ? 1 : 0) + capabilityFilters.size
+
   // Filter and sort disabled items
   const searchLower = disabledSearch.toLowerCase()
   const filteredDisabledItems = useMemo(() => {
     let items = disabledItems
+
+    // Text search
     if (searchLower) {
       items = items.filter(
         (item) =>
@@ -484,6 +523,18 @@ export function ThreeZoneModelSelector({
           item.provider.toLowerCase().includes(searchLower)
       )
     }
+
+    // Free tier filter
+    if (freeTierOnly) {
+      items = items.filter((item) => isFreeTierProvider(item.provider))
+    }
+
+    // Capability filters
+    if (capabilityFilters.size > 0) {
+      items = items.filter((item) => hasCapabilities(item.provider, item.modelId, capabilityFilters))
+    }
+
+    // Sorting
     if (disabledSort !== 'name') {
       items = [...items].sort((a, b) => {
         switch (disabledSort) {
@@ -499,7 +550,6 @@ export function ThreeZoneModelSelector({
           case 'price-desc': {
             const priceA = getModelAvgPrice(a.provider, a.modelId)
             const priceB = getModelAvgPrice(b.provider, b.modelId)
-            // Push models without pricing to the bottom
             if (priceA === Infinity && priceB === Infinity) return a.modelId.localeCompare(b.modelId)
             if (priceA === Infinity) return 1
             if (priceB === Infinity) return -1
@@ -525,6 +575,22 @@ export function ThreeZoneModelSelector({
             if (numB === Infinity) return -1
             return numB - numA || a.modelId.localeCompare(b.modelId)
           }
+          case 'context-desc': {
+            const ctxA = modelContextWindows?.[`${a.provider}/${a.modelId}`] ?? 0
+            const ctxB = modelContextWindows?.[`${b.provider}/${b.modelId}`] ?? 0
+            if (ctxA === 0 && ctxB === 0) return a.modelId.localeCompare(b.modelId)
+            if (ctxA === 0) return 1
+            if (ctxB === 0) return -1
+            return ctxB - ctxA || a.modelId.localeCompare(b.modelId)
+          }
+          case 'context-asc': {
+            const ctxA = modelContextWindows?.[`${a.provider}/${a.modelId}`] ?? 0
+            const ctxB = modelContextWindows?.[`${b.provider}/${b.modelId}`] ?? 0
+            if (ctxA === 0 && ctxB === 0) return a.modelId.localeCompare(b.modelId)
+            if (ctxA === 0) return 1
+            if (ctxB === 0) return -1
+            return ctxA - ctxB || a.modelId.localeCompare(b.modelId)
+          }
           default:
             return a.modelId.localeCompare(b.modelId)
         }
@@ -532,10 +598,10 @@ export function ThreeZoneModelSelector({
     }
     return items
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [disabledItems, searchLower, disabledSort, modelPricing, modelParamCounts])
+  }, [disabledItems, searchLower, disabledSort, modelPricing, modelParamCounts, freeTierOnly, freeTierKinds, capabilityFilters, modelCapabilities, modelContextWindows])
 
-  // Whether to show flat list (no provider grouping) - used for price/params sorting
-  const showFlatList = disabledSort !== 'name' && disabledSort !== 'provider'
+  // Whether to show flat list (no provider grouping) - controlled by toggle
+  const showFlatList = !groupByProvider
 
   // Visible disabled items (filtered + not in collapsed providers)
   const visibleDisabledItems = useMemo(() => {
@@ -851,31 +917,136 @@ export function ThreeZoneModelSelector({
             </span>
           </div>
 
-          {/* Search and sort controls for disabled models */}
+          {/* Search, sort, and filter controls for disabled models */}
           {disabledItems.length > 0 && (
-            <div className="flex items-center gap-2 px-3 py-2 border-b bg-background">
-              <Search className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" />
-              <input
-                type="text"
-                placeholder="Search models..."
-                value={disabledSearch}
-                onChange={(e) => setDisabledSearch(e.target.value)}
-                className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
-              />
-              <div className="flex items-center gap-1.5 shrink-0 border-l pl-2">
-                <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground/50" />
-                <select
-                  value={disabledSort}
-                  onChange={(e) => setDisabledSort(e.target.value as SortOption)}
-                  className="bg-transparent text-xs text-muted-foreground outline-none cursor-pointer"
+            <div className="border-b bg-background">
+              {/* Row 1: Search + Sort + Filter toggle */}
+              <div className="flex items-center gap-2 px-3 py-2">
+                <Search className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" />
+                <input
+                  type="text"
+                  placeholder="Search models..."
+                  value={disabledSearch}
+                  onChange={(e) => setDisabledSearch(e.target.value)}
+                  className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
+                />
+                <div className="flex items-center gap-1.5 shrink-0 border-l pl-2">
+                  <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground/50" />
+                  <select
+                    value={disabledSort}
+                    onChange={(e) => setDisabledSort(e.target.value as SortOption)}
+                    className="bg-transparent text-xs text-muted-foreground outline-none cursor-pointer"
+                  >
+                    {SORT_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowFilters(!showFilters)}
+                  className={cn(
+                    "flex items-center gap-1 shrink-0 border-l pl-2 text-xs transition-colors",
+                    showFilters || activeFilterCount > 0
+                      ? "text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
                 >
-                  {SORT_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>Filters</span>
+                  {activeFilterCount > 0 && (
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground leading-none">
+                      {activeFilterCount}
+                    </span>
+                  )}
+                </button>
               </div>
+
+              {/* Row 2: Filter chips (collapsible) */}
+              {showFilters && (
+                <div className="flex flex-wrap items-center gap-1.5 px-3 py-2 border-t border-border/50">
+                  {/* Group by provider toggle */}
+                  <button
+                    type="button"
+                    onClick={() => setGroupByProvider(!groupByProvider)}
+                    className={cn(
+                      "flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-full border transition-colors",
+                      groupByProvider
+                        ? "bg-primary/10 border-primary/30 text-primary"
+                        : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                    )}
+                  >
+                    <ChevronRight className="h-3 w-3" />
+                    Group by provider
+                  </button>
+
+                  {/* Free tier only toggle */}
+                  <button
+                    type="button"
+                    onClick={() => setFreeTierOnly(!freeTierOnly)}
+                    className={cn(
+                      "flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-full border transition-colors",
+                      freeTierOnly
+                        ? "bg-green-500/10 border-green-500/30 text-green-600 dark:text-green-400"
+                        : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                    )}
+                  >
+                    <Gift className="h-3 w-3" />
+                    Free tier
+                  </button>
+
+                  {/* Divider */}
+                  <div className="h-4 w-px bg-border mx-0.5" />
+
+                  {/* Capability filters */}
+                  {CAPABILITY_FILTERS.map((cap) => {
+                    const isActive = capabilityFilters.has(cap.value)
+                    const Icon = cap.icon
+                    return (
+                      <button
+                        key={cap.value}
+                        type="button"
+                        onClick={() => {
+                          setCapabilityFilters(prev => {
+                            const next = new Set(prev)
+                            if (next.has(cap.value)) {
+                              next.delete(cap.value)
+                            } else {
+                              next.add(cap.value)
+                            }
+                            return next
+                          })
+                        }}
+                        className={cn(
+                          "flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-full border transition-colors",
+                          isActive
+                            ? "bg-primary/10 border-primary/30 text-primary"
+                            : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                        )}
+                      >
+                        <Icon className="h-3 w-3" />
+                        {cap.label}
+                      </button>
+                    )
+                  })}
+
+                  {/* Clear all filters */}
+                  {activeFilterCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFreeTierOnly(false)
+                        setCapabilityFilters(new Set())
+                      }}
+                      className="text-[11px] text-muted-foreground hover:text-foreground ml-1 underline underline-offset-2"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -888,7 +1059,12 @@ export function ThreeZoneModelSelector({
                 </div>
               ) : filteredDisabledItems.length === 0 ? (
                 <div className="p-4 text-center text-sm text-muted-foreground/60">
-                  No models match &ldquo;{disabledSearch}&rdquo;
+                  {disabledSearch
+                    ? <>No models match &ldquo;{disabledSearch}&rdquo;</>
+                    : activeFilterCount > 0
+                      ? "No models match the selected filters"
+                      : "No disabled models"
+                  }
                 </div>
               ) : showFlatList ? (
                 /* Flat list for price/params sorting */
@@ -907,14 +1083,16 @@ export function ThreeZoneModelSelector({
                   />
                 ))
               ) : (
-                /* Provider-grouped list for name/provider sorting */
-                disabledProviders.map((provider) => {
-                  const providerItems = (disabledByProvider[provider] || []).filter(
-                    (item) =>
-                      !searchLower ||
-                      item.modelId.toLowerCase().includes(searchLower) ||
-                      item.provider.toLowerCase().includes(searchLower)
-                  )
+                /* Provider-grouped list — uses filteredDisabledItems so all filters apply */
+                (() => {
+                  const groups: Record<string, typeof filteredDisabledItems> = {}
+                  for (const item of filteredDisabledItems) {
+                    if (!groups[item.provider]) groups[item.provider] = []
+                    groups[item.provider].push(item)
+                  }
+                  const providers = Object.keys(groups).sort()
+                  return providers.map((provider) => {
+                  const providerItems = groups[provider]
                   if (providerItems.length === 0) return null
                   const collapsed = isProviderCollapsed(provider)
 
@@ -952,6 +1130,7 @@ export function ThreeZoneModelSelector({
                     </div>
                   )
                 })
+                })()
               )}
             </DisabledDropZone>
           </SortableContext>

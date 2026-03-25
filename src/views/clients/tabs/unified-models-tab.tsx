@@ -85,6 +85,9 @@ interface UnifiedModelsTabProps {
 interface DetailedModelInfo {
   model_id: string
   provider_instance: string
+  provider_type: string
+  capabilities: string[]
+  context_window: number
   input_price_per_million?: number | null
   output_price_per_million?: number | null
   parameter_count?: string | null
@@ -127,6 +130,8 @@ export function UnifiedModelsTab({
   const [modelPricing, setModelPricing] = useState<Record<string, ModelPricingInfo>>({})
   const [modelParamCounts, setModelParamCounts] = useState<Record<string, string>>({})
   const [freeTierKinds, setFreeTierKinds] = useState<Record<string, FreeTierKind>>({})
+  const [modelCapabilities, setModelCapabilities] = useState<Record<string, string[]>>({})
+  const [modelContextWindows, setModelContextWindows] = useState<Record<string, number>>({})
 
   // RouteLLM state
   const [routellmStatus, setRoutellmStatus] = useState<RouteLLMStatus | null>(null)
@@ -182,17 +187,28 @@ export function UnifiedModelsTab({
       ])
       const pricingMap: Record<string, ModelPricingInfo> = {}
       const paramMap: Record<string, string> = {}
+      const capMap: Record<string, string[]> = {}
+      const ctxMap: Record<string, number> = {}
       for (const m of detailedModels) {
-        pricingMap[`${m.provider_instance}/${m.model_id}`] = {
+        const key = `${m.provider_instance}/${m.model_id}`
+        pricingMap[key] = {
           input: m.input_price_per_million,
           output: m.output_price_per_million,
         }
         if (m.parameter_count) {
-          paramMap[`${m.provider_instance}/${m.model_id}`] = m.parameter_count
+          paramMap[key] = m.parameter_count
+        }
+        if (m.capabilities.length > 0) {
+          capMap[key] = m.capabilities
+        }
+        if (m.context_window > 0) {
+          ctxMap[key] = m.context_window
         }
       }
       setModelPricing(pricingMap)
       setModelParamCounts(paramMap)
+      setModelCapabilities(capMap)
+      setModelContextWindows(ctxMap)
 
       const ftMap: Record<string, FreeTierKind> = {}
       for (const s of ftStatuses) {
@@ -533,6 +549,8 @@ export function UnifiedModelsTab({
             modelPricing={modelPricing}
             modelParamCounts={modelParamCounts}
             freeTierKinds={freeTierKinds}
+            modelCapabilities={modelCapabilities}
+            modelContextWindows={modelContextWindows}
           />
         </CardContent>
       </Card>

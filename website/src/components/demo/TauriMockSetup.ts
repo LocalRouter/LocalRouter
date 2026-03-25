@@ -1494,13 +1494,27 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'groq-fast': 'groq',
       'openrouter-backup': 'openrouter',
     }
+    const capabilitiesMap: Record<string, string[]> = {
+      'gpt-4o': ['chat', 'completion', 'vision', 'functioncalling'],
+      'gpt-4o-mini': ['chat', 'completion', 'vision', 'functioncalling'],
+      'gpt-4-turbo': ['chat', 'completion', 'vision', 'functioncalling'],
+      'o1-preview': ['chat', 'completion'],
+      'o1-mini': ['chat', 'completion'],
+      'claude-3-5-sonnet-20241022': ['chat', 'completion', 'vision', 'functioncalling'],
+      'claude-3-5-haiku-20241022': ['chat', 'completion', 'functioncalling'],
+      'claude-3-opus-20240229': ['chat', 'completion', 'vision', 'functioncalling'],
+      'gemini-1.5-pro': ['chat', 'completion', 'vision', 'functioncalling'],
+      'gemini-1.5-flash': ['chat', 'completion', 'vision', 'functioncalling'],
+      'text-embedding-3-small': ['embedding'],
+      'text-embedding-3-large': ['embedding'],
+    }
     return mockData.models.map(m => {
       const pricing = pricingMap[m.id]
       return {
         model_id: m.id,
         provider_instance: m.provider,
         provider_type: providerTypeMap[m.provider] || 'unknown',
-        capabilities: ['chat', 'completion'],
+        capabilities: capabilitiesMap[m.id] || ['chat', 'completion'],
         context_window: m.context_length,
         supports_streaming: true,
         input_price_per_million: pricing?.input ?? null,
