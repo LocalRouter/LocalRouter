@@ -136,6 +136,33 @@ impl<'a> GatewayClient<'a> {
         }
     }
 
+    /// Create from pre-extracted gateway permissions (used by streaming loop for tool refresh)
+    pub fn from_permissions(
+        gateway: &'a McpGateway,
+        permissions: &crate::orchestrator::GatewayPermissions,
+        allowed_servers: Vec<String>,
+    ) -> Self {
+        Self {
+            gateway,
+            client_id: permissions.client_id.clone(),
+            session_key: permissions.session_key.clone(),
+            allowed_servers,
+            roots: Vec::new(),
+            mcp_permissions: permissions.mcp_permissions.clone(),
+            skills_permissions: permissions.skills_permissions.clone(),
+            client_name: permissions.client_name.clone(),
+            marketplace_permission: permissions.marketplace_permission.clone(),
+            coding_agent_permission: permissions.coding_agent_permission.clone(),
+            coding_agent_type: permissions.coding_agent_type,
+            context_management_overrides: permissions.context_management_overrides.clone(),
+            mcp_sampling_permission: permissions.mcp_sampling_permission.clone(),
+            mcp_elicitation_permission: permissions.mcp_elicitation_permission.clone(),
+            memory_enabled: permissions.memory_enabled,
+            client_mode: permissions.client_mode.clone(),
+            monitor_session_id: None,
+        }
+    }
+
     fn make_request(&self, method: &str, params: Option<Value>) -> JsonRpcRequest {
         JsonRpcRequest {
             jsonrpc: "2.0".to_string(),

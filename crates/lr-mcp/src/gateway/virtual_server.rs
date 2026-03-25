@@ -128,6 +128,10 @@ pub enum VirtualToolCallResult {
         /// Optional closure to mutate the virtual server's session state
         #[allow(clippy::type_complexity)]
         state_update: Option<Box<dyn FnOnce(&mut dyn VirtualSessionState) + Send>>,
+        /// Optional: new server IDs to add to the session's allowed_servers list.
+        /// Used by marketplace installs to make newly installed servers accessible.
+        #[allow(clippy::type_complexity)]
+        add_allowed_servers: Option<Vec<String>>,
     },
     /// Tool not found (shouldn't happen if owns_tool is correct)
     NotHandled,

@@ -29,6 +29,7 @@ use crate::session::{McpViaLlmSession, PendingMixedExecution};
 /// Extracted from a `Client` so background tasks can call `handle_request_with_skills`.
 #[derive(Clone)]
 pub(crate) struct GatewayPermissions {
+    pub client_id: String,
     pub session_key: String,
     pub mcp_permissions: lr_config::McpPermissions,
     pub skills_permissions: lr_config::SkillsPermissions,
@@ -46,6 +47,7 @@ pub(crate) struct GatewayPermissions {
 impl GatewayPermissions {
     pub fn from_client_and_session(client: &Client, session_key: String) -> Self {
         Self {
+            client_id: client.id.clone(),
             session_key,
             mcp_permissions: client.mcp_permissions.clone(),
             skills_permissions: client.skills_permissions.clone(),
@@ -749,6 +751,68 @@ pub async fn run_agentic_loop(
                     });
                 }
 
+                // Check if any tool call was a marketplace install that changed the tool set.
+                // If so, re-fetch tools and update the request for subsequent iterations.
+                {
+                    let tools_may_have_changed = mcp_calls.iter().any(|tc| {
+                        // Check the tool result content for "installed" status indicator
+                        // by looking at the last messages we just added
+                        request
+                            .messages
+                            .iter()
+                            .rev()
+                            .take(mcp_calls.len())
+                            .any(|m| {
+                                if m.tool_call_id.as_deref() == Some(&tc.id) {
+                                    let text = m.content.as_text();
+                                    text.contains("\"status\": \"installed\"")
+                                        || text.contains("\"status\":\"installed\"")
+                                } else {
+                                    false
+                                }
+                            })
+                    });
+
+                    if tools_may_have_changed {
+                        tracing::info!(
+                            "MCP via LLM: marketplace install detected, refreshing tool list"
+                        );
+
+                        // Note: We intentionally do NOT re-call initialize() here because
+                        // that would destroy and recreate the gateway session, losing the
+                        // add_allowed_servers side effect and all other session state.
+                        // The install tool response already includes the new server's tools
+                        // and instructions, so the LLM has sufficient context.
+
+                        match gw_client.list_tools().await {
+                            Ok(refreshed_tools) => {
+                                let new_mcp_names: HashSet<String> =
+                                    refreshed_tools.iter().map(|t| t.name.clone()).collect();
+
+                                if new_mcp_names != mcp_tool_names {
+                                    tracing::info!(
+                                        "MCP via LLM: tool list changed ({} -> {} tools), updating request",
+                                        mcp_tool_names.len(),
+                                        new_mcp_names.len()
+                                    );
+                                    refresh_mcp_tools_in_request(
+                                        &mut request,
+                                        &mcp_tool_names,
+                                        &refreshed_tools,
+                                    );
+                                    mcp_tool_names = new_mcp_names;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "MCP via LLM: failed to refresh tools after install: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+
                 // Store updated history in session
                 session
                     .write()
@@ -1161,6 +1225,30 @@ pub(crate) fn inject_mcp_tools(request: &mut CompletionRequest, mcp_tools: &[Mcp
             request.tools = Some(provider_tools);
         }
     }
+}
+
+/// Re-inject MCP tools after a tool set change (e.g., marketplace install).
+///
+/// Removes all old MCP tool definitions from the request and injects the new set,
+/// preserving any client-provided tools.
+pub(crate) fn refresh_mcp_tools_in_request(
+    request: &mut CompletionRequest,
+    old_mcp_names: &HashSet<String>,
+    new_mcp_tools: &[McpTool],
+) {
+    // Also remove the synthetic ResourceRead and PromptRead tools since they'll
+    // still be present from the initial injection
+    if let Some(ref mut tools) = request.tools {
+        tools.retain(|t| {
+            !old_mcp_names.contains(&t.function.name)
+                && t.function.name != RESOURCE_READ_TOOL_NAME
+                && t.function.name != PROMPT_READ_TOOL_NAME
+        });
+    }
+    // Re-inject the refreshed MCP tools (includes any newly installed server's tools)
+    inject_mcp_tools(request, new_mcp_tools);
+    // Re-inject ResourceRead (always present when MCP tools exist)
+    inject_resource_read_tool(request);
 }
 
 /// Build the final response with aggregated usage and metadata

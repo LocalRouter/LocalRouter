@@ -291,7 +291,7 @@ pub struct SkillInstallRequest {
     pub client_name: String,
 }
 
-/// Result of installing an MCP server
+/// Result of installing an MCP server (for UI direct installs)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledServer {
     /// The server ID in config
@@ -301,7 +301,7 @@ pub struct InstalledServer {
     pub name: String,
 }
 
-/// Result of installing a skill
+/// Result of installing a skill (for UI direct installs)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledSkill {
     /// Skill name
@@ -309,6 +309,48 @@ pub struct InstalledSkill {
 
     /// Path where skill was installed
     pub path: String,
+}
+
+/// Rich result of installing an MCP server (returned to the LLM)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpInstallResult {
+    /// The server ID in config
+    pub server_id: String,
+
+    /// Server name
+    pub server_name: String,
+
+    /// Tools provided by the installed server
+    pub tools: Vec<InstalledToolInfo>,
+
+    /// Server's instructions/welcome message
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+/// Rich result of installing a skill (returned to the LLM)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillInstallResult {
+    /// Skill name
+    pub skill_name: String,
+
+    /// Tools provided by the installed skill
+    pub tools: Vec<InstalledToolInfo>,
+
+    /// Skill instructions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+/// Info about a tool provided by an installed server/skill
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledToolInfo {
+    /// Tool name
+    pub name: String,
+
+    /// Tool description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Cache entry for MCP server listings

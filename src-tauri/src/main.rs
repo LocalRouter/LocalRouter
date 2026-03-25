@@ -679,6 +679,256 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 );
                 Some(Arc::new(service))
             };
+
+            // Wire up marketplace install callbacks for actual server/skill installation
+            if let Some(ref service) = marketplace_service {
+                // MCP server install callback
+                {
+                    let config_mgr = config_manager.clone();
+                    let mcp_mgr = mcp_server_manager.clone();
+                    let app_handle = app.handle().clone();
+
+                    service.set_mcp_install_callback(Arc::new(move |listing, user_config, client_id, _client_name| {
+                        let config_mgr = config_mgr.clone();
+                        let mcp_mgr = mcp_mgr.clone();
+                        let app_handle = app_handle.clone();
+                        Box::pin(async move {
+                            use marketplace::install::create_mcp_server_config;
+                            use marketplace::McpInstallConfig;
+
+                            // Parse user config into McpInstallConfig
+                            let install_config: McpInstallConfig = serde_json::from_value(user_config)
+                                .map_err(|e| format!("Invalid install config: {}", e))?;
+
+                            // Create server config
+                            let server_config = create_mcp_server_config(&listing, &install_config)
+                                .map_err(|e| e.to_string())?;
+                            let server_id = server_config.id.clone();
+                            let server_name = server_config.name.clone();
+
+                            // Handle bearer token — store in keychain if present
+                            if install_config.auth_type == "bearer" {
+                                if let Some(token) = &install_config.bearer_token {
+                                    let keyring_entry = keyring::Entry::new(
+                                        lr_config::MCP_KEYRING_SERVICE,
+                                        &server_id,
+                                    )
+                                    .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+                                    keyring_entry
+                                        .set_password(token)
+                                        .map_err(|e| format!("Failed to store token: {}", e))?;
+                                }
+                            }
+
+                            // Add to config and save
+                            config_mgr
+                                .update(|cfg| {
+                                    cfg.mcp_servers.push(server_config.clone());
+
+                                    // Auto-grant Ask permission to the requesting client
+                                    if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                                        if !client.mcp_permissions.global.is_enabled() {
+                                            client.mcp_permissions.servers.insert(
+                                                server_id.clone(),
+                                                lr_config::PermissionState::Ask,
+                                            );
+                                        }
+                                    }
+                                })
+                                .map_err(|e| e.to_string())?;
+                            config_mgr.save().await.map_err(|e| e.to_string())?;
+
+                            // Add to MCP server manager and start
+                            mcp_mgr.add_config(server_config);
+                            if let Err(e) = mcp_mgr.start_server(&server_id).await {
+                                tracing::warn!(
+                                    "Marketplace: server '{}' installed but failed to start: {}",
+                                    server_id, e
+                                );
+                                // Don't fail — server is configured, just not running yet
+                            }
+
+                            // Wait for server to become healthy (up to 30s)
+                            let mut tools = Vec::new();
+                            let mut instructions = None;
+                            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                            loop {
+                                let health = mcp_mgr.get_server_health(&server_id).await;
+                                if matches!(health.status, lr_mcp::manager::HealthStatus::Unhealthy) && health.error.is_some() {
+                                    // Server started but crashed — don't wait further
+                                    tracing::warn!(
+                                        "Marketplace: server '{}' failed after start: {:?}",
+                                        server_id, health.error
+                                    );
+                                    break;
+                                }
+                                if matches!(health.status, lr_mcp::manager::HealthStatus::Healthy) {
+                                    // Server is ready — fetch its tools
+                                    let tools_request = lr_mcp::protocol::JsonRpcRequest {
+                                        jsonrpc: "2.0".to_string(),
+                                        id: Some(serde_json::json!(1)),
+                                        method: "tools/list".to_string(),
+                                        params: Some(serde_json::json!({})),
+                                    };
+                                    if let Ok(resp) = mcp_mgr.send_request(&server_id, tools_request).await {
+                                        if let Some(result) = &resp.result {
+                                            if let Some(tool_list) = result.get("tools").and_then(|t| t.as_array()) {
+                                                tools = tool_list
+                                                    .iter()
+                                                    .filter_map(|t| {
+                                                        Some(marketplace::InstalledToolInfo {
+                                                            name: t.get("name")?.as_str()?.to_string(),
+                                                            description: t
+                                                                .get("description")
+                                                                .and_then(|d| d.as_str())
+                                                                .map(|s| s.to_string()),
+                                                        })
+                                                    })
+                                                    .collect();
+                                            }
+                                        }
+                                    }
+
+                                    // Fetch server info for instructions
+                                    let init_request = lr_mcp::protocol::JsonRpcRequest {
+                                        jsonrpc: "2.0".to_string(),
+                                        id: Some(serde_json::json!(2)),
+                                        method: "initialize".to_string(),
+                                        params: Some(serde_json::json!({
+                                            "protocolVersion": "2024-11-05",
+                                            "capabilities": {},
+                                            "clientInfo": { "name": "LocalRouter", "version": "1.0.0" }
+                                        })),
+                                    };
+                                    // Try to get instructions but don't fail if it doesn't work
+                                    // (server was already initialized by start_server)
+                                    if let Ok(resp) = mcp_mgr.send_request(&server_id, init_request).await {
+                                        instructions = resp.result
+                                            .as_ref()
+                                            .and_then(|r| r.get("instructions"))
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string());
+                                    }
+
+                                    break;
+                                }
+                                if std::time::Instant::now() >= deadline {
+                                    tracing::warn!(
+                                        "Marketplace: timed out waiting for server '{}' to become healthy",
+                                        server_id
+                                    );
+                                    break;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            }
+
+                            // Emit events
+                            use tauri::Emitter;
+                            let _ = app_handle.emit("mcp-servers-changed", ());
+                            let _ = app_handle.emit("clients-changed", ());
+
+                            Ok(marketplace::McpInstallResult {
+                                server_id,
+                                server_name,
+                                tools,
+                                instructions,
+                            })
+                        })
+                    }));
+                }
+
+                // Skill install callback
+                {
+                    let config_mgr = config_manager.clone();
+                    let skill_mgr = skill_manager.clone();
+                    let service_clone = service.clone();
+                    let app_handle = app.handle().clone();
+
+                    service.set_skill_install_callback(Arc::new(move |listing, _client_id, _client_name| {
+                        let config_mgr = config_mgr.clone();
+                        let skill_mgr = skill_mgr.clone();
+                        let service_clone = service_clone.clone();
+                        let app_handle = app_handle.clone();
+                        Box::pin(async move {
+                            let skill_name = listing.name.clone();
+                            let skills_dir = service_clone.skills_data_dir();
+                            let skill_target_dir = skills_dir.join(&listing.source_label).join(&listing.name);
+
+                            // Download skill files
+                            let http_client = reqwest::Client::new();
+                            std::fs::create_dir_all(&skill_target_dir)
+                                .map_err(|e| format!("Failed to create directory: {}", e))?;
+
+                            // Download SKILL.md
+                            let skill_md = http_client
+                                .get(&listing.skill_md_url)
+                                .send()
+                                .await
+                                .map_err(|e| format!("Failed to download SKILL.md: {}", e))?
+                                .text()
+                                .await
+                                .map_err(|e| format!("Failed to read SKILL.md: {}", e))?;
+
+                            std::fs::write(skill_target_dir.join("SKILL.md"), &skill_md)
+                                .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
+
+                            // Download additional files
+                            for file in &listing.files {
+                                let file_path = skill_target_dir.join(&file.path);
+                                if let Some(parent) = file_path.parent() {
+                                    std::fs::create_dir_all(parent)
+                                        .map_err(|e| format!("Failed to create directory: {}", e))?;
+                                }
+                                let content = http_client
+                                    .get(&file.url)
+                                    .send()
+                                    .await
+                                    .map_err(|e| format!("Failed to download {}: {}", file.path, e))?
+                                    .bytes()
+                                    .await
+                                    .map_err(|e| format!("Failed to read {}: {}", file.path, e))?;
+                                std::fs::write(&file_path, content)
+                                    .map_err(|e| format!("Failed to write {}: {}", file.path, e))?;
+                            }
+
+                            // Add path to config
+                            let skill_path = skill_target_dir.to_string_lossy().to_string();
+                            let mut path_added = false;
+                            config_mgr
+                                .update(|cfg| {
+                                    if !cfg.skills.paths.contains(&skill_path) {
+                                        cfg.skills.paths.push(skill_path.clone());
+                                        path_added = true;
+                                    }
+                                })
+                                .map_err(|e| e.to_string())?;
+                            if path_added {
+                                config_mgr.save().await.map_err(|e| e.to_string())?;
+                            }
+
+                            // Trigger skill rescan
+                            let config = config_mgr.get();
+                            skill_mgr.rescan(&config.skills.paths, &config.skills.disabled_skills);
+
+                            // Extract description from SKILL.md as instructions
+                            let instructions = listing.description.clone();
+
+                            // Emit events
+                            use tauri::Emitter;
+                            let _ = app_handle.emit("skills-changed", ());
+
+                            Ok(marketplace::SkillInstallResult {
+                                skill_name,
+                                tools: Vec::new(), // Skills expose tools through the virtual server
+                                instructions,
+                            })
+                        })
+                    }));
+                }
+
+                info!("Marketplace install callbacks wired up");
+            }
+
             app.manage(marketplace_service.clone());
 
             // Get AppState from server manager and manage it for Tauri commands

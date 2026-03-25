@@ -198,7 +198,7 @@ pub async fn run_agentic_loop_streaming(
             request,
             &client_id,
             &client_name,
-            &mcp_tool_names,
+            mcp_tool_names,
             &client_tool_names,
             &prompts,
             roots,
@@ -241,7 +241,7 @@ async fn streaming_loop(
     mut request: CompletionRequest,
     client_id: &str,
     client_name: &str,
-    mcp_tool_names: &HashSet<String>,
+    mut mcp_tool_names: HashSet<String>,
     client_tool_names: &HashSet<String>,
     prompts: &[crate::gateway_client::McpPrompt],
     roots: Vec<lr_mcp::protocol::Root>,
@@ -861,6 +861,59 @@ async fn streaming_loop(
                         name: None,
                         reasoning_content: None,
                     });
+                }
+
+                // Check if any tool call was a marketplace install that changed the tool set
+                {
+                    let tools_may_have_changed = mcp_calls.iter().any(|tc| {
+                        request
+                            .messages
+                            .iter()
+                            .rev()
+                            .take(mcp_calls.len())
+                            .any(|m| {
+                                if m.tool_call_id.as_deref() == Some(&tc.id) {
+                                    let text = m.content.as_text();
+                                    text.contains("\"status\": \"installed\"")
+                                        || text.contains("\"status\":\"installed\"")
+                                } else {
+                                    false
+                                }
+                            })
+                    });
+
+                    if tools_may_have_changed {
+                        tracing::info!(
+                            "MCP via LLM streaming: marketplace install detected, refreshing tool list"
+                        );
+                        let gw_client =
+                            GatewayClient::from_permissions(&gateway, permissions, servers.clone());
+                        match gw_client.list_tools().await {
+                            Ok(refreshed_tools) => {
+                                let new_mcp_names: HashSet<String> =
+                                    refreshed_tools.iter().map(|t| t.name.clone()).collect();
+                                if new_mcp_names != mcp_tool_names {
+                                    tracing::info!(
+                                        "MCP via LLM streaming: tool list changed ({} -> {} tools), updating request",
+                                        mcp_tool_names.len(),
+                                        new_mcp_names.len()
+                                    );
+                                    orchestrator::refresh_mcp_tools_in_request(
+                                        &mut request,
+                                        &mcp_tool_names,
+                                        &refreshed_tools,
+                                    );
+                                    mcp_tool_names = new_mcp_names;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "MCP via LLM streaming: failed to refresh tools after install: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
                 }
 
                 // Store updated history

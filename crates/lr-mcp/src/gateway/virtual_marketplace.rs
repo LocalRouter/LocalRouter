@@ -136,12 +136,34 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
             .handle_tool_call(tool_name, arguments, client_id, client_name)
             .await
         {
-            Ok(result) => VirtualToolCallResult::Success(json!({
-                "content": [{
-                    "type": "text",
-                    "text": serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
-                }]
-            })),
+            Ok(result) => {
+                let is_install = result.get("status").and_then(|v| v.as_str()) == Some("installed");
+
+                let response = json!({
+                    "content": [{
+                        "type": "text",
+                        "text": serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
+                    }]
+                });
+
+                if is_install {
+                    // Extract new server ID for adding to allowed_servers
+                    let new_server_id = result
+                        .get("server_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    VirtualToolCallResult::SuccessWithSideEffects {
+                        response,
+                        invalidate_cache: true,
+                        send_list_changed: true,
+                        state_update: None,
+                        add_allowed_servers: new_server_id.map(|id| vec![id]),
+                    }
+                } else {
+                    VirtualToolCallResult::Success(response)
+                }
+            }
             Err(e) => VirtualToolCallResult::ToolError(e.to_string()),
         }
     }

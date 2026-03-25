@@ -19,9 +19,43 @@ use crate::skill_sources::SkillSourcesClient;
 use lr_config::MarketplaceConfig;
 use parking_lot::RwLock;
 use serde_json::Value;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+
+/// Callback for performing actual MCP server installation.
+///
+/// Called after the user approves an install request from the popup.
+/// The callback receives the listing + user-provided config, performs the actual
+/// installation (add config, start server, grant permissions, wait for ready),
+/// and returns the installed server's tools and instructions.
+pub type McpInstallCallback = Arc<
+    dyn Fn(
+            McpServerListing,
+            Value,
+            String,
+            String,
+        ) -> Pin<Box<dyn Future<Output = Result<McpInstallResult, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Callback for performing actual skill installation.
+///
+/// Called after the user approves a skill install request.
+/// The callback receives the listing, performs the download + installation,
+/// and returns the installed skill's tools and instructions.
+pub type SkillInstallCallback = Arc<
+    dyn Fn(
+            SkillListing,
+            String,
+            String,
+        ) -> Pin<Box<dyn Future<Output = Result<SkillInstallResult, String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Virtual server ID for marketplace (used in connection graph, not MCP panel)
 pub const MARKETPLACE_ID: &str = "marketplace";
@@ -48,6 +82,12 @@ pub struct MarketplaceService {
 
     /// Optional Tauri app handle for event emission
     app_handle: RwLock<Option<tauri::AppHandle>>,
+
+    /// Callback for performing actual MCP server installation
+    mcp_install_callback: RwLock<Option<McpInstallCallback>>,
+
+    /// Callback for performing actual skill installation
+    skill_install_callback: RwLock<Option<SkillInstallCallback>>,
 }
 
 impl MarketplaceService {
@@ -64,6 +104,8 @@ impl MarketplaceService {
             data_dir,
             cache: RwLock::new(cache),
             app_handle: RwLock::new(None),
+            mcp_install_callback: RwLock::new(None),
+            skill_install_callback: RwLock::new(None),
         }
     }
 
@@ -89,6 +131,8 @@ impl MarketplaceService {
             data_dir,
             cache: RwLock::new(cache),
             app_handle: RwLock::new(None),
+            mcp_install_callback: RwLock::new(None),
+            skill_install_callback: RwLock::new(None),
         }
     }
 
@@ -382,6 +426,29 @@ impl MarketplaceService {
             }
         }
     }
+
+    /// Set the callback for performing actual MCP server installation.
+    ///
+    /// When set, the marketplace install tool will call this after user approval
+    /// to actually install the server (add config, start, grant permissions).
+    pub fn set_mcp_install_callback(&self, callback: McpInstallCallback) {
+        *self.mcp_install_callback.write() = Some(callback);
+    }
+
+    /// Set the callback for performing actual skill installation.
+    pub fn set_skill_install_callback(&self, callback: SkillInstallCallback) {
+        *self.skill_install_callback.write() = Some(callback);
+    }
+
+    /// Get the MCP install callback (if set)
+    pub fn mcp_install_callback(&self) -> Option<McpInstallCallback> {
+        self.mcp_install_callback.read().clone()
+    }
+
+    /// Get the skill install callback (if set)
+    pub fn skill_install_callback(&self) -> Option<SkillInstallCallback> {
+        self.skill_install_callback.read().clone()
+    }
 }
 
 impl Clone for MarketplaceService {
@@ -394,6 +461,8 @@ impl Clone for MarketplaceService {
             data_dir: self.data_dir.clone(),
             cache: RwLock::new(self.cache.read().clone()),
             app_handle: RwLock::new(self.app_handle.read().clone()),
+            mcp_install_callback: RwLock::new(self.mcp_install_callback.read().clone()),
+            skill_install_callback: RwLock::new(self.skill_install_callback.read().clone()),
         }
     }
 }

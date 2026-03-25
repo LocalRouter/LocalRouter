@@ -980,6 +980,7 @@ impl McpGateway {
                 invalidate_cache,
                 send_list_changed,
                 state_update,
+                add_allowed_servers,
             } => {
                 let preview = serde_json::to_string_pretty(&response).unwrap_or_default();
                 self.update_monitor_event(
@@ -1000,7 +1001,7 @@ impl McpGateway {
                         }
                     }),
                 );
-                if state_update.is_some() || invalidate_cache {
+                if state_update.is_some() || invalidate_cache || add_allowed_servers.is_some() {
                     let mut sw = session.write().await;
                     if let Some(updater) = state_update {
                         if let Some(state) = sw.virtual_server_state.get_mut(vs.id()) {
@@ -1009,6 +1010,13 @@ impl McpGateway {
                     }
                     if invalidate_cache {
                         sw.invalidate_tools_cache();
+                    }
+                    if let Some(new_servers) = add_allowed_servers {
+                        for server_id in new_servers {
+                            if !sw.allowed_servers.contains(&server_id) {
+                                sw.allowed_servers.push(server_id);
+                            }
+                        }
                     }
                 }
                 if send_list_changed {

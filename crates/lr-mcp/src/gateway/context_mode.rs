@@ -553,6 +553,7 @@ fn handle_ctx_search_blocking(
             invalidate_cache: true,
             send_list_changed: true,
             state_update: Some(state_update),
+            add_allowed_servers: None,
         }
     }
 }
@@ -632,6 +633,7 @@ fn handle_index_read_blocking(
                         invalidate_cache: true,
                         send_list_changed: true,
                         state_update: Some(state_update),
+                        add_allowed_servers: None,
                     };
                 }
             }
@@ -1488,6 +1490,7 @@ mod tests {
                 invalidate_cache,
                 send_list_changed,
                 state_update,
+                ..
             } => {
                 let text = response["content"][0]["text"].as_str().unwrap();
                 assert!(

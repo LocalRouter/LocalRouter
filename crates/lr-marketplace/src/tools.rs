@@ -352,12 +352,51 @@ async fn handle_install_mcp_server(
                 MarketplaceError::InstallError("No config provided by user".to_string())
             })?;
 
-            Ok(json!({
-                "status": "approved",
-                "message": format!("Installation of '{}' from '{}' approved by user", name, source),
-                "config": config,
-                "next_step": "The server is being installed and will be available shortly"
-            }))
+            // Perform actual installation via callback
+            if let Some(callback) = service.mcp_install_callback() {
+                let result = callback(
+                    listing,
+                    config,
+                    client_id.to_string(),
+                    client_name.to_string(),
+                )
+                .await
+                .map_err(MarketplaceError::InstallError)?;
+
+                let tools_summary: Vec<Value> = result
+                    .tools
+                    .iter()
+                    .map(|t| {
+                        json!({
+                            "name": t.name,
+                            "description": t.description,
+                        })
+                    })
+                    .collect();
+
+                let tool_names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+
+                Ok(json!({
+                    "status": "installed",
+                    "server_id": result.server_id,
+                    "server_name": result.server_name,
+                    "tools": tools_summary,
+                    "instructions": result.instructions,
+                    "message": format!(
+                        "MCP server '{}' installed and ready. Available tools: {}. These tools are now available for immediate use.",
+                        result.server_name,
+                        tool_names.join(", ")
+                    )
+                }))
+            } else {
+                // No callback set — fall back to old behavior (approved but not installed)
+                Ok(json!({
+                    "status": "approved",
+                    "message": format!("Installation of '{}' from '{}' approved by user", name, source),
+                    "config": config,
+                    "next_step": "The server is being installed and will be available shortly"
+                }))
+            }
         }
         crate::install_popup::InstallAction::Cancel => Err(MarketplaceError::InstallCancelled),
     }
@@ -400,12 +439,56 @@ async fn handle_install_skill(
         .await?;
 
     match response.action {
-        crate::install_popup::InstallAction::Install => Ok(json!({
-            "status": "approved",
-            "message": format!("Installation of skill '{}' from '{}' approved by user", name, source),
-            "listing": listing,
-            "next_step": "The skill is being downloaded and will be available shortly"
-        })),
+        crate::install_popup::InstallAction::Install => {
+            // Perform actual installation via callback
+            if let Some(callback) = service.skill_install_callback() {
+                let result = callback(listing, client_id.to_string(), client_name.to_string())
+                    .await
+                    .map_err(MarketplaceError::InstallError)?;
+
+                let tools_summary: Vec<Value> = result
+                    .tools
+                    .iter()
+                    .map(|t| {
+                        json!({
+                            "name": t.name,
+                            "description": t.description,
+                        })
+                    })
+                    .collect();
+
+                let tool_names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+
+                let message = if tool_names.is_empty() {
+                    format!(
+                        "Skill '{}' installed and ready. The skill's tools are now available for use.",
+                        result.skill_name
+                    )
+                } else {
+                    format!(
+                        "Skill '{}' installed and ready. Available tools: {}. These tools are now available for immediate use.",
+                        result.skill_name,
+                        tool_names.join(", ")
+                    )
+                };
+
+                Ok(json!({
+                    "status": "installed",
+                    "skill_name": result.skill_name,
+                    "tools": tools_summary,
+                    "instructions": result.instructions,
+                    "message": message
+                }))
+            } else {
+                // No callback set — fall back to old behavior
+                Ok(json!({
+                    "status": "approved",
+                    "message": format!("Installation of skill '{}' from '{}' approved by user", name, source),
+                    "listing": listing,
+                    "next_step": "The skill is being downloaded and will be available shortly"
+                }))
+            }
+        }
         crate::install_popup::InstallAction::Cancel => Err(MarketplaceError::InstallCancelled),
     }
 }
