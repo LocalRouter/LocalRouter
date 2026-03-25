@@ -18,7 +18,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { Bot, Brain, Coins, Download, Gauge, Loader2, MessageSquareWarning } from "lucide-react"
+import { Bot, Brain, Coins, Download, Gauge, Loader2, MessageSquareWarning, ShieldCheck } from "lucide-react"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import {
@@ -533,31 +533,23 @@ export function UnifiedModelsTab({
       {/* Section 1: Model Selection */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-primary/10">
-                <Bot className="h-4 w-4 text-primary" />
-              </div>
-              <div>
-                <CardTitle className="text-base">Model Selection</CardTitle>
-                <CardDescription>
-                  Select and prioritize models. Enabled models appear in the API model list and are used for auto-routing in priority order.
-                </CardDescription>
-                {/* Show loading indicator for providers */}
-                {!isFullyLoaded && loadingProviders.size > 0 && (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    <span>Loading models from {loadingProviders.size} provider{loadingProviders.size > 1 ? 's' : ''}...</span>
-                  </div>
-                )}
-              </div>
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-primary/10">
+              <Bot className="h-4 w-4 text-primary" />
             </div>
-            <PermissionStateButton
-              value={autoConfig?.permission || 'allow'}
-              onChange={handleAutoRouterPermissionChange}
-              disabled={saving}
-              size="sm"
-            />
+            <div>
+              <CardTitle className="text-base">Model Selection</CardTitle>
+              <CardDescription>
+                Select and prioritize models. Enabled models appear in the API model list and are used for auto-routing in priority order.
+              </CardDescription>
+              {/* Show loading indicator for providers */}
+              {!isFullyLoaded && loadingProviders.size > 0 && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>Loading models from {loadingProviders.size} provider{loadingProviders.size > 1 ? 's' : ''}...</span>
+                </div>
+              )}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -578,7 +570,51 @@ export function UnifiedModelsTab({
         </CardContent>
       </Card>
 
-      {/* Section 2: Rate Limits */}
+      {/* Section 2: Model Permissions */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-primary/10">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+            </div>
+            <div>
+              <CardTitle className="text-base">Model Permissions</CardTitle>
+              <CardDescription>
+                Control how this client accesses LLM models through the API.
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Access Control</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                <strong>Allow</strong> &mdash; requests are processed immediately.{" "}
+                <strong>Ask</strong> &mdash; each request triggers an approval popup.{" "}
+                <strong>Off</strong> &mdash; all model requests are blocked.
+              </p>
+            </div>
+            <PermissionStateButton
+              value={autoConfig?.permission || 'allow'}
+              onChange={handleAutoRouterPermissionChange}
+              disabled={saving}
+            />
+          </div>
+
+          <div className="border-t pt-3 flex items-center justify-between">
+            <div>
+              <span className="text-sm font-medium">Approval Popup Preview</span>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Preview the popup shown when a model request requires approval
+              </p>
+            </div>
+            <SamplePopupButton popupType="llm_model" />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Section 3: Rate Limits */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
