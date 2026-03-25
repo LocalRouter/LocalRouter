@@ -33,6 +33,7 @@ import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { ROUTELLM_REQUIREMENTS, RouteLLMStatus } from "@/components/routellm/types"
+import { PermissionStateButton } from "@/components/permissions"
 import type { ModelPricingInfo } from "@/components/strategy/DragThresholdModelSelector"
 import type { FreeTierKind, ProviderFreeTierStatus, PermissionState } from "@/types/tauri-commands"
 
@@ -340,6 +341,20 @@ export function UnifiedModelsTab({
   }, [strategy, updateStrategy])
 
   // -------------------------------------------------------------------------
+  // Auto-router permission handler
+  // -------------------------------------------------------------------------
+
+  const handleAutoRouterPermissionChange = useCallback((permission: PermissionState) => {
+    if (!strategy?.auto_config) return
+    updateStrategy({
+      auto_config: {
+        ...strategy.auto_config,
+        permission,
+      },
+    })
+  }, [strategy, updateStrategy])
+
+  // -------------------------------------------------------------------------
   // Rate limits (debounced separately at 500ms)
   // -------------------------------------------------------------------------
 
@@ -518,23 +533,31 @@ export function UnifiedModelsTab({
       {/* Section 1: Model Selection */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10">
-              <Bot className="h-4 w-4 text-primary" />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-primary/10">
+                <Bot className="h-4 w-4 text-primary" />
+              </div>
+              <div>
+                <CardTitle className="text-base">Model Selection</CardTitle>
+                <CardDescription>
+                  Select and prioritize models. Enabled models appear in the API model list and are used for auto-routing in priority order.
+                </CardDescription>
+                {/* Show loading indicator for providers */}
+                {!isFullyLoaded && loadingProviders.size > 0 && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <span>Loading models from {loadingProviders.size} provider{loadingProviders.size > 1 ? 's' : ''}...</span>
+                  </div>
+                )}
+              </div>
             </div>
-            <div>
-              <CardTitle className="text-base">Model Selection</CardTitle>
-              <CardDescription>
-                Select and prioritize models. Enabled models appear in the API model list and are used for auto-routing in priority order.
-              </CardDescription>
-              {/* Show loading indicator for providers */}
-              {!isFullyLoaded && loadingProviders.size > 0 && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>Loading models from {loadingProviders.size} provider{loadingProviders.size > 1 ? 's' : ''}...</span>
-                </div>
-              )}
-            </div>
+            <PermissionStateButton
+              value={autoConfig?.permission || 'allow'}
+              onChange={handleAutoRouterPermissionChange}
+              disabled={saving}
+              size="sm"
+            />
           </div>
         </CardHeader>
         <CardContent>
