@@ -41,13 +41,17 @@ impl AppIntegration for OpenClawIntegration {
         true
     }
 
+    fn needs_model_list(&self) -> bool {
+        true
+    }
+
     fn configure_permanent(
         &self,
         base_url: &str,
         client_secret: &str,
         _client_id: &str,
     ) -> Result<LaunchResult, String> {
-        self.write_config(base_url, client_secret, true, true)
+        self.write_config(base_url, client_secret, true, true, None)
     }
 
     fn sync_config(&self, ctx: &ConfigSyncContext) -> Result<LaunchResult, String> {
@@ -56,6 +60,7 @@ impl AppIntegration for OpenClawIntegration {
             &ctx.client_secret,
             ctx.should_sync_llm(),
             ctx.should_sync_mcp(),
+            Some(&ctx.models),
         )
     }
 }
@@ -67,6 +72,7 @@ impl OpenClawIntegration {
         client_secret: &str,
         sync_llm: bool,
         sync_mcp: bool,
+        models: Option<&Vec<String>>,
     ) -> Result<LaunchResult, String> {
         let path = config_path();
 
@@ -102,17 +108,41 @@ impl OpenClawIntegration {
                 .entry("providers")
                 .or_insert_with(|| serde_json::json!({}));
 
+            let model_ids = models
+                .cloned()
+                .unwrap_or_else(|| vec!["localrouter/auto".to_string()]);
+            let model_entries: Vec<serde_json::Value> = model_ids
+                .iter()
+                .map(|id| {
+                    serde_json::json!({
+                        "id": id,
+                        "name": id
+                    })
+                })
+                .collect();
+
             let provider_entry = serde_json::json!({
                 "baseUrl": base_url,
                 "apiKey": client_secret,
-                "api": "openai-responses"
+                "api": "openai-responses",
+                "models": model_entries
             });
 
             if let Some(prov_obj) = providers.as_object_mut() {
                 prov_obj.insert("localrouter".to_string(), provider_entry);
                 changed = true;
             }
-            parts.push("LLM provider");
+
+            // Set default model to autorouter
+            let models_obj = models_section
+                .as_object_mut()
+                .ok_or("Invalid models section")?;
+            models_obj.insert(
+                "default".to_string(),
+                serde_json::json!("localrouter:localrouter/auto"),
+            );
+
+            parts.push("LLM provider + default model");
         } else {
             // Remove stale LLM entry
             if let Some(models) = obj.get_mut("models") {
