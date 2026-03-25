@@ -28,6 +28,9 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{error, info};
 
+/// Interval for periodic session cleanup tasks (gateway + MCP via LLM).
+const SESSION_CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
+
 use lr_mcp::McpServerManager;
 use lr_providers::registry::ProviderRegistry;
 use lr_router::{RateLimiterManager, Router as AppRouter};
@@ -138,13 +141,15 @@ pub async fn start_server(
     // Clone state to return before starting server (which runs forever)
     let state_clone = state.clone();
 
-    // Spawn gateway session cleanup task (runs every 10 minutes)
+    // Spawn session cleanup tasks (runs every 10 minutes)
     let gateway_for_cleanup = state.mcp_gateway.clone();
+    let mcp_via_llm_for_cleanup = state.mcp_via_llm_manager.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(600)); // 10 minutes
+        let mut interval = tokio::time::interval(SESSION_CLEANUP_INTERVAL);
         loop {
             interval.tick().await;
             gateway_for_cleanup.cleanup_expired_sessions();
+            mcp_via_llm_for_cleanup.cleanup_expired_sessions();
         }
     });
 
