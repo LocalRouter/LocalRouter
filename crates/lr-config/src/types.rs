@@ -280,7 +280,7 @@ impl Default for RouteLLMConfig {
 }
 
 /// Auto model configuration for localrouter/auto virtual model
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutoModelConfig {
     /// Permission state for auto-routing (Allow/Ask/Off)
     #[serde(default)]
@@ -289,7 +289,10 @@ pub struct AutoModelConfig {
     #[serde(default, skip_serializing)]
     pub enabled: Option<bool>,
     /// Custom model name for the auto router (default: "localrouter/auto")
-    #[serde(default = "default_auto_model_name")]
+    #[serde(
+        default = "default_auto_model_name",
+        deserialize_with = "deserialize_auto_model_name"
+    )]
     pub model_name: String,
     /// Prioritized models list (in order) for fallback
     pub prioritized_models: Vec<(String, String)>,
@@ -299,6 +302,19 @@ pub struct AutoModelConfig {
     /// RouteLLM intelligent routing configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routellm_config: Option<RouteLLMConfig>,
+}
+
+impl Default for AutoModelConfig {
+    fn default() -> Self {
+        Self {
+            permission: PermissionState::default(),
+            enabled: None,
+            model_name: default_auto_model_name(),
+            prioritized_models: Vec::new(),
+            available_models: Vec::new(),
+            routellm_config: None,
+        }
+    }
 }
 
 impl AutoModelConfig {
@@ -319,6 +335,17 @@ impl AutoModelConfig {
 
 fn default_auto_model_name() -> String {
     "localrouter/auto".to_string()
+}
+
+fn deserialize_auto_model_name<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let s = String::deserialize(deserializer)?;
+    Ok(if s.is_empty() {
+        default_auto_model_name()
+    } else {
+        s
+    })
 }
 
 /// Routing strategy configuration (separate from clients)
