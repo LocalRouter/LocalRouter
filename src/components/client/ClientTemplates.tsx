@@ -41,6 +41,10 @@ export interface ClientTemplate {
   setupType: 'env_vars' | 'config_file' | 'generic'
   envVars?: ClientTemplateEnvVar[]
   configFile?: ClientTemplateConfigFile
+  /** Separate MCP config file (when MCP config lives in a different file than the main config) */
+  mcpConfigFile?: ClientTemplateConfigFile
+  /** Note about MCP prerequisites (e.g. required skills/plugins) */
+  mcpNote?: string
   manualInstructions?: string
   docsUrl?: string
   supportsMcp: boolean
@@ -197,7 +201,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     description: 'AI assistant bridging messaging apps to coding agents.',
     category: 'coding_assistants',
     icon: 'openclaw',
-    defaultMode: 'llm_only',
+    defaultMode: 'both',
     setupType: 'config_file',
     configFile: {
       path: '{{HOME_DIR}}/.openclaw/openclaw.json',
@@ -214,8 +218,24 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
       }, null, 2),
       description: 'Adds LocalRouter as an OpenAI-compatible provider.',
     },
+    mcpConfigFile: {
+      path: '{{HOME_DIR}}/.openclaw/config/mcporter.json',
+      jsonSnippet: JSON.stringify({
+        mcpServers: {
+          localrouter: {
+            baseUrl: '{{BASE_URL}}',
+            headers: {
+              Authorization: 'Bearer {{CLIENT_SECRET}}',
+            },
+          },
+        },
+        imports: [],
+      }, null, 2),
+      description: 'Adds LocalRouter as an MCP server via MCPorter.',
+    },
+    mcpNote: 'Requires the MCPorter skill to be installed in OpenClaw. Install it from clawhub.ai/steipete/mcporter.',
     docsUrl: 'https://docs.openclaw.ai',
-    supportsMcp: false,
+    supportsMcp: true,
     supportsLlm: true,
     // Audit: only 'openclaw' is documented; 'clawdbot' not found in public docs.
     // See: https://docs.openclaw.ai/cli/models

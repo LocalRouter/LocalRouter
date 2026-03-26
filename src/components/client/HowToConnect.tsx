@@ -444,7 +444,12 @@ function QuickSetupTab({
                 {template.supportsMcp && (
                   <li className="flex items-start gap-2 text-xs text-muted-foreground">
                     <Terminal className="h-3.5 w-3.5 mt-0.5 shrink-0 text-foreground" />
-                    <span>Set up MCP proxy connection to LocalRouter's servers and skills</span>
+                    <span>
+                      Set up MCP proxy connection to LocalRouter's servers and skills
+                      {template.mcpConfigFile && (
+                        <> via <code className="bg-muted px-1 py-0.5 rounded break-all">{resolveTemplatePlaceholders(template.mcpConfigFile.path, baseUrl, resolvedSecret, clientId, homeDir, configDir)}</code></>
+                      )}
+                    </span>
                   </li>
                 )}
                 <li className="flex items-start gap-2 text-xs text-muted-foreground">
@@ -452,6 +457,12 @@ function QuickSetupTab({
                   <span>Re-sync automatically when models, secrets, or server settings change</span>
                 </li>
               </ul>
+              {template.mcpNote && (
+                <div className="flex items-start gap-2 text-xs text-muted-foreground mt-2 pt-2 border-t">
+                  <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-yellow-500" />
+                  <span>{template.mcpNote}</span>
+                </div>
+              )}
             </div>
 
             {/* Toggle */}
@@ -592,20 +603,53 @@ function QuickSetupTab({
           {template.supportsMcp && (
             <div className="space-y-2 pt-2 border-t">
               <p className="text-xs font-medium">MCP Proxy</p>
-              <p className="text-xs text-muted-foreground">Add this MCP server configuration to {template.name}:</p>
-              <CopyableCodeBlock
-                value={JSON.stringify({
-                  mcpServers: {
-                    localrouter: {
-                      type: "http",
-                      url: baseUrl,
-                      headers: {
-                        Authorization: `Bearer ${resolvedSecret}`
+              {template.mcpConfigFile ? (
+                <>
+                  {template.mcpConfigFile.description && (
+                    <p className="text-xs text-muted-foreground">{template.mcpConfigFile.description}</p>
+                  )}
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Config File Path</Label>
+                    <CopyableCode
+                      value={resolveTemplatePlaceholders(template.mcpConfigFile.path, baseUrl, resolvedSecret, clientId, homeDir, configDir)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Configuration</Label>
+                    <CopyableCodeBlock
+                      value={resolveTemplatePlaceholders(
+                        typeof template.mcpConfigFile.jsonSnippet === 'function'
+                          ? template.mcpConfigFile.jsonSnippet({ models })
+                          : template.mcpConfigFile.jsonSnippet,
+                        baseUrl, resolvedSecret, clientId, homeDir, configDir,
+                      )}
+                    />
+                  </div>
+                  {template.mcpNote && (
+                    <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                      <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-yellow-500" />
+                      <span>{template.mcpNote}</span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-muted-foreground">Add this MCP server configuration to {template.name}:</p>
+                  <CopyableCodeBlock
+                    value={JSON.stringify({
+                      mcpServers: {
+                        localrouter: {
+                          type: "http",
+                          url: baseUrl,
+                          headers: {
+                            Authorization: `Bearer ${resolvedSecret}`
+                          }
+                        }
                       }
-                    }
-                  }
-                }, null, 2)}
-              />
+                    }, null, 2)}
+                  />
+                </>
+              )}
             </div>
           )}
 
