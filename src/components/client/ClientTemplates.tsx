@@ -207,9 +207,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
             localrouter: {
               baseUrl: '{{BASE_URL}}',
               apiKey: '{{CLIENT_SECRET}}',
-              // Audit: "openai-responses" is the correct api type for OpenAI-compatible endpoints.
-              // See: https://docs.openclaw.ai/concepts/model-providers
-              api: 'openai-responses',
+              api: 'openai-completions',
             },
           },
         },

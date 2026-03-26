@@ -124,7 +124,7 @@ impl OpenClawIntegration {
             let provider_entry = serde_json::json!({
                 "baseUrl": base_url,
                 "apiKey": client_secret,
-                "api": "openai-responses",
+                "api": "openai-completions",
                 "models": model_entries
             });
 
@@ -133,14 +133,26 @@ impl OpenClawIntegration {
                 changed = true;
             }
 
-            // Set default model to autorouter
-            let models_obj = models_section
+            // Set default model to autorouter under agents.defaults.model.primary
+            let agents_section =
+                obj.entry("agents").or_insert_with(|| serde_json::json!({}));
+            let defaults_section = agents_section
                 .as_object_mut()
-                .ok_or("Invalid models section")?;
-            models_obj.insert(
-                "default".to_string(),
-                serde_json::json!("localrouter:localrouter/auto"),
-            );
+                .ok_or("Invalid agents section")?
+                .entry("defaults")
+                .or_insert_with(|| serde_json::json!({}));
+            let model_section = defaults_section
+                .as_object_mut()
+                .ok_or("Invalid agents.defaults section")?
+                .entry("model")
+                .or_insert_with(|| serde_json::json!({}));
+            model_section
+                .as_object_mut()
+                .ok_or("Invalid agents.defaults.model section")?
+                .insert(
+                    "primary".to_string(),
+                    serde_json::json!("localrouter:localrouter/auto"),
+                );
 
             parts.push("LLM provider + default model");
         } else {
