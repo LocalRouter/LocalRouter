@@ -44,7 +44,7 @@ pub async fn embeddings(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(request): Json<EmbeddingRequest>,
+    Json(mut request): Json<EmbeddingRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "embedding");
@@ -88,11 +88,24 @@ pub async fn embeddings(
         return Err(llm_guard.capture_err(e));
     }
 
-    // Strategy-level model access checks (embeddings don't use localrouter/auto)
+    // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
+    if request.model != "localrouter/auto" {
+        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+            if let Some(ref ac) = strategy.auto_config {
+                if request.model == ac.model_name {
+                    request.model = "localrouter/auto".to_string();
+                }
+            }
+        }
+    }
+
+    // Strategy-level model access checks
     if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
         check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        validate_strategy_model_access(&state, strategy, &request.model)
-            .map_err(|e| llm_guard.capture_err(e))?;
+        if request.model != "localrouter/auto" {
+            validate_strategy_model_access(&state, strategy, &request.model)
+                .map_err(|e| llm_guard.capture_err(e))?;
+        }
     }
 
     // Check rate limits

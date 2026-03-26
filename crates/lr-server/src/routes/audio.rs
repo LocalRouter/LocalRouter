@@ -228,7 +228,7 @@ pub async fn audio_transcriptions(
         );
         ApiErrorResponse::bad_request("file is required").with_param("file")
     })?;
-    let model = model.ok_or_else(|| {
+    let mut model = model.ok_or_else(|| {
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
@@ -308,6 +308,17 @@ pub async fn audio_transcriptions(
         }
     }
 
+    // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
+    if model != "localrouter/auto" {
+        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+            if let Some(ref ac) = strategy.auto_config {
+                if model == ac.model_name {
+                    model = "localrouter/auto".to_string();
+                }
+            }
+        }
+    }
+
     // Emit monitor event for traffic inspection (before strategy checks so guard captures errors)
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/transcriptions"});
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
@@ -323,8 +334,10 @@ pub async fn audio_transcriptions(
     // Strategy-level model access checks
     if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
         check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        validate_strategy_model_access(&state, strategy, &model)
-            .map_err(|e| llm_guard.capture_err(e))?;
+        if model != "localrouter/auto" {
+            validate_strategy_model_access(&state, strategy, &model)
+                .map_err(|e| llm_guard.capture_err(e))?;
+        }
     }
 
     let request_id = format!("audio-{}", Uuid::new_v4());
@@ -661,7 +674,7 @@ pub async fn audio_translations(
         );
         ApiErrorResponse::bad_request("file is required").with_param("file")
     })?;
-    let model = model.ok_or_else(|| {
+    let mut model = model.ok_or_else(|| {
         super::monitor_helpers::emit_validation_error(
             &state,
             client_auth.as_ref(),
@@ -739,6 +752,17 @@ pub async fn audio_translations(
         }
     }
 
+    // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
+    if model != "localrouter/auto" {
+        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+            if let Some(ref ac) = strategy.auto_config {
+                if model == ac.model_name {
+                    model = "localrouter/auto".to_string();
+                }
+            }
+        }
+    }
+
     // Emit monitor event for traffic inspection (before strategy checks so guard captures errors)
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/translations"});
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
@@ -754,8 +778,10 @@ pub async fn audio_translations(
     // Strategy-level model access checks
     if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
         check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        validate_strategy_model_access(&state, strategy, &model)
-            .map_err(|e| llm_guard.capture_err(e))?;
+        if model != "localrouter/auto" {
+            validate_strategy_model_access(&state, strategy, &model)
+                .map_err(|e| llm_guard.capture_err(e))?;
+        }
     }
 
     let request_id = format!("audio-{}", Uuid::new_v4());
@@ -942,7 +968,7 @@ pub async fn audio_speech(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(request): Json<SpeechRequest>,
+    Json(mut request): Json<SpeechRequest>,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -981,11 +1007,24 @@ pub async fn audio_speech(
         return Err(llm_guard.capture_err(e));
     }
 
+    // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
+    if request.model != "localrouter/auto" {
+        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+            if let Some(ref ac) = strategy.auto_config {
+                if request.model == ac.model_name {
+                    request.model = "localrouter/auto".to_string();
+                }
+            }
+        }
+    }
+
     // Strategy-level model access checks
     if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
         check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        validate_strategy_model_access(&state, strategy, &request.model)
-            .map_err(|e| llm_guard.capture_err(e))?;
+        if request.model != "localrouter/auto" {
+            validate_strategy_model_access(&state, strategy, &request.model)
+                .map_err(|e| llm_guard.capture_err(e))?;
+        }
     }
 
     let request_id = format!("tts-{}", Uuid::new_v4());

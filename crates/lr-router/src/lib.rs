@@ -2152,6 +2152,17 @@ impl Router {
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
         self.check_client_rate_limits(client_id).await?;
+
+        if request.model == "localrouter/auto" {
+            debug!(
+                "Using auto-routing for transcription client '{}'",
+                client_id
+            );
+            return self
+                .transcribe_with_auto_routing(client_id, &strategy, request)
+                .await;
+        }
+
         self.check_strategy_rate_limits(&strategy, "", "")?;
 
         let (provider, model) = Self::parse_model_string(&request.model);
@@ -2249,6 +2260,17 @@ impl Router {
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
         self.check_client_rate_limits(client_id).await?;
+
+        if request.model == "localrouter/auto" {
+            debug!(
+                "Using auto-routing for audio translation client '{}'",
+                client_id
+            );
+            return self
+                .translate_with_auto_routing(client_id, &strategy, request)
+                .await;
+        }
+
         self.check_strategy_rate_limits(&strategy, "", "")?;
 
         let (provider, model) = Self::parse_model_string(&request.model);
@@ -2349,6 +2371,14 @@ impl Router {
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
         self.check_client_rate_limits(client_id).await?;
+
+        if request.model == "localrouter/auto" {
+            debug!("Using auto-routing for speech client '{}'", client_id);
+            return self
+                .speech_with_auto_routing(client_id, &strategy, request)
+                .await;
+        }
+
         self.check_strategy_rate_limits(&strategy, "", "")?;
 
         let (provider, model) = Self::parse_model_string(&request.model);
@@ -2366,6 +2396,160 @@ impl Router {
 
         self.execute_speech_request(client_id, &final_provider, &final_model, request)
             .await
+    }
+
+    /// Auto-routing for audio transcription requests.
+    /// Tries prioritized models in order with fallback (no RouteLLM — not applicable to audio).
+    async fn transcribe_with_auto_routing(
+        &self,
+        client_id: &str,
+        strategy: &lr_config::Strategy,
+        mut request: AudioTranscriptionRequest,
+    ) -> AppResult<AudioTranscriptionResponse> {
+        let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
+            AppError::Router("localrouter/auto not configured for this strategy".into())
+        })?;
+        if !auto_config.permission.is_enabled() {
+            return Err(AppError::Router("localrouter/auto is disabled".into()));
+        }
+        if auto_config.prioritized_models.is_empty() {
+            return Err(AppError::Router(
+                "No prioritized models configured for auto-routing".into(),
+            ));
+        }
+
+        let selected_models = &auto_config.prioritized_models;
+        let mut last_error = None;
+
+        for (provider, model) in selected_models {
+            if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
+                debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
+                continue;
+            }
+            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
+                warn!("Rate limit for {}/{}: {}", provider, model, e);
+                continue;
+            }
+
+            request.model = format!("{}/{}", provider, model);
+            match self
+                .execute_transcription_request(client_id, provider, model, request.clone())
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    warn!(
+                        "Auto-routing transcription {}/{} failed: {}",
+                        provider, model, e
+                    );
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error
+            .unwrap_or_else(|| AppError::Router("All auto-routing audio models failed".into())))
+    }
+
+    /// Auto-routing for audio translation requests.
+    async fn translate_with_auto_routing(
+        &self,
+        client_id: &str,
+        strategy: &lr_config::Strategy,
+        mut request: AudioTranslationRequest,
+    ) -> AppResult<AudioTranslationResponse> {
+        let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
+            AppError::Router("localrouter/auto not configured for this strategy".into())
+        })?;
+        if !auto_config.permission.is_enabled() {
+            return Err(AppError::Router("localrouter/auto is disabled".into()));
+        }
+        if auto_config.prioritized_models.is_empty() {
+            return Err(AppError::Router(
+                "No prioritized models configured for auto-routing".into(),
+            ));
+        }
+
+        let selected_models = &auto_config.prioritized_models;
+        let mut last_error = None;
+
+        for (provider, model) in selected_models {
+            if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
+                debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
+                continue;
+            }
+            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
+                warn!("Rate limit for {}/{}: {}", provider, model, e);
+                continue;
+            }
+
+            request.model = format!("{}/{}", provider, model);
+            match self
+                .execute_translation_request(client_id, provider, model, request.clone())
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    warn!(
+                        "Auto-routing translation {}/{} failed: {}",
+                        provider, model, e
+                    );
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error
+            .unwrap_or_else(|| AppError::Router("All auto-routing audio models failed".into())))
+    }
+
+    /// Auto-routing for speech (TTS) requests.
+    async fn speech_with_auto_routing(
+        &self,
+        client_id: &str,
+        strategy: &lr_config::Strategy,
+        mut request: SpeechRequest,
+    ) -> AppResult<SpeechResponse> {
+        let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
+            AppError::Router("localrouter/auto not configured for this strategy".into())
+        })?;
+        if !auto_config.permission.is_enabled() {
+            return Err(AppError::Router("localrouter/auto is disabled".into()));
+        }
+        if auto_config.prioritized_models.is_empty() {
+            return Err(AppError::Router(
+                "No prioritized models configured for auto-routing".into(),
+            ));
+        }
+
+        let selected_models = &auto_config.prioritized_models;
+        let mut last_error = None;
+
+        for (provider, model) in selected_models {
+            if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
+                debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
+                continue;
+            }
+            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
+                warn!("Rate limit for {}/{}: {}", provider, model, e);
+                continue;
+            }
+
+            request.model = format!("{}/{}", provider, model);
+            match self
+                .execute_speech_request(client_id, provider, model, request.clone())
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    warn!("Auto-routing speech {}/{} failed: {}", provider, model, e);
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error
+            .unwrap_or_else(|| AppError::Router("All auto-routing speech models failed".into())))
     }
 }
 
