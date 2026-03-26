@@ -274,13 +274,21 @@ impl ModelProvider for OpenAICompatibleProvider {
             )));
         }
 
-        let models_response: OpenAIModelsResponse = response
-            .json()
+        // Parse response - try standard OpenAI format {"data": [...]}, then bare array [...]
+        let body = response
+            .text()
             .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Failed to read models response: {}", e)))?;
 
-        let models = models_response
-            .data
+        let model_list: Vec<OpenAIModel> =
+            serde_json::from_str::<OpenAIModelsResponse>(&body)
+                .map(|r| r.data)
+                .or_else(|_| serde_json::from_str::<Vec<OpenAIModel>>(&body))
+                .map_err(|e| {
+                    AppError::Provider(format!("Failed to parse models response: {}", e))
+                })?;
+
+        let models = model_list
             .into_iter()
             .map(|model| {
                 ModelInfo {
