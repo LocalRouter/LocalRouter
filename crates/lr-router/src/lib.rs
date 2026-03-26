@@ -1402,6 +1402,7 @@ impl Router {
                             "Skipping {}/{}: no function calling support (request has tools)",
                             provider, model
                         );
+                        attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "no_tool_support"}));
                         continue;
                     }
                     Some(true) => {}
@@ -2123,7 +2124,6 @@ impl Router {
                     model: model.clone(),
                     retry_after_secs: backoff.retry_after_secs,
                 });
-                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "backoff", "error": &backoff.reason}));
                 continue;
             }
 
