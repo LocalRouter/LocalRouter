@@ -38,6 +38,10 @@ pub fn write_with_backup(path: &Path, data: &[u8]) -> Result<Option<PathBuf>, St
                 .map_err(|e| format!("Failed to write backup to {:?}: {}", backup_path, e))?;
 
             tracing::info!("Backed up {:?} to {:?}", path, backup_path);
+
+            // Self-cleanup: keep only the last 10 backups
+            cleanup_old_backups(&backup_dir, 10);
+
             Some(backup_path)
         } else {
             // Content is the same, no backup needed
@@ -64,6 +68,41 @@ pub fn write_with_backup(path: &Path, data: &[u8]) -> Result<Option<PathBuf>, St
     })?;
 
     Ok(backup_path)
+}
+
+/// Remove old backups, keeping only the most recent `keep` files.
+fn cleanup_old_backups(backup_dir: &Path, keep: usize) {
+    let mut entries: Vec<_> = match fs::read_dir(backup_dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.ends_with(".bak"))
+            })
+            .collect(),
+        Err(_) => return,
+    };
+
+    if entries.len() <= keep {
+        return;
+    }
+
+    // Sort by modification time descending — newest first
+    entries.sort_by(|a, b| {
+        let a_time = a.metadata().and_then(|m| m.modified()).ok();
+        let b_time = b.metadata().and_then(|m| m.modified()).ok();
+        b_time.cmp(&a_time)
+    });
+
+    for entry in entries.into_iter().skip(keep) {
+        let path = entry.path();
+        if let Err(e) = fs::remove_file(&path) {
+            tracing::debug!("Failed to remove old backup {:?}: {}", path, e);
+        } else {
+            tracing::debug!("Removed old backup: {:?}", path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -115,5 +154,72 @@ mod tests {
         let result = write_with_backup(&path, b"nested");
         assert!(result.is_ok());
         assert_eq!(fs::read_to_string(&path).unwrap(), "nested");
+    }
+
+    #[test]
+    fn test_cleanup_old_backups_keeps_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path();
+
+        // Create 15 fake backup files. We write them sequentially so
+        // filesystem mtime increases monotonically. A small sleep
+        // ensures distinct mtimes on filesystems with coarse resolution.
+        for i in 0..15 {
+            let name = format!("config.json.20260101_{:06}.bak", i);
+            fs::write(backup_dir.join(&name), format!("backup {}", i)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        cleanup_old_backups(backup_dir, 10);
+
+        let remaining: Vec<_> = fs::read_dir(backup_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(remaining.len(), 10, "should keep exactly 10 backups");
+
+        // The 5 oldest (000000..000004) should be gone
+        for i in 0..5 {
+            let name = format!("config.json.20260101_{:06}.bak", i);
+            assert!(
+                !backup_dir.join(&name).exists(),
+                "old backup {} should be removed",
+                name
+            );
+        }
+        // The 10 newest (000005..000014) should remain
+        for i in 5..15 {
+            let name = format!("config.json.20260101_{:06}.bak", i);
+            assert!(
+                backup_dir.join(&name).exists(),
+                "new backup {} should remain",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_cleanup_ignores_non_bak_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path();
+
+        // Create some .bak files and a non-.bak file
+        for i in 0..5 {
+            let name = format!("config.json.20260101_{:06}.bak", i);
+            fs::write(backup_dir.join(&name), "data").unwrap();
+        }
+        fs::write(backup_dir.join("readme.txt"), "not a backup").unwrap();
+
+        cleanup_old_backups(backup_dir, 3);
+
+        // Non-bak file should survive
+        assert!(backup_dir.join("readme.txt").exists());
+        // Only 3 .bak files should remain
+        let bak_count = fs::read_dir(backup_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".bak")))
+            .count();
+        assert_eq!(bak_count, 3);
     }
 }
