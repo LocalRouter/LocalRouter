@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
@@ -111,8 +111,8 @@ export function McpServersPanel({
   // Detail tab state
   const [detailTab, setDetailTab] = useState("info")
 
-  // Inline edit state
-  const [isEditing, setIsEditing] = useState(false)
+  // Auto-save guard
+  const isSavingRef = useRef(false)
 
   // Create modal state
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -143,6 +143,73 @@ export function McpServersPanel({
 
   // Template field values: { fieldId: userInputValue }
   const [templateFieldValues, setTemplateFieldValues] = useState<Record<string, string>>({})
+
+  // Auto-save: track when form is being populated to skip auto-save
+  const isPopulatingForm = useRef(false)
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const saveServerConfig = useCallback(async () => {
+    const server = servers.find((s) => s.id === selectedId)
+    if (!server) return
+    if (isSavingRef.current) return
+
+    // Validate required fields
+    if (!serverName.trim()) return
+    if (transportType === "Stdio" && !command.trim()) return
+    if (transportType === "Sse" && !url.trim()) return
+
+    isSavingRef.current = true
+    try {
+      let transportConfig
+      if (transportType === "Stdio") {
+        transportConfig = { type: "stdio", command, env: envVars }
+      } else {
+        transportConfig = { type: "http_sse", url, headers: headers }
+      }
+
+      let authConfig = null
+      if (authMethod === "bearer" && bearerToken) {
+        authConfig = { type: "bearer_token", token: bearerToken }
+      } else if (authMethod === "oauth_browser") {
+        authConfig = { type: "oauth_browser" }
+      } else if (authMethod === "none") {
+        authConfig = null
+      }
+
+      const updates: Record<string, unknown> = {
+        name: serverName, transport_config: transportConfig,
+      }
+
+      if (authMethod === "bearer" && bearerToken) {
+        updates.auth_config = authConfig
+      } else if (authMethod === "none" && server.auth_config?.type !== "none" && server.auth_config !== null) {
+        updates.auth_config = null
+      }
+
+      await invoke("update_mcp_server", { serverId: server.id, updates })
+      await loadServersOnly()
+    } catch (error) {
+      console.error("Failed to update MCP server:", error)
+      toast.error(`Error updating MCP server: ${error}`)
+    } finally {
+      isSavingRef.current = false
+    }
+  }, [servers, selectedId, serverName, transportType, command, url, envVars, headers, authMethod, bearerToken])
+
+  // Debounced auto-save when form fields change
+  useEffect(() => {
+    if (isPopulatingForm.current) return
+    if (detailTab !== "settings" || !selectedId) return
+
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
+    autoSaveTimer.current = setTimeout(() => {
+      saveServerConfig()
+    }, 600)
+
+    return () => {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
+    }
+  }, [serverName, transportType, command, url, envVars, headers, authMethod, bearerToken, saveServerConfig, detailTab, selectedId])
 
   useEffect(() => {
     loadServers()
@@ -388,6 +455,7 @@ export function McpServersPanel({
   }
 
   const populateFormFromServer = (server: McpServer) => {
+    isPopulatingForm.current = true
     setServerName(server.name)
     setTransportType(server.transport === "Stdio" ? "Stdio" : "Sse")
     setSelectedSource(null)
@@ -423,50 +491,10 @@ export function McpServersPanel({
     } else {
       setAuthMethod("none"); setBearerToken(""); setOauthClientId(""); setOauthClientSecret("")
     }
+    // Allow React to batch the state updates before re-enabling auto-save
+    setTimeout(() => { isPopulatingForm.current = false }, 0)
   }
 
-  const handleEditServer = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!selectedServer) return
-
-    setIsEditing(true)
-    try {
-      let transportConfig
-      if (transportType === "Stdio") {
-        transportConfig = { type: "stdio", command, env: envVars }
-      } else {
-        transportConfig = { type: "http_sse", url, headers: headers }
-      }
-
-      let authConfig = null
-      if (authMethod === "bearer" && bearerToken) {
-        authConfig = { type: "bearer_token", token: bearerToken }
-      } else if (authMethod === "oauth_browser") {
-        authConfig = { type: "oauth_browser" }
-      } else if (authMethod === "none") {
-        authConfig = null
-      }
-
-      const updates: Record<string, unknown> = {
-        name: serverName, transport_config: transportConfig,
-      }
-
-      if (authMethod === "bearer" && bearerToken) {
-        updates.auth_config = authConfig
-      } else if (authMethod === "none" && selectedServer.auth_config?.type !== "none" && selectedServer.auth_config !== null) {
-        updates.auth_config = null
-      }
-
-      await invoke("update_mcp_server", { serverId: selectedServer.id, updates })
-      toast.success("MCP server updated")
-      await loadServersOnly()
-    } catch (error) {
-      console.error("Failed to update MCP server:", error)
-      toast.error(`Error updating MCP server: ${error}`)
-    } finally {
-      setIsEditing(false)
-    }
-  }
 
   const handleDelete = async () => {
     if (!serverToDelete) return
@@ -901,10 +929,10 @@ export function McpServersPanel({
                         <CardDescription>Update the configuration for this MCP server</CardDescription>
                       </CardHeader>
                       <CardContent>
-                        <form onSubmit={handleEditServer} className="space-y-4">
+                        <div className="space-y-4">
                           <div>
                             <label className="block text-sm font-medium mb-2">Server Name</label>
-                            <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" required />
+                            <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" />
                           </div>
                           <div>
                             <label className="block text-sm font-medium mb-2">Transport Type</label>
@@ -917,7 +945,7 @@ export function McpServersPanel({
                             <>
                               <div>
                                 <label className="block text-sm font-medium mb-2">Command</label>
-                                <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" required />
+                                <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" />
                                 <p className="text-xs text-muted-foreground mt-1">Full command with arguments</p>
                               </div>
                               <div>
@@ -929,7 +957,7 @@ export function McpServersPanel({
                           {transportType === "Sse" && (
                             <div>
                               <label className="block text-sm font-medium mb-2">URL</label>
-                              <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" required />
+                              <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" />
                             </div>
                           )}
                           {transportType === "Sse" && (
@@ -973,12 +1001,7 @@ export function McpServersPanel({
                               <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
                             </div>
                           )}
-                          <div className="flex justify-end gap-2 pt-4">
-                            <Button type="submit" disabled={isEditing}>
-                              {isEditing ? "Saving..." : "Save Changes"}
-                            </Button>
-                          </div>
-                        </form>
+                        </div>
                       </CardContent>
                     </Card>
 
