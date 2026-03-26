@@ -244,7 +244,7 @@ pub struct AutoModelConfig {
 }
 
 fn default_auto_model_name() -> String {
-    "localrouter/auto".to_string()
+    "auto".to_string()
 }
 
 /// Routing strategy configuration (separate from clients)

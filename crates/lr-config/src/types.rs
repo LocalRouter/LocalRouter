@@ -334,14 +334,14 @@ impl AutoModelConfig {
 }
 
 fn default_auto_model_name() -> String {
-    "localrouter/auto".to_string()
+    "auto".to_string()
 }
 
 fn deserialize_auto_model_name<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {
     let s = String::deserialize(deserializer)?;
-    Ok(if s.is_empty() {
+    Ok(if s.is_empty() || s == "localrouter/auto" {
         default_auto_model_name()
     } else {
         s

@@ -56,7 +56,7 @@ pub async fn completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(mut request): Json<CompletionRequest>,
+    Json(request): Json<CompletionRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "completion");
@@ -97,17 +97,6 @@ pub async fn completions(
             400,
         );
         return Err(e);
-    }
-
-    // Normalize bare auto model names to full "localrouter/" prefixed form
-    if !request.model.contains('/') {
-        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-            if let Some(ref ac) = strategy.auto_config {
-                if ac.model_name.strip_prefix("localrouter/") == Some(request.model.as_str()) {
-                    request.model = ac.model_name.clone();
-                }
-            }
-        }
     }
 
     // Strategy-level model access checks
