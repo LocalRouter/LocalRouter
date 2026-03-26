@@ -2049,6 +2049,8 @@ impl McpGateway {
                 ));
             }
 
+            // Close transports since all initializations failed and no virtual servers
+            transport_set.close_all().await;
             let error_summary = failures
                 .iter()
                 .map(|f| format!("{}: {}", f.server_id, f.error))
@@ -3240,6 +3242,17 @@ impl McpGateway {
         );
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let _ = broadcast_request(&running_ids, init_request, &ephemeral_transports, timeout, 0).await;
+
+        // Complete MCP handshake: send notifications/initialized so servers
+        // register conditional tools in their oninitialized callback
+        for server_id in &running_ids {
+            let notification = JsonRpcRequest::new(
+                None,
+                "notifications/initialized".to_string(),
+                Some(json!({})),
+            );
+            let _ = ephemeral_transports.send_request(server_id, notification).await;
+        }
 
         let tools = self
             .fetch_and_merge_tools(
