@@ -194,16 +194,24 @@ impl ModelProvider for XAIProvider {
         let models = models_response
             .data
             .into_iter()
-            .filter(|m| !m.id.contains("embedding") && !m.id.contains("image"))
-            .map(|m| ModelInfo {
-                id: m.id.clone(),
-                name: m.id,
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
+            .map(|m| {
+                let capabilities = if m.id.contains("embedding") {
+                    vec![Capability::Embedding]
+                } else if m.id.contains("image") {
+                    vec![]
+                } else {
+                    vec![Capability::Chat, Capability::FunctionCalling]
+                };
+                ModelInfo {
+                    id: m.id.clone(),
+                    name: m.id,
+                    provider: "xai".to_string(),
+                    parameter_count: None,
+                    context_window: 131_072,
+                    supports_streaming: true,
+                    capabilities,
+                    detailed_capabilities: None,
+                }
             })
             .collect();
 

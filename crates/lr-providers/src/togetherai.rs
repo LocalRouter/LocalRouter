@@ -264,16 +264,24 @@ impl ModelProvider for TogetherAIProvider {
 
         let models = models_list
             .into_iter()
-            .filter(|m| m.model_type.as_deref() == Some("chat"))
-            .map(|m| ModelInfo {
-                id: m.id.clone(),
-                name: m.id,
-                provider: "togetherai".to_string(),
-                parameter_count: None,
-                context_window: m.context_length.unwrap_or(32_000),
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
+            .map(|m| {
+                let capabilities = match m.model_type.as_deref() {
+                    Some("chat") => vec![Capability::Chat, Capability::FunctionCalling],
+                    Some("embedding") => vec![Capability::Embedding],
+                    Some("image") => vec![],
+                    Some("audio") => vec![Capability::Audio],
+                    _ => vec![],
+                };
+                ModelInfo {
+                    id: m.id.clone(),
+                    name: m.id,
+                    provider: "togetherai".to_string(),
+                    parameter_count: None,
+                    context_window: m.context_length.unwrap_or(32_000),
+                    supports_streaming: true,
+                    capabilities,
+                    detailed_capabilities: None,
+                }
             })
             .collect();
 

@@ -40,6 +40,14 @@ pub struct CatalogCapabilities {
     pub structured_output: bool,
     /// Whether the model supports image input (vision)
     pub vision: bool,
+    /// Whether the model is an embedding model (family contains "embed")
+    pub embedding: bool,
+    /// Whether the model accepts audio-only input (e.g., whisper — pure STT)
+    pub audio_input: bool,
+    /// Whether the model produces audio-only output (e.g., TTS)
+    pub audio_output: bool,
+    /// Whether the model produces image-only output (e.g., DALL-E, Flux)
+    pub image_output: bool,
 }
 
 #[derive(Debug, Clone)]

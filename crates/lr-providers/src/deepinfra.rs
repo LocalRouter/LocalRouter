@@ -257,16 +257,24 @@ impl ModelProvider for DeepInfraProvider {
         let models = models_response
             .data
             .into_iter()
-            .filter(|m| !m.id.contains("embed") && !m.id.contains("whisper"))
-            .map(|m| ModelInfo {
-                id: m.id.clone(),
-                name: m.id,
-                provider: "deepinfra".to_string(),
-                parameter_count: None,
-                context_window: 32_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
+            .map(|m| {
+                let capabilities = if m.id.contains("embed") {
+                    vec![Capability::Embedding]
+                } else if m.id.contains("whisper") {
+                    vec![Capability::Audio]
+                } else {
+                    vec![Capability::Chat]
+                };
+                ModelInfo {
+                    id: m.id.clone(),
+                    name: m.id,
+                    provider: "deepinfra".to_string(),
+                    parameter_count: None,
+                    context_window: 32_000,
+                    supports_streaming: true,
+                    capabilities,
+                    detailed_capabilities: None,
+                }
             })
             .collect();
 

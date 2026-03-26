@@ -572,15 +572,13 @@ impl Router {
         &self,
         client_id: &str,
         request: CompletionRequest,
-    ) -> AppResult<CompletionResponse> {
+    ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
 
         if request.model == "localrouter/auto" {
-            let (response, _metadata) = self
-                .complete_with_auto_routing(client_id, &strategy, request)
-                .await?;
-            Ok(response)
+            self.complete_with_auto_routing(client_id, &strategy, request)
+                .await
         } else {
             let (provider, model) = Self::parse_model_string(&request.model);
             let (final_provider, final_model) = if provider.is_empty() {
@@ -590,6 +588,7 @@ impl Router {
             };
             self.execute_request(client_id, &final_provider, &final_model, request, false)
                 .await
+                .map(|r| (r, None))
         }
     }
 
@@ -598,7 +597,7 @@ impl Router {
         &self,
         client_id: &str,
         request: CompletionRequest,
-    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+    ) -> AppResult<(Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>, Option<serde_json::Value>)> {
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
 
@@ -636,7 +635,7 @@ impl Router {
                 }
             };
             let resolved_model = format!("{}/{}", final_provider, final_model);
-            Ok(wrap_stream_with_usage_tracking(
+            Ok((wrap_stream_with_usage_tracking(
                 stream,
                 client_id.to_string(),
                 resolved_model,
@@ -646,7 +645,7 @@ impl Router {
                 pricing,
                 strategy.free_tier_only,
             )
-            .await)
+            .await, None))
         }
     }
 
@@ -1334,7 +1333,7 @@ impl Router {
         client_id: &str,
         strategy: &lr_config::Strategy,
         request: CompletionRequest,
-    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+    ) -> AppResult<(Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>, Option<serde_json::Value>)> {
         let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
             AppError::Router("localrouter/auto not configured for this strategy".into())
         })?;
@@ -1369,6 +1368,8 @@ impl Router {
         );
 
         let mut last_error = None;
+        let candidate_models: Vec<String> = selected_models.iter().map(|(p, m)| format!("{}/{}", p, m)).collect();
+        let mut attempts: Vec<serde_json::Value> = Vec::new();
         let request_has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
@@ -1478,6 +1479,7 @@ impl Router {
                         provider: provider.clone(),
                         model: model.clone(),
                     });
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "provider_not_found"}));
                     continue;
                 }
             };
@@ -1493,13 +1495,15 @@ impl Router {
                         provider, model
                     );
                     self.free_tier_manager.clear_backoff(provider, model);
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success"}));
+                    let routing_meta = build_routing_metadata(&_routellm_win_rate, &candidate_models, attempts, Some(idx));
                     let resolved_model = format!("{}/{}", provider, model);
                     let pricing = provider_instance
                         .get_pricing(model)
                         .await
                         .unwrap_or_else(|_| lr_providers::PricingInfo::free());
                     let free_tier = self.get_effective_free_tier(provider);
-                    return Ok(wrap_stream_with_usage_tracking(
+                    return Ok((wrap_stream_with_usage_tracking(
                         stream,
                         client_id.to_string(),
                         resolved_model,
@@ -1509,7 +1513,7 @@ impl Router {
                         pricing,
                         strategy.free_tier_only,
                     )
-                    .await);
+                    .await, Some(routing_meta)));
                 }
                 Err(e) => {
                     let router_error = RouterError::classify(&e, provider, model);
@@ -1729,7 +1733,7 @@ impl Router {
         &self,
         client_id: &str,
         request: CompletionRequest,
-    ) -> AppResult<CompletionResponse> {
+    ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
         debug!(
             "Routing completion request for client '{}', model '{}'",
             client_id, request.model
@@ -1746,7 +1750,8 @@ impl Router {
             }
             return self
                 .execute_request(client_id, &provider, &model, request, false)
-                .await;
+                .await
+                .map(|r| (r, None));
         }
 
         // 1. Validate client and get strategy
@@ -1758,10 +1763,9 @@ impl Router {
         // 3. Route based on requested model
         if request.model == "localrouter/auto" {
             debug!("Using auto-routing for client '{}'", client_id);
-            let (response, _metadata) = self
+            return self
                 .complete_with_auto_routing(client_id, &strategy, request)
-                .await?;
-            return Ok(response);
+                .await;
         }
 
         // 4. For specific model requests, check strategy rate limits
@@ -1829,6 +1833,7 @@ impl Router {
             strategy.free_tier_only,
         )
         .await
+        .map(|r| (r, None))
     }
 
     /// Route a streaming completion request based on API key configuration
@@ -1836,7 +1841,7 @@ impl Router {
         &self,
         client_id: &str,
         request: CompletionRequest,
-    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+    ) -> AppResult<(Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>, Option<serde_json::Value>)> {
         debug!(
             "Routing streaming completion request for client '{}', model '{}'",
             client_id, request.model
@@ -1873,7 +1878,7 @@ impl Router {
                 }
             };
             let resolved_model = format!("{}/{}", provider, model);
-            return Ok(wrap_stream_with_usage_tracking(
+            return Ok((wrap_stream_with_usage_tracking(
                 stream,
                 client_id.to_string(),
                 resolved_model,
@@ -1883,7 +1888,7 @@ impl Router {
                 pricing,
                 false, // internal test — not free tier mode
             )
-            .await);
+            .await, None));
         }
 
         // 1. Validate client and get strategy
@@ -1973,7 +1978,7 @@ impl Router {
             }
         };
         let resolved_model = format!("{}/{}", final_provider, final_model);
-        Ok(wrap_stream_with_usage_tracking(
+        Ok((wrap_stream_with_usage_tracking(
             stream,
             client_id.to_string(),
             resolved_model,
@@ -1983,7 +1988,7 @@ impl Router {
             pricing,
             strategy.free_tier_only,
         )
-        .await)
+        .await, None))
     }
 
     /// Execute an embedding request on a specific provider/model
@@ -2118,6 +2123,7 @@ impl Router {
                     model: model.clone(),
                     retry_after_secs: backoff.retry_after_secs,
                 });
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "backoff", "error": &backoff.reason}));
                 continue;
             }
 

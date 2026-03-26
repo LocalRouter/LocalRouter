@@ -94,6 +94,24 @@ impl CatalogCodeGenerator {
         let aliases = self.generate_aliases(model);
         let modality = self.map_modality(model.model.modality_category());
 
+        // Derive endpoint capabilities from family and modalities
+        let embedding = model
+            .model
+            .family
+            .as_deref()
+            .is_some_and(|f| f.contains("embed"));
+        let has_audio_input = model.model.modalities.input.iter().any(|m| m == "audio");
+        let has_text_input = model.model.modalities.input.iter().any(|m| m == "text");
+        let has_audio_output = model.model.modalities.output.iter().any(|m| m == "audio");
+        let has_text_output = model.model.modalities.output.iter().any(|m| m == "text");
+        let has_image_output = model.model.modalities.output.iter().any(|m| m == "image");
+        // Pure audio-in only (whisper-like STT), not multimodal models that also accept text
+        let audio_input = has_audio_input && !has_text_input;
+        // Pure audio-out only (TTS), not omni models that also output text
+        let audio_output = has_audio_output && !has_text_output;
+        // Pure image-out only (generation), not models that also output text
+        let image_output = has_image_output && !has_text_output;
+
         format!(
             "    CatalogModel {{\n\
              \x20       id: \"{}\",\n\
@@ -107,6 +125,10 @@ impl CatalogCodeGenerator {
              \x20           tool_call: {},\n\
              \x20           structured_output: {},\n\
              \x20           vision: {},\n\
+             \x20           embedding: {},\n\
+             \x20           audio_input: {},\n\
+             \x20           audio_output: {},\n\
+             \x20           image_output: {},\n\
              \x20       }},\n\
              \x20       pricing: CatalogPricing {{\n\
              \x20           prompt_per_token: {},\n\
@@ -134,6 +156,10 @@ impl CatalogCodeGenerator {
             model.model.tool_call,
             model.model.structured_output,
             model.model.supports_vision(),
+            embedding,
+            audio_input,
+            audio_output,
+            image_output,
             self.format_f64(model.model.prompt_cost_per_token()),
             self.format_f64(model.model.completion_cost_per_token()),
             model

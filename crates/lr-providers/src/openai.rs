@@ -476,11 +476,42 @@ impl ModelProvider for OpenAIProvider {
         let mut models = Vec::new();
 
         for model in models_response.data {
-            // Only include chat completion models
-            if !model.id.starts_with("gpt-")
-                && !model.id.starts_with("o1-")
-                && !model.id.starts_with("text-")
-            {
+            // Classify models by prefix to assign capabilities and metadata
+            let is_chat_model = model.id.starts_with("gpt-")
+                || model.id.starts_with("o1-")
+                || model.id.starts_with("text-");
+            let is_embedding = model.id.starts_with("text-embedding-");
+            let is_audio = model.id.starts_with("whisper-");
+            let is_tts = model.id.starts_with("tts-");
+            let is_image = model.id.starts_with("dall-e-");
+
+            if !is_chat_model && !is_embedding && !is_audio && !is_tts && !is_image {
+                continue;
+            }
+
+            // Non-chat models get specialized capabilities and defaults
+            if is_embedding || is_audio || is_tts || is_image {
+                let capabilities = if is_embedding {
+                    vec![Capability::Embedding]
+                } else if is_audio {
+                    vec![Capability::Audio]
+                } else if is_tts {
+                    vec![Capability::TextToSpeech]
+                } else {
+                    // dall-e: empty = unknown/try everything
+                    vec![]
+                };
+
+                models.push(ModelInfo {
+                    id: model.id.clone(),
+                    name: model.id,
+                    provider: "openai".to_string(),
+                    parameter_count: None,
+                    context_window: 0,
+                    supports_streaming: is_tts, // TTS supports streaming audio
+                    capabilities,
+                    detailed_capabilities: None,
+                });
                 continue;
             }
 

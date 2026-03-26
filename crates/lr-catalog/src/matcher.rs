@@ -214,6 +214,10 @@ mod tests {
                     tool_call: true,
                     structured_output: true,
                     vision: false,
+                    embedding: false,
+                    audio_input: false,
+                    audio_output: false,
+                    image_output: false,
                 },
                 pricing: CatalogPricing {
                     prompt_per_token: 0.00003,
@@ -238,6 +242,10 @@ mod tests {
                     tool_call: true,
                     structured_output: true,
                     vision: true,
+                    embedding: false,
+                    audio_input: false,
+                    audio_output: false,
+                    image_output: false,
                 },
                 pricing: CatalogPricing {
                     prompt_per_token: 0.000015,

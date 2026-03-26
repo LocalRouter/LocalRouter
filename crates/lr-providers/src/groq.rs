@@ -262,16 +262,23 @@ impl ModelProvider for GroqProvider {
         let models = models_response
             .data
             .into_iter()
-            .filter(|m| !m.id.contains("whisper") && !m.id.contains("distil"))
-            .map(|m| ModelInfo {
-                id: m.id.clone(),
-                name: m.id,
-                provider: "groq".to_string(),
-                parameter_count: None,
-                context_window: m.context_window.unwrap_or(8192),
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
+            .filter(|m| !m.id.contains("distil"))
+            .map(|m| {
+                let capabilities = if m.id.contains("whisper") {
+                    vec![Capability::Audio]
+                } else {
+                    vec![Capability::Chat, Capability::FunctionCalling]
+                };
+                ModelInfo {
+                    id: m.id.clone(),
+                    name: m.id,
+                    provider: "groq".to_string(),
+                    parameter_count: None,
+                    context_window: m.context_window.unwrap_or(8192),
+                    supports_streaming: true,
+                    capabilities,
+                    detailed_capabilities: None,
+                }
             })
             .collect();
 

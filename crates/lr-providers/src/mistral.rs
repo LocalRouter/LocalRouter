@@ -271,12 +271,18 @@ impl ModelProvider for MistralProvider {
             .data
             .into_iter()
             .map(|m| {
-                let mut capabilities = vec![Capability::Chat];
-                if let Some(caps) = &m.capabilities {
-                    if caps.function_calling {
-                        capabilities.push(Capability::FunctionCalling);
+                // Detect embedding models by ID prefix
+                let capabilities = if m.id.starts_with("mistral-embed") {
+                    vec![Capability::Embedding]
+                } else {
+                    let mut caps = vec![Capability::Chat];
+                    if let Some(model_caps) = &m.capabilities {
+                        if model_caps.function_calling {
+                            caps.push(Capability::FunctionCalling);
+                        }
                     }
-                }
+                    caps
+                };
 
                 ModelInfo {
                     id: m.id.clone(),
