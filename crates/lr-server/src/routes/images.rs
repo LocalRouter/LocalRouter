@@ -9,6 +9,7 @@ use axum::{
 };
 use std::time::Instant;
 
+use super::helpers::get_client_with_strategy;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
 use crate::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
@@ -34,7 +35,7 @@ use crate::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
 pub async fn image_generations(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Json(request): Json<ImageGenerationRequest>,
+    Json(mut request): Json<ImageGenerationRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "image");
@@ -72,6 +73,17 @@ pub async fn image_generations(
     }
 
     let started_at = Instant::now();
+
+    // Normalize auto model name for rejection
+    if request.model != "localrouter/auto" {
+        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+            if let Some(ref ac) = strategy.auto_config {
+                if request.model == ac.model_name {
+                    request.model = "localrouter/auto".to_string();
+                }
+            }
+        }
+    }
 
     // Parse model to get provider (format: provider/model or just model)
     // Auto-routing is not supported for image generation

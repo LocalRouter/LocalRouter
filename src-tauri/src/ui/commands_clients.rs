@@ -77,36 +77,45 @@ pub async fn list_clients(
     Ok(clients
         .into_iter()
         .filter(|c| !c.name.starts_with("_test_strategy_"))
-        .map(|c| ClientInfo {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            client_id: c.id.clone(),
-            enabled: c.enabled,
-            strategy_id: c.strategy_id.clone(),
-            context_management_enabled: c.context_management_enabled,
-            catalog_compression_enabled: c.catalog_compression_enabled,
-            created_at: c.created_at.to_rfc3339(),
-            last_used: c.last_used.map(|t| t.to_rfc3339()),
-            mcp_permissions: c.mcp_permissions.clone(),
-            skills_permissions: c.skills_permissions.clone(),
-            coding_agent_permission: c.coding_agent_permission.clone(),
-            coding_agent_type: c.coding_agent_type,
-            model_permissions: c.model_permissions.clone(),
-            marketplace_permission: c.marketplace_permission.clone(),
-            mcp_sampling_permission: c.mcp_sampling_permission.clone(),
-            mcp_elicitation_permission: c.mcp_elicitation_permission.clone(),
-            client_mode: c.client_mode.clone(),
-            template_id: c.template_id.clone(),
-            sync_config: c.sync_config,
-            guardrails_active: {
-                let effective_actions = c
-                    .guardrails
-                    .category_actions
-                    .as_deref()
-                    .unwrap_or(&config.guardrails.category_actions);
-                effective_actions.iter().any(|a| a.action != "allow")
-            },
-            json_repair_active: c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
+        .map(|c| {
+            // Get model_permissions from the client's strategy (no longer on client)
+            let strategy_model_perms = config
+                .strategies
+                .iter()
+                .find(|s| s.id == c.strategy_id)
+                .map(|s| s.model_permissions.clone())
+                .unwrap_or_default();
+            ClientInfo {
+                id: c.id.clone(),
+                name: c.name.clone(),
+                client_id: c.id.clone(),
+                enabled: c.enabled,
+                strategy_id: c.strategy_id.clone(),
+                context_management_enabled: c.context_management_enabled,
+                catalog_compression_enabled: c.catalog_compression_enabled,
+                created_at: c.created_at.to_rfc3339(),
+                last_used: c.last_used.map(|t| t.to_rfc3339()),
+                mcp_permissions: c.mcp_permissions.clone(),
+                skills_permissions: c.skills_permissions.clone(),
+                coding_agent_permission: c.coding_agent_permission.clone(),
+                coding_agent_type: c.coding_agent_type,
+                model_permissions: strategy_model_perms,
+                marketplace_permission: c.marketplace_permission.clone(),
+                mcp_sampling_permission: c.mcp_sampling_permission.clone(),
+                mcp_elicitation_permission: c.mcp_elicitation_permission.clone(),
+                client_mode: c.client_mode.clone(),
+                template_id: c.template_id.clone(),
+                sync_config: c.sync_config,
+                guardrails_active: {
+                    let effective_actions = c
+                        .guardrails
+                        .category_actions
+                        .as_deref()
+                        .unwrap_or(&config.guardrails.category_actions);
+                    effective_actions.iter().any(|a| a.action != "allow")
+                },
+                json_repair_active: c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
+            }
         })
         .collect())
 }
@@ -149,6 +158,16 @@ pub async fn create_client(
         tracing::error!("Failed to emit strategies-changed event: {}", e);
     }
 
+    // Get model_permissions from the client's strategy
+    let strategy_model_perms = {
+        let cfg = config_manager.get();
+        cfg.strategies
+            .iter()
+            .find(|s| s.id == client.strategy_id)
+            .map(|s| s.model_permissions.clone())
+            .unwrap_or_default()
+    };
+
     let client_info = ClientInfo {
         id: client.id.clone(),
         name: client.name.clone(),
@@ -163,7 +182,7 @@ pub async fn create_client(
         skills_permissions: client.skills_permissions.clone(),
         coding_agent_permission: client.coding_agent_permission.clone(),
         coding_agent_type: client.coding_agent_type,
-        model_permissions: client.model_permissions.clone(),
+        model_permissions: strategy_model_perms,
         marketplace_permission: client.marketplace_permission.clone(),
         mcp_sampling_permission: client.mcp_sampling_permission.clone(),
         mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
@@ -297,6 +316,7 @@ pub async fn clone_client(
             id: new_strategy_id.clone(),
             name: lr_config::client_strategy_name(&clone_name),
             parent: Some(new_client_id.clone()),
+            model_permissions: src_strategy.model_permissions.clone(),
             allowed_models: src_strategy.allowed_models.clone(),
             auto_config: src_strategy.auto_config.clone(),
             rate_limits: src_strategy.rate_limits.clone(),
@@ -342,7 +362,7 @@ pub async fn clone_client(
         marketplace_enabled: false,
         mcp_permissions: source_client.mcp_permissions.clone(),
         skills_permissions: source_client.skills_permissions.clone(),
-        model_permissions: source_client.model_permissions.clone(),
+        model_permissions: lr_config::ModelPermissions::default(), // model_permissions now lives on strategy
         marketplace_permission: source_client.marketplace_permission.clone(),
         coding_agents_permissions: lr_config::CodingAgentsPermissions::default(),
         coding_agent_permission: source_client.coding_agent_permission.clone(),
@@ -388,6 +408,16 @@ pub async fn clone_client(
         tracing::error!("Failed to emit strategies-changed event: {}", e);
     }
 
+    // Get model_permissions from the cloned strategy
+    let strategy_model_perms = {
+        let cfg = config_manager.get();
+        cfg.strategies
+            .iter()
+            .find(|s| s.id == new_client.strategy_id)
+            .map(|s| s.model_permissions.clone())
+            .unwrap_or_default()
+    };
+
     let client_info = ClientInfo {
         id: new_client.id.clone(),
         name: new_client.name.clone(),
@@ -402,7 +432,7 @@ pub async fn clone_client(
         skills_permissions: new_client.skills_permissions.clone(),
         coding_agent_permission: new_client.coding_agent_permission.clone(),
         coding_agent_type: new_client.coding_agent_type,
-        model_permissions: new_client.model_permissions.clone(),
+        model_permissions: strategy_model_perms,
         marketplace_permission: new_client.marketplace_permission.clone(),
         mcp_sampling_permission: new_client.mcp_sampling_permission.clone(),
         mcp_elicitation_permission: new_client.mcp_elicitation_permission.clone(),
@@ -940,6 +970,7 @@ pub async fn update_strategy(
     strategy_id: String,
     name: Option<String>,
     allowed_models: Option<lr_config::AvailableModelsSelection>,
+    model_permissions: Option<lr_config::ModelPermissions>,
     auto_config: Option<lr_config::AutoModelConfig>,
     rate_limits: Option<Vec<lr_config::StrategyRateLimit>>,
     free_tier_only: Option<bool>,
@@ -956,6 +987,10 @@ pub async fn update_strategy(
                 if let Some(new_name) = name {
                     strategy.name = new_name;
                 }
+                if let Some(perms) = model_permissions {
+                    strategy.model_permissions = perms;
+                }
+                // Legacy: allowed_models is still accepted for backward compat
                 if let Some(models) = allowed_models {
                     strategy.allowed_models = models;
                 }
@@ -1771,15 +1806,23 @@ pub(crate) fn reevaluate_pending_approvals(
                     .is_none_or(|a| a.is_empty()),
             }
         } else if info.is_model_request {
-            FirewallCheckContext::Model {
-                permissions: &client.model_permissions,
-                provider: &info.server_name,
-                model_id: &info.tool_name,
-                has_time_based_approval: model_approval_tracker.has_valid_approval(
-                    &info.client_id,
-                    &info.server_name,
-                    &info.tool_name,
-                ),
+            let strategy = config
+                .strategies
+                .iter()
+                .find(|s| s.id == client.strategy_id);
+            if let Some(strategy) = strategy {
+                FirewallCheckContext::Model {
+                    permissions: &strategy.model_permissions,
+                    provider: &info.server_name,
+                    model_id: &info.tool_name,
+                    has_time_based_approval: model_approval_tracker.has_valid_approval(
+                        &info.client_id,
+                        &info.server_name,
+                        &info.tool_name,
+                    ),
+                }
+            } else {
+                continue;
             }
         } else if info.tool_name.starts_with("skill_") {
             FirewallCheckContext::SkillTool {
@@ -1855,16 +1898,29 @@ async fn update_model_permission_for_allow_permanent(
         info.tool_name    // model_id
     );
 
+    // Find the client's strategy and update model_permissions there
+    let strategy_id = {
+        let cfg = config_manager.get();
+        cfg.clients
+            .iter()
+            .find(|c| c.id == info.client_id)
+            .map(|c| c.strategy_id.clone())
+    };
+
     config_manager
         .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == info.client_id) {
-                // For model requests: server_name = provider, tool_name = model_id
-                let model_key = format!("{}__{}", info.server_name, info.tool_name);
-                client
-                    .model_permissions
-                    .models
-                    .insert(model_key.clone(), PermissionState::Allow);
-                tracing::info!("Set model permission to Allow: {}", model_key);
+            if let Some(sid) = &strategy_id {
+                if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == *sid) {
+                    // For model requests: server_name = provider, tool_name = model_id
+                    let model_key = format!("{}__{}", info.server_name, info.tool_name);
+                    strategy
+                        .model_permissions
+                        .models
+                        .insert(model_key.clone(), PermissionState::Allow);
+                    tracing::info!("Set model permission to Allow on strategy: {}", model_key);
+                } else {
+                    tracing::warn!("Strategy {} not found for AllowPermanent model update", sid);
+                }
             } else {
                 tracing::warn!(
                     "Client {} not found for AllowPermanent model update",
@@ -2097,15 +2153,28 @@ async fn update_model_permission_for_deny_permanent(
         info.tool_name    // model_id
     );
 
+    // Find the client's strategy and update model_permissions there
+    let strategy_id = {
+        let cfg = config_manager.get();
+        cfg.clients
+            .iter()
+            .find(|c| c.id == info.client_id)
+            .map(|c| c.strategy_id.clone())
+    };
+
     config_manager
         .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == info.client_id) {
-                let model_key = format!("{}__{}", info.server_name, info.tool_name);
-                client
-                    .model_permissions
-                    .models
-                    .insert(model_key.clone(), PermissionState::Off);
-                tracing::info!("Set model permission to Off: {}", model_key);
+            if let Some(sid) = &strategy_id {
+                if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == *sid) {
+                    let model_key = format!("{}__{}", info.server_name, info.tool_name);
+                    strategy
+                        .model_permissions
+                        .models
+                        .insert(model_key.clone(), PermissionState::Off);
+                    tracing::info!("Set model permission to Off on strategy: {}", model_key);
+                } else {
+                    tracing::warn!("Strategy {} not found for DenyAlways model update", sid);
+                }
             } else {
                 tracing::warn!(
                     "Client {} not found for DenyAlways model update",
@@ -2121,9 +2190,12 @@ async fn update_model_permission_for_deny_permanent(
         .await
         .map_err(|e: lr_types::AppError| e.to_string())?;
 
-    // Emit clients-changed event
+    // Emit clients-changed and strategies-changed events
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
     }
 
     Ok(())
@@ -2396,10 +2468,13 @@ pub async fn set_client_skills_permission(
     Ok(())
 }
 
-/// Set Model permission for a client
+/// Set Model permission for a client's strategy
+///
+/// Model permissions now live on the strategy, not the client.
+/// This command finds the client's strategy and updates it.
 ///
 /// # Arguments
-/// * `client_id` - The client ID
+/// * `client_id` - The client ID (used to find the owning strategy)
 /// * `level` - Permission level: global, provider, model
 /// * `key` - The key for the permission (e.g., provider_name, model_id)
 /// * `state` - The permission state to set
@@ -2415,7 +2490,7 @@ pub async fn set_client_model_permission(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
-        "Setting Model permission for client {}: level={:?}, key={:?}, state={:?}, clear={:?}",
+        "Setting Model permission for client {}'s strategy: level={:?}, key={:?}, state={:?}, clear={:?}",
         client_id,
         level,
         key,
@@ -2425,29 +2500,43 @@ pub async fn set_client_model_permission(
 
     let should_clear = clear.unwrap_or(false);
 
+    // Find the client's strategy_id
+    let strategy_id = {
+        let config = config_manager.get();
+        config
+            .clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .map(|c| c.strategy_id.clone())
+            .ok_or_else(|| format!("Client not found: {}", client_id))?
+    };
+
     let mut found = false;
     config_manager
         .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+            if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == strategy_id) {
                 match level {
                     ModelPermissionLevel::Global => {
-                        client.model_permissions.global = state.clone();
+                        strategy.model_permissions.global = state.clone();
                     }
                     ModelPermissionLevel::Provider => {
                         if let Some(k) = key.clone() {
                             if should_clear {
-                                client.model_permissions.providers.remove(&k);
+                                strategy.model_permissions.providers.remove(&k);
                             } else {
-                                client.model_permissions.providers.insert(k, state.clone());
+                                strategy
+                                    .model_permissions
+                                    .providers
+                                    .insert(k, state.clone());
                             }
                         }
                     }
                     ModelPermissionLevel::Model => {
                         if let Some(k) = key.clone() {
                             if should_clear {
-                                client.model_permissions.models.remove(&k);
+                                strategy.model_permissions.models.remove(&k);
                             } else {
-                                client.model_permissions.models.insert(k, state.clone());
+                                strategy.model_permissions.models.insert(k, state.clone());
                             }
                         }
                     }
@@ -2458,13 +2547,16 @@ pub async fn set_client_model_permission(
         .map_err(|e| e.to_string())?;
 
     if !found {
-        return Err(format!("Client not found: {}", client_id));
+        return Err(format!("Strategy not found for client: {}", client_id));
     }
 
     config_manager.save().await.map_err(|e| e.to_string())?;
 
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
     }
 
     Ok(())
@@ -2580,7 +2672,7 @@ pub async fn clear_client_skills_child_permissions(
     Ok(())
 }
 
-/// Clear child Model permissions for a client
+/// Clear child Model permissions for a client's strategy
 /// If provider is provided, only clears children of that provider (models)
 /// If provider is None, clears all children (providers, models)
 #[tauri::command]
@@ -2591,26 +2683,37 @@ pub async fn clear_client_model_child_permissions(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
-        "Clearing Model child permissions for client {}, provider: {:?}",
+        "Clearing Model child permissions for client {}'s strategy, provider: {:?}",
         client_id,
         provider
     );
 
+    // Find the client's strategy_id
+    let strategy_id = {
+        let config = config_manager.get();
+        config
+            .clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .map(|c| c.strategy_id.clone())
+            .ok_or_else(|| format!("Client not found: {}", client_id))?
+    };
+
     let mut found = false;
     config_manager
         .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+            if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == strategy_id) {
                 if let Some(ref prov) = provider {
                     // Only clear children of the specific provider
                     let prefix = format!("{prov}__");
-                    client
+                    strategy
                         .model_permissions
                         .models
                         .retain(|k, _| !k.starts_with(&prefix));
                 } else {
                     // Clear all children
-                    client.model_permissions.providers.clear();
-                    client.model_permissions.models.clear();
+                    strategy.model_permissions.providers.clear();
+                    strategy.model_permissions.models.clear();
                 }
                 found = true;
             }
@@ -2618,13 +2721,16 @@ pub async fn clear_client_model_child_permissions(
         .map_err(|e| e.to_string())?;
 
     if !found {
-        return Err(format!("Client not found: {}", client_id));
+        return Err(format!("Strategy not found for client: {}", client_id));
     }
 
     config_manager.save().await.map_err(|e| e.to_string())?;
 
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
     }
 
     Ok(())

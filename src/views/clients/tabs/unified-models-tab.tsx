@@ -55,10 +55,17 @@ interface RouteLLMConfig {
   weak_models: [string, string][]
 }
 
+interface StrategyModelPermissions {
+  global: PermissionState
+  providers: Record<string, PermissionState>
+  models: Record<string, PermissionState>
+}
+
 interface StrategyConfig {
   id: string
   name: string
   parent: string | null
+  model_permissions: StrategyModelPermissions
   allowed_models: {
     selected_all: boolean
     selected_providers: string[]
@@ -113,21 +120,27 @@ const ensureAutoConfig = (s: StrategyConfig): StrategyConfig => {
     }
   }
 
-  // Sync allowed_models with auto_config when they're out of sync.
-  // This handles pre-merge strategies where selected_all=true but
+  // Sync model_permissions with auto_config when they're out of sync.
+  // This handles pre-merge strategies where global=allow but
   // prioritized_models has specific models selected.
-  if (result.auto_config && result.allowed_models.selected_all) {
+  if (result.auto_config && result.model_permissions.global === 'allow'
+      && Object.keys(result.model_permissions.providers).length === 0
+      && Object.keys(result.model_permissions.models).length === 0) {
     const strong = result.auto_config.prioritized_models || []
     const weak = result.auto_config.routellm_config?.weak_models || []
     const allEnabled = [...strong, ...weak]
     if (allEnabled.length > 0) {
-      // Prioritized models exist but allowed_models says "all" — sync them
+      // Prioritized models exist but model_permissions says "all" — sync them
+      const models: Record<string, PermissionState> = {}
+      for (const [provider, modelId] of allEnabled) {
+        models[`${provider}__${modelId}`] = 'allow'
+      }
       result = {
         ...result,
-        allowed_models: {
-          selected_all: false,
-          selected_providers: [],
-          selected_models: allEnabled,
+        model_permissions: {
+          global: 'off' as PermissionState,
+          providers: {},
+          models,
         },
       }
     }
@@ -196,21 +209,26 @@ export function UnifiedModelsTab({
       const normalized = ensureAutoConfig(strategyData)
       setStrategy(normalized)
 
-      // If allowed_models was out of sync (e.g., selected_all was true but
+      // If model_permissions was out of sync (e.g., global was allow but
       // prioritized_models had specific models), persist the corrected state
-      if (strategyData.allowed_models.selected_all !== normalized.allowed_models.selected_all) {
+      const wasGlobalAllow = strategyData.model_permissions?.global === 'allow'
+        && Object.keys(strategyData.model_permissions?.models || {}).length === 0
+      const isNowSpecific = normalized.model_permissions?.global === 'off'
+        && Object.keys(normalized.model_permissions?.models || {}).length > 0
+      if (wasGlobalAllow && isNowSpecific) {
         try {
           await invoke("update_strategy", {
             strategyId: normalized.id,
             name: null,
-            allowedModels: normalized.allowed_models,
+            allowedModels: null,
+            modelPermissions: normalized.model_permissions,
             autoConfig: null,
             rateLimits: null,
             freeTierOnly: null,
             freeTierFallback: null,
           })
         } catch (syncError) {
-          console.error("Failed to sync allowed_models:", syncError)
+          console.error("Failed to sync model_permissions:", syncError)
         }
       }
     } catch (error) {
@@ -342,6 +360,7 @@ export function UnifiedModelsTab({
           strategyId: strategy.id,
           name: null,
           allowedModels: pending.allowed_models || null,
+          modelPermissions: pending.model_permissions || null,
           autoConfig: pending.auto_config !== undefined ? pending.auto_config : null,
           rateLimits: pending.rate_limits || null,
           freeTierOnly: pending.free_tier_only ?? null,
@@ -367,11 +386,18 @@ export function UnifiedModelsTab({
     if (!strategy || !strategy.auto_config) return
 
     const allEnabled = [...strong, ...weak]
+
+    // Build model_permissions from enabled models
+    const models: Record<string, PermissionState> = {}
+    for (const [provider, modelId] of allEnabled) {
+      models[`${provider}__${modelId}`] = 'allow'
+    }
+
     updateStrategy({
-      allowed_models: {
-        selected_all: false,
-        selected_providers: [],
-        selected_models: allEnabled,
+      model_permissions: {
+        global: 'off' as PermissionState,
+        providers: {},
+        models,
       },
       auto_config: {
         ...strategy.auto_config,

@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::helpers::{
     check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
-    get_enabled_client, get_enabled_client_from_manager, validate_strategy_model_access,
+    get_enabled_client, validate_strategy_model_access,
 };
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
@@ -94,11 +94,6 @@ pub async fn embeddings(
         validate_strategy_model_access(&state, strategy, &request.model)
             .map_err(|e| llm_guard.capture_err(e))?;
     }
-
-    // Validate client provider access (if using client auth)
-    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request)
-        .await
-        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Check rate limits
     if let Err(e) = check_rate_limits(&state, &auth, &request).await {
@@ -402,107 +397,6 @@ async fn check_rate_limits(
 
         return Err(error);
     }
-
-    Ok(())
-}
-
-/// Validate that the client has access to the requested LLM provider
-///
-/// This enforces the model_permissions access control for clients.
-/// Returns 403 Forbidden if the client doesn't have access to the provider.
-async fn validate_client_provider_access(
-    state: &AppState,
-    client_context: Option<&ClientAuthContext>,
-    request: &EmbeddingRequest,
-) -> ApiResult<()> {
-    // If no client context, skip validation (using API key auth)
-    let Some(client_ctx) = client_context else {
-        return Ok(());
-    };
-
-    // Get enabled client (returns synthetic for internal tokens)
-    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
-
-    // Special case: localrouter/auto is a virtual model that routes to actual providers
-    // The actual provider access will be checked by the router during auto-routing
-    if request.model == "localrouter/auto" {
-        tracing::debug!(
-            "Client {} using localrouter/auto - provider access will be checked during routing",
-            client.id
-        );
-        return Ok(());
-    }
-
-    // Extract provider and model_id from model string
-    // Format can be "provider/model" or just "model"
-    let (provider, model_id) = if let Some((prov, model)) = request.model.split_once('/') {
-        (prov.to_string(), model.to_string())
-    } else {
-        // No provider specified - need to find which provider has this model
-        let all_models = state.provider_registry.list_all_models_instant();
-
-        // Collect all matching models to handle duplicates across providers
-        let matching_models: Vec<_> = all_models
-            .iter()
-            .filter(|m| m.id.eq_ignore_ascii_case(&request.model))
-            .collect();
-
-        // Prefer a model from a provider where the client has permission
-        let matching_model = matching_models
-            .iter()
-            .find(|m| {
-                client
-                    .model_permissions
-                    .resolve_model(&m.provider, &m.id)
-                    .is_enabled()
-            })
-            .or(matching_models.first())
-            .ok_or_else(|| {
-                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
-                    .with_param("model")
-            })?;
-
-        (matching_model.provider.clone(), matching_model.id.clone())
-    };
-
-    // Check if model is enabled using model_permissions (hierarchical: model -> provider -> global)
-    let permission_state = client.model_permissions.resolve_model(&provider, &model_id);
-
-    if !permission_state.is_enabled() {
-        tracing::warn!(
-            "Client {} attempted to access unauthorized model: {}/{}",
-            client.id,
-            provider,
-            model_id
-        );
-
-        super::monitor_helpers::emit_access_denied_for_client(
-            state,
-            &client.id,
-            None,
-            "model_not_allowed",
-            "/v1/embeddings",
-            &format!(
-                "Access denied: Client is not authorized to use model '{}/{}'",
-                provider, model_id
-            ),
-            403,
-        );
-
-        return Err(ApiErrorResponse::forbidden(format!(
-            "Access denied: Client is not authorized to use model '{}/{}'. Contact administrator to grant access.",
-            provider, model_id
-        ))
-        .with_param("model"));
-    }
-
-    tracing::debug!(
-        "Client {} authorized for model: {}/{} (permission: {:?})",
-        client.id,
-        provider,
-        model_id,
-        permission_state
-    );
 
     Ok(())
 }

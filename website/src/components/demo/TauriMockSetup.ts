@@ -1432,7 +1432,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       id: `strategy-${generateId()}`,
       name: args?.name || 'New Strategy',
       parent: args?.parent || null,
-      allowed_models: args?.allowedModels || { mode: 'all' as const, models: [] },
+      model_permissions: args?.modelPermissions || { global: 'allow' as const, providers: {}, models: {} },
+      allowed_models: args?.allowedModels || { selected_all: true, selected_providers: [], selected_models: [] },
       auto_config: args?.autoConfig || {
         permission: 'allow',
         model_name: 'localrouter/auto',
@@ -1452,6 +1453,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     if (strategy) {
       // Handle individual field updates (the API passes individual fields, not an updates object)
       if (args?.name !== undefined && args.name !== null) strategy.name = args.name
+      if (args?.modelPermissions !== undefined && args.modelPermissions !== null) (strategy as Record<string, unknown>).model_permissions = args.modelPermissions
       if (args?.allowedModels !== undefined && args.allowedModels !== null) strategy.allowed_models = args.allowedModels
       if (args?.autoConfig !== undefined) strategy.auto_config = args.autoConfig
       if (args?.rateLimits !== undefined && args.rateLimits !== null) strategy.rate_limits = args.rateLimits

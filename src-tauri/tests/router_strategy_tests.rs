@@ -36,6 +36,10 @@ fn create_test_config(
         id: strategy_id.to_string(),
         name: "Test Strategy".to_string(),
         parent: None,
+        model_permissions: lr_config::ModelPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        },
         allowed_models,
         auto_config,
         rate_limits,
@@ -493,6 +497,10 @@ async fn test_disabled_client_returns_unauthorized() {
         id: "test-strategy".to_string(),
         name: "Test Strategy".to_string(),
         parent: None,
+        model_permissions: lr_config::ModelPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        },
         allowed_models: AvailableModelsSelection {
             selected_all: false,
             selected_providers: vec!["ollama".to_string()],
@@ -1158,6 +1166,10 @@ fn create_free_tier_config(
         id: strategy_id.to_string(),
         name: "Free Tier Strategy".to_string(),
         parent: None,
+        model_permissions: lr_config::ModelPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        },
         allowed_models,
         auto_config: None,
         rate_limits: vec![],

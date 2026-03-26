@@ -95,6 +95,18 @@ pub async fn chat_completions(
         return Err(llm_guard.capture_err(e));
     }
 
+    // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
+    // so all downstream hardcoded checks work consistently
+    if request.model != "localrouter/auto" {
+        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+            if let Some(ref ac) = strategy.auto_config {
+                if request.model == ac.model_name {
+                    request.model = "localrouter/auto".to_string();
+                }
+            }
+        }
+    }
+
     // Auto-routing firewall check — only for explicit localrouter/auto requests
     if request.model == "localrouter/auto" {
         if let Ok((client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
@@ -281,11 +293,6 @@ pub async fn chat_completions(
                 .map_err(|e| llm_guard.capture_err(e))?;
         }
     }
-
-    // Validate client provider access (if using client auth)
-    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request)
-        .await
-        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Enforce client mode: block MCP-only clients from LLM endpoints
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
@@ -547,10 +554,6 @@ pub async fn chat_completions(
         }
     }
 
-    // Defuse the guard: sub-functions manage their own completion.
-    // All early returns above this point auto-error via the guard's Drop.
-    let llm_event_id = llm_guard.into_event_id();
-
     // Determine if we can run guardrails in parallel with the LLM request.
     // Parallel mode buffers the response until guardrails pass, reducing latency.
     // Falls back to sequential when request may cause side effects.
@@ -558,6 +561,9 @@ pub async fn chat_completions(
     let use_parallel = config.guardrails.parallel_guardrails && !has_side_effects(&request);
 
     if use_parallel {
+        // Defuse the guard: parallel handler functions manage their own completion.
+        let llm_event_id = llm_guard.into_event_id();
+
         // Parallel mode: pass guardrail handle to response handlers
         // They will start the LLM request immediately and await guardrails concurrently
         if request.stream {
@@ -586,11 +592,18 @@ pub async fn chat_completions(
             .await
         }
     } else {
-        // Sequential mode: await guardrail result before calling provider
+        // Sequential mode: keep guard alive through guardrail checks.
+        // If guardrails error, the guard's Drop auto-completes as Error.
         let guardrail_result = if let Some(handle) = guardrail_handle {
-            handle.await.map_err(|e| {
-                ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
-            })??
+            handle
+                .await
+                .map_err(|e| {
+                    llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
+                        "Guardrail check failed: {}",
+                        e
+                    )))
+                })?
+                .map_err(|e| llm_guard.capture_err(e))?
         } else {
             None
         };
@@ -603,8 +616,12 @@ pub async fn chat_completions(
                 check_result,
                 "request",
             )
-            .await?;
+            .await
+            .map_err(|e| llm_guard.capture_err(e))?;
         }
+
+        // Now defuse — sub-functions manage their own completion from here
+        let llm_event_id = llm_guard.into_event_id();
 
         if request.stream {
             handle_streaming(
@@ -838,100 +855,6 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
     Ok(())
 }
 
-/// Validate that the client has access to the requested LLM provider
-///
-/// This enforces the model_permissions access control for clients.
-/// Returns 403 Forbidden if the client doesn't have access to the provider.
-/// Note: "Ask" permission is handled separately by check_model_firewall_permission.
-async fn validate_client_provider_access(
-    state: &AppState,
-    client_context: Option<&ClientAuthContext>,
-    request: &ChatCompletionRequest,
-) -> ApiResult<()> {
-    // If no client context, skip validation (using API key auth)
-    let Some(client_ctx) = client_context else {
-        return Ok(());
-    };
-
-    // Get enabled client (skip validation for clients not in manager, e.g. internal-test)
-    let Some(client) = state.client_manager.get_client(&client_ctx.client_id) else {
-        return Ok(());
-    };
-    if !client.enabled {
-        return Err(ApiErrorResponse::forbidden("Client is disabled"));
-    }
-
-    // Special case: localrouter/auto is a virtual model that routes to actual providers
-    // The actual provider access will be checked by the router during auto-routing
-    if request.model == "localrouter/auto" {
-        tracing::debug!(
-            "Client {} using localrouter/auto - provider access will be checked during routing",
-            client.id
-        );
-        return Ok(());
-    }
-
-    // Extract provider and model_id from model string
-    // Format can be "provider/model" or just "model"
-    let (provider, model_id) = if let Some((prov, model)) = request.model.split_once('/') {
-        (prov.to_string(), model.to_string())
-    } else {
-        // No provider specified - need to find which provider has this model
-        let all_models = state.provider_registry.list_all_models_instant();
-
-        // Collect all matching models to handle duplicates across providers
-        let matching_models: Vec<_> = all_models
-            .iter()
-            .filter(|m| m.id.eq_ignore_ascii_case(&request.model))
-            .collect();
-
-        // Prefer a model from a provider where the client has permission
-        let matching_model = matching_models
-            .iter()
-            .find(|m| {
-                client
-                    .model_permissions
-                    .resolve_model(&m.provider, &m.id)
-                    .is_enabled()
-            })
-            .or(matching_models.first())
-            .ok_or_else(|| {
-                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
-                    .with_param("model")
-            })?;
-
-        (matching_model.provider.clone(), matching_model.id.clone())
-    };
-
-    // Check if model is enabled using model_permissions (hierarchical: model -> provider -> global)
-    let permission_state = client.model_permissions.resolve_model(&provider, &model_id);
-
-    if !permission_state.is_enabled() {
-        tracing::warn!(
-            "Client {} attempted to access unauthorized model: {}/{}",
-            client.id,
-            provider,
-            model_id
-        );
-
-        return Err(ApiErrorResponse::forbidden(format!(
-            "Access denied: Client is not authorized to use model '{}/{}'. Contact administrator to grant access.",
-            provider, model_id
-        ))
-        .with_param("model"));
-    }
-
-    tracing::debug!(
-        "Client {} authorized for model: {}/{} (permission: {:?})",
-        client.id,
-        provider,
-        model_id,
-        permission_state
-    );
-
-    Ok(())
-}
-
 /// Apply user-edited fields from the firewall approval popup to the request.
 ///
 /// Supports model params (temperature, max_tokens, etc.) and messages.
@@ -1044,15 +967,20 @@ async fn check_model_firewall_permission(
             .filter(|m| m.id.eq_ignore_ascii_case(&request.model))
             .collect();
 
-        // Prefer a model from a provider where the client has permission
+        // Get model_permissions from the client's strategy for provider disambiguation
+        let strat_perms = state
+            .config_manager
+            .get()
+            .strategies
+            .iter()
+            .find(|s| s.parent.as_deref() == Some(&client.id))
+            .map(|s| s.model_permissions.clone())
+            .unwrap_or_default();
+
+        // Prefer a model from a provider where the strategy has permission
         let matching_model = matching_models
             .iter()
-            .find(|m| {
-                client
-                    .model_permissions
-                    .resolve_model(&m.provider, &m.id)
-                    .is_enabled()
-            })
+            .find(|m| strat_perms.resolve_model(&m.provider, &m.id).is_enabled())
             .or(matching_models.first())
             .ok_or_else(|| {
                 ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
@@ -1062,11 +990,21 @@ async fn check_model_firewall_permission(
         (matching_model.provider.clone(), matching_model.id.clone())
     };
 
+    // Get model_permissions from the client's strategy
+    let strategy_model_permissions = state
+        .config_manager
+        .get()
+        .strategies
+        .iter()
+        .find(|s| s.parent.as_deref() == Some(&client.id))
+        .map(|s| s.model_permissions.clone())
+        .unwrap_or_default();
+
     // Use unified check_needs_approval
     use lr_mcp::gateway::access_control::{FirewallCheckContext, FirewallCheckResult};
 
     let ctx = FirewallCheckContext::Model {
-        permissions: &client.model_permissions,
+        permissions: &strategy_model_permissions,
         provider: &provider,
         model_id: &model_id,
         has_time_based_approval: state

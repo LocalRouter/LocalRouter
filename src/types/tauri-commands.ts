@@ -258,12 +258,13 @@ export interface LaunchResult {
 // =============================================================================
 
 /**
- * Models selection configuration for strategies.
+ * Models selection configuration for strategies (deprecated, use ModelPermissions on strategy).
  * Rust: crates/lr-config/src/types.rs - AvailableModelsSelection struct
  */
 export interface AvailableModelsSelection {
-  mode: 'all' | 'selected'
-  models: string[]
+  selected_all: boolean
+  selected_providers: string[]
+  selected_models: [string, string][]
 }
 
 /**

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 25;
+pub(crate) const CONFIG_VERSION: u32 = 26;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -358,8 +358,12 @@ pub struct Strategy {
     /// Client ID that owns this strategy (if any)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
-    /// Models that are allowed by this strategy
+    /// Unified model permissions (hierarchical Allow/Ask/Off)
+    /// Replaces both strategy `allowed_models` and client `model_permissions`
     #[serde(default)]
+    pub model_permissions: ModelPermissions,
+    /// Migration shim: old model whitelist (deserialize only)
+    #[serde(default, skip_serializing)]
     pub allowed_models: AvailableModelsSelection,
     /// Auto-routing configuration for localrouter/auto
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -383,6 +387,10 @@ impl Strategy {
             id: Uuid::new_v4().to_string(),
             name,
             parent: None,
+            model_permissions: ModelPermissions {
+                global: PermissionState::Allow,
+                ..Default::default()
+            },
             allowed_models: AvailableModelsSelection::default(),
             auto_config: Some(AutoModelConfig {
                 permission: PermissionState::Allow,
@@ -400,6 +408,10 @@ impl Strategy {
             id: Uuid::new_v4().to_string(),
             name: client_strategy_name(&client_name),
             parent: Some(client_id),
+            model_permissions: ModelPermissions {
+                global: PermissionState::Allow,
+                ..Default::default()
+            },
             allowed_models: AvailableModelsSelection::all(),
             auto_config: Some(AutoModelConfig {
                 permission: PermissionState::Allow,
@@ -413,7 +425,9 @@ impl Strategy {
 
     /// Check if a model is allowed by this strategy
     pub fn is_model_allowed(&self, provider: &str, model: &str) -> bool {
-        self.allowed_models.is_model_allowed(provider, model)
+        self.model_permissions
+            .resolve_model(provider, model)
+            .is_enabled()
     }
 }
 
@@ -935,6 +949,16 @@ impl PermissionState {
     /// Check if the resource requires approval
     pub fn requires_approval(&self) -> bool {
         matches!(self, PermissionState::Ask)
+    }
+
+    /// Return the more restrictive of two permission states.
+    /// Off < Ask < Allow
+    pub fn min(&self, other: &PermissionState) -> PermissionState {
+        match (self, other) {
+            (PermissionState::Off, _) | (_, PermissionState::Off) => PermissionState::Off,
+            (PermissionState::Ask, _) | (_, PermissionState::Ask) => PermissionState::Ask,
+            _ => PermissionState::Allow,
+        }
     }
 }
 
@@ -2755,8 +2779,9 @@ pub struct Client {
     #[serde(default)]
     pub skills_permissions: SkillsPermissions,
 
-    /// Unified Model permissions (hierarchical Allow/Ask/Off)
-    #[serde(default)]
+    /// Migration shim: old client-level model permissions (deserialize only)
+    /// Model permissions now live on the Strategy
+    #[serde(default, skip_serializing)]
     pub model_permissions: ModelPermissions,
 
     /// Marketplace permission state (Allow/Ask/Off)

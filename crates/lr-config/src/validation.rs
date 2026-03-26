@@ -187,7 +187,12 @@ fn validate_providers_not_self_referential(config: &AppConfig) -> AppResult<()> 
     let client_secrets: HashSet<String> = config
         .clients
         .iter()
-        .filter_map(|client| keychain.get(CLIENT_KEYRING_SERVICE, &client.id).ok().flatten())
+        .filter_map(|client| {
+            keychain
+                .get(CLIENT_KEYRING_SERVICE, &client.id)
+                .ok()
+                .flatten()
+        })
         .collect();
 
     // Check if any suspect provider key matches an actual client secret
@@ -360,22 +365,24 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
     // Build set of provider names
     let provider_names: HashSet<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
 
-    // Validate strategy allowed_models reference valid providers
+    // Validate strategy model_permissions reference valid providers
     for strategy in &config.strategies {
-        for provider in &strategy.allowed_models.selected_providers {
+        for provider in strategy.model_permissions.providers.keys() {
             if !provider_names.contains(provider.as_str()) {
                 tracing::warn!(
-                    "Strategy '{}' references provider '{}' which is not configured - model availability may be limited",
+                    "Strategy '{}' references provider '{}' in model_permissions which is not configured - model availability may be limited",
                     strategy.name, provider
                 );
             }
         }
-        for (provider, _model) in &strategy.allowed_models.selected_models {
-            if !provider_names.contains(provider.as_str()) {
-                tracing::warn!(
-                    "Strategy '{}' references provider '{}' which is not configured - model may not be accessible",
-                    strategy.name, provider
-                );
+        for model_key in strategy.model_permissions.models.keys() {
+            if let Some(provider) = model_key.split("__").next() {
+                if !provider_names.contains(provider) {
+                    tracing::warn!(
+                        "Strategy '{}' references provider '{}' in model_permissions which is not configured - model may not be accessible",
+                        strategy.name, provider
+                    );
+                }
             }
         }
     }
@@ -465,6 +472,10 @@ mod tests {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
             parent: None,
+            model_permissions: crate::ModelPermissions {
+                global: crate::PermissionState::Allow,
+                ..Default::default()
+            },
             allowed_models: AvailableModelsSelection::all(),
             auto_config: None,
             rate_limits: vec![],

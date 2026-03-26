@@ -56,7 +56,7 @@ pub async fn completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(request): Json<CompletionRequest>,
+    Json(mut request): Json<CompletionRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "completion");
@@ -100,24 +100,26 @@ pub async fn completions(
         return Err(llm_guard.capture_err(e));
     }
 
+    // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
+    if request.model != "localrouter/auto" {
+        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+            if let Some(ref ac) = strategy.auto_config {
+                if request.model == ac.model_name {
+                    request.model = "localrouter/auto".to_string();
+                }
+            }
+        }
+    }
+
     // Strategy-level model access checks
     if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
         check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        let is_auto_model = request.model == "localrouter/auto"
-            || strategy
-                .auto_config
-                .as_ref()
-                .is_some_and(|ac| request.model == ac.model_name);
+        let is_auto_model = request.model == "localrouter/auto";
         if !is_auto_model {
             validate_strategy_model_access(&state, strategy, &request.model)
                 .map_err(|e| llm_guard.capture_err(e))?;
         }
     }
-
-    // Validate client provider access (if using client auth)
-    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request)
-        .await
-        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Secret scanning: check outbound request for leaked secrets (before guardrails)
     run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request)
@@ -214,11 +216,10 @@ pub async fn completions(
     let config = state.config_manager.get();
     let use_parallel = config.guardrails.parallel_guardrails && !has_side_effects(&request);
 
-    // Defuse the guard: sub-functions manage their own completion.
-    // All early returns above this point auto-error via the guard's Drop.
-    let llm_event_id = llm_guard.into_event_id();
-
     if use_parallel {
+        // Defuse the guard: parallel handler functions manage their own completion.
+        let llm_event_id = llm_guard.into_event_id();
+
         if request.stream {
             handle_streaming_parallel(
                 state,
@@ -243,10 +244,16 @@ pub async fn completions(
             .await
         }
     } else {
-        // Sequential mode: await guardrail result before calling provider
-        let guardrail_result = guardrail_handle.await.map_err(|e| {
-            ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
-        })??;
+        // Sequential mode: keep guard alive through guardrail checks.
+        let guardrail_result = guardrail_handle
+            .await
+            .map_err(|e| {
+                llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
+                    "Guardrail check failed: {}",
+                    e
+                )))
+            })?
+            .map_err(|e| llm_guard.capture_err(e))?;
 
         if let Some(check_result) = guardrail_result {
             handle_guardrail_approval(
@@ -255,8 +262,12 @@ pub async fn completions(
                 &request,
                 check_result,
             )
-            .await?;
+            .await
+            .map_err(|e| llm_guard.capture_err(e))?;
         }
+
+        // Now defuse — sub-functions manage their own completion from here
+        let llm_event_id = llm_guard.into_event_id();
 
         if request.stream {
             handle_streaming(
@@ -1111,107 +1122,6 @@ async fn build_non_streaming_response(
         .record(generation_details.id.clone(), generation_details);
 
     Ok(Json(api_response).into_response())
-}
-
-/// Validate that the client has access to the requested LLM provider
-///
-/// This enforces the model_permissions access control for clients.
-/// Returns 403 Forbidden if the client doesn't have access to the provider.
-async fn validate_client_provider_access(
-    state: &AppState,
-    client_context: Option<&ClientAuthContext>,
-    request: &CompletionRequest,
-) -> ApiResult<()> {
-    // If no client context, skip validation (using API key auth)
-    let Some(client_ctx) = client_context else {
-        return Ok(());
-    };
-
-    // Get enabled client
-    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
-
-    // Special case: localrouter/auto is a virtual model that routes to actual providers
-    // The actual provider access will be checked by the router during auto-routing
-    if request.model == "localrouter/auto" {
-        tracing::debug!(
-            "Client {} using localrouter/auto - provider access will be checked during routing",
-            client.id
-        );
-        return Ok(());
-    }
-
-    // Extract provider and model_id from model string
-    // Format can be "provider/model" or just "model"
-    let (provider, model_id) = if let Some((prov, model)) = request.model.split_once('/') {
-        (prov.to_string(), model.to_string())
-    } else {
-        // No provider specified - need to find which provider has this model
-        let all_models = state.provider_registry.list_all_models_instant();
-
-        // Collect all matching models to handle duplicates across providers
-        let matching_models: Vec<_> = all_models
-            .iter()
-            .filter(|m| m.id.eq_ignore_ascii_case(&request.model))
-            .collect();
-
-        // Prefer a model from a provider where the client has permission
-        let matching_model = matching_models
-            .iter()
-            .find(|m| {
-                client
-                    .model_permissions
-                    .resolve_model(&m.provider, &m.id)
-                    .is_enabled()
-            })
-            .or(matching_models.first())
-            .ok_or_else(|| {
-                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
-                    .with_param("model")
-            })?;
-
-        (matching_model.provider.clone(), matching_model.id.clone())
-    };
-
-    // Check if model is enabled using model_permissions (hierarchical: model -> provider -> global)
-    let permission_state = client.model_permissions.resolve_model(&provider, &model_id);
-
-    if !permission_state.is_enabled() {
-        tracing::warn!(
-            "Client {} attempted to access unauthorized model: {}/{}",
-            client.id,
-            provider,
-            model_id
-        );
-
-        super::monitor_helpers::emit_access_denied_for_client(
-            state,
-            &client.id,
-            None,
-            "model_not_allowed",
-            "/v1/completions",
-            &format!(
-                "Access denied: Client is not authorized to use model '{}/{}'",
-                provider, model_id
-            ),
-            403,
-        );
-
-        return Err(ApiErrorResponse::forbidden(format!(
-            "Access denied: Client is not authorized to use model '{}/{}'. Contact administrator to grant access.",
-            provider, model_id
-        ))
-        .with_param("model"));
-    }
-
-    tracing::debug!(
-        "Client {} authorized for model: {}/{} (permission: {:?})",
-        client.id,
-        provider,
-        model_id,
-        permission_state
-    );
-
-    Ok(())
 }
 
 /// Handle streaming completion

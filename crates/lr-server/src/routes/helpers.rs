@@ -239,17 +239,20 @@ pub fn check_llm_access_with_state(state: &AppState, client: &Client) -> HelperR
     Ok(())
 }
 
-/// Validate that the requested model is in the strategy's allowed models list.
+/// Validate that the requested model is allowed by the strategy's model_permissions.
 ///
-/// This ensures the model whitelist configured in the strategy is enforced at request time,
-/// not just at listing time (/v1/models). Returns 403 if the model is not enabled.
+/// Uses the unified hierarchical permission system (Allow/Ask/Off).
+/// Returns 403 if the model permission resolves to Off.
 pub fn validate_strategy_model_access(
     state: &AppState,
     strategy: &Strategy,
     model: &str,
 ) -> HelperResult<()> {
-    // If selected_all is true, all models are allowed
-    if strategy.allowed_models.selected_all {
+    // Quick check: if global is Allow and no overrides, all models are allowed
+    if strategy.model_permissions.global == lr_config::PermissionState::Allow
+        && strategy.model_permissions.providers.is_empty()
+        && strategy.model_permissions.models.is_empty()
+    {
         return Ok(());
     }
 

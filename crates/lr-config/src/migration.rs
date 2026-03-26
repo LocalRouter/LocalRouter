@@ -154,6 +154,12 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v25(config)?;
     }
 
+    // Migrate to v26: Unify model authorization — combine strategy allowed_models + client model_permissions
+    // into a single strategy.model_permissions field
+    if config.version < 26 {
+        config = migrate_to_v26(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -761,6 +767,129 @@ fn migrate_to_v25(mut config: AppConfig) -> AppResult<AppConfig> {
     }
 
     config.version = 25;
+    Ok(config)
+}
+
+/// Migrate to version 26: Unify model authorization
+///
+/// Combines strategy `allowed_models` (binary whitelist) and client `model_permissions`
+/// (hierarchical Allow/Ask/Off) into a single `strategy.model_permissions` field.
+/// The effective permission = min(strategy_permission, client_permission) where Off < Ask < Allow.
+fn migrate_to_v26(mut config: AppConfig) -> AppResult<AppConfig> {
+    use super::types::{ModelPermissions, PermissionState};
+    use std::collections::HashMap;
+
+    info!(
+        "Migrating to version 26: Unify model authorization — merge allowed_models + client model_permissions into strategy.model_permissions"
+    );
+
+    for strategy in &mut config.strategies {
+        // Skip strategies that already have non-default model_permissions (e.g. already migrated)
+        if strategy.model_permissions.has_any_access() {
+            continue;
+        }
+
+        // Phase A: Convert strategy allowed_models into a permission map
+        let (strategy_global, strategy_providers, strategy_models) =
+            if strategy.allowed_models.selected_all {
+                (PermissionState::Allow, HashMap::new(), HashMap::new())
+            } else {
+                let mut providers = HashMap::new();
+                for p in &strategy.allowed_models.selected_providers {
+                    providers.insert(p.clone(), PermissionState::Allow);
+                }
+                let mut models = HashMap::new();
+                for (p, m) in &strategy.allowed_models.selected_models {
+                    let key = format!("{}__{}", p, m);
+                    models.insert(key, PermissionState::Allow);
+                }
+                (PermissionState::Off, providers, models)
+            };
+
+        // Phase B: Find owning client and combine permissions
+        let client_perms = strategy
+            .parent
+            .as_ref()
+            .and_then(|parent_id| config.clients.iter().find(|c| c.id == *parent_id))
+            .map(|c| &c.model_permissions);
+
+        let final_perms = if let Some(client_mp) = client_perms {
+            // Combine: effective = min(strategy, client)
+            let final_global = strategy_global.min(&client_mp.global);
+
+            // Collect all provider keys from both sides
+            let mut all_provider_keys: std::collections::HashSet<String> =
+                strategy_providers.keys().cloned().collect();
+            all_provider_keys.extend(client_mp.providers.keys().cloned());
+
+            let mut final_providers = HashMap::new();
+            for p in &all_provider_keys {
+                let strat_perm = strategy_providers
+                    .get(p)
+                    .cloned()
+                    .unwrap_or(strategy_global.clone());
+                let client_perm = client_mp.resolve_provider(p);
+                let combined = strat_perm.min(&client_perm);
+                // Only write if differs from global (avoid redundant entries)
+                if combined != final_global {
+                    final_providers.insert(p.clone(), combined);
+                }
+            }
+
+            // Collect all model keys from both sides
+            let mut all_model_keys: std::collections::HashSet<String> =
+                strategy_models.keys().cloned().collect();
+            all_model_keys.extend(client_mp.models.keys().cloned());
+
+            let mut final_models = HashMap::new();
+            for key in &all_model_keys {
+                // Parse provider from key ("provider__model_id")
+                let provider_name = key.split("__").next().unwrap_or("");
+                let model_id = key.splitn(2, "__").nth(1).unwrap_or("");
+
+                let strat_perm = strategy_models.get(key).cloned().unwrap_or(
+                    strategy_providers
+                        .get(provider_name)
+                        .cloned()
+                        .unwrap_or(strategy_global.clone()),
+                );
+                let client_perm = client_mp.resolve_model(provider_name, model_id);
+                let combined = strat_perm.min(&client_perm);
+
+                // Only write if differs from effective provider/global
+                let effective_parent = final_providers
+                    .get(provider_name)
+                    .cloned()
+                    .unwrap_or(final_global.clone());
+                if combined != effective_parent {
+                    final_models.insert(key.clone(), combined);
+                }
+            }
+
+            ModelPermissions {
+                global: final_global,
+                providers: final_providers,
+                models: final_models,
+            }
+        } else {
+            // Phase C: No owning client — use strategy permissions directly
+            // (shared strategies were never gated by client model_permissions)
+            ModelPermissions {
+                global: strategy_global,
+                providers: strategy_providers,
+                models: strategy_models,
+            }
+        };
+
+        strategy.model_permissions = final_perms;
+    }
+
+    // Phase D: Clear client model_permissions (field is now skip_serializing)
+    for client in &mut config.clients {
+        client.model_permissions = ModelPermissions::default();
+    }
+
+    config.version = 26;
     Ok(config)
 }
 

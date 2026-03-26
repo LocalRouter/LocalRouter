@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::helpers::{
     check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
-    get_enabled_client, get_enabled_client_from_manager, validate_strategy_model_access,
+    get_enabled_client, validate_strategy_model_access,
 };
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
@@ -308,18 +308,9 @@ pub async fn audio_transcriptions(
         }
     }
 
-    // Strategy-level model access checks
-    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy)?;
-        validate_strategy_model_access(&state, strategy, &model)?;
-    }
-
-    // Validate client provider access
-    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &model).await?;
-
-    // Emit monitor event for traffic inspection
+    // Emit monitor event for traffic inspection (before strategy checks so guard captures errors)
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/transcriptions"});
-    let llm_guard = super::monitor_helpers::emit_llm_call(
+    let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -328,6 +319,13 @@ pub async fn audio_transcriptions(
         false,
         &monitor_body,
     );
+
+    // Strategy-level model access checks
+    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
+        validate_strategy_model_access(&state, strategy, &model)
+            .map_err(|e| llm_guard.capture_err(e))?;
+    }
 
     let request_id = format!("audio-{}", Uuid::new_v4());
     let created_at = Utc::now();
@@ -741,18 +739,9 @@ pub async fn audio_translations(
         }
     }
 
-    // Strategy-level model access checks
-    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy)?;
-        validate_strategy_model_access(&state, strategy, &model)?;
-    }
-
-    // Validate client provider access
-    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &model).await?;
-
-    // Emit monitor event for traffic inspection
+    // Emit monitor event for traffic inspection (before strategy checks so guard captures errors)
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/translations"});
-    let llm_guard = super::monitor_helpers::emit_llm_call(
+    let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -761,6 +750,13 @@ pub async fn audio_translations(
         false,
         &monitor_body,
     );
+
+    // Strategy-level model access checks
+    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
+        validate_strategy_model_access(&state, strategy, &model)
+            .map_err(|e| llm_guard.capture_err(e))?;
+    }
 
     let request_id = format!("audio-{}", Uuid::new_v4());
     let created_at = Utc::now();
@@ -992,11 +988,6 @@ pub async fn audio_speech(
             .map_err(|e| llm_guard.capture_err(e))?;
     }
 
-    // Validate client provider access
-    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request.model)
-        .await
-        .map_err(|e| llm_guard.capture_err(e))?;
-
     let request_id = format!("tts-{}", Uuid::new_v4());
     let created_at = Utc::now();
     let started_at = Instant::now();
@@ -1151,80 +1142,6 @@ pub async fn audio_speech(
         .header(header::CONTENT_LENGTH, audio_len)
         .body(Body::from(response.audio_data))
         .unwrap())
-}
-
-/// Validate that the client has access to the requested audio model's provider
-async fn validate_client_provider_access(
-    state: &AppState,
-    client_context: Option<&ClientAuthContext>,
-    model: &str,
-) -> ApiResult<()> {
-    let Some(client_ctx) = client_context else {
-        return Ok(());
-    };
-
-    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
-
-    // Extract provider and model_id from model string
-    let (provider, model_id) = if let Some((prov, m)) = model.split_once('/') {
-        (prov.to_string(), m.to_string())
-    } else {
-        // No provider specified — find which provider has this model
-        let all_models = state.provider_registry.list_all_models_instant();
-
-        let matching_models: Vec<_> = all_models
-            .iter()
-            .filter(|m| m.id.eq_ignore_ascii_case(model))
-            .collect();
-
-        let matching_model = matching_models
-            .iter()
-            .find(|m| {
-                client
-                    .model_permissions
-                    .resolve_model(&m.provider, &m.id)
-                    .is_enabled()
-            })
-            .or(matching_models.first())
-            .ok_or_else(|| {
-                ApiErrorResponse::not_found(format!("Model not found: {}", model))
-                    .with_param("model")
-            })?;
-
-        (matching_model.provider.clone(), matching_model.id.clone())
-    };
-
-    let permission_state = client.model_permissions.resolve_model(&provider, &model_id);
-
-    if !permission_state.is_enabled() {
-        tracing::warn!(
-            "Client {} attempted to access unauthorized audio model: {}/{}",
-            client.id,
-            provider,
-            model_id
-        );
-
-        super::monitor_helpers::emit_access_denied_for_client(
-            state,
-            &client.id,
-            None,
-            "model_not_allowed",
-            "/v1/audio",
-            &format!(
-                "Access denied: Client is not authorized to use model '{}/{}'",
-                provider, model_id
-            ),
-            403,
-        );
-
-        return Err(ApiErrorResponse::forbidden(format!(
-            "Access denied: Client is not authorized to use model '{}/{}'. Contact administrator to grant access.",
-            provider, model_id
-        ))
-        .with_param("model"));
-    }
-
-    Ok(())
 }
 
 /// Validate speech request

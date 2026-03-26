@@ -560,9 +560,11 @@ export const mockData = {
       id: "strategy-default",
       name: "Default Strategy",
       parent: null,
+      model_permissions: { global: "allow" as const, providers: {}, models: {} },
       allowed_models: {
-        mode: "all" as const,
-        models: [],
+        selected_all: true,
+        selected_providers: [],
+        selected_models: [],
       },
       auto_config: {
         permission: "allow" as const,
@@ -581,9 +583,11 @@ export const mockData = {
       id: "strategy-fast",
       name: "Fast & Cheap",
       parent: null,
+      model_permissions: { global: "off" as const, providers: {}, models: { "openai-primary__gpt-4o-mini": "allow" as const, "anthropic-main__claude-3-5-haiku-20241022": "allow" as const, "groq-fast__llama-3.2-3b-instruct": "allow" as const } },
       allowed_models: {
-        mode: "selected" as const,
-        models: [
+        selected_all: false,
+        selected_providers: [],
+        selected_models: [
           ["openai-primary", "gpt-4o-mini"],
           ["anthropic-main", "claude-3-5-haiku-20241022"],
           ["groq-fast", "llama-3.2-3b-instruct"],
@@ -607,9 +611,11 @@ export const mockData = {
       id: "strategy-quality",
       name: "High Quality",
       parent: null,
+      model_permissions: { global: "off" as const, providers: {}, models: { "openai-primary__gpt-4o": "allow" as const, "anthropic-main__claude-3-5-sonnet-20241022": "allow" as const, "gemini-google__gemini-1.5-pro": "allow" as const, "openai-primary__gpt-4o-mini": "allow" as const, "groq-fast__llama-3.2-3b-instruct": "allow" as const } },
       allowed_models: {
-        mode: "selected" as const,
-        models: [
+        selected_all: false,
+        selected_providers: [],
+        selected_models: [
           ["openai-primary", "gpt-4o"],
           ["anthropic-main", "claude-3-5-sonnet-20241022"],
           ["gemini-google", "gemini-1.5-pro"],
@@ -640,13 +646,11 @@ export const mockData = {
       id: "strategy-local",
       name: "Local Only",
       parent: null,
+      model_permissions: { global: "off" as const, providers: { "ollama-local": "allow" as const }, models: {} },
       allowed_models: {
-        mode: "selected" as const,
-        models: [
-          ["ollama-local", "llama3.2:latest"],
-          ["ollama-local", "codellama:latest"],
-          ["ollama-local", "mistral:latest"],
-        ] as [string, string][],
+        selected_all: false,
+        selected_providers: ["ollama-local"],
+        selected_models: [] as [string, string][],
       },
       auto_config: {
         permission: "allow" as const,
