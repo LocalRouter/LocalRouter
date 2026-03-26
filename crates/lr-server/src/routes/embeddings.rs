@@ -54,7 +54,7 @@ pub async fn embeddings(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let llm_guard = super::monitor_helpers::emit_llm_call(
+    let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -69,8 +69,9 @@ pub async fn embeddings(
 
     // Validate client is enabled and mode allows LLM access
     {
-        let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access_with_state(&state, &client)?;
+        let client =
+            get_enabled_client(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
+        check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
     }
 
     // Validate request
@@ -84,17 +85,20 @@ pub async fn embeddings(
             &e.error.error.message,
             400,
         );
-        return Err(e);
+        return Err(llm_guard.capture_err(e));
     }
 
     // Strategy-level model access checks (embeddings don't use localrouter/auto)
     if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy)?;
-        validate_strategy_model_access(&state, strategy, &request.model)?;
+        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
+        validate_strategy_model_access(&state, strategy, &request.model)
+            .map_err(|e| llm_guard.capture_err(e))?;
     }
 
     // Validate client provider access (if using client auth)
-    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
+    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request)
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Check rate limits
     if let Err(e) = check_rate_limits(&state, &auth, &request).await {
@@ -108,7 +112,7 @@ pub async fn embeddings(
             429,
             None,
         );
-        return Err(e);
+        return Err(llm_guard.capture_err(e));
     }
 
     // Log request summary

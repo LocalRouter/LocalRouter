@@ -66,7 +66,7 @@ pub async fn completions(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let llm_guard = super::monitor_helpers::emit_llm_call(
+    let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -81,8 +81,9 @@ pub async fn completions(
 
     // Enforce client mode: block MCP-only clients from LLM endpoints
     {
-        let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access_with_state(&state, &client)?;
+        let client =
+            get_enabled_client(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
+        check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
     }
 
     // Validate request
@@ -96,27 +97,32 @@ pub async fn completions(
             &e.error.error.message,
             400,
         );
-        return Err(e);
+        return Err(llm_guard.capture_err(e));
     }
 
     // Strategy-level model access checks
     if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy)?;
+        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
         let is_auto_model = request.model == "localrouter/auto"
             || strategy
                 .auto_config
                 .as_ref()
                 .is_some_and(|ac| request.model == ac.model_name);
         if !is_auto_model {
-            validate_strategy_model_access(&state, strategy, &request.model)?;
+            validate_strategy_model_access(&state, strategy, &request.model)
+                .map_err(|e| llm_guard.capture_err(e))?;
         }
     }
 
     // Validate client provider access (if using client auth)
-    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
+    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request)
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Secret scanning: check outbound request for leaked secrets (before guardrails)
-    run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
+    run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request)
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Start guardrail scan in parallel
     let guardrail_handle = {
@@ -140,7 +146,7 @@ pub async fn completions(
             429,
             None,
         );
-        return Err(e);
+        return Err(llm_guard.capture_err(e));
     }
 
     // Log request summary
@@ -161,7 +167,8 @@ pub async fn completions(
     }
 
     // Convert prompt to chat messages format
-    let messages = convert_prompt_to_messages(&request.prompt)?;
+    let messages =
+        convert_prompt_to_messages(&request.prompt).map_err(|e| llm_guard.capture_err(e))?;
 
     // Create provider request
     let provider_request = ProviderCompletionRequest {

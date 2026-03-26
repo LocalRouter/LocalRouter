@@ -68,7 +68,7 @@ pub async fn chat_completions(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let llm_guard = super::monitor_helpers::emit_llm_call(
+    let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -92,7 +92,7 @@ pub async fn chat_completions(
             &e.error.error.message,
             400,
         );
-        return Err(e);
+        return Err(llm_guard.capture_err(e));
     }
 
     // Auto-routing firewall check — only for explicit localrouter/auto requests
@@ -100,9 +100,9 @@ pub async fn chat_completions(
         if let Ok((client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
             if let Some(auto_config) = &strategy.auto_config {
                 if auto_config.prioritized_models.is_empty() {
-                    return Err(ApiErrorResponse::bad_request(
+                    return Err(llm_guard.capture_err(ApiErrorResponse::bad_request(
                         "Auto routing has no prioritized models configured".to_string(),
-                    ));
+                    )));
                 }
 
                 // Show approval popup if permission is Ask, or if monitor intercept overrides Allow → Ask
@@ -198,7 +198,8 @@ pub async fn chat_completions(
                                 "Auto-router approval failed: {}",
                                 e
                             ))
-                        })?;
+                        })
+                        .map_err(|e| llm_guard.capture_err(e))?;
 
                     // Emit firewall decision for auto-router popup
                     let ar_action_str = format!("{:?}", response.action);
@@ -247,15 +248,17 @@ pub async fn chat_completions(
                                 "Auto-routing denied by user",
                                 403,
                             );
-                            return Err(ApiErrorResponse::forbidden("Auto-routing denied by user"));
+                            return Err(llm_guard.capture_err(ApiErrorResponse::forbidden(
+                                "Auto-routing denied by user",
+                            )));
                         }
                     }
                 }
             } else {
                 // No auto_config at all — reject localrouter/auto request
-                return Err(ApiErrorResponse::not_found(
+                return Err(llm_guard.capture_err(ApiErrorResponse::not_found(
                     "Auto routing is not configured for this client".to_string(),
-                ));
+                )));
             }
         }
     }
@@ -263,7 +266,7 @@ pub async fn chat_completions(
     // Strategy-level model access checks
     if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
         // Master switch: auto_config.permission Off blocks ALL models (including auto-router)
-        check_strategy_permission(strategy)?;
+        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
 
         // Check if this is the auto-router model (could be custom name)
         let is_auto_model = request.model == "localrouter/auto"
@@ -274,16 +277,19 @@ pub async fn chat_completions(
 
         // Model whitelist: only for non-auto models (auto uses prioritized_models from router)
         if !is_auto_model {
-            validate_strategy_model_access(&state, strategy, &request.model)?;
+            validate_strategy_model_access(&state, strategy, &request.model)
+                .map_err(|e| llm_guard.capture_err(e))?;
         }
     }
 
     // Validate client provider access (if using client auth)
-    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
+    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request)
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Enforce client mode: block MCP-only clients from LLM endpoints
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_llm_access_with_state(&state, client)?;
+        check_llm_access_with_state(&state, client).map_err(|e| llm_guard.capture_err(e))?;
     }
 
     // Check model firewall permission (if using client auth and not auto-routing)
@@ -307,7 +313,8 @@ pub async fn chat_completions(
                 None,
                 strategy_permission,
             )
-            .await?;
+            .await
+            .map_err(|e| llm_guard.capture_err(e))?;
 
             // Apply edited request fields from firewall edit mode
             if let Some(edits) = firewall_edits {
@@ -328,11 +335,13 @@ pub async fn chat_completions(
             429,
             None,
         );
-        return Err(e);
+        return Err(llm_guard.capture_err(e));
     }
 
     // Secret scanning: check outbound request for leaked secrets (before guardrails)
-    run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
+    run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request)
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Start guardrail scan in parallel (only if safety engine is available)
     let guardrail_handle = if client_auth.is_some()
@@ -376,7 +385,10 @@ pub async fn chat_completions(
     // Await compression result (must complete before converting to provider format)
     let compression_result = if let Some(handle) = compression_handle {
         handle.await.map_err(|e| {
-            ApiErrorResponse::internal_error(format!("Compression task failed: {}", e))
+            llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
+                "Compression task failed: {}",
+                e
+            )))
         })?
     } else {
         Ok(None)
@@ -426,15 +438,19 @@ pub async fn chat_completions(
 
     // Await RouteLLM classification result
     let routellm_result = if let Some(handle) = routellm_handle {
-        handle
-            .await
-            .map_err(|e| ApiErrorResponse::internal_error(format!("RouteLLM task failed: {}", e)))?
+        handle.await.map_err(|e| {
+            llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
+                "RouteLLM task failed: {}",
+                e
+            )))
+        })?
     } else {
         None
     };
 
     // Convert to provider format (uses possibly-compressed messages)
-    let mut provider_request = convert_to_provider_request(&request)?;
+    let mut provider_request =
+        convert_to_provider_request(&request).map_err(|e| llm_guard.capture_err(e))?;
 
     // Inject pre-computed RouteLLM routing into provider request
     if let Some(routing) = routellm_result {

@@ -10,12 +10,19 @@ use crate::types::{EventStatus, MonitorEventData, MonitorEventType};
 /// it automatically marks the event as `Error` with a descriptive message.
 /// This prevents events from staying in `Pending` state forever when
 /// early returns or errors skip the explicit completion call.
+///
+/// Call `set_early_error()` before returning an error to capture the actual
+/// HTTP status code and error message on the monitor event. If not called,
+/// the guard falls back to a generic "Request failed" message on drop.
 pub struct MonitorEventGuard {
     store: Arc<MonitorEventStore>,
     event_id: String,
     event_type: MonitorEventType,
     created_at: Instant,
     completed: bool,
+    /// Captured error context from early returns (status_code, error_message).
+    /// Set via `set_early_error()` before the guard drops.
+    early_error: Option<(u16, String)>,
 }
 
 impl MonitorEventGuard {
@@ -31,12 +38,19 @@ impl MonitorEventGuard {
             event_type,
             created_at: Instant::now(),
             completed: false,
+            early_error: None,
         }
     }
 
     /// Get the event ID.
     pub fn event_id(&self) -> &str {
         &self.event_id
+    }
+
+    /// Capture error context from an early return, so the guard's `Drop` can
+    /// record the actual HTTP status code and error message instead of a generic fallback.
+    pub fn set_early_error(&mut self, status_code: u16, error: impl Into<String>) {
+        self.early_error = Some((status_code, error.into()));
     }
 
     /// Defuse the guard, returning the event ID.
@@ -59,35 +73,34 @@ impl Drop for MonitorEventGuard {
         let duration_ms = self.created_at.elapsed().as_millis() as u64;
         let event_type_label = self.event_type.label();
 
+        // Use captured error context if available, otherwise fall back to generic message
+        let (err_status, err_msg) = self
+            .early_error
+            .take()
+            .unwrap_or_else(|| (0, format!("{} failed", event_type_label)));
+
         self.store.update(&self.event_id, |event| {
             event.status = EventStatus::Error;
             event.duration_ms = Some(duration_ms);
 
-            // Set error message in the event data based on event type
+            // Set error message (and status_code for LlmCall) based on event type
             match &mut event.data {
-                MonitorEventData::LlmCall { error, .. } => {
-                    *error = Some(format!(
-                        "{} terminated without completion",
-                        event_type_label
-                    ));
+                MonitorEventData::LlmCall {
+                    error, status_code, ..
+                } => {
+                    if err_status > 0 {
+                        *status_code = Some(err_status);
+                    }
+                    *error = Some(err_msg.clone());
                 }
                 MonitorEventData::McpToolCall { error, .. } => {
-                    *error = Some(format!(
-                        "{} terminated without completion",
-                        event_type_label
-                    ));
+                    *error = Some(err_msg.clone());
                 }
                 MonitorEventData::McpResourceRead { error, .. } => {
-                    *error = Some(format!(
-                        "{} terminated without completion",
-                        event_type_label
-                    ));
+                    *error = Some(err_msg.clone());
                 }
                 MonitorEventData::McpPromptGet { error, .. } => {
-                    *error = Some(format!(
-                        "{} terminated without completion",
-                        event_type_label
-                    ));
+                    *error = Some(err_msg.clone());
                 }
                 _ => {}
             }
@@ -158,13 +171,38 @@ mod tests {
         assert_eq!(event.status, EventStatus::Error);
         assert!(event.duration_ms.is_some());
 
-        // Check error message was set
+        // Check error message was set (generic fallback when no early_error captured)
         if let MonitorEventData::LlmCall { error, .. } = &event.data {
             assert!(error.is_some());
-            assert!(error
-                .as_ref()
-                .unwrap()
-                .contains("terminated without completion"));
+            assert!(error.as_ref().unwrap().contains("failed"));
+        } else {
+            panic!("Expected LlmCall data");
+        }
+    }
+
+    #[test]
+    fn test_guard_drop_with_early_error_captures_context() {
+        let store = make_store();
+        let event_id = push_pending_llm_call(&store);
+
+        // Create guard, set early error context, then drop
+        {
+            let mut guard =
+                MonitorEventGuard::new(store.clone(), event_id.clone(), MonitorEventType::LlmCall);
+            guard.set_early_error(404, "Model not found: gpt-5");
+        } // guard dropped here
+
+        // Event should be Error with captured context
+        let event = store.get(&event_id).unwrap();
+        assert_eq!(event.status, EventStatus::Error);
+        assert!(event.duration_ms.is_some());
+
+        if let MonitorEventData::LlmCall {
+            error, status_code, ..
+        } = &event.data
+        {
+            assert_eq!(*status_code, Some(404));
+            assert_eq!(error.as_deref(), Some("Model not found: gpt-5"));
         } else {
             panic!("Expected LlmCall data");
         }

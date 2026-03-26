@@ -44,7 +44,7 @@ pub async fn image_generations(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let llm_guard = super::monitor_helpers::emit_llm_call(
+    let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         None,
         Some(&session_id),
@@ -68,7 +68,7 @@ pub async fn image_generations(
             &e.error.error.message,
             400,
         );
-        return Err(e);
+        return Err(llm_guard.capture_err(e));
     }
 
     let started_at = Instant::now();
@@ -85,10 +85,10 @@ pub async fn image_generations(
             "Auto-routing is not supported for image generation. Use provider/model format (e.g. openai/dall-e-3)",
             400,
         );
-        return Err(ApiErrorResponse::bad_request(
+        return Err(llm_guard.capture_err(ApiErrorResponse::bad_request(
             "Auto-routing is not supported for image generation. Use provider/model format (e.g. openai/dall-e-3)",
         )
-        .with_param("model"));
+        .with_param("model")));
     }
 
     let (provider_name, model_name) = if let Some((prov, model)) = request.model.split_once('/') {
@@ -107,18 +107,17 @@ pub async fn image_generations(
                 "Model must be in provider/model format or a recognized model name",
                 400,
             );
-            return Err(ApiErrorResponse::bad_request(
+            return Err(llm_guard.capture_err(ApiErrorResponse::bad_request(
                 "Model must be in provider/model format or a recognized model name (dall-e-2, dall-e-3)",
             )
-            .with_param("model"));
+            .with_param("model")));
         }
     };
 
     // Get the provider
-    let provider = state
-        .provider_registry
-        .get_provider(&provider_name)
-        .ok_or_else(|| {
+    let provider = match state.provider_registry.get_provider(&provider_name) {
+        Some(p) => p,
+        None => {
             super::monitor_helpers::emit_validation_error(
                 &state,
                 None,
@@ -128,9 +127,12 @@ pub async fn image_generations(
                 &format!("Provider '{}' not found", provider_name),
                 400,
             );
-            ApiErrorResponse::bad_request(format!("Provider '{}' not found", provider_name))
-                .with_param("model")
-        })?;
+            return Err(llm_guard.capture_err(
+                ApiErrorResponse::bad_request(format!("Provider '{}' not found", provider_name))
+                    .with_param("model"),
+            ));
+        }
+    };
 
     // Convert server request to provider request
     let provider_request = lr_providers::ImageGenerationRequest {

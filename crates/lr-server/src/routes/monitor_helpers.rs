@@ -6,6 +6,7 @@
 //! 3. `complete_*()` updates the event with response data and sets status to Complete/Error
 
 use crate::middleware::client_auth::ClientAuthContext;
+use crate::middleware::error::ApiErrorResponse;
 use crate::state::AppState;
 use axum::Extension;
 use lr_monitor::{EventStatus, MonitorEventData, MonitorEventGuard, MonitorEventType};
@@ -73,6 +74,23 @@ impl LlmCallGuard {
     ) {
         let event_id = self.inner.defuse();
         complete_llm_call_error(state, &event_id, provider, model, status_code, error_msg);
+    }
+
+    /// Capture error context from an `ApiErrorResponse` onto the guard, then
+    /// return the error unchanged.  This lets callers write:
+    ///
+    /// ```ignore
+    /// validate_something().map_err(|e| llm_guard.capture_err(e))?;
+    /// // or
+    /// return Err(llm_guard.capture_err(ApiErrorResponse::not_found("...")));
+    /// ```
+    ///
+    /// If the guard is dropped without explicit completion, the `Drop` impl
+    /// will use this captured status code and message instead of a generic fallback.
+    pub fn capture_err(&mut self, err: ApiErrorResponse) -> ApiErrorResponse {
+        self.inner
+            .set_early_error(err.status.as_u16(), &err.error.error.message);
+        err
     }
 
     /// Extract the event ID, defusing the guard.

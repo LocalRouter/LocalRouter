@@ -953,7 +953,7 @@ pub async fn audio_speech(
 
     // Emit monitor event for traffic inspection
     let monitor_body = serde_json::json!({"model": &request.model, "endpoint": "/v1/audio/speech", "voice": &request.voice});
-    let llm_guard = super::monitor_helpers::emit_llm_call(
+    let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
@@ -966,8 +966,9 @@ pub async fn audio_speech(
     state.record_client_activity(&auth.api_key_id);
 
     if auth.api_key_id != "internal-test" {
-        let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access_with_state(&state, &client)?;
+        let client =
+            get_enabled_client(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
+        check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
     }
 
     // Validate request
@@ -981,18 +982,20 @@ pub async fn audio_speech(
             &e.error.error.message,
             400,
         );
-        return Err(e);
+        return Err(llm_guard.capture_err(e));
     }
 
     // Strategy-level model access checks
     if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy)?;
-        validate_strategy_model_access(&state, strategy, &request.model)?;
+        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
+        validate_strategy_model_access(&state, strategy, &request.model)
+            .map_err(|e| llm_guard.capture_err(e))?;
     }
 
     // Validate client provider access
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request.model)
-        .await?;
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     let request_id = format!("tts-{}", Uuid::new_v4());
     let created_at = Utc::now();

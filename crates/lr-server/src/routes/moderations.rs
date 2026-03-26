@@ -48,7 +48,7 @@ pub async fn moderations(
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();
-    let llm_guard = super::monitor_helpers::emit_llm_call(
+    let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         None,
         Some(&session_id),
@@ -63,8 +63,9 @@ pub async fn moderations(
 
     // Validate client is enabled and has LLM access
     if auth.api_key_id != "internal-test" {
-        let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access_with_state(&state, &client)?;
+        let client =
+            get_enabled_client(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
+        check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
     }
 
     // Check if moderation endpoint is enabled
@@ -76,9 +77,9 @@ pub async fn moderations(
             "Moderation API endpoint is disabled",
             503,
         );
-        return Err(ApiErrorResponse::service_unavailable(
+        return Err(llm_guard.capture_err(ApiErrorResponse::service_unavailable(
             "Moderation API endpoint is disabled. Enable it in Settings > GuardRails.",
-        ));
+        )));
     }
 
     // Get safety engine (clone the Arc to avoid holding the RwLock across await)
@@ -93,9 +94,9 @@ pub async fn moderations(
                     "No safety models configured",
                     503,
                 );
-                ApiErrorResponse::service_unavailable(
+                llm_guard.capture_err(ApiErrorResponse::service_unavailable(
                     "No safety models configured. Add safety models in Settings > GuardRails.",
-                )
+                ))
             })?
             .clone()
     };
@@ -107,9 +108,9 @@ pub async fn moderations(
             "No safety models loaded",
             503,
         );
-        return Err(ApiErrorResponse::service_unavailable(
+        return Err(llm_guard.capture_err(ApiErrorResponse::service_unavailable(
             "No safety models loaded. Add safety models in Settings > GuardRails.",
-        ));
+        )));
     }
 
     // Extract input texts
@@ -128,7 +129,9 @@ pub async fn moderations(
             "input cannot be empty",
             400,
         );
-        return Err(ApiErrorResponse::bad_request("input cannot be empty").with_param("input"));
+        return Err(llm_guard.capture_err(
+            ApiErrorResponse::bad_request("input cannot be empty").with_param("input"),
+        ));
     }
 
     // Run safety check for each input text
