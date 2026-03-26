@@ -134,8 +134,7 @@ impl OpenClawIntegration {
             }
 
             // Set default model to autorouter under agents.defaults.model.primary
-            let agents_section =
-                obj.entry("agents").or_insert_with(|| serde_json::json!({}));
+            let agents_section = obj.entry("agents").or_insert_with(|| serde_json::json!({}));
             let defaults_section = agents_section
                 .as_object_mut()
                 .ok_or("Invalid agents section")?

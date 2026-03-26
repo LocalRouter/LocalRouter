@@ -75,11 +75,7 @@ fn cleanup_old_backups(backup_dir: &Path, keep: usize) {
     let mut entries: Vec<_> = match fs::read_dir(backup_dir) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(|n| n.ends_with(".bak"))
-            })
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".bak")))
             .collect(),
         Err(_) => return,
     };

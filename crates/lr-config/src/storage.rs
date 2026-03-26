@@ -312,18 +312,15 @@ async fn cleanup_old_backups(dir: &Path) {
 /// - The secrets file does not exist
 #[cfg(not(debug_assertions))]
 fn migrate_secrets_file_to_keychain(config: &super::AppConfig) {
+    use super::{
+        McpAuthConfig, CLIENT_KEYRING_SERVICE, MCP_KEYRING_SERVICE, OAUTH_CLIENT_KEYRING_SERVICE,
+        PROVIDER_KEYRING_SERVICE,
+    };
     use lr_api_keys::keychain_trait::{KeychainStorage, SystemKeychain};
     use std::collections::HashSet;
-    use super::{
-        McpAuthConfig, CLIENT_KEYRING_SERVICE, MCP_KEYRING_SERVICE,
-        OAUTH_CLIENT_KEYRING_SERVICE, PROVIDER_KEYRING_SERVICE,
-    };
 
     // If the user explicitly wants file-based storage, don't migrate
-    if matches!(
-        std::env::var("LOCALROUTER_KEYCHAIN").as_deref(),
-        Ok("file")
-    ) {
+    if matches!(std::env::var("LOCALROUTER_KEYCHAIN").as_deref(), Ok("file")) {
         return;
     }
 
@@ -359,14 +356,13 @@ fn migrate_secrets_file_to_keychain(config: &super::AppConfig) {
         return;
     }
 
-    let secrets: std::collections::HashMap<String, String> =
-        match serde_json::from_str(&contents) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to parse secrets file: {}", e);
-                return;
-            }
-        };
+    let secrets: std::collections::HashMap<String, String> = match serde_json::from_str(&contents) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to parse secrets file: {}", e);
+            return;
+        }
+    };
 
     if secrets.is_empty() {
         cleanup_secrets_files(&secrets_path);
@@ -388,19 +384,16 @@ fn migrate_secrets_file_to_keychain(config: &super::AppConfig) {
         if let Some(ref auth_config) = server.auth_config {
             match auth_config {
                 McpAuthConfig::BearerToken { token_ref } => {
-                    referenced_keys
-                        .insert(format!("{}:{}", MCP_KEYRING_SERVICE, token_ref));
+                    referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, token_ref));
                 }
                 McpAuthConfig::CustomHeaders { header_refs } => {
                     for ref_key in header_refs.values() {
-                        referenced_keys
-                            .insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
+                        referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
                     }
                 }
                 McpAuthConfig::EnvVars { env_refs } => {
                     for ref_key in env_refs.values() {
-                        referenced_keys
-                            .insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
+                        referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
                     }
                 }
                 McpAuthConfig::OAuth {
@@ -409,10 +402,8 @@ fn migrate_secrets_file_to_keychain(config: &super::AppConfig) {
                 | McpAuthConfig::OAuthBrowser {
                     client_secret_ref, ..
                 } => {
-                    referenced_keys.insert(format!(
-                        "{}:{}",
-                        MCP_KEYRING_SERVICE, client_secret_ref
-                    ));
+                    referenced_keys
+                        .insert(format!("{}:{}", MCP_KEYRING_SERVICE, client_secret_ref));
                 }
                 McpAuthConfig::None => {}
             }
@@ -426,8 +417,10 @@ fn migrate_secrets_file_to_keychain(config: &super::AppConfig) {
 
     // OAuth clients: "LocalRouter-OAuthClients:{oauth_client_id}"
     for oauth_client in &config.oauth_clients {
-        referenced_keys
-            .insert(format!("{}:{}", OAUTH_CLIENT_KEYRING_SERVICE, oauth_client.id));
+        referenced_keys.insert(format!(
+            "{}:{}",
+            OAUTH_CLIENT_KEYRING_SERVICE, oauth_client.id
+        ));
     }
 
     // Migrate referenced secrets to system keychain

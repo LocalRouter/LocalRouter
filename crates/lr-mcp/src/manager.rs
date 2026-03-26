@@ -1331,7 +1331,13 @@ impl McpServerManager {
         }
     }
 
-    /// Wait for stdout/stderr output or process exit
+    /// Wait for stdout output or process exit to determine health.
+    ///
+    /// Stderr is drained in a background task to prevent pipe buffer deadlock
+    /// but is NOT used as a health signal — only as diagnostic context when the
+    /// process actually exits with an error code. This avoids false negatives
+    /// from MCP servers that log warnings (e.g. "connection closed: initialize
+    /// request") to stderr when they don't receive an immediate initialize request.
     async fn wait_for_output_or_exit(
         child: &mut tokio::process::Child,
         stdout: Option<tokio::process::ChildStdout>,
@@ -1340,14 +1346,37 @@ impl McpServerManager {
         use tokio::io::AsyncBufReadExt;
 
         let stdout_reader = stdout.map(tokio::io::BufReader::new);
-        let stderr_reader = stderr.map(tokio::io::BufReader::new);
 
-        // Track if we got any successful output
-        let got_output = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let got_output_clone = got_output.clone();
+        // Drain stderr in background to prevent pipe buffer deadlock.
+        // Captured output is only used for diagnostics when the process exits with failure.
+        let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let _stderr_task = if let Some(stderr) = stderr {
+            let capture = stderr_capture.clone();
+            Some(tokio::spawn(async move {
+                let mut reader = tokio::io::BufReader::new(stderr);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if let Ok(mut buf) = capture.lock() {
+                                buf.push_str(&line);
+                                if buf.len() > 4096 {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }))
+        } else {
+            None
+        };
 
         tokio::select! {
-            // Wait for stdout line
+            // Wait for stdout line (positive signal: server is producing output)
             result = async {
                 if let Some(mut reader) = stdout_reader {
                     let mut line = String::new();
@@ -1358,12 +1387,8 @@ impl McpServerManager {
             } => {
                 match result {
                     Ok(0) => {
-                        // EOF on stdout - check if we already got stderr output
-                        if got_output.load(std::sync::atomic::Ordering::Relaxed) {
-                            Ok(())
-                        } else {
-                            Err("Process closed stdout".to_string())
-                        }
+                        // EOF on stdout - process likely exiting
+                        Err("Process closed stdout without output".to_string())
                     }
                     Ok(_) => {
                         // Got output on stdout - server is running!
@@ -1373,94 +1398,34 @@ impl McpServerManager {
                 }
             }
 
-            // Wait for stderr line (could be error or progress)
-            result = async {
-                if let Some(mut reader) = stderr_reader {
-                    // Read multiple lines to catch errors that come after notices
-                    let mut all_stderr = String::new();
-                    let mut line = String::new();
-
-                    // Read up to 10 lines or until we see a definitive result
-                    for _ in 0..10 {
-                        line.clear();
-                        match tokio::time::timeout(
-                            tokio::time::Duration::from_secs(5),
-                            reader.read_line(&mut line),
-                        ).await {
-                            Ok(Ok(0)) => break, // EOF
-                            Ok(Ok(_)) => {
-                                all_stderr.push_str(&line);
-                                // Check if this line indicates an error
-                                let lower = line.to_lowercase();
-                                if lower.contains("error")
-                                    || lower.contains("fatal")
-                                    || lower.contains("failed")
-                                    || lower.contains("not found")
-                                    || lower.contains("e404")
-                                    || lower.contains("404") {
-                                    return Err(all_stderr);
-                                }
-                                // Check if this line indicates success (server starting)
-                                if line.starts_with('{')
-                                    || lower.contains("listening")
-                                    || lower.contains("started")
-                                    || lower.contains("starting")
-                                    || lower.contains("server")
-                                    || lower.contains("ready") {
-                                    got_output_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-                                    return Ok(all_stderr);
-                                }
-                            }
-                            Ok(Err(e)) => return Err(format!("Read error: {}", e)),
-                            Err(_) => break, // Timeout waiting for more lines
-                        }
-                    }
-                    // Got some output without explicit error - likely success
-                    if !all_stderr.is_empty() {
-                        got_output_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Ok(all_stderr)
-                } else {
-                    std::future::pending::<Result<String, String>>().await
-                }
-            } => {
-                match result {
-                    Ok(_) => {
-                        // Got stderr output that didn't look like an error
-                        Ok(())
-                    }
-                    Err(stderr_output) => {
-                        // Got stderr with error indication
-                        let first_error_line = stderr_output
-                            .lines()
-                            .find(|l| {
-                                let lower = l.to_lowercase();
-                                lower.contains("error")
-                                    || lower.contains("fatal")
-                                    || lower.contains("failed")
-                                    || lower.contains("not found")
-                            })
-                            .unwrap_or(&stderr_output);
-
-                        let truncated = if first_error_line.len() > 100 {
-                            format!("{}...", &first_error_line[..100])
-                        } else {
-                            first_error_line.to_string()
-                        };
-                        Err(truncated)
-                    }
-                }
-            }
-
             // Wait for process exit
             result = child.wait() => {
                 match result {
+                    Ok(status) if status.success() => {
+                        // Exited successfully (unusual for MCP servers)
+                        Ok(())
+                    }
                     Ok(status) => {
-                        if status.success() {
-                            // Exited successfully (unusual for MCP servers)
-                            Ok(())
-                        } else {
+                        // Process exited with error - use captured stderr for context
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                        let captured = stderr_capture.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        if captured.is_empty() {
                             Err(format!("Exited with code: {}", status))
+                        } else {
+                            let first_error = captured.lines()
+                                .find(|l| {
+                                    let lower = l.to_lowercase();
+                                    lower.contains("error") || lower.contains("fatal")
+                                        || lower.contains("failed") || lower.contains("not found")
+                                })
+                                .or_else(|| captured.lines().next())
+                                .unwrap_or("");
+                            let truncated = if first_error.len() > 100 {
+                                format!("{}...", &first_error[..100])
+                            } else {
+                                first_error.to_string()
+                            };
+                            Err(truncated)
                         }
                     }
                     Err(e) => Err(format!("Failed to wait for process: {}", e)),
