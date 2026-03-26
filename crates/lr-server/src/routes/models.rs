@@ -57,8 +57,15 @@ pub async fn list_models<B>(
     let mut auto_model: Option<ModelData> = None;
     if let Some(auto_config) = &strategy.auto_config {
         if auto_config.permission.is_enabled() && !auto_config.prioritized_models.is_empty() {
+            // Strip "localrouter/" prefix from id to be consistent with other models
+            // (e.g., "gpt-4o" not "openai/gpt-4o"). The provider field carries the provider.
+            let bare_id = auto_config
+                .model_name
+                .strip_prefix("localrouter/")
+                .unwrap_or(&auto_config.model_name)
+                .to_string();
             auto_model = Some(ModelData {
-                id: auto_config.model_name.clone(),
+                id: bare_id,
                 object: "model".to_string(),
                 owned_by: "localrouter".to_string(),
                 created: Some(0),
@@ -162,10 +169,17 @@ pub async fn get_model<B>(
     check_llm_access_with_state(&state, &client)?;
 
     // Special handling for auto router virtual model
+    // Match both bare name ("auto") and full name ("localrouter/auto")
     if let Some(auto_config) = &strategy.auto_config {
-        if !auto_config.prioritized_models.is_empty() && model_id == auto_config.model_name {
+        let bare_name = auto_config
+            .model_name
+            .strip_prefix("localrouter/")
+            .unwrap_or(&auto_config.model_name);
+        if !auto_config.prioritized_models.is_empty()
+            && (model_id == bare_name || model_id == auto_config.model_name)
+        {
             return Ok(Json(ModelData {
-                id: auto_config.model_name.clone(),
+                id: bare_name.to_string(),
                 object: "model".to_string(),
                 owned_by: "localrouter".to_string(),
                 created: Some(0),

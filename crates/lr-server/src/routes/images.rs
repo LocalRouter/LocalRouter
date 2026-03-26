@@ -75,7 +75,7 @@ pub async fn image_generations(
 
     // Parse model to get provider (format: provider/model or just model)
     // Auto-routing is not supported for image generation
-    if request.model == "localrouter/auto" {
+    if request.model == "localrouter/auto" || request.model == "auto" {
         super::monitor_helpers::emit_validation_error(
             &state,
             None,

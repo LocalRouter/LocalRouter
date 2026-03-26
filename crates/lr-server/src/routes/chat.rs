@@ -95,6 +95,19 @@ pub async fn chat_completions(
         return Err(e);
     }
 
+    // Normalize bare auto model names to the full "localrouter/" prefixed form.
+    // The models list API returns bare IDs (e.g., "auto") consistent with other models,
+    // but the server internally uses the full form (e.g., "localrouter/auto").
+    if !request.model.contains('/') {
+        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+            if let Some(ref ac) = strategy.auto_config {
+                if ac.model_name.strip_prefix("localrouter/") == Some(request.model.as_str()) {
+                    request.model = ac.model_name.clone();
+                }
+            }
+        }
+    }
+
     // Auto-routing firewall check — only for explicit localrouter/auto requests
     if request.model == "localrouter/auto" {
         if let Ok((client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
