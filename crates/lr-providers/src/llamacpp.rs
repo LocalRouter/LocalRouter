@@ -395,9 +395,10 @@ impl ModelProvider for LlamaCppProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "llama.cpp streaming API error: {}",
-                status
+                "llama.cpp streaming API error {}: {}",
+                status, error_text
             )));
         }
 

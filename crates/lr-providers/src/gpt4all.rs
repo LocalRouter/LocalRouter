@@ -389,9 +389,10 @@ impl ModelProvider for GPT4AllProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "GPT4All streaming API error: {}",
-                status
+                "GPT4All streaming API error {}: {}",
+                status, error_text
             )));
         }
 

@@ -314,9 +314,10 @@ impl ModelProvider for CerebrasProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "Cerebras streaming API error: {}",
-                status
+                "Cerebras streaming API error {}: {}",
+                status, error_text
             )));
         }
 

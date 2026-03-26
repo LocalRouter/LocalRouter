@@ -595,9 +595,10 @@ impl ModelProvider for GeminiProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "Gemini streaming API error: {}",
-                status
+                "Gemini streaming API error {}: {}",
+                status, error_text
             )));
         }
 

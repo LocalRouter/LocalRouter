@@ -389,9 +389,10 @@ impl ModelProvider for JanProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "Jan streaming API error: {}",
-                status
+                "Jan streaming API error {}: {}",
+                status, error_text
             )));
         }
 

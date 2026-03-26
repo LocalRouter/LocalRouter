@@ -379,9 +379,10 @@ impl ModelProvider for TogetherAIProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "Together AI streaming API error: {}",
-                status
+                "Together AI streaming API error {}: {}",
+                status, error_text
             )));
         }
 

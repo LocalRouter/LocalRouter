@@ -312,9 +312,10 @@ impl ModelProvider for XAIProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "xAI streaming API error: {}",
-                status
+                "xAI streaming API error {}: {}",
+                status, error_text
             )));
         }
 
