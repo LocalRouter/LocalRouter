@@ -767,12 +767,8 @@ impl ModelInfo {
                 self.context_window = catalog_model.context_length;
             }
 
-            // Add vision capability if multimodal
-            if catalog_model.modality == catalog::Modality::Multimodal
-                && !self.capabilities.contains(&Capability::Vision)
-            {
-                self.capabilities.push(Capability::Vision);
-            }
+            // Add capabilities from catalog data
+            Self::enrich_capabilities_from_catalog(&mut self.capabilities, catalog_model);
         } else {
             tracing::debug!(
                 "Model '{}' not found in catalog (provider: {})",
@@ -812,12 +808,8 @@ impl ModelInfo {
                 self.context_window = catalog_model.context_length;
             }
 
-            // Add vision capability if multimodal
-            if catalog_model.modality == catalog::Modality::Multimodal
-                && !self.capabilities.contains(&Capability::Vision)
-            {
-                self.capabilities.push(Capability::Vision);
-            }
+            // Add capabilities from catalog data
+            Self::enrich_capabilities_from_catalog(&mut self.capabilities, catalog_model);
         } else {
             tracing::debug!(
                 "Model '{}' not found in catalog (provider-agnostic search)",
@@ -826,6 +818,36 @@ impl ModelInfo {
         }
 
         self
+    }
+
+    /// Add capabilities derived from catalog model data (vision, embedding, audio, TTS)
+    fn enrich_capabilities_from_catalog(
+        capabilities: &mut Vec<Capability>,
+        catalog_model: &lr_catalog::CatalogModel,
+    ) {
+        use lr_catalog as catalog;
+
+        if catalog_model.modality == catalog::Modality::Multimodal
+            && !capabilities.contains(&Capability::Vision)
+        {
+            capabilities.push(Capability::Vision);
+        }
+        if catalog_model.capabilities.embedding && !capabilities.contains(&Capability::Embedding) {
+            capabilities.push(Capability::Embedding);
+        }
+        if catalog_model.capabilities.audio_input && !capabilities.contains(&Capability::Audio) {
+            capabilities.push(Capability::Audio);
+        }
+        if catalog_model.capabilities.audio_output
+            && !capabilities.contains(&Capability::TextToSpeech)
+        {
+            capabilities.push(Capability::TextToSpeech);
+        }
+        if catalog_model.capabilities.tool_call
+            && !capabilities.contains(&Capability::FunctionCalling)
+        {
+            capabilities.push(Capability::FunctionCalling);
+        }
     }
 }
 
@@ -843,6 +865,55 @@ pub enum Capability {
 
 /// Core capability categories (for backward compatibility)
 pub type CoreCapability = Capability;
+
+/// API endpoint types for capability-based model filtering during auto-routing.
+///
+/// Used to check whether a model is compatible with a given endpoint before
+/// attempting the request. Models with empty capabilities are treated as
+/// "unknown" and compatible with all endpoint types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EndpointType {
+    Chat,
+    Embedding,
+    Transcription,
+    Translation,
+    Speech,
+    ImageGeneration,
+}
+
+impl EndpointType {
+    /// Check if a model's capabilities indicate support for this endpoint.
+    /// Returns true if compatible OR if capabilities are unknown (empty).
+    pub fn is_compatible_with(&self, capabilities: &[Capability]) -> bool {
+        if capabilities.is_empty() {
+            return true; // Unknown capabilities — try everything
+        }
+        match self {
+            EndpointType::Chat => {
+                capabilities.contains(&Capability::Chat)
+                    || capabilities.contains(&Capability::Completion)
+            }
+            EndpointType::Embedding => capabilities.contains(&Capability::Embedding),
+            EndpointType::Transcription | EndpointType::Translation => {
+                capabilities.contains(&Capability::Audio)
+            }
+            EndpointType::Speech => capabilities.contains(&Capability::TextToSpeech),
+            EndpointType::ImageGeneration => false, // TODO: add ImageGeneration capability
+        }
+    }
+
+    /// Check provider-level support for this endpoint type
+    pub fn is_supported_by_provider(&self, provider: &dyn ModelProvider) -> bool {
+        match self {
+            EndpointType::Chat => true, // All providers support chat
+            EndpointType::Embedding => provider.supports_embeddings(),
+            EndpointType::Transcription => provider.supports_transcription(),
+            EndpointType::Translation => provider.supports_audio_translation(),
+            EndpointType::Speech => provider.supports_speech(),
+            EndpointType::ImageGeneration => provider.supports_image_generation(),
+        }
+    }
+}
 
 /// Advanced feature capability with metadata
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

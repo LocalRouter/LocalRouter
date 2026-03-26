@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 
 use super::factory::{ProviderFactory, SetupParameter};
 use super::health::HealthCheckManager;
-use super::{ModelInfo, ModelProvider, ProviderHealth};
+use super::{Capability, ModelInfo, ModelProvider, ProviderHealth};
 use lr_config::{FreeTierKind, ModelCacheConfig};
 use lr_types::{AppError, AppResult};
 
@@ -645,12 +645,26 @@ impl ProviderRegistry {
             .iter()
             .filter(|m| m.id.starts_with(&format!("{}/", provider_type)))
             .map(|m| {
-                let capabilities = match m.modality {
-                    lr_catalog::Modality::Multimodal => {
-                        vec![crate::Capability::Chat, crate::Capability::Vision]
+                let mut capabilities = Vec::new();
+                if m.capabilities.embedding {
+                    capabilities.push(crate::Capability::Embedding);
+                } else if m.modality == lr_catalog::Modality::Image
+                    || m.capabilities.image_output
+                {
+                    // Image generation model — don't add Chat
+                } else {
+                    // Chat model (or unknown)
+                    capabilities.push(crate::Capability::Chat);
+                    if m.modality == lr_catalog::Modality::Multimodal {
+                        capabilities.push(crate::Capability::Vision);
                     }
-                    _ => vec![crate::Capability::Chat],
-                };
+                }
+                if m.capabilities.audio_input {
+                    capabilities.push(crate::Capability::Audio);
+                }
+                if m.capabilities.audio_output {
+                    capabilities.push(crate::Capability::TextToSpeech);
+                }
 
                 ModelInfo {
                     id: m.id.split('/').next_back().unwrap_or(m.id).to_string(),
@@ -862,6 +876,22 @@ impl ProviderRegistry {
         all_models
     }
 
+    /// Check if a cached model has a specific capability (no I/O).
+    ///
+    /// Returns `None` if the provider or model is not in the cache
+    /// (e.g., cache not yet populated after startup).
+    pub fn model_has_capability(
+        &self,
+        instance_name: &str,
+        model_id: &str,
+        capability: &Capability,
+    ) -> Option<bool> {
+        let cache = self.model_cache.read();
+        let cached = cache.get(instance_name)?;
+        let model = cached.models.iter().find(|m| m.id == model_id)?;
+        Some(model.capabilities.contains(capability))
+    }
+
     /// Get the list of enabled provider instance names
     pub fn get_enabled_instance_names(&self) -> Vec<String> {
         self.instances
@@ -878,6 +908,49 @@ impl ProviderRegistry {
             .read()
             .get(instance_name)
             .map(|i| i.provider_type.clone())
+    }
+
+    /// Look up a model's capabilities from cached model list, falling back to catalog.
+    /// Returns None if model not found anywhere (treat as unknown = try everything).
+    pub fn get_model_capabilities(
+        &self,
+        instance_name: &str,
+        model_id: &str,
+    ) -> Option<Vec<crate::Capability>> {
+        // Try cached model list first
+        let cache = self.model_cache.read();
+        if let Some(mc) = cache.get(instance_name) {
+            if let Some(model) = mc.models.iter().find(|m| m.id == model_id) {
+                return Some(model.capabilities.clone());
+            }
+        }
+        drop(cache);
+
+        // Fall back to catalog
+        let provider_type = self.get_provider_type_for_instance(instance_name)?;
+        let catalog_model = lr_catalog::find_model(&provider_type, model_id)
+            .or_else(|| lr_catalog::find_model_by_name(model_id))?;
+
+        let mut caps = Vec::new();
+        if catalog_model.capabilities.embedding {
+            caps.push(crate::Capability::Embedding);
+        } else if catalog_model.modality == lr_catalog::Modality::Image
+            || catalog_model.capabilities.image_output
+        {
+            // Image generation model — don't add Chat
+        } else {
+            caps.push(crate::Capability::Chat);
+            if catalog_model.modality == lr_catalog::Modality::Multimodal {
+                caps.push(crate::Capability::Vision);
+            }
+        }
+        if catalog_model.capabilities.audio_input {
+            caps.push(crate::Capability::Audio);
+        }
+        if catalog_model.capabilities.audio_output {
+            caps.push(crate::Capability::TextToSpeech);
+        }
+        Some(caps)
     }
 
     /// Check if any enabled provider's cache is expired or missing

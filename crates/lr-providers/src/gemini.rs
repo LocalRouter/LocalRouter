@@ -283,14 +283,28 @@ impl ModelProvider for GeminiProvider {
             .models
             .into_iter()
             .filter(|model| {
-                // Only include models that support generateContent
+                // Include models that support generateContent or embedContent
                 model
                     .supported_generation_methods
                     .contains(&"generateContent".to_string())
+                    || model
+                        .supported_generation_methods
+                        .contains(&"embedContent".to_string())
             })
             .map(|model| {
-                // Extract capabilities
-                let mut capabilities = vec![Capability::Chat, Capability::Completion];
+                let is_embedding = model
+                    .supported_generation_methods
+                    .contains(&"embedContent".to_string());
+                let is_generative = model
+                    .supported_generation_methods
+                    .contains(&"generateContent".to_string());
+
+                // Extract capabilities based on supported generation methods
+                let mut capabilities = if is_embedding && !is_generative {
+                    vec![Capability::Embedding]
+                } else {
+                    vec![Capability::Chat, Capability::Completion, Capability::FunctionCalling]
+                };
 
                 if model.name.contains("vision") {
                     capabilities.push(Capability::Vision);
@@ -305,7 +319,7 @@ impl ModelProvider for GeminiProvider {
                     provider: "gemini".to_string(),
                     parameter_count: None, // Gemini doesn't expose parameter counts
                     context_window,
-                    supports_streaming: true,
+                    supports_streaming: is_generative,
                     capabilities,
                     detailed_capabilities: None,
                 }

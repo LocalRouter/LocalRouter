@@ -12,15 +12,17 @@ use lr_config::{ConfigManager, FreeTierFallback, FreeTierKind};
 use lr_providers::registry::ProviderRegistry;
 use lr_providers::{
     AudioTranscriptionRequest, AudioTranscriptionResponse, AudioTranslationRequest,
-    AudioTranslationResponse, CompletionChunk, CompletionRequest, CompletionResponse,
+    AudioTranslationResponse, Capability, CompletionChunk, CompletionRequest, CompletionResponse,
     EmbeddingRequest, EmbeddingResponse, SpeechRequest, SpeechResponse,
 };
 use lr_types::{AppError, AppResult};
 
+pub mod endpoint_cache;
 pub mod free_tier;
 pub mod rate_limit;
 
 // Re-export commonly used types
+pub use endpoint_cache::EndpointCapabilityCache;
 pub use free_tier::FreeTierManager;
 pub use rate_limit::{RateLimiterManager, UsageInfo};
 
@@ -47,6 +49,12 @@ pub enum RouterError {
     },
     /// Provider unreachable - should retry with different model
     Unreachable { provider: String, model: String },
+    /// Endpoint not supported by this model/provider - should retry with different model
+    EndpointNotSupported {
+        provider: String,
+        model: String,
+        endpoint: String,
+    },
     /// Other error - should not retry
     Other {
         provider: String,
@@ -64,6 +72,7 @@ impl RouterError {
                 | RouterError::Unreachable { .. }
                 | RouterError::ContextLengthExceeded { .. }
                 | RouterError::PolicyViolation { .. }
+                | RouterError::EndpointNotSupported { .. }
         )
     }
 
@@ -101,6 +110,20 @@ impl RouterError {
                     model: model.to_string(),
                 }
             }
+            // Match our own trait default error messages from lr-providers (lines 192-299)
+            AppError::Provider(msg)
+                if msg.contains("does not support embeddings")
+                    || msg.contains("does not support image generation")
+                    || msg.contains("does not support audio transcription")
+                    || msg.contains("does not support audio translation")
+                    || msg.contains("does not support text-to-speech") =>
+            {
+                RouterError::EndpointNotSupported {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    endpoint: msg.clone(),
+                }
+            }
             AppError::Io(_) => RouterError::Unreachable {
                 provider: provider.to_string(),
                 model: model.to_string(),
@@ -110,6 +133,18 @@ impl RouterError {
                 model: model.to_string(),
                 error: error.to_string(),
             },
+        }
+    }
+
+    /// Short outcome string for monitor events
+    pub fn outcome_str(&self) -> &'static str {
+        match self {
+            RouterError::RateLimited { .. } => "rate_limited",
+            RouterError::PolicyViolation { .. } => "policy_violation",
+            RouterError::ContextLengthExceeded { .. } => "context_length",
+            RouterError::Unreachable { .. } => "unreachable",
+            RouterError::EndpointNotSupported { .. } => "endpoint_not_supported",
+            RouterError::Other { .. } => "error",
         }
     }
 
@@ -145,6 +180,16 @@ impl RouterError {
             }
             RouterError::Unreachable { provider, model } => {
                 format!("UNREACHABLE: {}/{}", provider, model)
+            }
+            RouterError::EndpointNotSupported {
+                provider,
+                model,
+                endpoint,
+            } => {
+                format!(
+                    "ENDPOINT_NOT_SUPPORTED: {}/{} - {}",
+                    provider, model, endpoint
+                )
             }
             RouterError::Other {
                 provider,
@@ -311,6 +356,34 @@ pub struct Router {
     routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
     free_tier_manager: Arc<FreeTierManager>,
     health_cache: Option<Arc<lr_providers::health_cache::HealthCacheManager>>,
+    endpoint_cache: Arc<EndpointCapabilityCache>,
+}
+
+/// Build routing metadata JSON for monitor events.
+fn build_routing_metadata(
+    routellm_win_rate: &Option<f32>,
+    candidate_models: &[String],
+    attempts: Vec<serde_json::Value>,
+    successful_idx: Option<usize>,
+) -> serde_json::Value {
+    let total = attempts.len();
+    let mut info = serde_json::json!({
+        "candidate_models": candidate_models,
+        "attempts": attempts,
+        "total_attempts": total,
+    });
+    if let Some(idx) = successful_idx {
+        info["successful_attempt"] = serde_json::json!(idx);
+    }
+    if let Some(wr) = routellm_win_rate {
+        info["routellm_win_rate"] = serde_json::json!(*wr as f64);
+        info["routellm_tier"] = if *wr >= 0.5 {
+            serde_json::json!("strong")
+        } else {
+            serde_json::json!("weak")
+        };
+    }
+    info
 }
 
 impl Router {
@@ -330,6 +403,9 @@ impl Router {
             routellm_service: None,
             free_tier_manager: Arc::new(FreeTierManager::new(None)),
             health_cache: None,
+            endpoint_cache: Arc::new(EndpointCapabilityCache::new(
+                std::time::Duration::from_secs(3600),
+            )),
         }
     }
 
@@ -349,6 +425,9 @@ impl Router {
             routellm_service: None,
             free_tier_manager,
             health_cache: None,
+            endpoint_cache: Arc::new(EndpointCapabilityCache::new(
+                std::time::Duration::from_secs(3600),
+            )),
         }
     }
 
@@ -378,6 +457,60 @@ impl Router {
     /// Get the free tier manager
     pub fn free_tier_manager(&self) -> &Arc<FreeTierManager> {
         &self.free_tier_manager
+    }
+
+    /// Check if a model should be skipped for a given endpoint type.
+    ///
+    /// Uses three layers of filtering:
+    /// 1. Negative capability cache (cached previous failures)
+    /// 2. Provider-level support flags (supports_embeddings, etc.)
+    /// 3. Model capability lookup (registry cache → catalog fallback)
+    ///
+    /// Returns true if the model should be skipped (incompatible).
+    fn should_skip_for_endpoint(
+        &self,
+        provider: &str,
+        model: &str,
+        endpoint_type: lr_providers::EndpointType,
+    ) -> bool {
+        // Layer 1: Negative cache (cached previous runtime failures)
+        if self
+            .endpoint_cache
+            .is_known_unsupported(provider, model, endpoint_type)
+        {
+            debug!(
+                "Skipping {}/{} for {:?}: cached as unsupported",
+                provider, model, endpoint_type
+            );
+            return true;
+        }
+
+        // Layer 2: Provider-level support
+        if let Some(provider_instance) = self.provider_registry.get_provider(provider) {
+            if !endpoint_type.is_supported_by_provider(provider_instance.as_ref()) {
+                debug!(
+                    "Skipping {}/{} for {:?}: provider does not support endpoint",
+                    provider, model, endpoint_type
+                );
+                self.endpoint_cache
+                    .record_unsupported(provider, model, endpoint_type);
+                return true;
+            }
+        }
+
+        // Layer 3: Model capability lookup (registry cache → catalog → None)
+        if let Some(capabilities) = self.provider_registry.get_model_capabilities(provider, model) {
+            if !endpoint_type.is_compatible_with(&capabilities) {
+                debug!(
+                    "Skipping {}/{} for {:?}: model capabilities {:?} incompatible",
+                    provider, model, endpoint_type, capabilities
+                );
+                return true; // Known incompatible; don't cache since capabilities may refresh
+            }
+        }
+
+        // Model not found or capabilities unknown → try it
+        false
     }
 
     /// Get the effective free tier config for a provider instance.
@@ -444,8 +577,10 @@ impl Router {
         strategy.free_tier_only = false;
 
         if request.model == "localrouter/auto" {
-            self.complete_with_auto_routing(client_id, &strategy, request)
-                .await
+            let (response, _metadata) = self
+                .complete_with_auto_routing(client_id, &strategy, request)
+                .await?;
+            Ok(response)
         } else {
             let (provider, model) = Self::parse_model_string(&request.model);
             let (final_provider, final_model) = if provider.is_empty() {
@@ -948,13 +1083,14 @@ impl Router {
     }
 
     /// Complete with auto-routing (localrouter/auto virtual model)
-    /// Tries models in prioritized order with intelligent fallback
+    /// Tries models in prioritized order with intelligent fallback.
+    /// Returns (response, optional routing metadata as JSON).
     async fn complete_with_auto_routing(
         &self,
         client_id: &str,
         strategy: &lr_config::Strategy,
         request: CompletionRequest,
-    ) -> AppResult<CompletionResponse> {
+    ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
         let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
             AppError::Router("localrouter/auto not configured for this strategy".into())
         })?;
@@ -990,6 +1126,9 @@ impl Router {
 
         let mut last_error = None;
         let mut min_retry_after: u64 = u64::MAX;
+        let candidate_models: Vec<String> = selected_models.iter().map(|(p, m)| format!("{}/{}", p, m)).collect();
+        let mut attempts: Vec<serde_json::Value> = Vec::new();
+        let request_has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
             debug!(
@@ -1000,6 +1139,41 @@ impl Router {
                 model
             );
 
+            // Check endpoint compatibility (skip models that don't support chat)
+            if self.should_skip_for_endpoint(
+                provider,
+                model,
+                lr_providers::EndpointType::Chat,
+            ) {
+                continue;
+            }
+
+            // Skip models that don't support tool/function calling when request has tools
+            if request_has_tools {
+                match self.provider_registry.model_has_capability(
+                    provider,
+                    model,
+                    &Capability::FunctionCalling,
+                ) {
+                    Some(false) => {
+                        debug!(
+                            "Skipping {}/{}: no function calling support (request has tools)",
+                            provider, model
+                        );
+                        attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "no_tool_support"}));
+                        continue;
+                    }
+                    Some(true) => {}
+                    None => {
+                        // Not in cache yet (e.g., first request after startup) — be permissive
+                        debug!(
+                            "Capability unknown for {}/{} (not in cache), allowing",
+                            provider, model
+                        );
+                    }
+                }
+            }
+
             // Check backoff state (skip providers with recent 429/402)
             if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
@@ -1009,6 +1183,7 @@ impl Router {
                     model: model.clone(),
                     retry_after_secs: backoff.retry_after_secs,
                 });
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "backoff", "error": &backoff.reason}));
                 continue;
             }
 
@@ -1024,6 +1199,7 @@ impl Router {
                     | free_tier::ModelFreeStatus::FreeModel => { /* allow */ }
                     free_tier::ModelFreeStatus::NotFree => {
                         debug!("Skipping {}/{} in free-tier-only mode", provider, model);
+                        attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "not_free"}));
                         continue;
                     }
                 }
@@ -1039,6 +1215,7 @@ impl Router {
                         model: model.clone(),
                         retry_after_secs: retry_secs,
                     });
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "cost_backoff", "error": format!("Cost backoff ({}s)", retry_secs)}));
                     continue;
                 }
             }
@@ -1054,9 +1231,11 @@ impl Router {
                     model: model.clone(),
                     retry_after_secs: 60,
                 });
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "rate_limited", "error": e.to_string()}));
                 continue;
             }
 
+            let attempt_start = std::time::Instant::now();
             match self
                 .execute_request(
                     client_id,
@@ -1068,20 +1247,32 @@ impl Router {
                 .await
             {
                 Ok(mut response) => {
+                    let attempt_ms = attempt_start.elapsed().as_millis() as u64;
                     info!("Auto-routing succeeded with {}/{}", provider, model);
                     self.free_tier_manager.clear_backoff(provider, model);
-                    // Attach RouteLLM win rate to response for logging
                     if let Some(win_rate) = routellm_win_rate {
                         response.routellm_win_rate = Some(win_rate);
                     }
-                    return Ok(response);
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success", "duration_ms": attempt_ms}));
+                    let routing_meta = build_routing_metadata(&routellm_win_rate, &candidate_models, attempts, Some(idx));
+                    return Ok((response, Some(routing_meta)));
                 }
                 Err(e) => {
+                    let attempt_ms = attempt_start.elapsed().as_millis() as u64;
                     let router_error = RouterError::classify(&e, provider, model);
                     warn!(
                         "Auto-routing attempt failed: {}",
                         router_error.to_log_string()
                     );
+
+                    // Cache endpoint incompatibility for future requests
+                    if matches!(router_error, RouterError::EndpointNotSupported { .. }) {
+                        self.endpoint_cache.record_unsupported(
+                            provider,
+                            model,
+                            lr_providers::EndpointType::Chat,
+                        );
+                    }
 
                     // Record backoff for rate-limited errors
                     if router_error.should_retry() {
@@ -1100,6 +1291,7 @@ impl Router {
                         }
                     }
 
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": router_error.outcome_str(), "error": router_error.to_log_string(), "duration_ms": attempt_ms}));
                     last_error = Some(router_error.clone());
 
                     // Continue to next model on retryable errors
@@ -1177,6 +1369,7 @@ impl Router {
         );
 
         let mut last_error = None;
+        let request_has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
             debug!(
@@ -1186,6 +1379,39 @@ impl Router {
                 provider,
                 model
             );
+
+            // Check endpoint compatibility (skip models that don't support chat)
+            if self.should_skip_for_endpoint(
+                provider,
+                model,
+                lr_providers::EndpointType::Chat,
+            ) {
+                continue;
+            }
+
+            // Skip models that don't support tool/function calling when request has tools
+            if request_has_tools {
+                match self.provider_registry.model_has_capability(
+                    provider,
+                    model,
+                    &Capability::FunctionCalling,
+                ) {
+                    Some(false) => {
+                        debug!(
+                            "Skipping {}/{}: no function calling support (request has tools)",
+                            provider, model
+                        );
+                        continue;
+                    }
+                    Some(true) => {}
+                    None => {
+                        debug!(
+                            "Capability unknown for {}/{} (not in cache), allowing",
+                            provider, model
+                        );
+                    }
+                }
+            }
 
             // Check backoff state (skip providers with recent 429/402)
             if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
@@ -1295,6 +1521,15 @@ impl Router {
                     // Mark provider unhealthy for infrastructure errors
                     if matches!(router_error, RouterError::Unreachable { .. }) {
                         self.report_provider_failure(provider, &e.to_string());
+                    }
+
+                    // Cache endpoint incompatibility for future requests
+                    if matches!(router_error, RouterError::EndpointNotSupported { .. }) {
+                        self.endpoint_cache.record_unsupported(
+                            provider,
+                            model,
+                            lr_providers::EndpointType::Chat,
+                        );
                     }
 
                     // Record backoff for rate-limited errors
@@ -1523,9 +1758,10 @@ impl Router {
         // 3. Route based on requested model
         if request.model == "localrouter/auto" {
             debug!("Using auto-routing for client '{}'", client_id);
-            return self
+            let (response, _metadata) = self
                 .complete_with_auto_routing(client_id, &strategy, request)
-                .await;
+                .await?;
+            return Ok(response);
         }
 
         // 4. For specific model requests, check strategy rate limits
@@ -1865,6 +2101,15 @@ impl Router {
                 model
             );
 
+            // Check endpoint compatibility (skip models that don't support embeddings)
+            if self.should_skip_for_endpoint(
+                provider,
+                model,
+                lr_providers::EndpointType::Embedding,
+            ) {
+                continue;
+            }
+
             // Check backoff state (skip providers with recent 429/402)
             if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
@@ -1927,6 +2172,15 @@ impl Router {
                         "Auto-routing embeddings attempt failed: {}",
                         router_error.to_log_string()
                     );
+
+                    // Cache endpoint incompatibility for future requests
+                    if matches!(router_error, RouterError::EndpointNotSupported { .. }) {
+                        self.endpoint_cache.record_unsupported(
+                            provider,
+                            model,
+                            lr_providers::EndpointType::Embedding,
+                        );
+                    }
 
                     last_error = Some(router_error.clone());
 
