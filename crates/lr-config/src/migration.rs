@@ -845,7 +845,7 @@ fn migrate_to_v26(mut config: AppConfig) -> AppResult<AppConfig> {
             for key in &all_model_keys {
                 // Parse provider from key ("provider__model_id")
                 let provider_name = key.split("__").next().unwrap_or("");
-                let model_id = key.splitn(2, "__").nth(1).unwrap_or("");
+                let model_id = key.split_once("__").map(|x| x.1).unwrap_or("");
 
                 let strat_perm = strategy_models.get(key).cloned().unwrap_or(
                     strategy_providers
