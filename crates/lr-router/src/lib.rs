@@ -362,6 +362,7 @@ pub struct Router {
 /// Build routing metadata JSON for monitor events.
 fn build_routing_metadata(
     routellm_win_rate: &Option<f32>,
+    routellm_tier: Option<&str>,
     candidate_models: &[String],
     attempts: Vec<serde_json::Value>,
     successful_idx: Option<usize>,
@@ -377,11 +378,9 @@ fn build_routing_metadata(
     }
     if let Some(wr) = routellm_win_rate {
         info["routellm_win_rate"] = serde_json::json!(*wr as f64);
-        info["routellm_tier"] = if *wr >= 0.5 {
-            serde_json::json!("strong")
-        } else {
-            serde_json::json!("weak")
-        };
+    }
+    if let Some(tier) = routellm_tier {
+        info["routellm_tier"] = serde_json::json!(tier);
     }
     info
 }
@@ -1110,6 +1109,9 @@ impl Router {
         let (selected_models, routellm_win_rate) = self
             .select_models_for_auto_routing(auto_config, &request, "")
             .await;
+        let routellm_tier = request.pre_computed_routing.as_ref().map(|r| {
+            if r.is_strong { "strong" } else { "weak" }
+        });
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -1253,7 +1255,7 @@ impl Router {
                         response.routellm_win_rate = Some(win_rate);
                     }
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success", "duration_ms": attempt_ms}));
-                    let routing_meta = build_routing_metadata(&routellm_win_rate, &candidate_models, attempts, Some(idx));
+                    let routing_meta = build_routing_metadata(&routellm_win_rate, routellm_tier, &candidate_models, attempts, Some(idx));
                     return Ok((response, Some(routing_meta)));
                 }
                 Err(e) => {
@@ -1354,6 +1356,9 @@ impl Router {
         let (selected_models, _routellm_win_rate) = self
             .select_models_for_auto_routing(auto_config, &request, "streaming")
             .await;
+        let routellm_tier = request.pre_computed_routing.as_ref().map(|r| {
+            if r.is_strong { "strong" } else { "weak" }
+        });
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -1497,7 +1502,7 @@ impl Router {
                     );
                     self.free_tier_manager.clear_backoff(provider, model);
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success"}));
-                    let routing_meta = build_routing_metadata(&_routellm_win_rate, &candidate_models, attempts, Some(idx));
+                    let routing_meta = build_routing_metadata(&_routellm_win_rate, routellm_tier, &candidate_models, attempts, Some(idx));
                     let resolved_model = format!("{}/{}", provider, model);
                     let pricing = provider_instance
                         .get_pricing(model)

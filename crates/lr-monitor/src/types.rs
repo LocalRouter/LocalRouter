@@ -218,6 +218,10 @@ pub enum MonitorEventData {
         // Error field (filled only on error)
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+
+        // Routing info (filled when auto-routing was used)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        routing_info: Option<AutoRoutingInfo>,
     },
 
     // ---- MCP (combined: request + response) ----
@@ -551,6 +555,45 @@ pub struct FlaggedCategory {
     pub category: String,
     pub confidence: f64,
     pub action: String,
+}
+
+/// A single routing attempt during auto-routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingAttempt {
+    /// Provider name (e.g., "openai")
+    pub provider: String,
+    /// Model name (e.g., "gpt-4o")
+    pub model: String,
+    /// Outcome of this attempt: "success", "rate_limited", "backoff", "unreachable",
+    /// "context_length", "policy_violation", "not_free", "cost_backoff",
+    /// "provider_not_found", "error", "skipped"
+    pub outcome: String,
+    /// Error message if the attempt failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Duration of this attempt in milliseconds (only for attempts that made a provider call)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// Auto-routing metadata for LLM call monitor events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoRoutingInfo {
+    /// Whether RouteLLM classification was used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routellm_tier: Option<String>,
+    /// RouteLLM win rate (0.0-1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routellm_win_rate: Option<f64>,
+    /// All candidate models in priority order
+    pub candidate_models: Vec<String>,
+    /// Individual routing attempts (in order)
+    pub attempts: Vec<RoutingAttempt>,
+    /// Total number of attempts made
+    pub total_attempts: usize,
+    /// Index of the successful attempt (0-based), None if all failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub successful_attempt: Option<usize>,
 }
 
 /// Filter criteria for listing monitor events.

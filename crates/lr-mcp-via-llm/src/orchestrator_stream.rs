@@ -69,7 +69,7 @@ pub async fn run_agentic_loop_streaming(
             &client.id[..8.min(client.id.len())]
         );
         request.stream = true;
-        let stream = router
+        let (stream, _) = router
             .stream_complete(&client.id, request)
             .await
             .map_err(|e| McpViaLlmError::Gateway(format!("stream passthrough failed: {}", e)))?;
@@ -130,7 +130,7 @@ pub async fn run_agentic_loop_streaming(
             &client.id[..8.min(client.id.len())]
         );
         request.stream = true;
-        let stream = router
+        let (stream, _) = router
             .stream_complete(&client.id, request)
             .await
             .map_err(|e| McpViaLlmError::Gateway(format!("stream passthrough failed: {}", e)))?;
@@ -344,7 +344,8 @@ async fn streaming_loop(
                     streamed: None,
                     response_body: None,
                     error: None,
-                },
+                routing_info: None,
+},
                 lr_monitor::EventStatus::Pending,
                 None,
             )
@@ -353,7 +354,7 @@ async fn streaming_loop(
         };
         let iter_start = std::time::Instant::now();
 
-        let mut provider_stream = router
+        let (mut provider_stream, _) = router
             .stream_complete(client_id, stream_request)
             .await
             .map_err(|e| McpViaLlmError::Gateway(format!("stream_complete failed: {}", e)))?;

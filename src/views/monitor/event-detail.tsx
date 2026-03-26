@@ -486,6 +486,8 @@ function LlmCallDetail({ data }: { data: EventData }) {
   const hasTransformed = transformedBody != null
   const hasResponse = data.provider != null || data.response_body != null
   const hasError = data.error != null
+  const routingInfo = data.routing_info as { routellm_tier?: string | null; routellm_win_rate?: number | null; candidate_models?: string[]; attempts?: Array<{ provider: string; model: string; outcome: string; error?: string | null; duration_ms?: number | null }>; total_attempts?: number; successful_attempt?: number | null } | undefined
+  const hasRouting = routingInfo != null && routingInfo.attempts != null
 
   const [showTransformed, setShowTransformed] = useState(hasTransformed)
 
@@ -522,6 +524,7 @@ function LlmCallDetail({ data }: { data: EventData }) {
       <TabsList className="w-full">
         <TabsTrigger value="request">Request</TabsTrigger>
         <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
+        {hasRouting && <TabsTrigger value="routing">Routing</TabsTrigger>}
         <TabsTrigger value="error" disabled={!hasError}>Error</TabsTrigger>
       </TabsList>
 
@@ -628,6 +631,65 @@ function LlmCallDetail({ data }: { data: EventData }) {
       {hasResponse && (
         <TabsContent value="response">
           <LlmResponseContent data={data} />
+        </TabsContent>
+      )}
+
+      {hasRouting && routingInfo && (
+        <TabsContent value="routing" className="space-y-2">
+          {routingInfo.routellm_win_rate != null && (
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <Field label="RouteLLM Tier" value={routingInfo.routellm_tier || '?'} />
+              <Field label="Win Rate" value={routingInfo.routellm_win_rate.toFixed(3)} />
+            </div>
+          )}
+          <div className="text-xs text-muted-foreground">
+            {routingInfo.total_attempts} attempt{routingInfo.total_attempts !== 1 ? 's' : ''} across {routingInfo.candidate_models?.length || 0} candidate model{(routingInfo.candidate_models?.length || 0) !== 1 ? 's' : ''}
+          </div>
+          <div className="space-y-1">
+            {(routingInfo.attempts || []).map((attempt, i) => {
+              const isSuccess = attempt.outcome === 'success'
+              const isSkip = ['backoff', 'not_free', 'cost_backoff', 'rate_limited', 'provider_not_found'].includes(attempt.outcome)
+              return (
+                <div
+                  key={i}
+                  className={cn(
+                    'flex items-center gap-2 text-xs px-2 py-1 rounded border',
+                    isSuccess ? 'bg-green-500/10 border-green-500/30' :
+                    isSkip ? 'bg-yellow-500/10 border-yellow-500/30' :
+                    'bg-destructive/10 border-destructive/30'
+                  )}
+                >
+                  <span className="font-mono font-medium min-w-0 truncate">
+                    {attempt.provider}/{attempt.model}
+                  </span>
+                  <Badge
+                    variant={isSuccess ? 'default' : isSkip ? 'secondary' : 'destructive'}
+                    className="text-[10px] shrink-0"
+                  >
+                    {attempt.outcome}
+                  </Badge>
+                  {attempt.duration_ms != null && (
+                    <span className="text-muted-foreground shrink-0">{attempt.duration_ms}ms</span>
+                  )}
+                  {routingInfo.successful_attempt === i && (
+                    <span className="text-green-500 shrink-0">&#10003;</span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          {(routingInfo.attempts || []).some(a => a.error) && (
+            <details className="text-xs">
+              <summary className="text-muted-foreground cursor-pointer">Error details</summary>
+              <div className="mt-1 space-y-1">
+                {(routingInfo.attempts || []).filter(a => a.error).map((a, i) => (
+                  <div key={i} className="text-destructive/80 font-mono text-[11px] break-all">
+                    <span className="text-muted-foreground">{a.provider}/{a.model}:</span> {a.error}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </TabsContent>
       )}
 

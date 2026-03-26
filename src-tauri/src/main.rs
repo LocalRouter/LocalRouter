@@ -105,7 +105,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
         // Serialize request for monitor event observability
         let request_body = serde_json::to_value(&request).ok();
 
-        let response = self
+        let (response, _) = self
             .router
             .complete("memory-service", request)
             .await

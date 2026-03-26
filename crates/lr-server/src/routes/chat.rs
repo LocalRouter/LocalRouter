@@ -2778,8 +2778,8 @@ async fn handle_non_streaming_parallel(
     let llm_result = llm_result
         .map_err(|e| ApiErrorResponse::internal_error(format!("LLM request failed: {}", e)))?;
 
-    let response = match llm_result {
-        Ok(resp) => resp,
+    let (response, routing_metadata) = match llm_result {
+        Ok((resp, meta)) => (resp, meta),
         Err(lr_types::AppError::FreeTierFallbackAvailable {
             retry_after_secs,
             exhausted_models,
@@ -2848,6 +2848,7 @@ async fn handle_non_streaming_parallel(
         created_at,
         compression_tokens_saved,
         llm_event_id,
+        routing_metadata,
     )
     .await
 }
@@ -2952,12 +2953,12 @@ async fn handle_non_streaming(
     let created_at = Utc::now();
 
     // Call router to get completion
-    let response = match state
+    let (response, routing_metadata) = match state
         .router
         .complete(&auth.api_key_id, provider_request.clone())
         .await
     {
-        Ok(resp) => resp,
+        Ok(result) => result,
         Err(lr_types::AppError::FreeTierFallbackAvailable {
             retry_after_secs,
             exhausted_models,
@@ -3033,6 +3034,7 @@ async fn handle_non_streaming(
         created_at,
         compression_tokens_saved,
         llm_event_id,
+        routing_metadata,
     )
     .await
 }
@@ -3051,6 +3053,7 @@ async fn build_non_streaming_response(
     created_at: chrono::DateTime<Utc>,
     compression_tokens_saved: u64,
     llm_event_id: String,
+    routing_metadata: Option<serde_json::Value>,
 ) -> ApiResult<Response> {
     let completed_at = Instant::now();
 
@@ -3162,6 +3165,9 @@ async fn build_non_streaming_response(
             .as_ref()
             .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
             .map(|t| t as u64);
+        if let Some(ref meta) = routing_metadata {
+            super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, meta);
+        }
         super::monitor_helpers::complete_llm_call(
             &state,
             &llm_event_id,
@@ -3363,12 +3369,12 @@ async fn handle_streaming(
     let model = provider_request.model.clone();
 
     // Call router to get streaming completion
-    let stream = match state
+    let (stream, routing_metadata) = match state
         .router
         .stream_complete(&auth.api_key_id, provider_request.clone())
         .await
     {
-        Ok(s) => s,
+        Ok(result) => result,
         Err(lr_types::AppError::FreeTierFallbackAvailable {
             retry_after_secs,
             exhausted_models,
@@ -3432,6 +3438,11 @@ async fn handle_streaming(
             )));
         }
     };
+
+    // Update monitor event with routing info if auto-routing was used
+    if let Some(ref meta) = routing_metadata {
+        super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, meta);
+    }
 
     // Convert provider stream to SSE stream
     let created_timestamp = created_at.timestamp();
@@ -3816,12 +3827,12 @@ async fn handle_streaming_parallel(
     let model = provider_request.model.clone();
 
     // Start LLM streaming request immediately
-    let stream = match state
+    let (stream, routing_metadata) = match state
         .router
         .stream_complete(&auth.api_key_id, provider_request.clone())
         .await
     {
-        Ok(s) => s,
+        Ok(result) => result,
         Err(lr_types::AppError::FreeTierFallbackAvailable {
             retry_after_secs,
             exhausted_models,
@@ -3877,6 +3888,11 @@ async fn handle_streaming_parallel(
             )));
         }
     };
+
+    // Update monitor event with routing info if auto-routing was used
+    if let Some(ref meta) = routing_metadata {
+        super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, meta);
+    }
 
     // Guardrail gate: signals whether the response should be flushed or denied
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

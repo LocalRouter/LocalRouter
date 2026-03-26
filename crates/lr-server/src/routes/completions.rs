@@ -794,7 +794,7 @@ async fn handle_non_streaming_parallel(
     let llm_handle = {
         let router = state.router.clone();
         let api_key_id = auth.api_key_id.clone();
-        tokio::spawn(async move { router.complete(&api_key_id, provider_request).await })
+        tokio::spawn(async move { router.complete(&api_key_id, provider_request).await.map(|(r, _)| r) })
     };
 
     // Wait for both concurrently
@@ -888,7 +888,7 @@ async fn handle_non_streaming(
         .complete(&auth.api_key_id, provider_request)
         .await
     {
-        Ok(resp) => resp,
+        Ok((resp, _routing_meta)) => resp,
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
@@ -1146,7 +1146,7 @@ async fn handle_streaming(
         .stream_complete(&auth.api_key_id, provider_request)
         .await
     {
-        Ok(s) => s,
+        Ok((s, _routing_meta)) => s,
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
@@ -1475,7 +1475,7 @@ async fn handle_streaming_parallel(
         .stream_complete(&auth.api_key_id, provider_request)
         .await
     {
-        Ok(s) => s,
+        Ok((s, _routing_meta)) => s,
         Err(e) => {
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state

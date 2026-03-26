@@ -1416,7 +1416,7 @@ impl McpGateway {
         }
 
         match router.complete(client_id, completion_req).await {
-            Ok(resp) => {
+            Ok((resp, _routing_meta)) => {
                 match super::sampling::convert_chat_to_sampling_response(resp) {
                     Ok(sampling_resp) => {
                         // Build MCP-spec-compliant response

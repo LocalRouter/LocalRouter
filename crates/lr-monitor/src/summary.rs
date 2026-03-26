@@ -14,6 +14,7 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             total_tokens,
             status_code,
             error,
+            routing_info,
             ..
         } => match event.status {
             EventStatus::Pending => {
@@ -26,7 +27,13 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             EventStatus::Complete => {
                 let prov = provider.as_deref().unwrap_or("?");
                 let tokens = total_tokens.unwrap_or(0);
-                format!("{}/{} — {} tokens", prov, model, tokens)
+                let retry_label = match routing_info {
+                    Some(ri) if ri.total_attempts > 1 => {
+                        format!(" ({} attempts)", ri.total_attempts)
+                    }
+                    _ => String::new(),
+                };
+                format!("{}/{} — {} tokens{}", prov, model, tokens, retry_label)
             }
             EventStatus::Error => {
                 let prov = provider.as_deref().unwrap_or("?");

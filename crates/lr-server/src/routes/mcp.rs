@@ -828,7 +828,7 @@ pub async fn mcp_gateway_handler(
 
                     let completion_resp =
                         match state.router.complete(&client_id, completion_req).await {
-                            Ok(resp) => resp,
+                            Ok((resp, _routing_meta)) => resp,
                             Err(e) => {
                                 let error = lr_mcp::protocol::JsonRpcError::custom(
                                     -32603,

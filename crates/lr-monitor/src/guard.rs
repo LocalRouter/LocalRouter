@@ -145,7 +145,8 @@ mod tests {
                 streamed: None,
                 response_body: None,
                 error: None,
-            },
+            routing_info: None,
+},
             EventStatus::Pending,
             None,
         )

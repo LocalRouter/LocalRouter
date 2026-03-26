@@ -155,6 +155,7 @@ pub fn emit_llm_call(
             streamed: None,
             response_body: None,
             error: None,
+            routing_info: None,
         },
         EventStatus::Pending,
         None,
@@ -287,6 +288,32 @@ pub fn complete_llm_call_error(
             *rb = Some(error_body);
         }
     });
+}
+
+/// Update the LlmCall event with auto-routing metadata.
+///
+/// Called when auto-routing was used, to record which models were tried and why.
+pub fn update_llm_call_routing(
+    state: &AppState,
+    event_id: &str,
+    routing_metadata: &serde_json::Value,
+) {
+    match serde_json::from_value::<lr_monitor::AutoRoutingInfo>(routing_metadata.clone()) {
+        Ok(info) => {
+            state.monitor_store.update(event_id, |event| {
+                if let MonitorEventData::LlmCall {
+                    routing_info: ref mut ri,
+                    ..
+                } = &mut event.data
+                {
+                    *ri = Some(info);
+                }
+            });
+        }
+        Err(e) => {
+            tracing::warn!("Failed to deserialize routing metadata: {}", e);
+        }
+    }
 }
 
 /// Update the LlmCall event with the full response body JSON.

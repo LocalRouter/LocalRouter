@@ -135,7 +135,7 @@ pub async fn run_agentic_loop(
             &client.id[..8.min(client.id.len())]
         );
         request.stream = false;
-        let response = router
+        let (response, _) = router
             .complete(&client.id, request)
             .await
             .map_err(McpViaLlmError::from)?;
@@ -199,7 +199,7 @@ pub async fn run_agentic_loop(
         // No MCP tools available - just call the router directly (non-streaming)
         // Streaming passthrough is handled by the streaming orchestrator
         request.stream = false;
-        let response = router
+        let (response, _) = router
             .complete(&client.id, request)
             .await
             .map_err(McpViaLlmError::from)?;
@@ -338,7 +338,8 @@ pub async fn run_agentic_loop(
                     streamed: None,
                     response_body: None,
                     error: None,
-                },
+                routing_info: None,
+},
                 lr_monitor::EventStatus::Pending,
                 None,
             )
@@ -348,7 +349,7 @@ pub async fn run_agentic_loop(
         let iter_start = std::time::Instant::now();
 
         // Call the LLM
-        let response = router
+        let (response, _) = router
             .complete(&client.id, completion_request)
             .await
             .map_err(McpViaLlmError::from)?;

@@ -3369,6 +3369,25 @@ export interface MonitorEvent {
   duration_ms: number | null
 }
 
+/** Rust: crates/lr-monitor/src/types.rs - RoutingAttempt */
+export interface RoutingAttempt {
+  provider: string
+  model: string
+  outcome: string
+  error?: string | null
+  duration_ms?: number | null
+}
+
+/** Rust: crates/lr-monitor/src/types.rs - AutoRoutingInfo */
+export interface AutoRoutingInfo {
+  routellm_tier?: string | null
+  routellm_win_rate?: number | null
+  candidate_models: string[]
+  attempts: RoutingAttempt[]
+  total_attempts: number
+  successful_attempt?: number | null
+}
+
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEventListResponse */
 export interface MonitorEventListResponse {
   events: MonitorEventSummary[]
