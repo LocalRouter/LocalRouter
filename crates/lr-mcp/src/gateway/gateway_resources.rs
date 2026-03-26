@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpResource};
+use crate::transport::SessionTransportSet;
 use lr_types::{AppError, AppResult};
 
 use super::merger::merge_resources;
@@ -48,6 +49,8 @@ impl McpGateway {
         }
 
         let allowed_servers = session_read.allowed_servers.clone();
+        let transports = session_read.transports.clone()
+            .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
         drop(session_read);
 
         tracing::info!(
@@ -58,7 +61,7 @@ impl McpGateway {
 
         // Fetch from servers
         let (resources, failures) = self
-            .fetch_and_merge_resources(&allowed_servers, request.clone())
+            .fetch_and_merge_resources(&allowed_servers, request.clone(), &transports)
             .await?;
 
         tracing::info!(
@@ -109,6 +112,7 @@ impl McpGateway {
         &self,
         server_ids: &[String],
         request: JsonRpcRequest,
+        transports: &Arc<SessionTransportSet>,
     ) -> AppResult<(Vec<NamespacedResource>, Vec<ServerFailure>)> {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
@@ -116,7 +120,7 @@ impl McpGateway {
         let results = broadcast_request(
             server_ids,
             request,
-            &self.server_manager,
+            transports,
             timeout,
             max_retries,
         )
@@ -172,7 +176,7 @@ impl McpGateway {
 
                 match tokio::time::timeout(
                     timeout,
-                    self.server_manager.send_request(&server_id, page_request),
+                    transports.send_request(&server_id, page_request),
                 )
                 .await
                 {
@@ -295,6 +299,9 @@ impl McpGateway {
                     "Resource URI not in mapping and resources/list not yet fetched, fetching now"
                 );
 
+                let transports = session.read().await.transports.clone()
+                    .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
+
                 // Fetch resources/list to populate the URI mapping (only once per session)
                 let (resources, _failures) = self
                     .fetch_and_merge_resources(
@@ -304,6 +311,7 @@ impl McpGateway {
                             "resources/list".to_string(),
                             None,
                         ),
+                        &transports,
                     )
                     .await?;
 
@@ -385,11 +393,16 @@ impl McpGateway {
             None,
         );
 
+        let transports = {
+            let session_read = session.read().await;
+            session_read.transports.clone()
+                .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
+        };
+
         let start = std::time::Instant::now();
 
         // Route to server
-        let result = self
-            .server_manager
+        let result = transports
             .send_request(&server_id, transformed_request)
             .await;
 
@@ -506,6 +519,12 @@ impl McpGateway {
         }
 
         // Forward subscription request to the backend server
+        let transports = {
+            let session_read = session.read().await;
+            session_read.transports.clone()
+                .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
+        };
+
         let backend_request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: request.id.clone(),
@@ -513,8 +532,7 @@ impl McpGateway {
             params: Some(json!({ "uri": uri })),
         };
 
-        match self
-            .server_manager
+        match transports
             .send_request(&server_id, backend_request)
             .await
         {
@@ -569,6 +587,12 @@ impl McpGateway {
         };
 
         // Forward unsubscribe request to the backend server
+        let transports = {
+            let session_read = session.read().await;
+            session_read.transports.clone()
+                .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
+        };
+
         let backend_request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: request.id.clone(),
@@ -576,8 +600,7 @@ impl McpGateway {
             params: Some(json!({ "uri": uri })),
         };
 
-        match self
-            .server_manager
+        match transports
             .send_request(&server_id, backend_request)
             .await
         {
@@ -612,6 +635,8 @@ impl McpGateway {
         let request_id = request.id.clone();
         let session_read = session.read().await;
         let allowed_servers = session_read.allowed_servers.clone();
+        let transports = session_read.transports.clone()
+            .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
         drop(session_read);
 
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
@@ -620,7 +645,7 @@ impl McpGateway {
         let results = broadcast_request(
             &allowed_servers,
             request,
-            &self.server_manager,
+            &transports,
             timeout,
             max_retries,
         )
@@ -666,7 +691,7 @@ impl McpGateway {
 
                 match tokio::time::timeout(
                     timeout,
-                    self.server_manager.send_request(&server_id, page_request),
+                    transports.send_request(&server_id, page_request),
                 )
                 .await
                 {

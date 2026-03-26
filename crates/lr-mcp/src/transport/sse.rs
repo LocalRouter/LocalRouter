@@ -1011,6 +1011,14 @@ impl Transport for SseTransport {
     async fn close(&self) -> AppResult<()> {
         self.disconnect().await
     }
+
+    fn set_notification_callback(&self, callback: super::NotificationCallback) {
+        *self.notification_callback.write() = Some(callback);
+    }
+
+    fn set_request_callback(&self, callback: super::RequestCallback) {
+        *self.request_callback.write() = Some(callback);
+    }
 }
 
 #[cfg(test)]

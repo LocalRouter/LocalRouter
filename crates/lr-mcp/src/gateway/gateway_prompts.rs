@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpPrompt};
+use crate::transport::SessionTransportSet;
 use lr_types::{AppError, AppResult};
 
 use super::merger::merge_prompts;
@@ -41,11 +42,13 @@ impl McpGateway {
         }
 
         let allowed_servers = session_read.allowed_servers.clone();
+        let transports = session_read.transports.clone()
+            .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
         drop(session_read);
 
         // Fetch from servers
         let (prompts, failures) = self
-            .fetch_and_merge_prompts(&allowed_servers, request.clone())
+            .fetch_and_merge_prompts(&allowed_servers, request.clone(), &transports)
             .await?;
 
         // Update session mappings, cache, and failures
@@ -88,6 +91,7 @@ impl McpGateway {
         &self,
         server_ids: &[String],
         request: JsonRpcRequest,
+        transports: &Arc<SessionTransportSet>,
     ) -> AppResult<(Vec<NamespacedPrompt>, Vec<ServerFailure>)> {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
@@ -95,7 +99,7 @@ impl McpGateway {
         let results = broadcast_request(
             server_ids,
             request,
-            &self.server_manager,
+            transports,
             timeout,
             max_retries,
         )
@@ -151,7 +155,7 @@ impl McpGateway {
 
                 match tokio::time::timeout(
                     timeout,
-                    self.server_manager.send_request(&server_id, page_request),
+                    transports.send_request(&server_id, page_request),
                 )
                 .await
                 {
@@ -290,11 +294,16 @@ impl McpGateway {
             None,
         );
 
+        let transports = {
+            let session_read = session.read().await;
+            session_read.transports.clone()
+                .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
+        };
+
         let start = std::time::Instant::now();
 
         // Route to server
-        let result = self
-            .server_manager
+        let result = transports
             .send_request(&server_id, transformed_request)
             .await;
 

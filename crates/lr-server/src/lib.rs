@@ -148,7 +148,7 @@ pub async fn start_server(
         let mut interval = tokio::time::interval(SESSION_CLEANUP_INTERVAL);
         loop {
             interval.tick().await;
-            gateway_for_cleanup.cleanup_expired_sessions();
+            gateway_for_cleanup.cleanup_expired_sessions().await;
             mcp_via_llm_for_cleanup.cleanup_expired_sessions();
         }
     });

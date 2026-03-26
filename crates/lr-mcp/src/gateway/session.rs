@@ -1,12 +1,14 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::context_mode::ContextModeSessionState;
 use super::types::*;
 use super::virtual_server::VirtualSessionState;
 use crate::protocol::Root;
+use crate::transport::SessionTransportSet;
 
 /// Gateway session (one per client)
 pub struct GatewaySession {
@@ -122,6 +124,12 @@ pub struct GatewaySession {
     /// Monitor session ID for grouping events from one API request.
     /// Set by MCP-via-LLM to link tool call events to the parent LLM call.
     pub monitor_session_id: Option<String>,
+
+    /// Per-session MCP server transports (owned by this session).
+    /// Created during `handle_initialize`, closed when the session ends.
+    /// Wrapped in `Arc` so it can be extracted with a brief read lock and used
+    /// without holding the session lock during requests.
+    pub transports: Option<Arc<SessionTransportSet>>,
 }
 
 impl GatewaySession {
@@ -177,6 +185,7 @@ impl GatewaySession {
             client_mode: lr_config::ClientMode::default(),
             pending_requests: HashMap::new(),
             monitor_session_id: None,
+            transports: None,
         }
     }
 

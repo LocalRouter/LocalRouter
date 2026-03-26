@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use crate::manager::McpServerManager;
 use crate::protocol::JsonRpcRequest;
+use crate::transport::SessionTransportSet;
 use lr_types::errors::AppError;
 use serde_json::Value;
 
@@ -11,11 +11,13 @@ use super::types::ServerFailure;
 
 type AppResult<T> = Result<T, AppError>;
 
-/// Broadcast request to multiple servers in parallel with retry logic
+/// Broadcast request to multiple servers in parallel with retry logic.
+///
+/// Routes through a per-session `SessionTransportSet`.
 pub async fn broadcast_request(
     server_ids: &[String],
     request: JsonRpcRequest,
-    server_manager: &Arc<McpServerManager>,
+    transports: &Arc<SessionTransportSet>,
     request_timeout: Duration,
     max_retries: u8,
 ) -> Vec<(String, AppResult<Value>)> {
@@ -31,7 +33,7 @@ pub async fn broadcast_request(
     let futures = server_ids.iter().map(|server_id| {
         let request = request.clone();
         let server_id = server_id.clone();
-        let server_manager = server_manager.clone();
+        let transports = transports.clone();
         let method = method.clone();
 
         async move {
@@ -47,7 +49,7 @@ pub async fn broadcast_request(
 
                 let result = timeout(
                     request_timeout,
-                    server_manager.send_request(&server_id, request.clone()),
+                    transports.send_request(&server_id, request.clone()),
                 )
                 .await;
 

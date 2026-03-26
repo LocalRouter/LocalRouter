@@ -3,25 +3,30 @@
 //! Supports three transport types:
 //! - STDIO: Subprocess with piped stdin/stdout
 //! - HTTP-SSE: Server-Sent Events over HTTP
-
-#![allow(dead_code)]
 //! - WebSocket: Bidirectional WebSocket connection
 
+#![allow(dead_code)]
+
+pub mod session_transport_set;
 pub mod sse;
 pub mod stdio;
 pub mod websocket;
 
+pub use session_transport_set::SessionTransportSet;
 pub use sse::SseTransport;
 pub use stdio::{StdioRequestCallback, StdioTransport};
 pub use websocket::WebSocketTransport;
 
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse, StreamingChunk};
+use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
 use async_trait::async_trait;
 use futures_util::stream::Stream;
 use lr_types::errors::AppResult;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+
+/// Notification callback type shared across all transport types.
+pub type NotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
 
 /// Request callback type for server-initiated requests (sampling, elicitation, etc.)
 ///
@@ -81,4 +86,12 @@ pub trait Transport: Send + Sync {
 
     /// Close/cleanup the transport
     async fn close(&self) -> AppResult<()>;
+
+    /// Set a callback for server-originated notifications (e.g. list_changed).
+    /// Default no-op for transports that don't support notifications.
+    fn set_notification_callback(&self, _callback: NotificationCallback) {}
+
+    /// Set a callback for server-initiated requests (e.g. sampling/createMessage).
+    /// Default no-op for transports that don't support server-initiated requests.
+    fn set_request_callback(&self, _callback: RequestCallback) {}
 }

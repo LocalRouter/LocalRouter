@@ -487,9 +487,11 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       return []
     })
 
-    if (mcpClientRef.current) {
-      await mcpClientRef.current.disconnect()
-      mcpClientRef.current = null
+    // Capture and null the ref synchronously to avoid race with doConnect()
+    const client = mcpClientRef.current
+    mcpClientRef.current = null
+    if (client) {
+      await client.disconnect()
     }
     // Clear subscription state on disconnect
     setSubscribedUris(new Set())
@@ -567,10 +569,11 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       isConnectingRef.current = true
 
       try {
-        // Disconnect existing client
-        if (mcpClientRef.current) {
-          await mcpClientRef.current.disconnect()
-          mcpClientRef.current = null
+        // Disconnect existing client — null ref synchronously to avoid race with doDisconnect()
+        const oldClient = mcpClientRef.current
+        mcpClientRef.current = null
+        if (oldClient) {
+          await oldClient.disconnect()
         }
 
         if (aborted) return

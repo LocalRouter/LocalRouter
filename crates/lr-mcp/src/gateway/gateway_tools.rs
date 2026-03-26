@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 use crate::protocol::{
     JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpTool,
 };
+use crate::transport::SessionTransportSet;
 use lr_types::{AppError, AppResult};
 
 use super::merger::merge_tools;
@@ -65,11 +66,13 @@ impl McpGateway {
         }
 
         let allowed_servers = session_read.allowed_servers.clone();
+        let transports = session_read.transports.clone()
+            .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
         drop(session_read);
 
         // Fetch from servers
         let (tools, failures) = self
-            .fetch_and_merge_tools(&allowed_servers, request.clone())
+            .fetch_and_merge_tools(&allowed_servers, request.clone(), &transports)
             .await?;
 
         // Update session mappings, cache, and failures
@@ -123,6 +126,7 @@ impl McpGateway {
         &self,
         server_ids: &[String],
         request: JsonRpcRequest,
+        transports: &Arc<SessionTransportSet>,
     ) -> AppResult<(Vec<NamespacedTool>, Vec<ServerFailure>)> {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
@@ -130,7 +134,7 @@ impl McpGateway {
         let results = broadcast_request(
             server_ids,
             request,
-            &self.server_manager,
+            transports,
             timeout,
             max_retries,
         )
@@ -186,7 +190,7 @@ impl McpGateway {
 
                 match tokio::time::timeout(
                     timeout,
-                    self.server_manager.send_request(&server_id, page_request),
+                    transports.send_request(&server_id, page_request),
                 )
                 .await
                 {
@@ -397,6 +401,12 @@ impl McpGateway {
                     .unwrap_or_else(|| id.to_string())
             })
             .unwrap_or_default();
+        let transports = {
+            let session_read = session.read().await;
+            session_read.transports.clone()
+                .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
+        };
+
         if !request_id_str.is_empty() {
             let mut session_write = session.write().await;
             session_write
@@ -405,8 +415,7 @@ impl McpGateway {
         }
 
         // Route to server
-        let result = self
-            .server_manager
+        let result = transports
             .send_request(&server_id, transformed_request)
             .await;
 

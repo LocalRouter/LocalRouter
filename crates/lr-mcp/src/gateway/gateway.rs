@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 
 use crate::manager::McpServerManager;
 use crate::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use crate::transport::SessionTransportSet;
 use lr_router::Router;
 use lr_types::{AppError, AppResult};
 
@@ -35,9 +36,6 @@ pub struct McpGateway {
 
     /// Gateway configuration
     pub(crate) config: GatewayConfig,
-
-    /// Track which servers have global notification handlers registered
-    pub(crate) notification_handlers_registered: Arc<DashMap<String, bool>>,
 
     /// Broadcast sender for client notifications (optional)
     /// Allows external clients to subscribe to real-time notifications from MCP servers
@@ -196,7 +194,6 @@ impl McpGateway {
                 config.elicitation_mode.clone(),
             )),
             config,
-            notification_handlers_registered: Arc::new(DashMap::new()),
             notification_broadcast,
             router,
             elicitation_manager,
@@ -589,11 +586,19 @@ impl McpGateway {
         // This prevents lock contention with any previous task that may still
         // be running on the old session (e.g., from a replaced SSE connection).
         // The old task continues on its orphaned Arc but won't block new tasks.
-        if method == "initialize" && self.sessions.remove(session_key).is_some() {
-            tracing::info!(
-                "Gateway: removed stale session for session_key={} before re-initialize",
-                session_key
-            );
+        if method == "initialize" {
+            if let Some((_, old_session)) = self.sessions.remove(session_key) {
+                // Close per-session transports before re-initializing
+                if let Ok(session_read) = old_session.try_read() {
+                    if let Some(transports) = &session_read.transports {
+                        transports.close_all().await;
+                    }
+                }
+                tracing::info!(
+                    "Gateway: removed stale session for session_key={} before re-initialize",
+                    session_key
+                );
+            }
         }
 
         // Get or create session
@@ -685,11 +690,16 @@ impl McpGateway {
                                 "notifications/cancelled".to_string(),
                                 Some(params.clone()),
                             );
-                            if let Err(e) = self
-                                .server_manager
-                                .send_request(&server_id, notification)
-                                .await
-                            {
+                            // Use session transports to forward cancellation
+                            let transports = session.read().await.transports.clone();
+                            let send_result = if let Some(transports) = transports {
+                                transports.send_request(&server_id, notification).await
+                            } else {
+                                Err(AppError::Mcp(
+                                    "Session not initialized, cannot forward cancellation".into(),
+                                ))
+                            };
+                            if let Err(e) = send_result {
                                 tracing::warn!(
                                     "Failed to forward cancellation to server {}: {}",
                                     server_id,
@@ -763,8 +773,13 @@ impl McpGateway {
 
             // Check if expired
             if session_read.is_expired() {
+                // Close per-session transports before removing
+                let transports = session_read.transports.clone();
                 drop(session_read);
                 drop(session);
+                if let Some(transports) = transports {
+                    transports.close_all().await;
+                }
 
                 // Remove expired session
                 self.sessions.remove(session_key);
@@ -777,6 +792,12 @@ impl McpGateway {
                 let mut existing_sorted = session_read.allowed_servers.clone();
                 existing_sorted.sort();
                 let servers_changed = servers_sorted != existing_sorted;
+                // Clone transports before dropping the read lock
+                let transports = if servers_changed {
+                    session_read.transports.clone()
+                } else {
+                    None
+                };
                 drop(session_read);
 
                 if servers_changed {
@@ -784,6 +805,10 @@ impl McpGateway {
                         "Allowed servers changed for session {} - recreating session",
                         session_key,
                     );
+                    // Close per-session transports before removing
+                    if let Some(transports) = transports {
+                        transports.close_all().await;
+                    }
                     drop(session);
                     self.sessions.remove(session_key);
                     // Fall through to create new session below
@@ -806,10 +831,9 @@ impl McpGateway {
 
         let session = Arc::new(RwLock::new(session_data));
 
-        // Register GLOBAL notification handlers for each server (if not already registered)
-        // Note: request handlers are registered in handle_initialize AFTER servers are started,
-        // since they need the transport to be available.
-        self.register_notification_handlers(&allowed_servers).await;
+        // Note: notification and request handlers are now registered per-session in
+        // handle_initialize, after session transports are created. The old global
+        // register_notification_handlers method is retained but no longer called here.
 
         self.sessions
             .insert(session_key.to_string(), session.clone());
@@ -817,177 +841,24 @@ impl McpGateway {
         Ok(session)
     }
 
-    /// Register GLOBAL notification handlers for servers (one handler per server, shared across sessions)
-    /// This prevents memory leaks from per-session handlers
-    async fn register_notification_handlers(&self, allowed_servers: &[String]) {
-        for server_id in allowed_servers {
-            // Check if handler already registered for this server
-            if self
-                .notification_handlers_registered
-                .contains_key(server_id)
-            {
-                continue;
-            }
-
-            // Mark as registered (prevent duplicate registration)
-            self.notification_handlers_registered
-                .insert(server_id.clone(), true);
-
-            let sessions_clone = self.sessions.clone();
-            let server_id_clone = server_id.clone();
-            let broadcast_clone = self.notification_broadcast.clone();
-
-            // Register GLOBAL notification handler (one per server, not per session)
-            self.server_manager.on_notification(
-                server_id,
-                Arc::new(move |_, notification| {
-                    let sessions_inner = sessions_clone.clone();
-                    let server_id_inner = server_id_clone.clone();
-                    let broadcast_inner = broadcast_clone.clone();
-
-                    tokio::spawn(async move {
-                        match notification.method.as_str() {
-                            "notifications/tools/list_changed" => {
-                                tracing::info!(
-                                    "Received tools/list_changed notification from server: {}",
-                                    server_id_inner
-                                );
-                                // Invalidate tools cache for ALL sessions that include this server
-                                for entry in sessions_inner.iter() {
-                                    let session = entry.value();
-                                    if let Ok(mut session_write) = session.try_write() {
-                                        if session_write.allowed_servers.contains(&server_id_inner)
-                                        {
-                                            session_write.cache_ttl_manager.record_invalidation();
-                                            session_write.cached_tools = None;
-                                        }
-                                    }
-                                }
-                                tracing::debug!(
-                                    "Invalidated tools cache for all sessions using server: {}",
-                                    server_id_inner
-                                );
-                            }
-                            "notifications/resources/list_changed" => {
-                                tracing::info!(
-                                    "Received resources/list_changed notification from server: {}",
-                                    server_id_inner
-                                );
-                                // Invalidate resources cache for ALL sessions that include this server
-                                for entry in sessions_inner.iter() {
-                                    let session = entry.value();
-                                    if let Ok(mut session_write) = session.try_write() {
-                                        if session_write.allowed_servers.contains(&server_id_inner)
-                                        {
-                                            session_write.cache_ttl_manager.record_invalidation();
-                                            session_write.cached_resources = None;
-                                        }
-                                    }
-                                }
-                                tracing::debug!(
-                                    "Invalidated resources cache for all sessions using server: {}",
-                                    server_id_inner
-                                );
-                            }
-                            "notifications/prompts/list_changed" => {
-                                tracing::info!(
-                                    "Received prompts/list_changed notification from server: {}",
-                                    server_id_inner
-                                );
-                                // Invalidate prompts cache for ALL sessions that include this server
-                                for entry in sessions_inner.iter() {
-                                    let session = entry.value();
-                                    if let Ok(mut session_write) = session.try_write() {
-                                        if session_write.allowed_servers.contains(&server_id_inner)
-                                        {
-                                            session_write.cache_ttl_manager.record_invalidation();
-                                            session_write.cached_prompts = None;
-                                        }
-                                    }
-                                }
-                                tracing::debug!(
-                                    "Invalidated prompts cache for all sessions using server: {}",
-                                    server_id_inner
-                                );
-                            }
-                            other_method => {
-                                tracing::debug!(
-                                    "Received notification from server {}: {}",
-                                    server_id_inner,
-                                    other_method
-                                );
-                                // Other notifications are logged but not acted upon
-                            }
-                        }
-
-                        // Forward notification to external clients (if broadcast channel exists)
-                        // Namespace progress tokens to avoid collisions between servers
-                        let forwarded_notification =
-                            if notification.method == "notifications/progress" {
-                                let mut n = notification.clone();
-                                if let Some(ref mut params) = n.params {
-                                    if let Some(token) = params.get("progressToken").cloned() {
-                                        let namespaced = format!(
-                                            "{}__{}",
-                                            server_id_inner,
-                                            token
-                                                .as_str()
-                                                .map(|s| s.to_string())
-                                                .unwrap_or_else(|| token.to_string())
-                                        );
-                                        if let Some(obj) = params.as_object_mut() {
-                                            obj.insert(
-                                                "progressToken".to_string(),
-                                                serde_json::json!(namespaced),
-                                            );
-                                        }
-                                    }
-                                }
-                                n
-                            } else {
-                                notification.clone()
-                            };
-
-                        if let Some(broadcast) = broadcast_inner.as_ref() {
-                            let payload = (server_id_inner.clone(), forwarded_notification);
-                            match broadcast.send(payload) {
-                                Ok(receiver_count) => {
-                                    tracing::debug!(
-                                        "Forwarded notification from server {} to {} client(s)",
-                                        server_id_inner,
-                                        receiver_count
-                                    );
-                                }
-                                Err(_) => {
-                                    // No active receivers - this is normal when no clients are connected
-                                    tracing::trace!(
-                                        "No clients subscribed to notifications from server {}",
-                                        server_id_inner
-                                    );
-                                }
-                            }
-                        }
-                    });
-                }),
-            );
-        }
-    }
-
-    /// Register request callbacks for server-initiated requests (sampling, elicitation, roots)
+    /// Register request callbacks on per-session transports.
     ///
-    /// Without these callbacks, server-initiated requests (e.g. during tool execution or init)
-    /// would be dropped, potentially causing the server to block indefinitely.
-    ///
-    /// Uses global gateway config for sampling/elicitation mode and permissions,
-    /// combined with the session's client_mode for compatibility checks.
-    fn register_request_handlers(
+    /// Same logic as `register_request_handlers` but targets the session's
+    /// `SessionTransportSet` instead of the global server_manager transports.
+    fn register_request_handlers_on_transports(
         &self,
-        allowed_servers: &[String],
+        server_ids: &[String],
         client_id: &str,
         session_key: &str,
         client_mode: lr_config::ClientMode,
+        transport_set: &Arc<SessionTransportSet>,
     ) {
-        for server_id in allowed_servers {
+        for server_id in server_ids {
+            let transport = match transport_set.get(server_id) {
+                Some(t) => t,
+                None => continue,
+            };
+
             let server_id_clone = server_id.clone();
             let elicitation_manager = self.elicitation_manager.clone();
             let sampling_approval_manager = self.sampling_approval_manager.read().clone();
@@ -996,342 +867,440 @@ impl McpGateway {
             let client_id = client_id.to_string();
             let session_key = session_key.to_string();
             let client_mode = client_mode.clone();
-            // Share Arc references so callbacks always read current settings
             let live_sampling = self.live_sampling.clone();
             let live_elicitation_mode = self.live_elicitation_mode.clone();
             let firewall_manager = self.firewall_manager.clone();
 
-            self.server_manager.set_request_callback(
-                server_id,
-                std::sync::Arc::new(move |request| {
-                    let server_id = server_id_clone.clone();
-                    let elicitation_mgr = elicitation_manager.clone();
-                    let sampling_approval_mgr = sampling_approval_manager.clone();
-                    let client_request_sender = client_request_sender.clone();
-                    let router = router.clone();
-                    let client_id = client_id.clone();
-                    let session_key = session_key.clone();
-                    let client_mode = client_mode.clone();
-                    let firewall_mgr = firewall_manager.clone();
-                    // Read live settings inside callback for instant effect
-                    let sampling_behavior = live_sampling.read().clone();
-                    let elicitation_mode = live_elicitation_mode.read().clone();
+            transport.set_request_callback(std::sync::Arc::new(move |request| {
+                let server_id = server_id_clone.clone();
+                let elicitation_mgr = elicitation_manager.clone();
+                let sampling_approval_mgr = sampling_approval_manager.clone();
+                let client_request_sender = client_request_sender.clone();
+                let router = router.clone();
+                let client_id = client_id.clone();
+                let session_key = session_key.clone();
+                let client_mode = client_mode.clone();
+                let firewall_mgr = firewall_manager.clone();
+                let sampling_behavior = live_sampling.read().clone();
+                let elicitation_mode = live_elicitation_mode.read().clone();
 
-                    Box::pin(async move {
-                        tracing::info!(
-                            "Server {} sent request: method={}, id={:?}",
-                            server_id,
-                            request.method,
-                            request.id,
-                        );
+                Box::pin(async move {
+                    tracing::info!(
+                        "Server {} sent request: method={}, id={:?}",
+                        server_id,
+                        request.method,
+                        request.id,
+                    );
 
-                        let request_id = request.id.unwrap_or(Value::Null);
-                        match request.method.as_str() {
-                            "roots/list" => {
-                                JsonRpcResponse::success(
+                    let request_id = request.id.unwrap_or(Value::Null);
+                    match request.method.as_str() {
+                        "roots/list" => {
+                            JsonRpcResponse::success(
+                                request_id,
+                                json!({ "roots": [] }),
+                            )
+                        }
+
+                        "elicitation/create" | "elicitation/requestInput" => {
+                            if matches!(elicitation_mode, lr_config::ElicitationMode::Off) {
+                                return JsonRpcResponse::success(
                                     request_id,
-                                    json!({ "roots": [] }),
-                                )
+                                    json!({ "action": "decline" }),
+                                );
                             }
 
-                            "elicitation/create" | "elicitation/requestInput" => {
-                                // Check elicitation mode
-                                if matches!(elicitation_mode, lr_config::ElicitationMode::Off) {
-                                    return JsonRpcResponse::success(
-                                        request_id,
-                                        json!({ "action": "decline" }),
-                                    );
-                                }
-
-                                // LlmOnly clients don't support elicitation
-                                if matches!(client_mode, lr_config::ClientMode::LlmOnly) {
-                                    return JsonRpcResponse::success(
-                                        request_id,
-                                        json!({ "action": "decline" }),
-                                    );
-                                }
-
-                                // Determine effective elicitation mode based on client_mode
-                                let effective_mode = match (&elicitation_mode, &client_mode) {
-                                    (lr_config::ElicitationMode::Passthrough, lr_config::ClientMode::McpViaLlm) => {
-                                        // Can't passthrough when no external client — fall back to Direct
-                                        lr_config::ElicitationMode::Direct
-                                    }
-                                    (mode, _) => mode.clone(),
-                                };
-
-                                // Monitor intercept: override Off → Direct to force elicitation popup
-                                let effective_mode = if matches!(effective_mode, lr_config::ElicitationMode::Off)
-                                    && firewall_mgr.should_intercept(
-                                        &client_id,
-                                        super::firewall::InterceptCategory::Elicitation,
-                                    )
-                                {
-                                    tracing::info!(
-                                        "Monitor intercept: overriding Off → Direct for elicitation (client={})",
-                                        client_id
-                                    );
-                                    lr_config::ElicitationMode::Direct
-                                } else {
-                                    effective_mode
-                                };
-
-                                tracing::info!(
-                                    "Elicitation handler: mode={:?}, effective={:?}, client_mode={:?}",
-                                    elicitation_mode, effective_mode, client_mode
+                            if matches!(client_mode, lr_config::ClientMode::LlmOnly) {
+                                return JsonRpcResponse::success(
+                                    request_id,
+                                    json!({ "action": "decline" }),
                                 );
+                            }
 
-                                match effective_mode {
-                                    lr_config::ElicitationMode::Passthrough => {
-                                        // Forward as a proper JSON-RPC request to the external client
-                                        if let Some(sender) = &client_request_sender {
-                                            let forward_req = crate::protocol::JsonRpcRequest {
-                                                jsonrpc: "2.0".to_string(),
-                                                id: Some(json!(uuid::Uuid::new_v4().to_string())),
-                                                method: "elicitation/create".to_string(),
-                                                params: request.params.clone(),
-                                            };
+                            let effective_mode = match (&elicitation_mode, &client_mode) {
+                                (lr_config::ElicitationMode::Passthrough, lr_config::ClientMode::McpViaLlm) => {
+                                    lr_config::ElicitationMode::Direct
+                                }
+                                (mode, _) => mode.clone(),
+                            };
 
-                                            tracing::info!(
-                                                "Passthrough: forwarding elicitation request to external client for server {}",
-                                                server_id
-                                            );
+                            let effective_mode = if matches!(effective_mode, lr_config::ElicitationMode::Off)
+                                && firewall_mgr.should_intercept(
+                                    &client_id,
+                                    super::firewall::InterceptCategory::Elicitation,
+                                )
+                            {
+                                tracing::info!(
+                                    "Monitor intercept: overriding Off → Direct for elicitation (client={})",
+                                    client_id
+                                );
+                                lr_config::ElicitationMode::Direct
+                            } else {
+                                effective_mode
+                            };
 
-                                            if let Some(response_rx) = sender(&session_key, forward_req) {
-                                                match tokio::time::timeout(
-                                                    std::time::Duration::from_secs(120),
-                                                    response_rx,
-                                                ).await {
-                                                    Ok(Ok(response)) => {
-                                                        // Return the client's response directly
-                                                        JsonRpcResponse::success(
-                                                            request_id,
-                                                            response.result.unwrap_or(json!({ "action": "decline" })),
-                                                        )
-                                                    }
-                                                    Ok(Err(_)) | Err(_) => {
-                                                        tracing::warn!("Elicitation passthrough timed out");
-                                                        JsonRpcResponse::success(
-                                                            request_id,
-                                                            json!({ "action": "decline" }),
-                                                        )
-                                                    }
+                            tracing::info!(
+                                "Elicitation handler: mode={:?}, effective={:?}, client_mode={:?}",
+                                elicitation_mode, effective_mode, client_mode
+                            );
+
+                            match effective_mode {
+                                lr_config::ElicitationMode::Passthrough => {
+                                    if let Some(sender) = &client_request_sender {
+                                        let forward_req = crate::protocol::JsonRpcRequest {
+                                            jsonrpc: "2.0".to_string(),
+                                            id: Some(json!(uuid::Uuid::new_v4().to_string())),
+                                            method: "elicitation/create".to_string(),
+                                            params: request.params.clone(),
+                                        };
+
+                                        tracing::info!(
+                                            "Passthrough: forwarding elicitation request to external client for server {}",
+                                            server_id
+                                        );
+
+                                        if let Some(response_rx) = sender(&session_key, forward_req) {
+                                            match tokio::time::timeout(
+                                                std::time::Duration::from_secs(120),
+                                                response_rx,
+                                            ).await {
+                                                Ok(Ok(response)) => {
+                                                    JsonRpcResponse::success(
+                                                        request_id,
+                                                        response.result.unwrap_or(json!({ "action": "decline" })),
+                                                    )
                                                 }
-                                            } else {
-                                                tracing::warn!("No SSE connection for client - falling back to Direct elicitation");
-                                                Self::handle_elicitation_direct(
-                                                    &elicitation_mgr, server_id, request.params, request_id
-                                                ).await
+                                                Ok(Err(_)) | Err(_) => {
+                                                    tracing::warn!("Elicitation passthrough timed out");
+                                                    JsonRpcResponse::success(
+                                                        request_id,
+                                                        json!({ "action": "decline" }),
+                                                    )
+                                                }
                                             }
                                         } else {
-                                            // No client request sender — fall back to Direct
+                                            tracing::warn!("No SSE connection for client - falling back to Direct elicitation");
                                             Self::handle_elicitation_direct(
                                                 &elicitation_mgr, server_id, request.params, request_id
                                             ).await
                                         }
-                                    }
-                                    lr_config::ElicitationMode::Direct => {
+                                    } else {
                                         Self::handle_elicitation_direct(
                                             &elicitation_mgr, server_id, request.params, request_id
                                         ).await
                                     }
-                                    lr_config::ElicitationMode::Off => {
-                                        // Already handled above, but for completeness
-                                        JsonRpcResponse::success(
+                                }
+                                lr_config::ElicitationMode::Direct => {
+                                    Self::handle_elicitation_direct(
+                                        &elicitation_mgr, server_id, request.params, request_id
+                                    ).await
+                                }
+                                lr_config::ElicitationMode::Off => {
+                                    JsonRpcResponse::success(
+                                        request_id,
+                                        json!({ "action": "decline" }),
+                                    )
+                                }
+                            }
+                        }
+
+                        "sampling/createMessage" => {
+                            if matches!(sampling_behavior, lr_config::SamplingBehavior::Off) {
+                                return JsonRpcResponse::error(
+                                    request_id,
+                                    JsonRpcError::custom(
+                                        -32601,
+                                        "Sampling is disabled".to_string(),
+                                        None,
+                                    ),
+                                );
+                            }
+
+                            if matches!(client_mode, lr_config::ClientMode::LlmOnly) {
+                                return JsonRpcResponse::error(
+                                    request_id,
+                                    JsonRpcError::custom(
+                                        -32601,
+                                        "Sampling is unavailable for LLM-only clients".to_string(),
+                                        None,
+                                    ),
+                                );
+                            }
+
+                            let effective = match (&sampling_behavior, &client_mode) {
+                                (lr_config::SamplingBehavior::Passthrough, lr_config::ClientMode::McpViaLlm) => {
+                                    lr_config::SamplingBehavior::DirectAllow
+                                }
+                                (lr_config::SamplingBehavior::DirectAllow | lr_config::SamplingBehavior::DirectAsk, lr_config::ClientMode::McpOnly) => {
+                                    lr_config::SamplingBehavior::Passthrough
+                                }
+                                (b, _) => b.clone(),
+                            };
+
+                            let effective = if matches!(effective, lr_config::SamplingBehavior::DirectAllow)
+                                && firewall_mgr.should_intercept(
+                                    &client_id,
+                                    super::firewall::InterceptCategory::Sampling,
+                                )
+                            {
+                                tracing::info!(
+                                    "Monitor intercept: overriding DirectAllow → DirectAsk for sampling (client={})",
+                                    client_id
+                                );
+                                lr_config::SamplingBehavior::DirectAsk
+                            } else {
+                                effective
+                            };
+
+                            if matches!(effective, lr_config::SamplingBehavior::DirectAsk) {
+                                let sampling_req_for_approval = request.params.as_ref()
+                                    .and_then(|p| serde_json::from_value::<crate::protocol::SamplingRequest>(p.clone()).ok());
+
+                                let approval_req = sampling_req_for_approval.unwrap_or_else(|| {
+                                    crate::protocol::SamplingRequest {
+                                        messages: Vec::new(),
+                                        system_prompt: None,
+                                        temperature: None,
+                                        max_tokens: None,
+                                        stop_sequences: None,
+                                        metadata: None,
+                                        model_preferences: None,
+                                        tools: None,
+                                        tool_choice: None,
+                                    }
+                                });
+
+                                let approval_id = uuid::Uuid::new_v4().to_string();
+                                match sampling_approval_mgr.request_approval(
+                                    approval_id,
+                                    server_id.clone(),
+                                    approval_req,
+                                    None,
+                                ).await {
+                                    Ok(super::sampling_approval::SamplingApprovalAction::Allow) => {
+                                        // User approved, continue to direct
+                                    }
+                                    Ok(super::sampling_approval::SamplingApprovalAction::Deny) | Err(_) => {
+                                        return JsonRpcResponse::error(
                                             request_id,
-                                            json!({ "action": "decline" }),
-                                        )
+                                            JsonRpcError::custom(
+                                                -32601,
+                                                "Sampling request was denied by user".to_string(),
+                                                None,
+                                            ),
+                                        );
                                     }
                                 }
                             }
 
-                            "sampling/createMessage" => {
-                                // Check if sampling is disabled
-                                if matches!(sampling_behavior, lr_config::SamplingBehavior::Off) {
-                                    return JsonRpcResponse::error(
-                                        request_id,
-                                        JsonRpcError::custom(
-                                            -32601,
-                                            "Sampling is disabled".to_string(),
-                                            None,
-                                        ),
-                                    );
-                                }
+                            match effective {
+                                lr_config::SamplingBehavior::Passthrough => {
+                                    if let Some(sender) = &client_request_sender {
+                                        let forward_req = crate::protocol::JsonRpcRequest {
+                                            jsonrpc: "2.0".to_string(),
+                                            id: Some(json!(uuid::Uuid::new_v4().to_string())),
+                                            method: "sampling/createMessage".to_string(),
+                                            params: request.params.clone(),
+                                        };
 
-                                // LlmOnly clients don't support sampling
-                                if matches!(client_mode, lr_config::ClientMode::LlmOnly) {
-                                    return JsonRpcResponse::error(
-                                        request_id,
-                                        JsonRpcError::custom(
-                                            -32601,
-                                            "Sampling is unavailable for LLM-only clients".to_string(),
-                                            None,
-                                        ),
-                                    );
-                                }
+                                        tracing::info!(
+                                            "Passthrough: forwarding sampling request to external client"
+                                        );
 
-                                // Determine effective behavior based on client_mode
-                                let effective = match (&sampling_behavior, &client_mode) {
-                                    // Passthrough on McpViaLlm → fall back to DirectAllow
-                                    (lr_config::SamplingBehavior::Passthrough, lr_config::ClientMode::McpViaLlm) => {
-                                        lr_config::SamplingBehavior::DirectAllow
-                                    }
-                                    // Direct modes on McpOnly → fall back to Passthrough
-                                    (lr_config::SamplingBehavior::DirectAllow | lr_config::SamplingBehavior::DirectAsk, lr_config::ClientMode::McpOnly) => {
-                                        lr_config::SamplingBehavior::Passthrough
-                                    }
-                                    (b, _) => b.clone(),
-                                };
-
-                                // Monitor intercept: override DirectAllow → DirectAsk to force popup
-                                let effective = if matches!(effective, lr_config::SamplingBehavior::DirectAllow)
-                                    && firewall_mgr.should_intercept(
-                                        &client_id,
-                                        super::firewall::InterceptCategory::Sampling,
-                                    )
-                                {
-                                    tracing::info!(
-                                        "Monitor intercept: overriding DirectAllow → DirectAsk for sampling (client={})",
-                                        client_id
-                                    );
-                                    lr_config::SamplingBehavior::DirectAsk
-                                } else {
-                                    effective
-                                };
-
-                                // If DirectAsk, request user approval first
-                                if matches!(effective, lr_config::SamplingBehavior::DirectAsk) {
-                                    let sampling_req_for_approval = request.params.as_ref()
-                                        .and_then(|p| serde_json::from_value::<crate::protocol::SamplingRequest>(p.clone()).ok());
-
-                                    let approval_req = sampling_req_for_approval.unwrap_or_else(|| {
-                                        crate::protocol::SamplingRequest {
-                                            messages: Vec::new(),
-                                            system_prompt: None,
-                                            temperature: None,
-                                            max_tokens: None,
-                                            stop_sequences: None,
-                                            metadata: None,
-                                            model_preferences: None,
-                                            tools: None,
-                                            tool_choice: None,
-                                        }
-                                    });
-
-                                    let approval_id = uuid::Uuid::new_v4().to_string();
-                                    match sampling_approval_mgr.request_approval(
-                                        approval_id,
-                                        server_id.clone(),
-                                        approval_req,
-                                        None,
-                                    ).await {
-                                        Ok(super::sampling_approval::SamplingApprovalAction::Allow) => {
-                                            // User approved, continue to direct
-                                        }
-                                        Ok(super::sampling_approval::SamplingApprovalAction::Deny) | Err(_) => {
-                                            return JsonRpcResponse::error(
-                                                request_id,
-                                                JsonRpcError::custom(
-                                                    -32601,
-                                                    "Sampling request was denied by user".to_string(),
-                                                    None,
-                                                ),
-                                            );
-                                        }
-                                    }
-                                }
-
-                                match effective {
-                                    lr_config::SamplingBehavior::Passthrough => {
-                                        // Forward as a proper JSON-RPC request to the external client
-                                        if let Some(sender) = &client_request_sender {
-                                            let forward_req = crate::protocol::JsonRpcRequest {
-                                                jsonrpc: "2.0".to_string(),
-                                                id: Some(json!(uuid::Uuid::new_v4().to_string())),
-                                                method: "sampling/createMessage".to_string(),
-                                                params: request.params.clone(),
-                                            };
-
-                                            tracing::info!(
-                                                "Passthrough: forwarding sampling request to external client"
-                                            );
-
-                                            if let Some(response_rx) = sender(&session_key, forward_req) {
-                                                match tokio::time::timeout(
-                                                    std::time::Duration::from_secs(120),
-                                                    response_rx,
-                                                ).await {
-                                                    Ok(Ok(response)) => {
-                                                        if let Some(err) = response.error {
-                                                            JsonRpcResponse::error(
-                                                                request_id,
-                                                                err,
-                                                            )
-                                                        } else {
-                                                            JsonRpcResponse::success(
-                                                                request_id,
-                                                                response.result.unwrap_or(json!({})),
-                                                            )
-                                                        }
-                                                    }
-                                                    Ok(Err(_)) | Err(_) => {
+                                        if let Some(response_rx) = sender(&session_key, forward_req) {
+                                            match tokio::time::timeout(
+                                                std::time::Duration::from_secs(120),
+                                                response_rx,
+                                            ).await {
+                                                Ok(Ok(response)) => {
+                                                    if let Some(err) = response.error {
                                                         JsonRpcResponse::error(
                                                             request_id,
-                                                            JsonRpcError::custom(
-                                                                -32603,
-                                                                "Sampling passthrough timed out waiting for client response".to_string(),
-                                                                None,
-                                                            ),
+                                                            err,
+                                                        )
+                                                    } else {
+                                                        JsonRpcResponse::success(
+                                                            request_id,
+                                                            response.result.unwrap_or(json!({})),
                                                         )
                                                     }
                                                 }
-                                            } else {
-                                                JsonRpcResponse::error(
-                                                    request_id,
-                                                    JsonRpcError::custom(
-                                                        -32603,
-                                                        "No SSE connection for client - cannot passthrough sampling request".to_string(),
-                                                        None,
-                                                    ),
-                                                )
+                                                Ok(Err(_)) | Err(_) => {
+                                                    JsonRpcResponse::error(
+                                                        request_id,
+                                                        JsonRpcError::custom(
+                                                            -32603,
+                                                            "Sampling passthrough timed out waiting for client response".to_string(),
+                                                            None,
+                                                        ),
+                                                    )
+                                                }
                                             }
                                         } else {
                                             JsonRpcResponse::error(
                                                 request_id,
                                                 JsonRpcError::custom(
                                                     -32603,
-                                                    "Sampling passthrough unavailable: no client request sender configured".to_string(),
+                                                    "No SSE connection for client - cannot passthrough sampling request".to_string(),
                                                     None,
                                                 ),
                                             )
                                         }
-                                    }
-                                    lr_config::SamplingBehavior::DirectAllow | lr_config::SamplingBehavior::DirectAsk => {
-                                        // DirectAsk approval already handled above
-                                        Self::handle_sampling_direct(
-                                            &router, &client_id, request.params, request_id
-                                        ).await
-                                    }
-                                    lr_config::SamplingBehavior::Off => {
-                                        // Already handled above
+                                    } else {
                                         JsonRpcResponse::error(
                                             request_id,
-                                            JsonRpcError::custom(-32601, "Sampling is disabled".to_string(), None),
+                                            JsonRpcError::custom(
+                                                -32603,
+                                                "Sampling passthrough unavailable: no client request sender configured".to_string(),
+                                                None,
+                                            ),
                                         )
                                     }
                                 }
-                            }
-
-                            _ => {
-                                JsonRpcResponse::error(
-                                    request_id,
-                                    JsonRpcError::method_not_found(&request.method),
-                                )
+                                lr_config::SamplingBehavior::DirectAllow | lr_config::SamplingBehavior::DirectAsk => {
+                                    Self::handle_sampling_direct(
+                                        &router, &client_id, request.params, request_id
+                                    ).await
+                                }
+                                lr_config::SamplingBehavior::Off => {
+                                    JsonRpcResponse::error(
+                                        request_id,
+                                        JsonRpcError::custom(-32601, "Sampling is disabled".to_string(), None),
+                                    )
+                                }
                             }
                         }
-                    })
-                }),
-            );
+
+                        _ => {
+                            JsonRpcResponse::error(
+                                request_id,
+                                JsonRpcError::method_not_found(&request.method),
+                            )
+                        }
+                    }
+                })
+            }));
+        }
+    }
+
+    /// Register per-session notification callbacks on transports.
+    ///
+    /// Replaces the global `register_notification_handlers` for sessions that
+    /// own their own transport set. Notifications invalidate session caches and
+    /// are forwarded to SSE clients.
+    fn register_notification_handlers_on_transports(
+        &self,
+        server_ids: &[String],
+        session: &Arc<RwLock<GatewaySession>>,
+        transport_set: &Arc<SessionTransportSet>,
+    ) {
+        use crate::transport::NotificationCallback;
+
+        for server_id in server_ids {
+            let transport = match transport_set.get(server_id) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let session_clone = session.clone();
+            let server_id_clone = server_id.clone();
+            let broadcast_clone = self.notification_broadcast.clone();
+
+            let callback: NotificationCallback = Arc::new(move |notification: JsonRpcNotification| {
+                let session_inner = session_clone.clone();
+                let server_id_inner = server_id_clone.clone();
+                let broadcast_inner = broadcast_clone.clone();
+
+                tokio::spawn(async move {
+                    match notification.method.as_str() {
+                        "notifications/tools/list_changed" => {
+                            tracing::info!(
+                                "Received tools/list_changed notification from server: {}",
+                                server_id_inner
+                            );
+                            if let Ok(mut session_write) = session_inner.try_write() {
+                                session_write.cache_ttl_manager.record_invalidation();
+                                session_write.cached_tools = None;
+                            }
+                        }
+                        "notifications/resources/list_changed" => {
+                            tracing::info!(
+                                "Received resources/list_changed notification from server: {}",
+                                server_id_inner
+                            );
+                            if let Ok(mut session_write) = session_inner.try_write() {
+                                session_write.cache_ttl_manager.record_invalidation();
+                                session_write.cached_resources = None;
+                            }
+                        }
+                        "notifications/prompts/list_changed" => {
+                            tracing::info!(
+                                "Received prompts/list_changed notification from server: {}",
+                                server_id_inner
+                            );
+                            if let Ok(mut session_write) = session_inner.try_write() {
+                                session_write.cache_ttl_manager.record_invalidation();
+                                session_write.cached_prompts = None;
+                            }
+                        }
+                        other_method => {
+                            tracing::debug!(
+                                "Received notification from server {}: {}",
+                                server_id_inner,
+                                other_method
+                            );
+                        }
+                    }
+
+                    // Forward notification to external clients (if broadcast channel exists)
+                    // Namespace progress tokens to avoid collisions between servers
+                    let forwarded_notification =
+                        if notification.method == "notifications/progress" {
+                            let mut n = notification.clone();
+                            if let Some(ref mut params) = n.params {
+                                if let Some(token) = params.get("progressToken").cloned() {
+                                    let namespaced = format!(
+                                        "{}__{}",
+                                        server_id_inner,
+                                        token
+                                            .as_str()
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| token.to_string())
+                                    );
+                                    if let Some(obj) = params.as_object_mut() {
+                                        obj.insert(
+                                            "progressToken".to_string(),
+                                            serde_json::json!(namespaced),
+                                        );
+                                    }
+                                }
+                            }
+                            n
+                        } else {
+                            notification.clone()
+                        };
+
+                    if let Some(broadcast) = broadcast_inner.as_ref() {
+                        let payload = (server_id_inner.clone(), forwarded_notification);
+                        match broadcast.send(payload) {
+                            Ok(receiver_count) => {
+                                tracing::debug!(
+                                    "Forwarded notification from server {} to {} client(s)",
+                                    server_id_inner,
+                                    receiver_count
+                                );
+                            }
+                            Err(_) => {
+                                tracing::trace!(
+                                    "No clients subscribed to notifications from server {}",
+                                    server_id_inner
+                                );
+                            }
+                        }
+                    }
+                });
+            });
+
+            transport.set_notification_callback(callback);
         }
     }
 
@@ -1644,7 +1613,7 @@ impl McpGateway {
     /// which we un-namespace before forwarding.
     async fn handle_completion_complete(
         &self,
-        _session: Arc<RwLock<GatewaySession>>,
+        session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let request_id = request.id.clone().unwrap_or(Value::Null);
@@ -1701,18 +1670,24 @@ impl McpGateway {
             }
         }
 
-        // Forward to the specific upstream server
+        // Forward to the specific upstream server via session transports
         let forward_request = JsonRpcRequest::new(
             Some(request_id.clone()),
             "completion/complete".to_string(),
             Some(modified_params),
         );
 
+        let transports = session
+            .read()
+            .await
+            .transports
+            .clone()
+            .ok_or_else(|| AppError::Mcp("Session not initialized".into()))?;
+
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         match tokio::time::timeout(
             timeout,
-            self.server_manager
-                .send_request(&server_id, forward_request),
+            transports.send_request(&server_id, forward_request),
         )
         .await
         {
@@ -1783,74 +1758,14 @@ impl McpGateway {
         let allowed_servers = session_read.allowed_servers.clone();
         drop(session_read);
 
-        // Start all servers in parallel, collecting failures
-        // We continue even if some servers fail to start
+        // Create per-session transports for all allowed servers
         let start_timeout = tokio::time::Duration::from_secs(15);
-        let mut start_futures = Vec::new();
-
-        for server_id in &allowed_servers {
-            let server_name = self
-                .server_manager
-                .get_config(server_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| server_id.clone());
-
-            if self.server_manager.is_running(server_id) {
-                tracing::debug!("Server '{}' already running, skipping start", server_name);
-                continue;
-            }
-            let server_id = server_id.clone();
-            let manager = self.server_manager.clone();
-            start_futures.push(async move {
-                tracing::info!("Starting MCP server '{}' for gateway init...", server_name);
-                let start = std::time::Instant::now();
-                let result =
-                    tokio::time::timeout(start_timeout, manager.start_server(&server_id)).await;
-                tracing::info!(
-                    "Server '{}' start completed in {:?}: {}",
-                    server_name,
-                    start.elapsed(),
-                    match &result {
-                        Ok(Ok(())) => "success".to_string(),
-                        Ok(Err(e)) => format!("error: {}", e),
-                        Err(_) => "TIMEOUT".to_string(),
-                    }
-                );
-                (server_id, result)
-            });
-        }
-
-        // Already-running servers are immediately successful
-        let mut started_servers: Vec<String> = allowed_servers
-            .iter()
-            .filter(|id| self.server_manager.is_running(id))
-            .cloned()
-            .collect();
-        let mut start_failures: Vec<ServerFailure> = Vec::new();
-
-        let results = futures::future::join_all(start_futures).await;
-        for (server_id, result) in results {
-            match result {
-                Ok(Ok(())) => {
-                    started_servers.push(server_id);
-                }
-                Ok(Err(e)) => {
-                    start_failures.push(ServerFailure {
-                        server_id,
-                        error: e.to_string(),
-                    });
-                }
-                Err(_) => {
-                    start_failures.push(ServerFailure {
-                        server_id,
-                        error: format!(
-                            "Server startup timed out after {}s",
-                            start_timeout.as_secs()
-                        ),
-                    });
-                }
-            }
-        }
+        let (transport_set, start_failures) = self
+            .server_manager
+            .create_transports(&allowed_servers, start_timeout)
+            .await;
+        let transport_set = Arc::new(transport_set);
+        let started_servers = transport_set.running_server_ids();
 
         // If no servers could be started, proceed without MCP servers.
         // The gateway still serves other features (marketplace, coding agents, skills).
@@ -1915,6 +1830,7 @@ impl McpGateway {
             {
                 let mut session_write = session.write().await;
                 session_write.merged_capabilities = Some(merged);
+                session_write.transports = Some(transport_set.clone());
             }
 
             return Ok(JsonRpcResponse::success(
@@ -1992,7 +1908,7 @@ impl McpGateway {
         let results = broadcast_request(
             &servers_to_initialize,
             broadcast_request_msg,
-            &self.server_manager,
+            &transport_set,
             timeout,
             max_retries,
         )
@@ -2014,7 +1930,7 @@ impl McpGateway {
             })
             .collect();
 
-        // Register request callbacks on (now-running) transports before completing
+        // Register per-session request callbacks on transports before completing
         // the handshake. Servers may send requests (elicitation, sampling, roots/list)
         // from their oninitialized callback which fires when they receive the notification.
         let initialized_server_ids: Vec<String> =
@@ -2027,33 +1943,44 @@ impl McpGateway {
                 s.client_mode.clone(),
             )
         };
-        self.register_request_handlers(
+        self.register_request_handlers_on_transports(
             &initialized_server_ids,
             &client_id_for_callbacks,
             &session_key_for_callbacks,
             client_mode_for_callbacks,
+            &transport_set,
         );
 
-        // Send notifications/initialized to all successfully initialized servers.
-        // This completes the MCP handshake — servers fire oninitialized callbacks
-        // which may register conditional tools based on client capabilities.
+        // Register per-session notification callbacks on transports
+        self.register_notification_handlers_on_transports(
+            &initialized_server_ids,
+            &session,
+            &transport_set,
+        );
+
+        // Send notifications/initialized to all successfully initialized servers
+        // via session transports. This completes the MCP handshake — servers fire
+        // oninitialized callbacks which may register conditional tools based on
+        // client capabilities.
         for (server_id, _) in &init_results {
             let notification = JsonRpcRequest::new(
                 None,
                 "notifications/initialized".to_string(),
                 Some(json!({})),
             );
-            if let Err(e) = self
-                .server_manager
-                .send_request(server_id, notification)
-                .await
-            {
+            if let Err(e) = transport_set.send_request(server_id, notification).await {
                 tracing::warn!(
                     "Failed to send notifications/initialized to server {}: {}",
                     server_id,
                     e
                 );
             }
+        }
+
+        // Store the transport set on the session
+        {
+            let mut session_write = session.write().await;
+            session_write.transports = Some(transport_set.clone());
         }
 
         // If all servers failed, check if virtual servers can serve as fallback
@@ -2113,6 +2040,7 @@ impl McpGateway {
                 {
                     let mut session_write = session.write().await;
                     session_write.merged_capabilities = Some(merged);
+                    session_write.transports = Some(transport_set.clone());
                 }
 
                 return Ok(JsonRpcResponse::success(
@@ -2185,6 +2113,7 @@ impl McpGateway {
                     "tools/list".to_string(),
                     None,
                 ),
+                &transport_set,
             )
             .await
             .map(|(t, _)| t)
@@ -2198,6 +2127,7 @@ impl McpGateway {
                     "resources/list".to_string(),
                     None,
                 ),
+                &transport_set,
             )
             .await
             .map(|(r, _)| r)
@@ -2211,6 +2141,7 @@ impl McpGateway {
                     "prompts/list".to_string(),
                     None,
                 ),
+                &transport_set,
             )
             .await
             .map(|(p, _)| p)
@@ -2500,9 +2431,16 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
-        let session_read = session.read().await;
-        let allowed_servers = session_read.allowed_servers.clone();
-        drop(session_read);
+        let (allowed_servers, transports) = {
+            let session_read = session.read().await;
+            (
+                session_read.allowed_servers.clone(),
+                session_read
+                    .transports
+                    .clone()
+                    .ok_or_else(|| AppError::Mcp("Session not initialized".into()))?,
+            )
+        };
 
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
@@ -2510,7 +2448,7 @@ impl McpGateway {
         let results = broadcast_request(
             &allowed_servers,
             request.clone(),
-            &self.server_manager,
+            &transports,
             timeout,
             max_retries,
         )
@@ -2532,14 +2470,13 @@ impl McpGateway {
     }
 
     /// Cleanup expired sessions (call periodically from background task)
-    pub fn cleanup_expired_sessions(&self) {
+    pub async fn cleanup_expired_sessions(&self) {
         let mut to_remove = Vec::new();
 
         for entry in self.sessions.iter() {
             let session_key = entry.key().clone();
             let session = entry.value().clone();
 
-            // Try to acquire read lock with timeout
             let is_expired = if let Ok(session_read) = session.try_read() {
                 session_read.is_expired()
             } else {
@@ -2547,11 +2484,17 @@ impl McpGateway {
             };
 
             if is_expired {
-                to_remove.push(session_key);
+                to_remove.push((session_key, session));
             }
         }
 
-        for session_key in to_remove {
+        for (session_key, session) in to_remove {
+            // Close per-session transports before removing
+            if let Ok(session_read) = session.try_read() {
+                if let Some(transports) = &session_read.transports {
+                    transports.close_all().await;
+                }
+            }
             self.sessions.remove(&session_key);
             tracing::info!("Removed expired gateway session: {}", session_key);
         }
@@ -2795,8 +2738,15 @@ impl McpGateway {
     }
 
     /// Terminate a session by session key (direct lookup).
+    /// Closes all per-session transports before removing.
     pub async fn terminate_session(&self, session_key: &str) -> Result<(), String> {
-        if self.sessions.remove(session_key).is_some() {
+        if let Some((_, session)) = self.sessions.remove(session_key) {
+            // Close per-session transports
+            if let Ok(session_read) = session.try_read() {
+                if let Some(transports) = &session_read.transports {
+                    transports.close_all().await;
+                }
+            }
             tracing::info!(
                 "Gateway: terminated session for session_key={}",
                 session_key
@@ -2823,8 +2773,14 @@ impl McpGateway {
             .collect();
 
         let count = keys_to_remove.len();
-        for key in keys_to_remove {
-            self.sessions.remove(&key);
+        for key in &keys_to_remove {
+            if let Some((_, session)) = self.sessions.remove(key) {
+                if let Ok(session_read) = session.try_read() {
+                    if let Some(transports) = &session_read.transports {
+                        transports.close_all().await;
+                    }
+                }
+            }
         }
         if count > 0 {
             tracing::info!(
@@ -3059,64 +3015,28 @@ impl McpGateway {
             );
         }
 
-        // 3. Start servers on demand if not already running
+        // 3. Create ephemeral transports for preview
         let start_timeout = tokio::time::Duration::from_secs(15);
-        let mut start_futures = Vec::new();
-
-        for server_id in &allowed_server_ids {
-            if self.server_manager.is_running(server_id) {
-                continue;
-            }
-            let sid = server_id.clone();
-            let manager = self.server_manager.clone();
-            start_futures.push(async move {
-                let result = tokio::time::timeout(start_timeout, manager.start_server(&sid)).await;
-                (sid, result)
-            });
-        }
-
-        let mut running_ids: Vec<String> = allowed_server_ids
-            .iter()
-            .filter(|id| self.server_manager.is_running(id))
-            .cloned()
-            .collect();
-        let mut unavailable = Vec::new();
-
-        if !start_futures.is_empty() {
-            let results = futures::future::join_all(start_futures).await;
-            for (server_id, result) in results {
-                match result {
-                    Ok(Ok(())) => {
-                        running_ids.push(server_id);
-                    }
-                    Ok(Err(e)) => {
-                        let name = self
-                            .server_manager
-                            .get_config(&server_id)
-                            .map(|c| c.name.clone())
-                            .unwrap_or_else(|| server_id.clone());
-                        unavailable.push(UnavailableServerInfo {
-                            name,
-                            error: e.to_string(),
-                        });
-                    }
-                    Err(_) => {
-                        let name = self
-                            .server_manager
-                            .get_config(&server_id)
-                            .map(|c| c.name.clone())
-                            .unwrap_or_else(|| server_id.clone());
-                        unavailable.push(UnavailableServerInfo {
-                            name,
-                            error: format!(
-                                "Server startup timed out after {}s",
-                                start_timeout.as_secs()
-                            ),
-                        });
-                    }
+        let (preview_transports, preview_failures) = self
+            .server_manager
+            .create_transports(&allowed_server_ids, start_timeout)
+            .await;
+        let preview_transports = Arc::new(preview_transports);
+        let running_ids = preview_transports.running_server_ids();
+        let unavailable: Vec<UnavailableServerInfo> = preview_failures
+            .into_iter()
+            .map(|f| {
+                let name = self
+                    .server_manager
+                    .get_config(&f.server_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| f.server_id.clone());
+                UnavailableServerInfo {
+                    name,
+                    error: f.error,
                 }
-            }
-        }
+            })
+            .collect();
 
         // Send initialize to running servers to get instructions/description
         let init_request = JsonRpcRequest::new(
@@ -3139,7 +3059,7 @@ impl McpGateway {
         let init_results_raw = broadcast_request(
             &running_ids,
             init_request,
-            &self.server_manager,
+            &preview_transports,
             timeout,
             0, // no retries for preview
         )
@@ -3161,8 +3081,7 @@ impl McpGateway {
                 "notifications/initialized".to_string(),
                 Some(json!({})),
             );
-            let _ = self
-                .server_manager
+            let _ = preview_transports
                 .send_request(server_id, notification)
                 .await;
         }
@@ -3176,6 +3095,7 @@ impl McpGateway {
                     "tools/list".to_string(),
                     None,
                 ),
+                &preview_transports,
             )
             .await
             .map(|(t, _)| t)
@@ -3189,6 +3109,7 @@ impl McpGateway {
                     "resources/list".to_string(),
                     None,
                 ),
+                &preview_transports,
             )
             .await
             .map(|(r, _)| r)
@@ -3202,6 +3123,7 @@ impl McpGateway {
                     "prompts/list".to_string(),
                     None,
                 ),
+                &preview_transports,
             )
             .await
             .map(|(p, _)| p)
@@ -3249,6 +3171,9 @@ impl McpGateway {
             ..Default::default()
         };
 
+        // Close ephemeral preview transports — they are not needed after catalog fetch
+        preview_transports.close_all().await;
+
         // Cache the context in a lightweight preview session so subsequent
         // calls (e.g. threshold slider changes) don't rebuild from scratch.
         let preview_session_id = format!("_preview_{}", client_id);
@@ -3268,7 +3193,9 @@ impl McpGateway {
         Ok(ctx)
     }
 
-    /// Fetch tool/resource/prompt catalogs from all running servers for preview detail display.
+    /// Fetch tool/resource/prompt catalogs from all enabled servers for preview detail display.
+    ///
+    /// Creates ephemeral transports, fetches data, then tears them down.
     pub async fn fetch_preview_catalogs(
         &self,
     ) -> (
@@ -3276,17 +3203,43 @@ impl McpGateway {
         Vec<NamespacedResource>,
         Vec<NamespacedPrompt>,
     ) {
-        let running_ids: Vec<String> = self
+        let server_ids: Vec<String> = self
             .server_manager
             .list_configs()
             .iter()
-            .filter(|c| c.enabled && self.server_manager.is_running(&c.id))
+            .filter(|c| c.enabled)
             .map(|c| c.id.clone())
             .collect();
 
-        if running_ids.is_empty() {
+        if server_ids.is_empty() {
             return (Vec::new(), Vec::new(), Vec::new());
         }
+
+        let start_timeout = tokio::time::Duration::from_secs(15);
+        let (ephemeral_transports, _) = self
+            .server_manager
+            .create_transports(&server_ids, start_timeout)
+            .await;
+        let ephemeral_transports = Arc::new(ephemeral_transports);
+        let running_ids = ephemeral_transports.running_server_ids();
+
+        if running_ids.is_empty() {
+            ephemeral_transports.close_all().await;
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
+
+        // Send initialize to get servers ready
+        let init_request = JsonRpcRequest::new(
+            Some(json!("_preview_catalog_init")),
+            "initialize".to_string(),
+            Some(json!({
+                "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": { "name": "LocalRouter", "version": env!("CARGO_PKG_VERSION") }
+            })),
+        );
+        let timeout = Duration::from_secs(self.config.server_timeout_seconds);
+        let _ = broadcast_request(&running_ids, init_request, &ephemeral_transports, timeout, 0).await;
 
         let tools = self
             .fetch_and_merge_tools(
@@ -3296,6 +3249,7 @@ impl McpGateway {
                     "tools/list".to_string(),
                     None,
                 ),
+                &ephemeral_transports,
             )
             .await
             .map(|(t, _)| t)
@@ -3309,6 +3263,7 @@ impl McpGateway {
                     "resources/list".to_string(),
                     None,
                 ),
+                &ephemeral_transports,
             )
             .await
             .map(|(r, _)| r)
@@ -3322,11 +3277,13 @@ impl McpGateway {
                     "prompts/list".to_string(),
                     None,
                 ),
+                &ephemeral_transports,
             )
             .await
             .map(|(p, _)| p)
             .unwrap_or_default();
 
+        ephemeral_transports.close_all().await;
         (tools, resources, prompts)
     }
 }

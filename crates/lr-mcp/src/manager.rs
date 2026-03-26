@@ -997,6 +997,318 @@ impl McpServerManager {
         Ok(())
     }
 
+    /// Create a transport for a server (does NOT store globally or set callbacks).
+    ///
+    /// Returns an `Arc<dyn Transport>` suitable for per-session ownership.
+    /// Callers are responsible for setting notification/request callbacks and closing
+    /// the transport when done.
+    pub async fn create_transport(&self, server_id: &str) -> AppResult<Arc<dyn Transport>> {
+        let config = self
+            .configs
+            .get(server_id)
+            .ok_or_else(|| AppError::Mcp(format!("Server not found: {}", server_id)))?
+            .clone();
+
+        if !config.enabled {
+            return Err(AppError::Mcp(format!("Server is disabled: {}", server_id)));
+        }
+
+        #[allow(deprecated)]
+        match config.transport {
+            McpTransportType::Stdio => {
+                self.create_stdio_transport_impl(server_id, &config).await
+            }
+            McpTransportType::Sse | McpTransportType::HttpSse => {
+                self.create_sse_transport_impl(server_id, &config).await
+            }
+            McpTransportType::WebSocket => {
+                self.create_websocket_transport_impl(server_id, &config).await
+            }
+        }
+    }
+
+    /// Create transports for multiple servers in parallel.
+    ///
+    /// Returns a `SessionTransportSet` with all successfully created transports,
+    /// plus a list of failures.
+    pub async fn create_transports(
+        &self,
+        server_ids: &[String],
+        timeout: std::time::Duration,
+    ) -> (crate::transport::SessionTransportSet, Vec<crate::gateway::types::ServerFailure>) {
+        use crate::transport::SessionTransportSet;
+        use crate::gateway::types::ServerFailure;
+
+        let transport_set = SessionTransportSet::new();
+        let mut failures = Vec::new();
+
+        let futures: Vec<_> = server_ids
+            .iter()
+            .map(|server_id| {
+                let server_id = server_id.clone();
+                let manager = self.clone();
+                let server_name = self
+                    .get_config(&server_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| server_id.clone());
+                async move {
+                    tracing::info!("Creating transport for MCP server '{}'...", server_name);
+                    let start = std::time::Instant::now();
+                    let result = tokio::time::timeout(timeout, manager.create_transport(&server_id)).await;
+                    tracing::info!(
+                        "Transport creation for '{}' completed in {:?}: {}",
+                        server_name,
+                        start.elapsed(),
+                        match &result {
+                            Ok(Ok(_)) => "success".to_string(),
+                            Ok(Err(e)) => format!("error: {}", e),
+                            Err(_) => "TIMEOUT".to_string(),
+                        }
+                    );
+                    (server_id, result)
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+
+        for (server_id, result) in results {
+            match result {
+                Ok(Ok(transport)) => {
+                    transport_set.insert(server_id, transport);
+                }
+                Ok(Err(e)) => {
+                    failures.push(ServerFailure {
+                        server_id,
+                        error: e.to_string(),
+                    });
+                }
+                Err(_) => {
+                    failures.push(ServerFailure {
+                        server_id,
+                        error: format!("Server startup timed out after {}s", timeout.as_secs()),
+                    });
+                }
+            }
+        }
+
+        (transport_set, failures)
+    }
+
+    /// Internal: create a STDIO transport without storing or setting callbacks.
+    async fn create_stdio_transport_impl(
+        &self,
+        server_id: &str,
+        config: &McpServerConfig,
+    ) -> AppResult<Arc<dyn Transport>> {
+        let (command, args, config_env) = config
+            .transport_config
+            .parse_stdio_command()
+            .map_err(AppError::Mcp)?;
+
+        let mut env = SHELL_ENV.clone();
+        for (key, value) in config_env {
+            env.insert(key, value);
+        }
+
+        if let Some(lr_config::McpAuthConfig::EnvVars { env_refs }) = &config.auth_config {
+            let keychain = lr_api_keys::CachedKeychain::auto()
+                .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
+            for (var_name, ref_key) in env_refs {
+                match keychain.get(lr_config::MCP_KEYRING_SERVICE, ref_key) {
+                    Ok(Some(value)) => { env.insert(var_name.clone(), value); }
+                    Ok(None) => { tracing::warn!("Env var '{}' ref '{}' not found in keychain", var_name, ref_key); }
+                    Err(e) => { tracing::warn!("Failed to read env var '{}' from keychain: {}", var_name, e); }
+                }
+            }
+            tracing::debug!("Applied auth env vars for STDIO server: {}", server_id);
+        }
+
+        let transport = StdioTransport::spawn(command, args, env).await?;
+        Ok(Arc::new(transport))
+    }
+
+    /// Internal: create an SSE transport without storing or setting callbacks.
+    async fn create_sse_transport_impl(
+        &self,
+        server_id: &str,
+        config: &McpServerConfig,
+    ) -> AppResult<Arc<dyn Transport>> {
+        let (url, mut headers) = match &config.transport_config {
+            McpTransportConfig::Sse { url, headers }
+            | McpTransportConfig::HttpSse { url, headers } => (url.clone(), headers.clone()),
+            _ => {
+                return Err(AppError::Mcp(
+                    "Invalid transport config for SSE/HttpSse".to_string(),
+                ))
+            }
+        };
+
+        self.apply_auth_headers(server_id, config, &mut headers).await?;
+
+        let transport = SseTransport::connect(url, headers).await?;
+        Ok(Arc::new(transport))
+    }
+
+    /// Internal: create a WebSocket transport without storing or setting callbacks.
+    async fn create_websocket_transport_impl(
+        &self,
+        server_id: &str,
+        config: &McpServerConfig,
+    ) -> AppResult<Arc<dyn Transport>> {
+        let (url, mut headers) = match &config.transport_config {
+            McpTransportConfig::WebSocket { url, headers } => (url.clone(), headers.clone()),
+            _ => {
+                return Err(AppError::Mcp(
+                    "Invalid transport config for WebSocket".to_string(),
+                ))
+            }
+        };
+
+        self.apply_auth_headers(server_id, config, &mut headers).await?;
+
+        let transport = WebSocketTransport::connect(url, headers).await?;
+        Ok(Arc::new(transport))
+    }
+
+    /// Apply auth config to HTTP headers (shared by SSE and WebSocket transports).
+    async fn apply_auth_headers(
+        &self,
+        server_id: &str,
+        config: &McpServerConfig,
+        headers: &mut HashMap<String, String>,
+    ) -> AppResult<()> {
+        let Some(auth_config) = &config.auth_config else {
+            return Ok(());
+        };
+
+        match auth_config {
+            lr_config::McpAuthConfig::BearerToken { token_ref: _ } => {
+                let keychain = lr_api_keys::CachedKeychain::auto()
+                    .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
+                let account_name = format!("{}_bearer_token", config.id);
+                if let Ok(Some(token)) =
+                    keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name)
+                {
+                    headers.insert("Authorization".to_string(), format!("Bearer {}", token));
+                    tracing::debug!("Applied bearer token auth for server: {}", server_id);
+                } else {
+                    tracing::warn!("Bearer token not found in keychain for MCP server");
+                }
+            }
+            lr_config::McpAuthConfig::CustomHeaders { header_refs } => {
+                let keychain = lr_api_keys::CachedKeychain::auto()
+                    .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
+                for (header_name, ref_key) in header_refs {
+                    match keychain.get(lr_config::MCP_KEYRING_SERVICE, ref_key) {
+                        Ok(Some(value)) => { headers.insert(header_name.clone(), value); }
+                        Ok(None) => { tracing::warn!("Header '{}' ref '{}' not found in keychain", header_name, ref_key); }
+                        Err(e) => { tracing::warn!("Failed to read header '{}' from keychain: {}", header_name, e); }
+                    }
+                }
+                tracing::debug!("Applied custom headers auth for server: {}", server_id);
+            }
+            lr_config::McpAuthConfig::OAuth {
+                client_id,
+                client_secret_ref,
+                token_url,
+                scopes,
+                ..
+            } => {
+                let keychain = lr_api_keys::CachedKeychain::auto()
+                    .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
+
+                let client_secret = match keychain
+                    .get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)
+                {
+                    Ok(Some(secret)) => secret,
+                    Ok(None) => {
+                        let msg = format!("OAuth client secret not found for server: {}", server_id);
+                        tracing::warn!("OAuth client secret not found in keychain for MCP server");
+                        return Err(AppError::Mcp(msg));
+                    }
+                    Err(e) => {
+                        let msg = format!("Failed to retrieve OAuth client secret: {}", e);
+                        tracing::error!("{}", msg);
+                        return Err(e);
+                    }
+                };
+
+                let client = reqwest::Client::new();
+                let mut form_params = vec![
+                    ("grant_type", "client_credentials"),
+                    ("client_id", client_id.as_str()),
+                    ("client_secret", client_secret.as_str()),
+                ];
+                let scopes_str = scopes.join(" ");
+                if !scopes.is_empty() {
+                    form_params.push(("scope", scopes_str.as_str()));
+                }
+
+                let token_response = client
+                    .post(token_url)
+                    .form(&form_params)
+                    .send()
+                    .await
+                    .map_err(|e| AppError::Mcp(format!("OAuth token request failed: {}", e)))?;
+
+                if !token_response.status().is_success() {
+                    let status = token_response.status();
+                    let body = token_response.text().await.unwrap_or_default();
+                    return Err(AppError::Mcp(format!(
+                        "OAuth token request failed with status {}: {}",
+                        status, body
+                    )));
+                }
+
+                let token_json: serde_json::Value =
+                    token_response.json().await.map_err(|e| {
+                        AppError::Mcp(format!("Failed to parse OAuth token response: {}", e))
+                    })?;
+
+                let access_token = token_json
+                    .get("access_token")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        AppError::Mcp("OAuth response missing access_token".to_string())
+                    })?;
+
+                headers.insert("Authorization".to_string(), format!("Bearer {}", access_token));
+                tracing::info!("Applied OAuth token for server: {}", server_id);
+            }
+            lr_config::McpAuthConfig::OAuthBrowser { .. } => {
+                let keychain = lr_api_keys::CachedKeychain::auto()
+                    .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
+
+                let account_name = format!("{}_access_token", config.id);
+                match keychain.get("LocalRouter-McpServerTokens", &account_name) {
+                    Ok(Some(token)) => {
+                        headers.insert("Authorization".to_string(), format!("Bearer {}", token));
+                        tracing::debug!("Applied OAuth browser token for server: {}", server_id);
+                    }
+                    Ok(None) => {
+                        let msg = format!(
+                            "OAuth browser authentication required for server: {}. Please complete browser authentication first.",
+                            server_id
+                        );
+                        tracing::warn!("OAuth browser token not found in keychain for MCP server");
+                        return Err(AppError::Mcp(msg));
+                    }
+                    Err(e) => {
+                        let msg = format!("Failed to retrieve OAuth browser token: {}", e);
+                        tracing::error!("{}", msg);
+                        return Err(e);
+                    }
+                }
+            }
+            _ => {
+                tracing::debug!("No applicable auth config for server: {}", server_id);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Stop an MCP server
     ///
     /// # Arguments
@@ -1130,46 +1442,50 @@ impl McpServerManager {
     /// * The health status
     pub async fn get_server_health(&self, server_id: &str) -> McpServerHealth {
         let config = self.get_config(server_id);
-        let start = std::time::Instant::now();
 
-        let (status, latency_ms, error) =
-            if let Some(transport) = self.stdio_transports.get(server_id) {
-                // STDIO doesn't have meaningful latency (no network)
-                if transport.is_alive() {
-                    (HealthStatus::Healthy, None, None)
-                } else {
-                    (
-                        HealthStatus::Unhealthy,
-                        None,
-                        Some("Process not running".to_string()),
-                    )
-                }
-            } else if let Some(transport) = self.sse_transports.get(server_id) {
-                let latency = start.elapsed().as_millis() as u64;
-                if transport.is_healthy() {
-                    (HealthStatus::Healthy, Some(latency), None)
-                } else {
-                    (
-                        HealthStatus::Unhealthy,
-                        None,
-                        Some("SSE connection lost".to_string()),
-                    )
-                }
-            } else if let Some(transport) = self.websocket_transports.get(server_id) {
-                let latency = start.elapsed().as_millis() as u64;
-                if transport.is_healthy() {
-                    (HealthStatus::Healthy, Some(latency), None)
-                } else {
-                    (
-                        HealthStatus::Unhealthy,
-                        None,
-                        Some("WebSocket connection lost".to_string()),
-                    )
-                }
-            } else {
-                // Server not running - check if it's ready to start
-                self.check_server_readiness(&config).await
-            };
+        // Check if there's a UI-managed global transport still alive
+        let has_live_global_transport = self
+            .stdio_transports
+            .get(server_id)
+            .is_some_and(|t| t.is_alive())
+            || self
+                .sse_transports
+                .get(server_id)
+                .is_some_and(|t| t.is_healthy())
+            || self
+                .websocket_transports
+                .get(server_id)
+                .is_some_and(|t| t.is_healthy());
+
+        // If a global transport is alive (e.g. manually started from UI), report healthy.
+        // Otherwise, always do a fresh readiness check (try to spawn/connect).
+        let (status, latency_ms, error) = if has_live_global_transport {
+            (HealthStatus::Healthy, None, None)
+        } else {
+            // Clean up any dead global transports before the readiness check
+            if self
+                .stdio_transports
+                .get(server_id)
+                .is_some_and(|t| !t.is_alive())
+            {
+                self.stdio_transports.remove(server_id);
+            }
+            if self
+                .sse_transports
+                .get(server_id)
+                .is_some_and(|t| !t.is_healthy())
+            {
+                self.sse_transports.remove(server_id);
+            }
+            if self
+                .websocket_transports
+                .get(server_id)
+                .is_some_and(|t| !t.is_healthy())
+            {
+                self.websocket_transports.remove(server_id);
+            }
+            self.check_server_readiness(&config).await
+        };
 
         let server_name = config
             .map(|c| c.name)
@@ -1387,8 +1703,11 @@ impl McpServerManager {
             } => {
                 match result {
                     Ok(0) => {
-                        // EOF on stdout - process likely exiting
-                        Err("Process closed stdout without output".to_string())
+                        // EOF on stdout — process closed without producing output.
+                        // This is normal for stdio MCP servers that exit when they
+                        // don't receive an initialize request on stdin. The process
+                        // was spawnable, so consider it ready.
+                        Ok(())
                     }
                     Ok(_) => {
                         // Got output on stdout - server is running!
@@ -1758,6 +2077,26 @@ mod tests {
         assert!(
             result.is_err(),
             "npx with invalid package should fail: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_try_spawn_command_no_stdout_output() {
+        // A command that exits immediately without producing stdout output.
+        // This simulates stdio MCP servers (like `netget --mcp`) that close
+        // when they don't receive an initialize request on stdin.
+        // `true` exits with code 0 but produces no output.
+        let result = McpServerManager::try_spawn_command(
+            "true",
+            &[],
+            &HashMap::new(),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "command that exits cleanly without output should be considered ready: {:?}",
             result
         );
     }

@@ -199,6 +199,7 @@ pub async fn mcp_gateway_get_handler(
     // Clone for cleanup
     let session_id_cleanup = session_id.clone();
     let sse_manager = state.sse_connection_manager.clone();
+    let gateway_for_cleanup = state.mcp_gateway.clone();
 
     // Create SSE stream that forwards both responses and notifications
     let sse_stream = async_stream::stream! {
@@ -353,7 +354,9 @@ pub async fn mcp_gateway_get_handler(
             }
         }
 
-        // Cleanup: unregister from SSE manager when stream ends
+        // Cleanup: terminate gateway session (closes per-session transports)
+        // and unregister from SSE manager when stream ends
+        let _ = gateway_for_cleanup.terminate_session(&session_id_cleanup).await;
         sse_manager.unregister(&session_id_cleanup);
         tracing::debug!("SSE stream ended for session {}", session_id_cleanup);
     };

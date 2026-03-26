@@ -368,6 +368,12 @@ impl Transport for WebSocketTransport {
     async fn close(&self) -> AppResult<()> {
         self.disconnect().await
     }
+
+    fn set_notification_callback(&self, callback: super::NotificationCallback) {
+        *self.notification_callback.write() = Some(callback);
+    }
+
+    // WebSocket transport does not support server-initiated requests (no set_request_callback)
 }
 
 #[cfg(test)]
