@@ -239,6 +239,60 @@ pub fn check_llm_access_with_state(state: &AppState, client: &Client) -> HelperR
     Ok(())
 }
 
+/// Validate that the requested model is in the strategy's allowed models list.
+///
+/// This ensures the model whitelist configured in the strategy is enforced at request time,
+/// not just at listing time (/v1/models). Returns 403 if the model is not enabled.
+pub fn validate_strategy_model_access(
+    state: &AppState,
+    strategy: &Strategy,
+    model: &str,
+) -> HelperResult<()> {
+    // If selected_all is true, all models are allowed
+    if strategy.allowed_models.selected_all {
+        return Ok(());
+    }
+
+    // Parse model string: "provider/model" or just "model"
+    if let Some((provider, model_id)) = model.split_once('/') {
+        if !strategy.is_model_allowed(provider, model_id) {
+            return Err(ApiErrorResponse::forbidden(format!(
+                "Model '{}' is not enabled for this client. Enable it in the model selection settings.",
+                model
+            )));
+        }
+    } else {
+        // No provider specified - check if any provider has this model allowed
+        let all_models = state.provider_registry.list_all_models_instant();
+        let is_allowed = all_models.iter().any(|m| {
+            m.id.eq_ignore_ascii_case(model) && strategy.is_model_allowed(&m.provider, &m.id)
+        });
+        if !is_allowed {
+            return Err(ApiErrorResponse::forbidden(format!(
+                "Model '{}' is not enabled for this client. Enable it in the model selection settings.",
+                model
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Check that auto_config.permission allows model access.
+///
+/// Returns 403 if permission is Off (all model access disabled).
+/// Used as a master switch before individual model checks.
+pub fn check_strategy_permission(strategy: &Strategy) -> HelperResult<()> {
+    if let Some(ref auto_config) = strategy.auto_config {
+        if !auto_config.permission.is_enabled() {
+            return Err(ApiErrorResponse::forbidden(
+                "Model access is disabled for this client. Contact administrator to grant access.",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Compatibility wrapper — does not emit monitor events.
 pub fn check_llm_access(client: &Client) -> HelperResult<()> {
     if client.client_mode == lr_config::ClientMode::McpOnly {

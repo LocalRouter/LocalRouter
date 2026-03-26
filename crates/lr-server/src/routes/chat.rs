@@ -16,7 +16,10 @@ use chrono::Utc;
 use futures::stream::StreamExt;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access_with_state, get_client_with_strategy};
+use super::helpers::{
+    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
+    validate_strategy_model_access,
+};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -102,12 +105,13 @@ pub async fn chat_completions(
                     ));
                 }
 
-                // Monitor intercept: override Allow → Ask if intercept rule matches
+                // Show approval popup if permission is Ask, or if monitor intercept overrides Allow → Ask
                 if auto_config.permission.is_enabled()
-                    && state.mcp_gateway.firewall_manager.should_intercept(
-                        &client.id,
-                        lr_mcp::gateway::firewall::InterceptCategory::Llm,
-                    )
+                    && (auto_config.permission.requires_approval()
+                        || state.mcp_gateway.firewall_manager.should_intercept(
+                            &client.id,
+                            lr_mcp::gateway::firewall::InterceptCategory::Llm,
+                        ))
                 {
                     use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
@@ -256,10 +260,22 @@ pub async fn chat_completions(
         }
     }
 
-    // Skip model access validation for localrouter/auto (handled by router)
-    if request.model != "localrouter/auto" {
-        // Validate model access based on API key's model selection
-        validate_model_access(&state, &auth, &request).await?;
+    // Strategy-level model access checks
+    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        // Master switch: auto_config.permission Off blocks ALL models (including auto-router)
+        check_strategy_permission(strategy)?;
+
+        // Check if this is the auto-router model (could be custom name)
+        let is_auto_model = request.model == "localrouter/auto"
+            || strategy
+                .auto_config
+                .as_ref()
+                .is_some_and(|ac| request.model == ac.model_name);
+
+        // Model whitelist: only for non-auto models (auto uses prioritized_models from router)
+        if !is_auto_model {
+            validate_strategy_model_access(&state, strategy, &request.model)?;
+        }
     }
 
     // Validate client provider access (if using client auth)
@@ -278,12 +294,18 @@ pub async fn chat_completions(
             .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
             .is_some_and(|c| c.client_mode == lr_config::ClientMode::McpViaLlm);
 
+        // Get auto_config.permission to pass as strategy-level override
+        let strategy_permission = get_client_with_strategy(&state, &auth.api_key_id)
+            .ok()
+            .and_then(|(_, s)| s.auto_config.map(|ac| ac.permission));
+
         if !is_mcp_via_llm_client {
             let firewall_edits = check_model_firewall_permission(
                 &state,
                 client_auth.as_ref().map(|e| &e.0),
                 &request,
                 None,
+                strategy_permission,
             )
             .await?;
 
@@ -800,71 +822,6 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
     Ok(())
 }
 
-/// Validate that the requested model is allowed by the API key's model selection
-async fn validate_model_access(
-    state: &AppState,
-    auth: &AuthContext,
-    request: &ChatCompletionRequest,
-) -> ApiResult<()> {
-    // If no model selection is configured, allow all models
-    let Some(ref selection) = auth.model_selection else {
-        return Ok(());
-    };
-
-    // Parse the model string to extract provider and model ID
-    // The model can be in format "provider/model" or just "model"
-    if let Some((provider, model_id)) = request.model.split_once('/') {
-        // Provider specified in request
-        if !selection.is_model_allowed(provider, model_id) {
-            super::monitor_helpers::emit_access_denied_for_client(
-                state,
-                &auth.api_key_id,
-                None,
-                "model_not_allowed",
-                "/v1/chat/completions",
-                &format!("Access denied for model '{}'", request.model),
-                403,
-            );
-            return Err(ApiErrorResponse::forbidden(format!(
-                "Model '{}' is not accessible with this API key. Check your API key's model selection settings.",
-                request.model
-            ))
-            .with_param("model"));
-        }
-    } else {
-        // No provider specified - need to find which provider has this model
-        let all_models = state.provider_registry.list_all_models_instant();
-
-        let matching_model = all_models
-            .iter()
-            .find(|m| m.id.eq_ignore_ascii_case(&request.model))
-            .ok_or_else(|| {
-                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
-                    .with_param("model")
-            })?;
-
-        // Check if allowed
-        if !selection.is_model_allowed(&matching_model.provider, &matching_model.id) {
-            super::monitor_helpers::emit_access_denied_for_client(
-                state,
-                &auth.api_key_id,
-                None,
-                "model_not_allowed",
-                "/v1/chat/completions",
-                &format!("Access denied for model '{}'", request.model),
-                403,
-            );
-            return Err(ApiErrorResponse::forbidden(format!(
-                "Model '{}' is not accessible with this API key. Check your API key's model selection settings.",
-                request.model
-            ))
-            .with_param("model"));
-        }
-    }
-
-    Ok(())
-}
-
 /// Validate that the client has access to the requested LLM provider
 ///
 /// This enforces the model_permissions access control for clients.
@@ -1035,6 +992,7 @@ async fn check_model_firewall_permission(
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
     mcp_via_llm_tools: Option<serde_json::Value>,
+    strategy_permission: Option<lr_config::PermissionState>,
 ) -> ApiResult<Option<serde_json::Value>> {
     use lr_mcp::gateway::access_control;
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
@@ -1100,9 +1058,26 @@ async fn check_model_firewall_permission(
             .has_valid_approval(&client.id, &provider, &model_id),
     };
 
-    // Monitor intercept: override Allow → Ask if intercept rule matches
+    // Override resolution with strategy-level auto_config.permission (Ask forces popup)
+    // Then monitor intercept can further override Allow → Ask
     let result = {
-        let r = access_control::check_needs_approval(&ctx);
+        let mut r = access_control::check_needs_approval(&ctx);
+
+        // Strategy permission "Ask" overrides Allow → Ask for all models
+        if r == FirewallCheckResult::Allow {
+            if let Some(ref sp) = strategy_permission {
+                if sp.requires_approval() {
+                    tracing::info!(
+                        "Strategy permission override: Allow → Ask for model {} (client={})",
+                        request.model,
+                        client.id
+                    );
+                    r = FirewallCheckResult::Ask;
+                }
+            }
+        }
+
+        // Monitor intercept: override Allow → Ask if intercept rule matches
         if r == FirewallCheckResult::Allow
             && state.mcp_gateway.firewall_manager.should_intercept(
                 &client.id,
@@ -2200,8 +2175,8 @@ async fn handle_mcp_via_llm(
     let started_at = Instant::now();
     let created_at = Utc::now();
 
-    // Get the client
-    let (client, _strategy) = get_client_with_strategy(&state, &auth.api_key_id)
+    // Get the client and strategy
+    let (client, mcp_via_llm_strategy) = get_client_with_strategy(&state, &auth.api_key_id)
         .map_err(|_| ApiErrorResponse::internal_error("Client lookup failed"))?;
 
     // Compute allowed MCP servers respecting client's mcp_permissions
@@ -2244,11 +2219,17 @@ async fn handle_mcp_via_llm(
             },
         );
 
+        let mcp_strategy_permission = mcp_via_llm_strategy
+            .auto_config
+            .as_ref()
+            .map(|ac| ac.permission.clone());
+
         let firewall_edits = check_model_firewall_permission(
             &state,
             client_auth.as_ref().map(|e| &e.0),
             &request,
             mcp_tools_json,
+            mcp_strategy_permission,
         )
         .await?;
 

@@ -42,6 +42,16 @@ pub async fn list_models<B>(
     let (client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
     check_llm_access_with_state(&state, &client)?;
 
+    // If auto_config.permission is Off, return empty model list (all access disabled)
+    if let Some(auto_config) = &strategy.auto_config {
+        if !auto_config.permission.is_enabled() {
+            return Ok(Json(ModelsResponse {
+                object: "list".to_string(),
+                data: vec![],
+            }));
+        }
+    }
+
     // If auto-routing is configured with prioritized models and permission is enabled,
     // prepend the virtual localrouter/auto model to the list
     let mut auto_model: Option<ModelData> = None;

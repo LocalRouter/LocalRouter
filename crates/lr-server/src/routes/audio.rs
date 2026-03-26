@@ -16,7 +16,8 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::helpers::{
-    check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager,
+    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
+    get_enabled_client, get_enabled_client_from_manager, validate_strategy_model_access,
 };
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
@@ -305,6 +306,12 @@ pub async fn audio_transcriptions(
             );
             return Err(ApiErrorResponse::bad_request(msg).with_param("response_format"));
         }
+    }
+
+    // Strategy-level model access checks
+    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        check_strategy_permission(strategy)?;
+        validate_strategy_model_access(&state, strategy, &model)?;
     }
 
     // Validate client provider access
@@ -734,6 +741,12 @@ pub async fn audio_translations(
         }
     }
 
+    // Strategy-level model access checks
+    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        check_strategy_permission(strategy)?;
+        validate_strategy_model_access(&state, strategy, &model)?;
+    }
+
     // Validate client provider access
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &model).await?;
 
@@ -969,6 +982,12 @@ pub async fn audio_speech(
             400,
         );
         return Err(e);
+    }
+
+    // Strategy-level model access checks
+    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        check_strategy_permission(strategy)?;
+        validate_strategy_model_access(&state, strategy, &request.model)?;
     }
 
     // Validate client provider access

@@ -16,7 +16,8 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::helpers::{
-    check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager,
+    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
+    get_enabled_client, get_enabled_client_from_manager, validate_strategy_model_access,
 };
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
@@ -96,6 +97,19 @@ pub async fn completions(
             400,
         );
         return Err(e);
+    }
+
+    // Strategy-level model access checks
+    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        check_strategy_permission(strategy)?;
+        let is_auto_model = request.model == "localrouter/auto"
+            || strategy
+                .auto_config
+                .as_ref()
+                .is_some_and(|ac| request.model == ac.model_name);
+        if !is_auto_model {
+            validate_strategy_model_access(&state, strategy, &request.model)?;
+        }
     }
 
     // Validate client provider access (if using client auth)

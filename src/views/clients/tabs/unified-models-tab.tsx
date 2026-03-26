@@ -99,17 +99,41 @@ interface DetailedModelInfo {
 // ---------------------------------------------------------------------------
 
 const ensureAutoConfig = (s: StrategyConfig): StrategyConfig => {
-  if (s.auto_config) return s
-  return {
-    ...s,
-    auto_config: {
-      permission: 'allow' as PermissionState,
-      model_name: 'localrouter/auto',
-      prioritized_models: [],
-      available_models: [],
-      routellm_config: null,
-    },
+  let result = s
+  if (!result.auto_config) {
+    result = {
+      ...result,
+      auto_config: {
+        permission: 'allow' as PermissionState,
+        model_name: 'localrouter/auto',
+        prioritized_models: [],
+        available_models: [],
+        routellm_config: null,
+      },
+    }
   }
+
+  // Sync allowed_models with auto_config when they're out of sync.
+  // This handles pre-merge strategies where selected_all=true but
+  // prioritized_models has specific models selected.
+  if (result.auto_config && result.allowed_models.selected_all) {
+    const strong = result.auto_config.prioritized_models || []
+    const weak = result.auto_config.routellm_config?.weak_models || []
+    const allEnabled = [...strong, ...weak]
+    if (allEnabled.length > 0) {
+      // Prioritized models exist but allowed_models says "all" — sync them
+      result = {
+        ...result,
+        allowed_models: {
+          selected_all: false,
+          selected_providers: [],
+          selected_models: allEnabled,
+        },
+      }
+    }
+  }
+
+  return result
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +193,26 @@ export function UnifiedModelsTab({
       const strategyData = await invoke<StrategyConfig>("get_strategy", {
         strategyId: client.strategy_id,
       })
-      setStrategy(ensureAutoConfig(strategyData))
+      const normalized = ensureAutoConfig(strategyData)
+      setStrategy(normalized)
+
+      // If allowed_models was out of sync (e.g., selected_all was true but
+      // prioritized_models had specific models), persist the corrected state
+      if (strategyData.allowed_models.selected_all !== normalized.allowed_models.selected_all) {
+        try {
+          await invoke("update_strategy", {
+            strategyId: normalized.id,
+            name: null,
+            allowedModels: normalized.allowed_models,
+            autoConfig: null,
+            rateLimits: null,
+            freeTierOnly: null,
+            freeTierFallback: null,
+          })
+        } catch (syncError) {
+          console.error("Failed to sync allowed_models:", syncError)
+        }
+      }
     } catch (error) {
       console.error("Failed to load strategy:", error)
     } finally {

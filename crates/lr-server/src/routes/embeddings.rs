@@ -11,7 +11,8 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::helpers::{
-    check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager,
+    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
+    get_enabled_client, get_enabled_client_from_manager, validate_strategy_model_access,
 };
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
@@ -84,6 +85,12 @@ pub async fn embeddings(
             400,
         );
         return Err(e);
+    }
+
+    // Strategy-level model access checks (embeddings don't use localrouter/auto)
+    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        check_strategy_permission(strategy)?;
+        validate_strategy_model_access(&state, strategy, &request.model)?;
     }
 
     // Validate client provider access (if using client auth)
