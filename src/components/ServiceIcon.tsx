@@ -208,7 +208,6 @@ const EMOJI_MAP: Record<string, string> = {
   xcode: '🔨',
   zed: '⚡',
   custom: '⚙️',
-
   // Cloud & Infrastructure
   'aws-core': '☁️',
   'aws-docs': '📖',
@@ -289,7 +288,7 @@ export default function ServiceIcon({
           }}
         />
         <span
-          className={`items-center justify-center ${className}`}
+          className={`items-center justify-center text-foreground dark:text-gray-800 ${className}`}
           style={{ display: 'none' }}
         >
           {emoji
@@ -327,7 +326,7 @@ export default function ServiceIcon({
   if (fallbackToServerIcon) {
     return (
       <span
-        className={`inline-flex items-center justify-center ${className}`}
+        className={`inline-flex items-center justify-center text-foreground ${className}`}
         style={{ width: containerSize, height: containerSize }}
       >
         <McpIcon style={{ width: size, height: size }} />
@@ -337,7 +336,7 @@ export default function ServiceIcon({
 
   return (
     <span
-      className={`inline-flex items-center justify-center ${className}`}
+      className={`inline-flex items-center justify-center text-foreground ${className}`}
       style={{ width: containerSize, height: containerSize }}
     >
       <ProvidersIcon style={{ width: size, height: size }} />
