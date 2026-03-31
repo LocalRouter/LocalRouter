@@ -2037,6 +2037,35 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(update_notification_state.clone());
 
             // Setup system tray
+            // On Linux, the tray depends on libayatana-appindicator3 which may be
+            // missing or ABI-incompatible. The library panics rather than returning
+            // an error, so we catch both panics and errors to allow the app to
+            // continue without a tray icon.
+            #[cfg(target_os = "linux")]
+            {
+                use std::panic::{catch_unwind, AssertUnwindSafe};
+                match catch_unwind(AssertUnwindSafe(|| ui::tray::setup_tray(app))) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        error!(
+                            "Failed to initialize system tray (continuing without it): {e}"
+                        );
+                    }
+                    Err(panic_info) => {
+                        let msg = panic_info
+                            .downcast_ref::<String>()
+                            .map(|s| s.as_str())
+                            .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                            .unwrap_or("unknown panic");
+                        error!(
+                            "System tray panicked: {msg}. \
+                             Install libayatana-appindicator3 for tray support. \
+                             Continuing without system tray."
+                        );
+                    }
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
             ui::tray::setup_tray(app)?;
 
             // Configure window for test mode
