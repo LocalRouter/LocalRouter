@@ -88,7 +88,7 @@ impl AppIntegration for CodexIntegration {
     }
 
     fn check_installed(&self) -> AppCapabilities {
-        let binary = which::which("codex").ok();
+        let binary = super::find_binary("codex");
 
         AppCapabilities {
             installed: binary.is_some(),

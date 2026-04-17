@@ -24,7 +24,7 @@ impl AppIntegration for GooseIntegration {
     }
 
     fn check_installed(&self) -> AppCapabilities {
-        let binary = which::which("goose").ok();
+        let binary = super::find_binary("goose");
 
         AppCapabilities {
             installed: binary.is_some(),

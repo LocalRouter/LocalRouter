@@ -21,17 +21,11 @@ impl AppIntegration for ClaudeCodeIntegration {
     }
 
     fn check_installed(&self) -> AppCapabilities {
-        let binary = which::which("claude")
-            .or_else(|_| {
-                let home = dirs::home_dir().unwrap_or_default();
-                let local_path = home.join(".claude/local/claude");
-                if local_path.exists() {
-                    Ok(local_path)
-                } else {
-                    Err(which::Error::CannotFindBinaryPath)
-                }
-            })
-            .ok();
+        let binary = super::find_binary("claude").or_else(|| {
+            let home = dirs::home_dir().unwrap_or_default();
+            let local_path = home.join(".claude/local/claude");
+            local_path.exists().then_some(local_path)
+        });
 
         AppCapabilities {
             installed: binary.is_some(),

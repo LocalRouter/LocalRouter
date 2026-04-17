@@ -74,7 +74,7 @@ impl AppIntegration for OpenCodeIntegration {
     }
 
     fn check_installed(&self) -> AppCapabilities {
-        let binary = which::which("opencode").ok();
+        let binary = super::find_binary("opencode");
 
         AppCapabilities {
             installed: binary.is_some(),

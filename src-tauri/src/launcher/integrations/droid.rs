@@ -31,7 +31,7 @@ impl AppIntegration for DroidIntegration {
     }
 
     fn check_installed(&self) -> AppCapabilities {
-        let binary = which::which("droid").ok();
+        let binary = super::find_binary("droid");
 
         AppCapabilities {
             installed: binary.is_some(),

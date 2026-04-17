@@ -46,7 +46,7 @@ impl AppIntegration for CursorIntegration {
 
     fn check_installed(&self) -> AppCapabilities {
         // Check for cursor CLI in PATH
-        let binary = which::which("cursor").ok();
+        let binary = super::find_binary("cursor");
 
         // Also check common macOS location
         #[cfg(target_os = "macos")]

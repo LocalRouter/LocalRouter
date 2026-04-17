@@ -20,7 +20,7 @@ impl AppIntegration for AiderIntegration {
     }
 
     fn check_installed(&self) -> AppCapabilities {
-        let binary = which::which("aider").ok();
+        let binary = super::find_binary("aider");
 
         AppCapabilities {
             installed: binary.is_some(),
