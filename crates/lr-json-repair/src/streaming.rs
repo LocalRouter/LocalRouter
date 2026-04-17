@@ -993,11 +993,9 @@ impl StreamingJsonRepairer {
                     frame.position = FramePosition::ExpectKeyOrClose;
                 }
             }
-            ':' => {
-                if frame.skip_depth == 0 && frame.position == FramePosition::ExpectColon {
-                    frame.position = FramePosition::ExpectValue;
-                }
-            }
+            // The earlier `':' if ...` arm already handles the interesting
+            // case; any other `:` (inside a skipped sub-value) is just
+            // noise we should ignore. Falling through to `_` is fine.
             '"' | '\'' => {
                 // Start tracking a string within skipped content
                 // We need to handle this to properly track string boundaries
@@ -1006,17 +1004,15 @@ impl StreamingJsonRepairer {
                 self.buf.clear();
                 self.in_escape = false;
             }
-            ',' => {
-                if frame.skip_depth == 0 && frame.position != FramePosition::ExpectColon {
-                    // Comma at our level - value is complete, end skip
-                    let had_emitted_value = frame.had_value;
-                    frame.skip_mode = false;
-                    frame.position = FramePosition::ExpectKeyOrClose;
-                    // If the object had previously emitted values, we need a comma
-                    // before the next non-skipped field
-                    self.comma_pending = had_emitted_value;
-                    self.pending_ws.clear();
-                }
+            ',' if frame.skip_depth == 0 && frame.position != FramePosition::ExpectColon => {
+                // Comma at our level - value is complete, end skip.
+                let had_emitted_value = frame.had_value;
+                frame.skip_mode = false;
+                frame.position = FramePosition::ExpectKeyOrClose;
+                // If the object had previously emitted values, we need a comma
+                // before the next non-skipped field.
+                self.comma_pending = had_emitted_value;
+                self.pending_ws.clear();
             }
             _ => {
                 // Other chars (whitespace, digits, letters) - just skip
