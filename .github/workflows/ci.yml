@@ -12,6 +12,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Ubuntu runners ship with Android SDK, .NET, Haskell GHC, large
+      # Docker images, etc. The cargo workspace + target dir has been
+      # exhausting the remaining ~14 GB and crashing the worker with
+      # "No space left on device". Free ~30 GB up front.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+
       - name: Checkout
         uses: actions/checkout@v4
 
