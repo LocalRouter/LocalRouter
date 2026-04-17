@@ -135,6 +135,7 @@ async fn test_skills_e2e_all_tool_commands() {
     let gateway = Arc::new(gateway);
 
     let client_id = "test-skills-client";
+    init_skills_session(&gateway, client_id).await;
     let skills_permissions = {
         let mut perms = SkillsPermissions::default();
         perms
@@ -331,6 +332,43 @@ async fn setup_gateway_without_skills() -> Arc<McpGateway> {
     Arc::new(gateway)
 }
 
+/// Initialize a gateway session for the given client_id. The gateway
+/// rejects non-initialize requests with `"Session not initialized"` until
+/// this is called; tests that exercise only the post-init paths need to
+/// bootstrap a session first.
+async fn init_skills_session(gateway: &McpGateway, client_id: &str) {
+    let init = JsonRpcRequest::with_id(
+        0,
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"}
+        })),
+    );
+    let _ = gateway
+        .handle_request_with_skills(
+            client_id,
+            None,
+            vec![],
+            vec![],
+            lr_config::McpPermissions::default(),
+            SkillsPermissions::default(),
+            "Test Client".to_string(),
+            PermissionState::Off,
+            lr_config::PermissionState::Off,
+            None,
+            None,
+            lr_config::PermissionState::default(),
+            lr_config::PermissionState::default(),
+            None,
+            lr_config::ClientMode::default(),
+            init,
+            None,
+        )
+        .await;
+}
+
 /// Helper to extract tool names from a tools/list response
 fn extract_tool_names(response: &localrouter::mcp::protocol::JsonRpcResponse) -> Vec<String> {
     let result = response.result.as_ref().expect("should have result");
@@ -347,6 +385,7 @@ async fn test_no_skill_tools_when_no_skills_configured() {
     let gateway = setup_gateway_without_skills().await;
 
     let client_id = "no-skills-client";
+    init_skills_session(&gateway, client_id).await;
 
     // Call tools/list with empty allowed_skills
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -389,6 +428,7 @@ async fn test_skill_tools_present_after_cache_hit() {
     let (gateway, _temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "cache-test-client";
+    init_skills_session(&gateway, client_id).await;
     let skills_permissions = {
         let mut perms = SkillsPermissions::default();
         perms

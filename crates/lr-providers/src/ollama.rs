@@ -78,6 +78,52 @@ impl OllamaProvider {
         Ok(Self::new())
     }
 
+    /// Fetch per-model capabilities from `/api/show`.
+    ///
+    /// Ollama's `/api/show` returns a `capabilities` array with entries like
+    /// `"completion"`, `"tools"`, `"vision"`, `"embedding"`, `"thinking"`. This
+    /// complements `/api/tags` (which only lists model names) and lets the
+    /// router filter correctly when a request carries tools.
+    ///
+    /// Returns `None` on any failure so the caller can fall back to defaults.
+    async fn fetch_model_capabilities(&self, name: &str) -> Option<Vec<Capability>> {
+        let url = format!("{}/api/show", self.base_url);
+        let resp = self
+            .http_client
+            .post(&url)
+            .json(&OllamaShowRequest { name })
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let show: OllamaShowResponse = resp.json().await.ok()?;
+        Some(Self::map_ollama_capabilities(&show.capabilities))
+    }
+
+    /// Map the Ollama `/api/show` `capabilities` strings onto our `Capability`
+    /// enum. Extracted so the mapping is testable without HTTP.
+    fn map_ollama_capabilities(raw: &[String]) -> Vec<Capability> {
+        let has = |s: &str| raw.iter().any(|c| c.eq_ignore_ascii_case(s));
+        let mut caps = Vec::with_capacity(4);
+        // A generation model is always usable for both /chat and /completions.
+        if has("completion") || has("chat") || has("generate") {
+            caps.push(Capability::Chat);
+            caps.push(Capability::Completion);
+        }
+        if has("tools") {
+            caps.push(Capability::FunctionCalling);
+        }
+        if has("vision") {
+            caps.push(Capability::Vision);
+        }
+        if has("embedding") {
+            caps.push(Capability::Embedding);
+        }
+        caps
+    }
+
     /// Parse model size from tags
     fn parse_parameter_count(name: &str) -> Option<u64> {
         let name_lower = name.to_lowercase();
@@ -316,6 +362,18 @@ struct OllamaModelDetails {
     parameter_size: Option<String>,
 }
 
+// Types for /api/show endpoint (used to detect per-model capabilities)
+#[derive(Debug, Serialize)]
+struct OllamaShowRequest<'a> {
+    name: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaShowResponse {
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
 // Ollama Embeddings API types
 #[derive(Debug, Serialize)]
 struct OllamaEmbedRequest {
@@ -405,11 +463,34 @@ impl ModelProvider for OllamaProvider {
             .await
             .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
 
+        // Fetch per-model capabilities concurrently via /api/show so the
+        // router's capability-based filters (FunctionCalling, Vision, ...)
+        // have accurate data. Bounded concurrency keeps load on local Ollama
+        // reasonable even with many installed models.
+        use futures::stream::{self, StreamExt};
+        let names: Vec<String> = tags_response
+            .models
+            .iter()
+            .map(|m| m.name.clone())
+            .collect();
+        // Use `buffered` (ordered) so results align with `tags_response.models`
+        // by index; `buffer_unordered` would break the zip below.
+        let cap_results: Vec<Option<Vec<Capability>>> = stream::iter(names.into_iter())
+            .map(|name| async move { self.fetch_model_capabilities(&name).await })
+            .buffered(8)
+            .collect::<Vec<_>>()
+            .await;
+
         let models: Vec<ModelInfo> = tags_response
             .models
             .into_iter()
-            .map(|model| {
+            .zip(cap_results)
+            .map(|(model, caps)| {
                 let parameter_count = Self::parse_parameter_count(&model.name);
+                // Fall back to Chat+Completion when /api/show is unavailable
+                // or doesn't return capabilities (e.g. older Ollama versions).
+                let capabilities =
+                    caps.unwrap_or_else(|| vec![Capability::Chat, Capability::Completion]);
 
                 ModelInfo {
                     id: model.name.clone(),
@@ -418,7 +499,7 @@ impl ModelProvider for OllamaProvider {
                     parameter_count,
                     context_window: 4096,
                     supports_streaming: true,
-                    capabilities: vec![Capability::Chat, Capability::Completion],
+                    capabilities,
                     detailed_capabilities: None,
                 }
                 .enrich_with_catalog_by_name() // Use model-only search for multi-provider system
@@ -991,5 +1072,48 @@ mod tests {
         let pricing = provider.get_pricing("any-model").await.unwrap();
         assert_eq!(pricing.input_cost_per_1k, 0.0);
         assert_eq!(pricing.output_cost_per_1k, 0.0);
+    }
+
+    #[test]
+    fn test_map_ollama_capabilities_tools_and_vision() {
+        // Matches the user's failing model: qwen3.5:27b-q8_0 reports
+        // ["completion", "vision", "tools", "thinking"].
+        let caps = OllamaProvider::map_ollama_capabilities(&[
+            "completion".to_string(),
+            "vision".to_string(),
+            "tools".to_string(),
+            "thinking".to_string(),
+        ]);
+        assert!(caps.contains(&Capability::Chat));
+        assert!(caps.contains(&Capability::Completion));
+        assert!(caps.contains(&Capability::FunctionCalling));
+        assert!(caps.contains(&Capability::Vision));
+        assert!(!caps.contains(&Capability::Embedding));
+    }
+
+    #[test]
+    fn test_map_ollama_capabilities_embedding_only() {
+        let caps = OllamaProvider::map_ollama_capabilities(&["embedding".to_string()]);
+        assert!(caps.contains(&Capability::Embedding));
+        // Embedding-only models should not advertise chat/completion.
+        assert!(!caps.contains(&Capability::Chat));
+        assert!(!caps.contains(&Capability::Completion));
+        assert!(!caps.contains(&Capability::FunctionCalling));
+    }
+
+    #[test]
+    fn test_map_ollama_capabilities_case_insensitive() {
+        let caps = OllamaProvider::map_ollama_capabilities(&[
+            "Completion".to_string(),
+            "TOOLS".to_string(),
+        ]);
+        assert!(caps.contains(&Capability::Chat));
+        assert!(caps.contains(&Capability::FunctionCalling));
+    }
+
+    #[test]
+    fn test_map_ollama_capabilities_empty() {
+        let caps = OllamaProvider::map_ollama_capabilities(&[]);
+        assert!(caps.is_empty());
     }
 }

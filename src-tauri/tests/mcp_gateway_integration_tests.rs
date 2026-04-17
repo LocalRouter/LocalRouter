@@ -90,6 +90,23 @@ async fn test_gateway_empty_allowed_servers() {
     let router = create_test_router();
     let gateway = Arc::new(McpGateway::new(manager, config, router));
 
+    // Gateway now requires an `initialize` call before any other request so
+    // a session exists; send one up front so this test exercises the
+    // "empty allowed_servers is handled gracefully" path instead of bailing
+    // out with "Session not initialized".
+    let init = JsonRpcRequest::new(
+        Some(json!(0)),
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"}
+        })),
+    );
+    let _ = gateway
+        .handle_request("test-client", vec![], vec![], init)
+        .await;
+
     let request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
     // With empty allowed_servers, should handle gracefully
@@ -98,7 +115,7 @@ async fn test_gateway_empty_allowed_servers() {
         .await;
 
     // Should either succeed with empty list or return appropriate response
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "handle_request failed: {:?}", result.err());
 }
 
 #[tokio::test]
@@ -220,7 +237,7 @@ async fn test_gateway_cleanup_expired_sessions() {
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     // Trigger cleanup
-    gateway.cleanup_expired_sessions();
+    gateway.cleanup_expired_sessions().await;
 
     // Session should be cleaned up (we can't directly verify this without exposing internal state,
     // but the test confirms the cleanup runs without errors)

@@ -34,6 +34,24 @@ pub enum AppError {
     #[error("Rate limit exceeded")]
     RateLimitExceeded,
 
+    /// Structured context-length error emitted by providers that can parse
+    /// their own error bodies (e.g. OpenAI's `context_length_exceeded` code).
+    /// The router matches on this variant directly instead of scraping the
+    /// error text, so the real `max` is preserved all the way through.
+    #[error("Context length exceeded{}{}",
+        .max.map(|m| format!(" (max: {})", m)).unwrap_or_default(),
+        .requested.map(|r| format!(" (requested: {})", r)).unwrap_or_default())]
+    ContextLengthExceeded {
+        max: Option<u64>,
+        requested: Option<u64>,
+    },
+
+    /// Provider returned a structured "model not found" (e.g. HTTP 404 /
+    /// OpenAI `model_not_found`). Router routes past it instead of
+    /// misclassifying as ContextLengthExceeded.
+    #[error("Model not found: {model}")]
+    ModelNotFound { model: String },
+
     #[error("Free tier exhausted (retry after {retry_after_secs}s)")]
     FreeTierExhausted { retry_after_secs: u64 },
 

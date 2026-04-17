@@ -10,7 +10,7 @@ use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
 use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
 use lr_types::{AppError, AppResult};
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -636,11 +636,10 @@ impl ModelProvider for OpenAIProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         let openai_response: OpenAIChatResponse = response
@@ -725,11 +724,10 @@ impl ModelProvider for OpenAIProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         // Parse SSE (Server-Sent Events) stream with proper line buffering
@@ -863,11 +861,10 @@ impl ModelProvider for OpenAIProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         let openai_response: OpenAIEmbeddingResponse = response
@@ -939,11 +936,10 @@ impl ModelProvider for OpenAIProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         let openai_response: serde_json::Value = response
@@ -1022,11 +1018,10 @@ impl ModelProvider for OpenAIProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         let transcription: super::AudioTranscriptionResponse = response
@@ -1081,11 +1076,10 @@ impl ModelProvider for OpenAIProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         let translation: super::AudioTranslationResponse = response
@@ -1114,11 +1108,10 @@ impl ModelProvider for OpenAIProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         // Determine content type from response headers or requested format

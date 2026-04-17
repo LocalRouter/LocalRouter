@@ -77,6 +77,40 @@ async fn tools_list(
     client_id: &str,
     memory_enabled: Option<bool>,
 ) -> localrouter::mcp::protocol::JsonRpcResponse {
+    // Gateway requires a prior `initialize` call before any other method;
+    // send one first so the session exists and the tools/list call actually
+    // reaches the virtual-server logic this test is exercising.
+    let init = JsonRpcRequest::with_id(
+        0,
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"}
+        })),
+    );
+    let _ = gateway
+        .handle_request_with_skills(
+            client_id,
+            None,
+            vec![],
+            vec![],
+            lr_config::McpPermissions::default(),
+            lr_config::SkillsPermissions::default(),
+            "Test Client".to_string(),
+            lr_config::PermissionState::Off,
+            lr_config::PermissionState::Off,
+            None,
+            None,
+            lr_config::PermissionState::default(),
+            lr_config::PermissionState::default(),
+            memory_enabled,
+            lr_config::ClientMode::default(),
+            init,
+            None,
+        )
+        .await;
+
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     gateway
         .handle_request_with_skills(

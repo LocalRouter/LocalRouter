@@ -196,13 +196,21 @@ async fn test_strategy_allows_specific_model() {
 
 #[tokio::test]
 async fn test_strategy_blocks_disallowed_model() {
-    let allowed_models = AvailableModelsSelection {
-        selected_all: false,
-        selected_providers: vec![],
-        selected_models: vec![("ollama".to_string(), "llama2".to_string())],
-    };
-
-    let config = create_test_config("test-strategy", allowed_models, None, vec![]);
+    // Strategy now denies by default and only explicitly allows ollama/llama2.
+    // A request for openai/gpt-4 should fail the permission check before
+    // ever reaching the provider registry. (The legacy `allowed_models`
+    // field is now a migration shim; permissions live in `model_permissions`.)
+    let allowed_models = AvailableModelsSelection::default();
+    let mut config = create_test_config("test-strategy", allowed_models, None, vec![]);
+    if let Some(strategy) = config.strategies.first_mut() {
+        strategy.model_permissions = ModelPermissions {
+            global: PermissionState::Off,
+            models: [("ollama__llama2".to_string(), PermissionState::Allow)]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+    }
     let router = create_test_router(config);
 
     let request = create_test_request("openai/gpt-4");
@@ -949,13 +957,16 @@ async fn test_bug_model_id_with_both_prefix_and_suffix() {
 
 #[tokio::test]
 async fn test_empty_allowed_models_blocks_all() {
-    let allowed_models = AvailableModelsSelection {
-        selected_all: false,
-        selected_providers: vec![],
-        selected_models: vec![],
-    };
-
-    let config = create_test_config("test-strategy", allowed_models, None, vec![]);
+    // With `model_permissions.global = Off` and no explicit allows, every
+    // model is blocked at the permission check.
+    let allowed_models = AvailableModelsSelection::default();
+    let mut config = create_test_config("test-strategy", allowed_models, None, vec![]);
+    if let Some(strategy) = config.strategies.first_mut() {
+        strategy.model_permissions = ModelPermissions {
+            global: PermissionState::Off,
+            ..Default::default()
+        };
+    }
     let router = create_test_router(config);
 
     let request = create_test_request("ollama/llama2");
@@ -1123,7 +1134,8 @@ fn test_router_error_should_retry_logic() {
         RouterError::ContextLengthExceeded {
             provider: "test".to_string(),
             model: "test".to_string(),
-            max_tokens: 1000,
+            max_tokens: Some(1000),
+            requested_tokens: None,
         },
         RouterError::Unreachable {
             provider: "test".to_string(),

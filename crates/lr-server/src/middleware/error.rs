@@ -153,6 +153,12 @@ impl From<AppError> for ApiErrorResponse {
             AppError::InvalidParams(msg) => {
                 ApiErrorResponse::bad_request(format!("Invalid parameters: {}", msg))
             }
+            // Typed provider errors surface as 400/404 so clients can react
+            // to them distinctly from generic upstream failures.
+            AppError::ContextLengthExceeded { .. } => {
+                ApiErrorResponse::bad_request(err.to_string())
+            }
+            AppError::ModelNotFound { .. } => ApiErrorResponse::bad_request(err.to_string()),
         }
     }
 }

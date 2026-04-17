@@ -45,7 +45,11 @@ pub enum RouterError {
     ContextLengthExceeded {
         provider: String,
         model: String,
-        max_tokens: u64,
+        /// The model's max context (tokens) if the provider surfaced it.
+        /// `None` when we couldn't parse it out of the error body — prefer
+        /// `None` over `0` so the log line doesn't read `"max: 0"`.
+        max_tokens: Option<u64>,
+        requested_tokens: Option<u64>,
     },
     /// Provider unreachable - should retry with different model
     Unreachable { provider: String, model: String },
@@ -79,6 +83,22 @@ impl RouterError {
     /// Classify an AppError into a RouterError
     pub fn classify(error: &AppError, provider: &str, model: &str) -> Self {
         match error {
+            // Prefer typed variants. Providers that parse their own error
+            // bodies (OpenAI via `classify_openai_style_error`) produce these
+            // so the router doesn't have to reverse-engineer the string.
+            AppError::ContextLengthExceeded { max, requested } => {
+                RouterError::ContextLengthExceeded {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    max_tokens: *max,
+                    requested_tokens: *requested,
+                }
+            }
+            AppError::ModelNotFound { .. } => RouterError::EndpointNotSupported {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                endpoint: "model_not_found".to_string(),
+            },
             AppError::RateLimitExceeded => RouterError::RateLimited {
                 provider: provider.to_string(),
                 model: model.to_string(),
@@ -91,13 +111,20 @@ impl RouterError {
                     reason: msg.clone(),
                 }
             }
+            // Backward-compat substring fallback: tightened to full phrases
+            // rather than individual words so unrelated errors mentioning
+            // "token" or "length" (e.g. "Bearer token invalid",
+            // "Content-Length") don't get mis-classified as context-length.
             AppError::Provider(msg)
-                if msg.contains("context") || msg.contains("token") || msg.contains("length") =>
+                if msg.contains("maximum context length")
+                    || msg.contains("context_length_exceeded")
+                    || msg.contains("context length exceeded") =>
             {
                 RouterError::ContextLengthExceeded {
                     provider: provider.to_string(),
                     model: model.to_string(),
-                    max_tokens: 0,
+                    max_tokens: None,
+                    requested_tokens: None,
                 }
             }
             AppError::Provider(msg)
@@ -172,11 +199,19 @@ impl RouterError {
                 provider,
                 model,
                 max_tokens,
+                requested_tokens,
             } => {
-                format!(
-                    "CONTEXT_LENGTH_EXCEEDED: {}/{} (max: {})",
-                    provider, model, max_tokens
-                )
+                // Only include "(max: N)" / "(requested: N)" when we
+                // actually know the numbers — otherwise the message used to
+                // read "(max: 0)", which was misleading.
+                let mut extra = String::new();
+                if let Some(m) = max_tokens {
+                    extra.push_str(&format!(" (max: {})", m));
+                }
+                if let Some(r) = requested_tokens {
+                    extra.push_str(&format!(" (requested: {})", r));
+                }
+                format!("CONTEXT_LENGTH_EXCEEDED: {}/{}{}", provider, model, extra)
             }
             RouterError::Unreachable { provider, model } => {
                 format!("UNREACHABLE: {}/{}", provider, model)
@@ -359,6 +394,27 @@ pub struct Router {
     endpoint_cache: Arc<EndpointCapabilityCache>,
 }
 
+/// Summarize skip reasons from the `attempts` log as a human-readable string
+/// like `"endpoint_not_supported: 1, no_tool_support: 2"`.
+///
+/// Used to produce a specific error when every prioritized model was skipped
+/// by a pre-request filter (e.g. no function-calling support for a tools
+/// request) so callers see the real reason instead of a generic "Unknown".
+fn summarize_attempt_outcomes(attempts: &[serde_json::Value]) -> String {
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for a in attempts {
+        if let Some(outcome) = a.get("outcome").and_then(|v| v.as_str()) {
+            *counts.entry(outcome).or_insert(0) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(k, v)| format!("{}: {}", k, v))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Build routing metadata JSON for monitor events.
 fn build_routing_metadata(
     routellm_win_rate: &Option<f32>,
@@ -498,7 +554,10 @@ impl Router {
         }
 
         // Layer 3: Model capability lookup (registry cache → catalog → None)
-        if let Some(capabilities) = self.provider_registry.get_model_capabilities(provider, model) {
+        if let Some(capabilities) = self
+            .provider_registry
+            .get_model_capabilities(provider, model)
+        {
             if !endpoint_type.is_compatible_with(&capabilities) {
                 debug!(
                     "Skipping {}/{} for {:?}: model capabilities {:?} incompatible",
@@ -596,7 +655,10 @@ impl Router {
         &self,
         client_id: &str,
         request: CompletionRequest,
-    ) -> AppResult<(Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>, Option<serde_json::Value>)> {
+    ) -> AppResult<(
+        Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
+        Option<serde_json::Value>,
+    )> {
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
 
@@ -634,17 +696,20 @@ impl Router {
                 }
             };
             let resolved_model = format!("{}/{}", final_provider, final_model);
-            Ok((wrap_stream_with_usage_tracking(
-                stream,
-                client_id.to_string(),
-                resolved_model,
-                self.rate_limiter.clone(),
-                self.free_tier_manager.clone(),
-                free_tier,
-                pricing,
-                strategy.free_tier_only,
-            )
-            .await, None))
+            Ok((
+                wrap_stream_with_usage_tracking(
+                    stream,
+                    client_id.to_string(),
+                    resolved_model,
+                    self.rate_limiter.clone(),
+                    self.free_tier_manager.clone(),
+                    free_tier,
+                    pricing,
+                    strategy.free_tier_only,
+                )
+                .await,
+                None,
+            ))
         }
     }
 
@@ -1109,9 +1174,16 @@ impl Router {
         let (selected_models, routellm_win_rate) = self
             .select_models_for_auto_routing(auto_config, &request, "")
             .await;
-        let routellm_tier = request.pre_computed_routing.as_ref().map(|r| {
-            if r.is_strong { "strong" } else { "weak" }
-        });
+        let routellm_tier =
+            request.pre_computed_routing.as_ref().map(
+                |r| {
+                    if r.is_strong {
+                        "strong"
+                    } else {
+                        "weak"
+                    }
+                },
+            );
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -1127,7 +1199,10 @@ impl Router {
 
         let mut last_error = None;
         let mut min_retry_after: u64 = u64::MAX;
-        let candidate_models: Vec<String> = selected_models.iter().map(|(p, m)| format!("{}/{}", p, m)).collect();
+        let candidate_models: Vec<String> = selected_models
+            .iter()
+            .map(|(p, m)| format!("{}/{}", p, m))
+            .collect();
         let mut attempts: Vec<serde_json::Value> = Vec::new();
         let request_has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
@@ -1141,11 +1216,8 @@ impl Router {
             );
 
             // Check endpoint compatibility (skip models that don't support chat)
-            if self.should_skip_for_endpoint(
-                provider,
-                model,
-                lr_providers::EndpointType::Chat,
-            ) {
+            if self.should_skip_for_endpoint(provider, model, lr_providers::EndpointType::Chat) {
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "endpoint_not_supported"}));
                 continue;
             }
 
@@ -1255,7 +1327,13 @@ impl Router {
                         response.routellm_win_rate = Some(win_rate);
                     }
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success", "duration_ms": attempt_ms}));
-                    let routing_meta = build_routing_metadata(&routellm_win_rate, routellm_tier, &candidate_models, attempts, Some(idx));
+                    let routing_meta = build_routing_metadata(
+                        &routellm_win_rate,
+                        routellm_tier,
+                        &candidate_models,
+                        attempts,
+                        Some(idx),
+                    );
                     return Ok((response, Some(routing_meta)));
                 }
                 Err(e) => {
@@ -1320,11 +1398,30 @@ impl Router {
             ));
         }
 
+        // No model produced an error because every candidate was filtered
+        // out before any request was attempted. Surface the specific reason
+        // instead of a generic "Unknown" so the user can fix the strategy.
+        let detail = match last_error {
+            Some(e) => e.to_log_string(),
+            None => {
+                let summary = summarize_attempt_outcomes(&attempts);
+                if summary.is_empty() {
+                    format!(
+                        "all {} prioritized models skipped by pre-request filters",
+                        selected_models.len()
+                    )
+                } else {
+                    format!(
+                        "all {} prioritized models skipped by pre-request filters ({})",
+                        selected_models.len(),
+                        summary
+                    )
+                }
+            }
+        };
         Err(AppError::Router(format!(
             "All auto-routing models failed. Last error: {}",
-            last_error
-                .map(|e| e.to_log_string())
-                .unwrap_or_else(|| "Unknown".to_string())
+            detail
         )))
     }
 
@@ -1335,7 +1432,10 @@ impl Router {
         client_id: &str,
         strategy: &lr_config::Strategy,
         request: CompletionRequest,
-    ) -> AppResult<(Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>, Option<serde_json::Value>)> {
+    ) -> AppResult<(
+        Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
+        Option<serde_json::Value>,
+    )> {
         let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
             AppError::Router("localrouter/auto not configured for this strategy".into())
         })?;
@@ -1356,9 +1456,16 @@ impl Router {
         let (selected_models, _routellm_win_rate) = self
             .select_models_for_auto_routing(auto_config, &request, "streaming")
             .await;
-        let routellm_tier = request.pre_computed_routing.as_ref().map(|r| {
-            if r.is_strong { "strong" } else { "weak" }
-        });
+        let routellm_tier =
+            request.pre_computed_routing.as_ref().map(
+                |r| {
+                    if r.is_strong {
+                        "strong"
+                    } else {
+                        "weak"
+                    }
+                },
+            );
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -1373,7 +1480,10 @@ impl Router {
         );
 
         let mut last_error = None;
-        let candidate_models: Vec<String> = selected_models.iter().map(|(p, m)| format!("{}/{}", p, m)).collect();
+        let candidate_models: Vec<String> = selected_models
+            .iter()
+            .map(|(p, m)| format!("{}/{}", p, m))
+            .collect();
         let mut attempts: Vec<serde_json::Value> = Vec::new();
         let request_has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
@@ -1387,11 +1497,8 @@ impl Router {
             );
 
             // Check endpoint compatibility (skip models that don't support chat)
-            if self.should_skip_for_endpoint(
-                provider,
-                model,
-                lr_providers::EndpointType::Chat,
-            ) {
+            if self.should_skip_for_endpoint(provider, model, lr_providers::EndpointType::Chat) {
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "endpoint_not_supported"}));
                 continue;
             }
 
@@ -1502,24 +1609,33 @@ impl Router {
                     );
                     self.free_tier_manager.clear_backoff(provider, model);
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success"}));
-                    let routing_meta = build_routing_metadata(&_routellm_win_rate, routellm_tier, &candidate_models, attempts, Some(idx));
+                    let routing_meta = build_routing_metadata(
+                        &_routellm_win_rate,
+                        routellm_tier,
+                        &candidate_models,
+                        attempts,
+                        Some(idx),
+                    );
                     let resolved_model = format!("{}/{}", provider, model);
                     let pricing = provider_instance
                         .get_pricing(model)
                         .await
                         .unwrap_or_else(|_| lr_providers::PricingInfo::free());
                     let free_tier = self.get_effective_free_tier(provider);
-                    return Ok((wrap_stream_with_usage_tracking(
-                        stream,
-                        client_id.to_string(),
-                        resolved_model,
-                        self.rate_limiter.clone(),
-                        self.free_tier_manager.clone(),
-                        free_tier,
-                        pricing,
-                        strategy.free_tier_only,
-                    )
-                    .await, Some(routing_meta)));
+                    return Ok((
+                        wrap_stream_with_usage_tracking(
+                            stream,
+                            client_id.to_string(),
+                            resolved_model,
+                            self.rate_limiter.clone(),
+                            self.free_tier_manager.clone(),
+                            free_tier,
+                            pricing,
+                            strategy.free_tier_only,
+                        )
+                        .await,
+                        Some(routing_meta),
+                    ));
                 }
                 Err(e) => {
                     let router_error = RouterError::classify(&e, provider, model);
@@ -1586,11 +1702,29 @@ impl Router {
             ));
         }
 
+        // Same "all filtered out" reporting as the non-streaming path: when
+        // no request was ever attempted, say *why* models were skipped.
+        let detail = match last_error {
+            Some(e) => e.to_log_string(),
+            None => {
+                let summary = summarize_attempt_outcomes(&attempts);
+                if summary.is_empty() {
+                    format!(
+                        "all {} prioritized models skipped by pre-request filters",
+                        selected_models.len()
+                    )
+                } else {
+                    format!(
+                        "all {} prioritized models skipped by pre-request filters ({})",
+                        selected_models.len(),
+                        summary
+                    )
+                }
+            }
+        };
         Err(AppError::Router(format!(
             "All auto-routing streaming models failed. Last error: {}",
-            last_error
-                .map(|e| e.to_log_string())
-                .unwrap_or_else(|| "Unknown".to_string())
+            detail
         )))
     }
 
@@ -1847,7 +1981,10 @@ impl Router {
         &self,
         client_id: &str,
         request: CompletionRequest,
-    ) -> AppResult<(Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>, Option<serde_json::Value>)> {
+    ) -> AppResult<(
+        Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
+        Option<serde_json::Value>,
+    )> {
         debug!(
             "Routing streaming completion request for client '{}', model '{}'",
             client_id, request.model
@@ -1884,17 +2021,20 @@ impl Router {
                 }
             };
             let resolved_model = format!("{}/{}", provider, model);
-            return Ok((wrap_stream_with_usage_tracking(
-                stream,
-                client_id.to_string(),
-                resolved_model,
-                self.rate_limiter.clone(),
-                self.free_tier_manager.clone(),
-                free_tier,
-                pricing,
-                false, // internal test — not free tier mode
-            )
-            .await, None));
+            return Ok((
+                wrap_stream_with_usage_tracking(
+                    stream,
+                    client_id.to_string(),
+                    resolved_model,
+                    self.rate_limiter.clone(),
+                    self.free_tier_manager.clone(),
+                    free_tier,
+                    pricing,
+                    false, // internal test — not free tier mode
+                )
+                .await,
+                None,
+            ));
         }
 
         // 1. Validate client and get strategy
@@ -1984,17 +2124,20 @@ impl Router {
             }
         };
         let resolved_model = format!("{}/{}", final_provider, final_model);
-        Ok((wrap_stream_with_usage_tracking(
-            stream,
-            client_id.to_string(),
-            resolved_model,
-            self.rate_limiter.clone(),
-            self.free_tier_manager.clone(),
-            free_tier,
-            pricing,
-            strategy.free_tier_only,
-        )
-        .await, None))
+        Ok((
+            wrap_stream_with_usage_tracking(
+                stream,
+                client_id.to_string(),
+                resolved_model,
+                self.rate_limiter.clone(),
+                self.free_tier_manager.clone(),
+                free_tier,
+                pricing,
+                strategy.free_tier_only,
+            )
+            .await,
+            None,
+        ))
     }
 
     /// Execute an embedding request on a specific provider/model
@@ -2113,11 +2256,8 @@ impl Router {
             );
 
             // Check endpoint compatibility (skip models that don't support embeddings)
-            if self.should_skip_for_endpoint(
-                provider,
-                model,
-                lr_providers::EndpointType::Embedding,
-            ) {
+            if self.should_skip_for_endpoint(provider, model, lr_providers::EndpointType::Embedding)
+            {
                 continue;
             }
 
@@ -2822,6 +2962,109 @@ impl Router {
 mod tests {
     use super::*;
     use lr_config::AppConfig;
+
+    #[test]
+    fn test_summarize_attempt_outcomes_counts_and_sorts() {
+        let attempts = vec![
+            serde_json::json!({"provider": "Ollama", "model": "m1", "outcome": "no_tool_support"}),
+            serde_json::json!({"provider": "Ollama", "model": "m2", "outcome": "no_tool_support"}),
+            serde_json::json!({"provider": "Ollama", "model": "m3", "outcome": "endpoint_not_supported"}),
+        ];
+        // BTreeMap ordering → alphabetical by outcome.
+        assert_eq!(
+            summarize_attempt_outcomes(&attempts),
+            "endpoint_not_supported: 1, no_tool_support: 2"
+        );
+    }
+
+    #[test]
+    fn test_summarize_attempt_outcomes_empty() {
+        assert_eq!(summarize_attempt_outcomes(&[]), "");
+    }
+
+    #[test]
+    fn test_summarize_attempt_outcomes_ignores_entries_without_outcome() {
+        let attempts = vec![
+            serde_json::json!({"provider": "p", "model": "m"}),
+            serde_json::json!({"outcome": "no_tool_support"}),
+        ];
+        assert_eq!(summarize_attempt_outcomes(&attempts), "no_tool_support: 1");
+    }
+
+    #[test]
+    fn test_classify_prefers_typed_context_length_error() {
+        // Structured provider error (from classify_openai_error) carries the
+        // real max — verify the router preserves it instead of zeroing it out.
+        let err = AppError::ContextLengthExceeded {
+            max: Some(8192),
+            requested: Some(9100),
+        };
+        match RouterError::classify(&err, "OpenAI", "gpt-4") {
+            RouterError::ContextLengthExceeded {
+                max_tokens,
+                requested_tokens,
+                ..
+            } => {
+                assert_eq!(max_tokens, Some(8192));
+                assert_eq!(requested_tokens, Some(9100));
+            }
+            other => panic!("expected ContextLengthExceeded, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_classify_model_not_found_maps_to_endpoint_not_supported() {
+        let err = AppError::ModelNotFound {
+            model: "gpt-99".into(),
+        };
+        assert!(matches!(
+            RouterError::classify(&err, "OpenAI", "gpt-99"),
+            RouterError::EndpointNotSupported { .. }
+        ));
+    }
+
+    #[test]
+    fn test_classify_token_auth_error_not_context_length() {
+        // Regression: the old classifier caught any AppError::Provider
+        // containing the word "token" and mis-labeled it as context-length.
+        // With the tightened substring match this should fall through to
+        // `Other` (not retried as context-length fallback).
+        let err = AppError::Provider("Bearer token invalid".into());
+        assert!(matches!(
+            RouterError::classify(&err, "OpenAI", "gpt-4"),
+            RouterError::Other { .. }
+        ));
+    }
+
+    #[test]
+    fn test_context_length_log_string_omits_unknown_max() {
+        let e = RouterError::ContextLengthExceeded {
+            provider: "OpenAI".into(),
+            model: "gpt-4".into(),
+            max_tokens: None,
+            requested_tokens: None,
+        };
+        let s = e.to_log_string();
+        assert!(
+            !s.contains("max:"),
+            "should not show max when unknown: {}",
+            s
+        );
+        assert!(s.contains("OpenAI/gpt-4"));
+    }
+
+    #[test]
+    fn test_context_length_log_string_includes_known_max() {
+        let e = RouterError::ContextLengthExceeded {
+            provider: "OpenAI".into(),
+            model: "gpt-4".into(),
+            max_tokens: Some(8192),
+            requested_tokens: Some(9100),
+        };
+        let s = e.to_log_string();
+        assert!(s.contains("(max: 8192)"));
+        assert!(s.contains("(requested: 9100)"));
+    }
 
     #[tokio::test]
     async fn test_router_creation() {

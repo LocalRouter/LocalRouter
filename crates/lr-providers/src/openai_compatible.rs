@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
 use lr_types::{AppError, AppResult};
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -353,11 +353,10 @@ impl ModelProvider for OpenAICompatibleProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         let openai_response: OpenAIChatResponse = response
@@ -450,11 +449,10 @@ impl ModelProvider for OpenAICompatibleProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         // Parse SSE (Server-Sent Events) stream
@@ -618,11 +616,10 @@ impl ModelProvider for OpenAICompatibleProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
 
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
-                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
-                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
-            });
+            return Err(crate::http_client::classify_openai_error(
+                status,
+                &error_text,
+            ));
         }
 
         let openai_response: OpenAIEmbeddingResponse = response
