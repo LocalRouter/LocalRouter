@@ -301,35 +301,20 @@ jobs:
 
       - name: Generate release notes
         id: notes
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          cat > release-notes.md << 'RELEASE_NOTES'
-          ## LocalRouter v${{ needs.version-bump.outputs.version }}
+          # Ensure we have the full tag history on shallow CI checkouts so
+          # the previous-tag detection in the script sees every release.
+          git fetch --prune --tags --unshallow 2>/dev/null || git fetch --prune --tags
 
-          ### Installation
+          bash scripts/generate-release-notes.sh \
+            "v${{ needs.version-bump.outputs.version }}" \
+            > release-notes.md
 
-          Download the appropriate file for your platform:
-
-          | Platform | File |
-          |----------|------|
-          | macOS (Intel) | `LocalRouter_*_x64.dmg` |
-          | macOS (Apple Silicon) | `LocalRouter_*_aarch64.dmg` |
-          | Windows | `LocalRouter_*_x64-setup.exe` or `.msi` |
-          | Linux | `LocalRouter_*_amd64.AppImage` or `.deb` |
-
-          ### Auto-Update
-
-          This release includes cryptographically signed binaries. The app will automatically check for updates weekly (configurable in Preferences → Updates).
-
-          ### Verification
-
-          All binaries are signed. The updater will verify signatures before installation.
-
-          ### Changes
-
-          See [commit history](https://github.com/${{ github.repository }}/commits/v${{ needs.version-bump.outputs.version }}) for details.
-          RELEASE_NOTES
-          sed -i 's/^          //' release-notes.md
-          echo "Release notes generated"
+          echo "Release notes generated ($(wc -l < release-notes.md) lines)"
+          echo "--- Preview ---"
+          cat release-notes.md
 
       - name: Create latest.json for updater
         run: |
