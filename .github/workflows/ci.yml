@@ -25,7 +25,10 @@ jobs:
           haskell: true
           large-packages: false
           docker-images: true
-          swap-storage: true
+          # Keep swap — the Rust linker needs it for debug-mode test
+          # binaries; removing swap crashes `ld` with SIGBUS on the
+          # big workspace binary (e.g. liblocalrouter + all test bins).
+          swap-storage: false
 
       - name: Checkout
         uses: actions/checkout@v4
