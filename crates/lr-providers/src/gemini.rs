@@ -303,7 +303,11 @@ impl ModelProvider for GeminiProvider {
                 let mut capabilities = if is_embedding && !is_generative {
                     vec![Capability::Embedding]
                 } else {
-                    vec![Capability::Chat, Capability::Completion, Capability::FunctionCalling]
+                    vec![
+                        Capability::Chat,
+                        Capability::Completion,
+                        Capability::FunctionCalling,
+                    ]
                 };
 
                 if model.name.contains("vision") {

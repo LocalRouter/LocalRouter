@@ -115,8 +115,7 @@ impl OpenClawIntegration {
             let mut changed = false;
 
             if sync_llm {
-                let models_section =
-                    obj.entry("models").or_insert_with(|| serde_json::json!({}));
+                let models_section = obj.entry("models").or_insert_with(|| serde_json::json!({}));
                 let providers = models_section
                     .as_object_mut()
                     .ok_or("Invalid models section")?
@@ -149,8 +148,7 @@ impl OpenClawIntegration {
                 }
 
                 // Set default model to autorouter under agents.defaults.model.primary
-                let agents_section =
-                    obj.entry("agents").or_insert_with(|| serde_json::json!({}));
+                let agents_section = obj.entry("agents").or_insert_with(|| serde_json::json!({}));
                 let defaults_section = agents_section
                     .as_object_mut()
                     .ok_or("Invalid agents section")?
@@ -164,17 +162,15 @@ impl OpenClawIntegration {
                 model_section
                     .as_object_mut()
                     .ok_or("Invalid agents.defaults.model section")?
-                    .insert(
-                        "primary".to_string(),
-                        serde_json::json!("localrouter/auto"),
-                    );
+                    .insert("primary".to_string(), serde_json::json!("localrouter/auto"));
 
                 parts.push(format!("LLM provider at {}", llm_path.display()));
             } else {
                 // Remove stale LLM entry
                 if let Some(models_val) = obj.get_mut("models") {
-                    if let Some(providers) =
-                        models_val.as_object_mut().and_then(|m| m.get_mut("providers"))
+                    if let Some(providers) = models_val
+                        .as_object_mut()
+                        .and_then(|m| m.get_mut("providers"))
                     {
                         if let Some(prov_obj) = providers.as_object_mut() {
                             if prov_obj.remove("localrouter").is_some() {

@@ -42,7 +42,9 @@ impl McpGateway {
         }
 
         let allowed_servers = session_read.allowed_servers.clone();
-        let transports = session_read.transports.clone()
+        let transports = session_read
+            .transports
+            .clone()
             .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
         drop(session_read);
 
@@ -96,14 +98,8 @@ impl McpGateway {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
-        let results = broadcast_request(
-            server_ids,
-            request,
-            transports,
-            timeout,
-            max_retries,
-        )
-        .await;
+        let results =
+            broadcast_request(server_ids, request, transports, timeout, max_retries).await;
 
         let (successes, failures) = separate_results(results);
 
@@ -296,7 +292,9 @@ impl McpGateway {
 
         let transports = {
             let session_read = session.read().await;
-            session_read.transports.clone()
+            session_read
+                .transports
+                .clone()
                 .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
         };
 

@@ -794,7 +794,12 @@ async fn handle_non_streaming_parallel(
     let llm_handle = {
         let router = state.router.clone();
         let api_key_id = auth.api_key_id.clone();
-        tokio::spawn(async move { router.complete(&api_key_id, provider_request).await.map(|(r, _)| r) })
+        tokio::spawn(async move {
+            router
+                .complete(&api_key_id, provider_request)
+                .await
+                .map(|(r, _)| r)
+        })
     };
 
     // Wait for both concurrently

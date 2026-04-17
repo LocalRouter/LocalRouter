@@ -1015,14 +1015,13 @@ impl McpServerManager {
 
         #[allow(deprecated)]
         match config.transport {
-            McpTransportType::Stdio => {
-                self.create_stdio_transport_impl(server_id, &config).await
-            }
+            McpTransportType::Stdio => self.create_stdio_transport_impl(server_id, &config).await,
             McpTransportType::Sse | McpTransportType::HttpSse => {
                 self.create_sse_transport_impl(server_id, &config).await
             }
             McpTransportType::WebSocket => {
-                self.create_websocket_transport_impl(server_id, &config).await
+                self.create_websocket_transport_impl(server_id, &config)
+                    .await
             }
         }
     }
@@ -1035,9 +1034,12 @@ impl McpServerManager {
         &self,
         server_ids: &[String],
         timeout: std::time::Duration,
-    ) -> (crate::transport::SessionTransportSet, Vec<crate::gateway::types::ServerFailure>) {
-        use crate::transport::SessionTransportSet;
+    ) -> (
+        crate::transport::SessionTransportSet,
+        Vec<crate::gateway::types::ServerFailure>,
+    ) {
         use crate::gateway::types::ServerFailure;
+        use crate::transport::SessionTransportSet;
 
         let transport_set = SessionTransportSet::new();
         let mut failures = Vec::new();
@@ -1054,7 +1056,8 @@ impl McpServerManager {
                 async move {
                     tracing::info!("Creating transport for MCP server '{}'...", server_name);
                     let start = std::time::Instant::now();
-                    let result = tokio::time::timeout(timeout, manager.create_transport(&server_id)).await;
+                    let result =
+                        tokio::time::timeout(timeout, manager.create_transport(&server_id)).await;
                     tracing::info!(
                         "Transport creation for '{}' completed in {:?}: {}",
                         server_name,
@@ -1116,9 +1119,23 @@ impl McpServerManager {
                 .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
             for (var_name, ref_key) in env_refs {
                 match keychain.get(lr_config::MCP_KEYRING_SERVICE, ref_key) {
-                    Ok(Some(value)) => { env.insert(var_name.clone(), value); }
-                    Ok(None) => { tracing::warn!("Env var '{}' ref '{}' not found in keychain", var_name, ref_key); }
-                    Err(e) => { tracing::warn!("Failed to read env var '{}' from keychain: {}", var_name, e); }
+                    Ok(Some(value)) => {
+                        env.insert(var_name.clone(), value);
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            "Env var '{}' ref '{}' not found in keychain",
+                            var_name,
+                            ref_key
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to read env var '{}' from keychain: {}",
+                            var_name,
+                            e
+                        );
+                    }
                 }
             }
             tracing::debug!("Applied auth env vars for STDIO server: {}", server_id);
@@ -1144,7 +1161,8 @@ impl McpServerManager {
             }
         };
 
-        self.apply_auth_headers(server_id, config, &mut headers).await?;
+        self.apply_auth_headers(server_id, config, &mut headers)
+            .await?;
 
         let transport = SseTransport::connect(url, headers).await?;
         Ok(Arc::new(transport))
@@ -1165,7 +1183,8 @@ impl McpServerManager {
             }
         };
 
-        self.apply_auth_headers(server_id, config, &mut headers).await?;
+        self.apply_auth_headers(server_id, config, &mut headers)
+            .await?;
 
         let transport = WebSocketTransport::connect(url, headers).await?;
         Ok(Arc::new(transport))
@@ -1187,8 +1206,7 @@ impl McpServerManager {
                 let keychain = lr_api_keys::CachedKeychain::auto()
                     .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
                 let account_name = format!("{}_bearer_token", config.id);
-                if let Ok(Some(token)) =
-                    keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name)
+                if let Ok(Some(token)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name)
                 {
                     headers.insert("Authorization".to_string(), format!("Bearer {}", token));
                     tracing::debug!("Applied bearer token auth for server: {}", server_id);
@@ -1201,9 +1219,23 @@ impl McpServerManager {
                     .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
                 for (header_name, ref_key) in header_refs {
                     match keychain.get(lr_config::MCP_KEYRING_SERVICE, ref_key) {
-                        Ok(Some(value)) => { headers.insert(header_name.clone(), value); }
-                        Ok(None) => { tracing::warn!("Header '{}' ref '{}' not found in keychain", header_name, ref_key); }
-                        Err(e) => { tracing::warn!("Failed to read header '{}' from keychain: {}", header_name, e); }
+                        Ok(Some(value)) => {
+                            headers.insert(header_name.clone(), value);
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                "Header '{}' ref '{}' not found in keychain",
+                                header_name,
+                                ref_key
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to read header '{}' from keychain: {}",
+                                header_name,
+                                e
+                            );
+                        }
                     }
                 }
                 tracing::debug!("Applied custom headers auth for server: {}", server_id);
@@ -1223,7 +1255,8 @@ impl McpServerManager {
                 {
                     Ok(Some(secret)) => secret,
                     Ok(None) => {
-                        let msg = format!("OAuth client secret not found for server: {}", server_id);
+                        let msg =
+                            format!("OAuth client secret not found for server: {}", server_id);
                         tracing::warn!("OAuth client secret not found in keychain for MCP server");
                         return Err(AppError::Mcp(msg));
                     }
@@ -1261,10 +1294,9 @@ impl McpServerManager {
                     )));
                 }
 
-                let token_json: serde_json::Value =
-                    token_response.json().await.map_err(|e| {
-                        AppError::Mcp(format!("Failed to parse OAuth token response: {}", e))
-                    })?;
+                let token_json: serde_json::Value = token_response.json().await.map_err(|e| {
+                    AppError::Mcp(format!("Failed to parse OAuth token response: {}", e))
+                })?;
 
                 let access_token = token_json
                     .get("access_token")
@@ -1273,7 +1305,10 @@ impl McpServerManager {
                         AppError::Mcp("OAuth response missing access_token".to_string())
                     })?;
 
-                headers.insert("Authorization".to_string(), format!("Bearer {}", access_token));
+                headers.insert(
+                    "Authorization".to_string(),
+                    format!("Bearer {}", access_token),
+                );
                 tracing::info!("Applied OAuth token for server: {}", server_id);
             }
             lr_config::McpAuthConfig::OAuthBrowser { .. } => {
@@ -2087,12 +2122,7 @@ mod tests {
         // This simulates stdio MCP servers (like `netget --mcp`) that close
         // when they don't receive an initialize request on stdin.
         // `true` exits with code 0 but produces no output.
-        let result = McpServerManager::try_spawn_command(
-            "true",
-            &[],
-            &HashMap::new(),
-        )
-        .await;
+        let result = McpServerManager::try_spawn_command("true", &[], &HashMap::new()).await;
 
         assert!(
             result.is_ok(),

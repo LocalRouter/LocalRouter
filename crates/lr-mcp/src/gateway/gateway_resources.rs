@@ -49,7 +49,9 @@ impl McpGateway {
         }
 
         let allowed_servers = session_read.allowed_servers.clone();
-        let transports = session_read.transports.clone()
+        let transports = session_read
+            .transports
+            .clone()
             .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
         drop(session_read);
 
@@ -117,14 +119,8 @@ impl McpGateway {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
-        let results = broadcast_request(
-            server_ids,
-            request,
-            transports,
-            timeout,
-            max_retries,
-        )
-        .await;
+        let results =
+            broadcast_request(server_ids, request, transports, timeout, max_retries).await;
 
         let (successes, failures) = separate_results(results);
 
@@ -299,7 +295,11 @@ impl McpGateway {
                     "Resource URI not in mapping and resources/list not yet fetched, fetching now"
                 );
 
-                let transports = session.read().await.transports.clone()
+                let transports = session
+                    .read()
+                    .await
+                    .transports
+                    .clone()
                     .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
 
                 // Fetch resources/list to populate the URI mapping (only once per session)
@@ -395,7 +395,9 @@ impl McpGateway {
 
         let transports = {
             let session_read = session.read().await;
-            session_read.transports.clone()
+            session_read
+                .transports
+                .clone()
                 .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
         };
 
@@ -521,7 +523,9 @@ impl McpGateway {
         // Forward subscription request to the backend server
         let transports = {
             let session_read = session.read().await;
-            session_read.transports.clone()
+            session_read
+                .transports
+                .clone()
                 .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
         };
 
@@ -532,10 +536,7 @@ impl McpGateway {
             params: Some(json!({ "uri": uri })),
         };
 
-        match transports
-            .send_request(&server_id, backend_request)
-            .await
-        {
+        match transports.send_request(&server_id, backend_request).await {
             Ok(response) => {
                 // If successful, track the subscription in the session
                 if response.error.is_none() {
@@ -589,7 +590,9 @@ impl McpGateway {
         // Forward unsubscribe request to the backend server
         let transports = {
             let session_read = session.read().await;
-            session_read.transports.clone()
+            session_read
+                .transports
+                .clone()
                 .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
         };
 
@@ -600,10 +603,7 @@ impl McpGateway {
             params: Some(json!({ "uri": uri })),
         };
 
-        match transports
-            .send_request(&server_id, backend_request)
-            .await
-        {
+        match transports.send_request(&server_id, backend_request).await {
             Ok(response) => {
                 // Remove the subscription from session tracking
                 let mut session_write = session.write().await;
@@ -635,21 +635,17 @@ impl McpGateway {
         let request_id = request.id.clone();
         let session_read = session.read().await;
         let allowed_servers = session_read.allowed_servers.clone();
-        let transports = session_read.transports.clone()
+        let transports = session_read
+            .transports
+            .clone()
             .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
         drop(session_read);
 
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
-        let results = broadcast_request(
-            &allowed_servers,
-            request,
-            &transports,
-            timeout,
-            max_retries,
-        )
-        .await;
+        let results =
+            broadcast_request(&allowed_servers, request, &transports, timeout, max_retries).await;
 
         let (successes, failures) = separate_results(results);
 

@@ -648,9 +648,7 @@ impl ProviderRegistry {
                 let mut capabilities = Vec::new();
                 if m.capabilities.embedding {
                     capabilities.push(crate::Capability::Embedding);
-                } else if m.modality == lr_catalog::Modality::Image
-                    || m.capabilities.image_output
-                {
+                } else if m.modality == lr_catalog::Modality::Image || m.capabilities.image_output {
                     // Image generation model — don't add Chat
                 } else {
                     // Chat model (or unknown)

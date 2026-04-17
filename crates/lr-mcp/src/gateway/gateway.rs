@@ -1205,100 +1205,101 @@ impl McpGateway {
             let server_id_clone = server_id.clone();
             let broadcast_clone = self.notification_broadcast.clone();
 
-            let callback: NotificationCallback = Arc::new(move |notification: JsonRpcNotification| {
-                let session_inner = session_clone.clone();
-                let server_id_inner = server_id_clone.clone();
-                let broadcast_inner = broadcast_clone.clone();
+            let callback: NotificationCallback =
+                Arc::new(move |notification: JsonRpcNotification| {
+                    let session_inner = session_clone.clone();
+                    let server_id_inner = server_id_clone.clone();
+                    let broadcast_inner = broadcast_clone.clone();
 
-                tokio::spawn(async move {
-                    match notification.method.as_str() {
-                        "notifications/tools/list_changed" => {
-                            tracing::info!(
-                                "Received tools/list_changed notification from server: {}",
-                                server_id_inner
-                            );
-                            if let Ok(mut session_write) = session_inner.try_write() {
-                                session_write.cache_ttl_manager.record_invalidation();
-                                session_write.cached_tools = None;
-                            }
-                        }
-                        "notifications/resources/list_changed" => {
-                            tracing::info!(
-                                "Received resources/list_changed notification from server: {}",
-                                server_id_inner
-                            );
-                            if let Ok(mut session_write) = session_inner.try_write() {
-                                session_write.cache_ttl_manager.record_invalidation();
-                                session_write.cached_resources = None;
-                            }
-                        }
-                        "notifications/prompts/list_changed" => {
-                            tracing::info!(
-                                "Received prompts/list_changed notification from server: {}",
-                                server_id_inner
-                            );
-                            if let Ok(mut session_write) = session_inner.try_write() {
-                                session_write.cache_ttl_manager.record_invalidation();
-                                session_write.cached_prompts = None;
-                            }
-                        }
-                        other_method => {
-                            tracing::debug!(
-                                "Received notification from server {}: {}",
-                                server_id_inner,
-                                other_method
-                            );
-                        }
-                    }
-
-                    // Forward notification to external clients (if broadcast channel exists)
-                    // Namespace progress tokens to avoid collisions between servers
-                    let forwarded_notification =
-                        if notification.method == "notifications/progress" {
-                            let mut n = notification.clone();
-                            if let Some(ref mut params) = n.params {
-                                if let Some(token) = params.get("progressToken").cloned() {
-                                    let namespaced = format!(
-                                        "{}__{}",
-                                        server_id_inner,
-                                        token
-                                            .as_str()
-                                            .map(|s| s.to_string())
-                                            .unwrap_or_else(|| token.to_string())
-                                    );
-                                    if let Some(obj) = params.as_object_mut() {
-                                        obj.insert(
-                                            "progressToken".to_string(),
-                                            serde_json::json!(namespaced),
-                                        );
-                                    }
-                                }
-                            }
-                            n
-                        } else {
-                            notification.clone()
-                        };
-
-                    if let Some(broadcast) = broadcast_inner.as_ref() {
-                        let payload = (server_id_inner.clone(), forwarded_notification);
-                        match broadcast.send(payload) {
-                            Ok(receiver_count) => {
-                                tracing::debug!(
-                                    "Forwarded notification from server {} to {} client(s)",
-                                    server_id_inner,
-                                    receiver_count
-                                );
-                            }
-                            Err(_) => {
-                                tracing::trace!(
-                                    "No clients subscribed to notifications from server {}",
+                    tokio::spawn(async move {
+                        match notification.method.as_str() {
+                            "notifications/tools/list_changed" => {
+                                tracing::info!(
+                                    "Received tools/list_changed notification from server: {}",
                                     server_id_inner
                                 );
+                                if let Ok(mut session_write) = session_inner.try_write() {
+                                    session_write.cache_ttl_manager.record_invalidation();
+                                    session_write.cached_tools = None;
+                                }
+                            }
+                            "notifications/resources/list_changed" => {
+                                tracing::info!(
+                                    "Received resources/list_changed notification from server: {}",
+                                    server_id_inner
+                                );
+                                if let Ok(mut session_write) = session_inner.try_write() {
+                                    session_write.cache_ttl_manager.record_invalidation();
+                                    session_write.cached_resources = None;
+                                }
+                            }
+                            "notifications/prompts/list_changed" => {
+                                tracing::info!(
+                                    "Received prompts/list_changed notification from server: {}",
+                                    server_id_inner
+                                );
+                                if let Ok(mut session_write) = session_inner.try_write() {
+                                    session_write.cache_ttl_manager.record_invalidation();
+                                    session_write.cached_prompts = None;
+                                }
+                            }
+                            other_method => {
+                                tracing::debug!(
+                                    "Received notification from server {}: {}",
+                                    server_id_inner,
+                                    other_method
+                                );
                             }
                         }
-                    }
+
+                        // Forward notification to external clients (if broadcast channel exists)
+                        // Namespace progress tokens to avoid collisions between servers
+                        let forwarded_notification =
+                            if notification.method == "notifications/progress" {
+                                let mut n = notification.clone();
+                                if let Some(ref mut params) = n.params {
+                                    if let Some(token) = params.get("progressToken").cloned() {
+                                        let namespaced = format!(
+                                            "{}__{}",
+                                            server_id_inner,
+                                            token
+                                                .as_str()
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_else(|| token.to_string())
+                                        );
+                                        if let Some(obj) = params.as_object_mut() {
+                                            obj.insert(
+                                                "progressToken".to_string(),
+                                                serde_json::json!(namespaced),
+                                            );
+                                        }
+                                    }
+                                }
+                                n
+                            } else {
+                                notification.clone()
+                            };
+
+                        if let Some(broadcast) = broadcast_inner.as_ref() {
+                            let payload = (server_id_inner.clone(), forwarded_notification);
+                            match broadcast.send(payload) {
+                                Ok(receiver_count) => {
+                                    tracing::debug!(
+                                        "Forwarded notification from server {} to {} client(s)",
+                                        server_id_inner,
+                                        receiver_count
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::trace!(
+                                        "No clients subscribed to notifications from server {}",
+                                        server_id_inner
+                                    );
+                                }
+                            }
+                        }
+                    });
                 });
-            });
 
             transport.set_notification_callback(callback);
         }
@@ -3241,7 +3242,14 @@ impl McpGateway {
             })),
         );
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
-        let _ = broadcast_request(&running_ids, init_request, &ephemeral_transports, timeout, 0).await;
+        let _ = broadcast_request(
+            &running_ids,
+            init_request,
+            &ephemeral_transports,
+            timeout,
+            0,
+        )
+        .await;
 
         // Complete MCP handshake: send notifications/initialized so servers
         // register conditional tools in their oninitialized callback
@@ -3251,7 +3259,9 @@ impl McpGateway {
                 "notifications/initialized".to_string(),
                 Some(json!({})),
             );
-            let _ = ephemeral_transports.send_request(server_id, notification).await;
+            let _ = ephemeral_transports
+                .send_request(server_id, notification)
+                .await;
         }
 
         let tools = self

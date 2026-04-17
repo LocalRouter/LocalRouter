@@ -338,8 +338,8 @@ pub async fn run_agentic_loop(
                     streamed: None,
                     response_body: None,
                     error: None,
-                routing_info: None,
-},
+                    routing_info: None,
+                },
                 lr_monitor::EventStatus::Pending,
                 None,
             )

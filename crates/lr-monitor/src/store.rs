@@ -257,8 +257,8 @@ mod tests {
                 streamed: None,
                 response_body: None,
                 error: None,
-            routing_info: None,
-},
+                routing_info: None,
+            },
             EventStatus::Pending,
             None,
         )
@@ -339,7 +339,7 @@ mod tests {
                 success: None,
                 response_preview: None,
                 error: None,
-},
+            },
             EventStatus::Pending,
             None,
         );
@@ -425,8 +425,8 @@ mod tests {
                 streamed: None,
                 response_body: None,
                 error: None,
-            routing_info: None,
-},
+                routing_info: None,
+            },
             EventStatus::Pending,
             None,
         );
@@ -499,7 +499,7 @@ mod tests {
                 success: None,
                 response_preview: None,
                 error: None,
-},
+            },
             EventStatus::Pending,
             None,
         );
