@@ -283,11 +283,49 @@ export default function ProviderForm({
                       )}
                     </>
                   )}
-                  {/* Browser PKCE flow - browser opened automatically */}
+                  {/* Browser PKCE flow - browser opened automatically; also
+                      surface the URL so the user can reopen/copy it if the
+                      auto-open failed (common on headless/remote setups). */}
                   {!oauthResult?.user_code && (
-                    <div className="p-3 bg-background rounded border text-center">
-                      <p className="text-muted-foreground">A browser window has been opened.</p>
-                      <p className="text-muted-foreground">Complete the authorization there.</p>
+                    <div className="p-3 bg-background rounded border space-y-2">
+                      <p className="text-muted-foreground text-center">
+                        A browser window has been opened. If it didn't, use the link below.
+                      </p>
+                      {oauthResult?.verification_url && isValidHttpUrl(oauthResult.verification_url) && (
+                        <div className="flex flex-col gap-2">
+                          <a
+                            href={oauthResult.verification_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-500 hover:underline text-xs break-all"
+                            title="Open in browser"
+                          >
+                            {oauthResult.verification_url}
+                          </a>
+                          <div className="flex gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => oauthResult.verification_url && open(oauthResult.verification_url)}
+                            >
+                              Open in Browser
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => {
+                                if (oauthResult.verification_url) {
+                                  navigator.clipboard.writeText(oauthResult.verification_url)
+                                }
+                              }}
+                            >
+                              Copy Link
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                   <p className="text-muted-foreground animate-pulse text-center">

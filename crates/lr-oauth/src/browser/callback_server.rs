@@ -55,8 +55,10 @@ struct ActiveServer {
     port: u16,
     /// Registered listeners by flow ID
     listeners: HashMap<FlowId, CallbackListener>,
-    /// Shutdown signal
-    _shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Send `()` here to trigger graceful shutdown of the spawned axum
+    /// task. Taken out of the Option when the server is being torn down
+    /// so the same signal can't be fired twice.
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Manager for OAuth callback servers
@@ -125,7 +127,8 @@ impl CallbackServerManager {
             let server_state = Arc::new(Mutex::new(ActiveServer {
                 port,
                 listeners: HashMap::from([(flow_id, listener)]),
-                _shutdown_tx: None,
+                // Filled in by `start_server` once the axum task is spawned.
+                shutdown_tx: None,
             }));
 
             // Start the HTTP server
@@ -321,10 +324,24 @@ impl CallbackServerManager {
             ))
         })?;
 
-        // Spawn server in background
+        // Wire a graceful-shutdown signal so `cancel_flow` can actually
+        // stop the axum task when the last listener goes away. Without
+        // this the port stayed bound forever after a cancelled / timed-
+        // out flow because `axum::serve(...).await` never returns.
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        {
+            let mut guard = server_state.lock();
+            guard.shutdown_tx = Some(shutdown_tx);
+        }
+
         tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app).await {
+            let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            });
+            if let Err(e) = server.await {
                 error!("OAuth callback server error on port {}: {}", port, e);
+            } else {
+                info!("OAuth callback server on port {} shut down cleanly", port);
             }
         });
 
@@ -342,14 +359,20 @@ impl CallbackServerManager {
     pub fn cancel_flow(&self, flow_id: FlowId, port: u16) {
         let mut servers = self.active_servers.lock();
 
-        if let Some(server) = servers.get(&port) {
-            let mut server = server.lock();
+        if let Some(server_arc) = servers.get(&port) {
+            let mut server = server_arc.lock();
             if server.listeners.remove(&flow_id).is_some() {
                 info!("Cancelled listener for flow {} on port {}", flow_id, port);
             }
 
-            // Clean up empty servers
+            // When the last listener on this port goes away, actually shut
+            // down the axum task — otherwise the TCP port stays bound and
+            // the server answers future callbacks forever (leaking a
+            // background task per OAuth attempt).
             if server.listeners.is_empty() {
+                if let Some(tx) = server.shutdown_tx.take() {
+                    let _ = tx.send(());
+                }
                 drop(server);
                 servers.remove(&port);
                 info!("Removed empty server on port {}", port);
