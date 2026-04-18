@@ -519,7 +519,7 @@ impl CodingAgentManager {
             }
         }
 
-        summaries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        summaries.sort_by_key(|s| std::cmp::Reverse(s.timestamp));
         summaries
     }
 
@@ -544,7 +544,7 @@ impl CodingAgentManager {
                 status: session.status.clone(),
             });
         }
-        summaries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        summaries.sort_by_key(|s| std::cmp::Reverse(s.timestamp));
         summaries
     }
 
