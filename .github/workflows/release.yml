@@ -321,8 +321,14 @@ jobs:
           VERSION="${{ needs.version-bump.outputs.version }}"
           REPO="${{ github.repository }}"
           BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
-          NOTES="See release notes at https://github.com/${REPO}/releases/tag/v${VERSION}"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          # Embed the full release notes (already markdown) directly in
+          # latest.json so the in-app updater dialog renders them via
+          # ReactMarkdown (`updateAvailable.body`) instead of showing just
+          # "See release notes at <url>". `jq -Rs .` reads the file raw
+          # and outputs a JSON-escaped string — including the surrounding
+          # quotes — so we drop it in unquoted below.
+          NOTES_JSON=$(jq -Rs . < release-notes.md)
 
           # Read signature files - all renamed to consistent pattern in prepare step
           get_sig() {
@@ -342,7 +348,7 @@ jobs:
           cat > release-assets/latest.json << EOF
           {
             "version": "v${VERSION}",
-            "notes": "${NOTES}",
+            "notes": ${NOTES_JSON},
             "pub_date": "${PUB_DATE}",
             "platforms": {
               "darwin-x86_64": {
