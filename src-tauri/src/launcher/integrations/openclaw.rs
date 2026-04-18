@@ -122,6 +122,18 @@ impl OpenClawIntegration {
                     .entry("providers")
                     .or_insert_with(|| serde_json::json!({}));
 
+                // Snapshot whether the user already had other providers
+                // configured before we add our own. This drives whether
+                // we're allowed to claim `agents.defaults.model.primary`
+                // below — a first-time install wants LocalRouter wired
+                // up as the default, but adding LocalRouter to an
+                // existing multi-provider setup should respect the
+                // user's current primary model.
+                let had_other_providers = providers
+                    .as_object()
+                    .map(|m| m.keys().any(|k| k != "localrouter"))
+                    .unwrap_or(false);
+
                 let model_ids = models
                     .cloned()
                     .unwrap_or_else(|| vec!["localrouter/auto".to_string()]);
@@ -147,22 +159,28 @@ impl OpenClawIntegration {
                     changed = true;
                 }
 
-                // Set default model to autorouter under agents.defaults.model.primary
-                let agents_section = obj.entry("agents").or_insert_with(|| serde_json::json!({}));
-                let defaults_section = agents_section
-                    .as_object_mut()
-                    .ok_or("Invalid agents section")?
-                    .entry("defaults")
-                    .or_insert_with(|| serde_json::json!({}));
-                let model_section = defaults_section
-                    .as_object_mut()
-                    .ok_or("Invalid agents.defaults section")?
-                    .entry("model")
-                    .or_insert_with(|| serde_json::json!({}));
-                model_section
-                    .as_object_mut()
-                    .ok_or("Invalid agents.defaults.model section")?
-                    .insert("primary".to_string(), serde_json::json!("localrouter/auto"));
+                // Only claim the default primary-model slot when LocalRouter
+                // is the sole provider. If the user already wired up another
+                // provider (openai, anthropic, …), leave their existing
+                // `agents.defaults.model.primary` untouched.
+                if !had_other_providers {
+                    let agents_section =
+                        obj.entry("agents").or_insert_with(|| serde_json::json!({}));
+                    let defaults_section = agents_section
+                        .as_object_mut()
+                        .ok_or("Invalid agents section")?
+                        .entry("defaults")
+                        .or_insert_with(|| serde_json::json!({}));
+                    let model_section = defaults_section
+                        .as_object_mut()
+                        .ok_or("Invalid agents.defaults section")?
+                        .entry("model")
+                        .or_insert_with(|| serde_json::json!({}));
+                    model_section
+                        .as_object_mut()
+                        .ok_or("Invalid agents.defaults.model section")?
+                        .insert("primary".to_string(), serde_json::json!("localrouter/auto"));
+                }
 
                 parts.push(format!("LLM provider at {}", llm_path.display()));
             } else {
