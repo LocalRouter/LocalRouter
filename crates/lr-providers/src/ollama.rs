@@ -475,7 +475,7 @@ impl ModelProvider for OllamaProvider {
             .collect();
         // Use `buffered` (ordered) so results align with `tags_response.models`
         // by index; `buffer_unordered` would break the zip below.
-        let cap_results: Vec<Option<Vec<Capability>>> = stream::iter(names.into_iter())
+        let cap_results: Vec<Option<Vec<Capability>>> = stream::iter(names)
             .map(|name| async move { self.fetch_model_capabilities(&name).await })
             .buffered(8)
             .collect::<Vec<_>>()
