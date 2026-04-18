@@ -6,6 +6,7 @@ import Button from './ui/Button'
 import Input from './ui/Input'
 import { EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline'
 import type { OAuthCredentialView } from '@/types/tauri-commands'
+import { errorMessage } from '@/utils/errors'
 
 export interface SetupParameter {
   key: string
@@ -205,7 +206,7 @@ export default function ProviderForm({
         console.error('OAuth poll error:', err)
         if (consecutiveErrors >= 3) {
           setOauthStatus('error')
-          setOauthError(err instanceof Error ? err.message : String(err))
+          setOauthError(errorMessage(err, 'OAuth poll failed'))
           clearInterval(pollInterval)
         }
       }
@@ -242,8 +243,14 @@ export default function ProviderForm({
         }
       }
     } catch (err) {
+      // Tauri `invoke` rejects with a raw string for commands that
+      // return `Result<T, String>` — that's NOT an Error instance, so
+      // plain `err.message` discarded the real backend message and the
+      // user only ever saw a generic fallback (e.g. when port 1455 was
+      // already bound by Codex, the user couldn't tell).
+      console.error('start_oauth_flow failed:', err)
       setOauthStatus('error')
-      setOauthError(err instanceof Error ? err.message : 'Failed to start OAuth flow')
+      setOauthError(errorMessage(err, 'Failed to start OAuth flow'))
     }
   }, [oauthProviderId])
 
