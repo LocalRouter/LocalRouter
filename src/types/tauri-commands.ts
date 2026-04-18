@@ -2327,6 +2327,18 @@ export interface DeleteOAuthCredentialsParams {
   providerId: string
 }
 
+/** Params for get_oauth_token */
+export interface GetOAuthTokenParams {
+  providerId: string
+}
+
+/** Rust: src-tauri/src/ui/commands.rs - OAuthCredentialView struct */
+export interface OAuthCredentialView {
+  access_token: string
+  expires_at?: number | null
+  account_id?: string | null
+}
+
 // =============================================================================
 // OAuth Client Commands
 // Rust: src-tauri/src/ui/commands.rs

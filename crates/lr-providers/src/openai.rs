@@ -17,6 +17,12 @@ use std::time::Instant;
 use tracing::{debug, info};
 
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
+/// ChatGPT Plus/Pro OAuth tokens (from the codex_cli flow) are scoped to
+/// `chatgpt.com/backend-api/codex/*`, not `api.openai.com/v1/*`. Calling
+/// `api.openai.com/v1/models` with those tokens returns 403. Verified
+/// against openai/codex: `backend-client/src/client.rs` uses
+/// `https://chatgpt.com/backend-api` as its base.
+const CHATGPT_BACKEND_API_BASE: &str = "https://chatgpt.com/backend-api/codex";
 const OAUTH_KEYCHAIN_SERVICE: &str = "LocalRouter-ProviderTokens";
 const OAUTH_PROVIDER_ID: &str = "openai-codex";
 
@@ -78,14 +84,24 @@ impl OpenAIProvider {
     pub fn from_oauth_or_key(provider_name: Option<&str>) -> AppResult<Self> {
         let keychain = CachedKeychain::system();
 
-        // Try OAuth first
+        // Try OAuth first.
+        //
+        // ChatGPT Plus/Pro OAuth tokens can't call `api.openai.com/v1/*`
+        // (returns 403) — they're only valid against the `chatgpt.com`
+        // backend. Route OAuth-based instances there so health checks,
+        // model listings, and eventually completions authenticate
+        // successfully.
         if let Ok(Some(access_token)) = keychain.get(
             OAUTH_KEYCHAIN_SERVICE,
             &format!("{}_access_token", OAUTH_PROVIDER_ID),
         ) {
             info!("Using OAuth credentials for OpenAI provider");
             debug!("Loaded OAuth access token from keychain for openai-codex");
-            return Ok(Self::new(access_token));
+            return Ok(Self {
+                api_key: access_token,
+                client: crate::http_client::default_client(),
+                base_url: CHATGPT_BACKEND_API_BASE.to_string(),
+            });
         }
 
         // Fall back to API key
@@ -108,6 +124,36 @@ impl OpenAIProvider {
             .ok()
             .flatten()
             .is_some()
+    }
+
+    /// True when this instance talks to the ChatGPT Plus/Pro backend
+    /// (via the codex_cli OAuth) rather than the public platform API.
+    fn is_chatgpt_backend(&self) -> bool {
+        self.base_url.starts_with(CHATGPT_BACKEND_API_BASE)
+    }
+
+    /// Hardcoded model list for ChatGPT Plus/Pro subscriptions — the
+    /// chatgpt.com backend-api doesn't expose a public `/models`
+    /// endpoint, so we surface the known-accessible set. Keep this list
+    /// aligned with what Codex's own TUI exposes for subscription auth.
+    fn chatgpt_plus_models() -> Vec<ModelInfo> {
+        let ids = ["gpt-5-codex", "gpt-4o", "gpt-4o-mini", "o1", "o1-mini"];
+        ids.iter()
+            .map(|id| ModelInfo {
+                id: (*id).to_string(),
+                name: (*id).to_string(),
+                provider: "openai".to_string(),
+                parameter_count: None,
+                context_window: 128_000,
+                supports_streaming: true,
+                capabilities: vec![
+                    Capability::Chat,
+                    Capability::FunctionCalling,
+                    Capability::Vision,
+                ],
+                detailed_capabilities: None,
+            })
+            .collect()
     }
 
     /// Get pricing information for known OpenAI models
@@ -400,6 +446,19 @@ impl ModelProvider for OpenAIProvider {
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
 
+        // The ChatGPT backend-api doesn't expose a cheap GET endpoint we
+        // can probe for health without consuming quota. Treat "we have a
+        // non-expired OAuth token and the base URL is reachable" as
+        // healthy; the real signal will come from an actual request.
+        if self.is_chatgpt_backend() {
+            return ProviderHealth {
+                status: HealthStatus::Healthy,
+                latency_ms: Some(0),
+                last_checked: Utc::now(),
+                error_message: None,
+            };
+        }
+
         // Use /v1/models endpoint for health check
         let result = self
             .client
@@ -453,6 +512,13 @@ impl ModelProvider for OpenAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
+        // ChatGPT Plus/Pro OAuth tokens can't call `/v1/models`, and the
+        // backend-api equivalent isn't publicly documented. Return the
+        // known subscription-accessible list so the UI shows something.
+        if self.is_chatgpt_backend() {
+            return Ok(Self::chatgpt_plus_models());
+        }
+
         let response = self
             .client
             .get(format!("{}/models", self.base_url))

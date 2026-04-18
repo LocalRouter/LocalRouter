@@ -1776,6 +1776,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'start_oauth_flow': () => ({ flow_id: generateId() }),
   'poll_oauth_status': () => ({ status: 'pending' }),
   'cancel_oauth_flow': () => null,
+  'get_oauth_token': () => ({
+    access_token: 'demo-access-token-redacted',
+    expires_at: null,
+    account_id: null,
+  }),
 
   // ============================================================================
   // Skills

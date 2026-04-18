@@ -407,6 +407,43 @@ pub async fn delete_oauth_credentials(
         .map_err(|e| e.to_string())
 }
 
+/// Stored OAuth credential summary — access token plus when it expires.
+///
+/// Purpose-built for the provider settings UI ("Show Token" / "Reconnect").
+/// We intentionally omit the refresh token; it's higher-value credentials
+/// and the user never needs to see it — the app uses it internally.
+#[derive(serde::Serialize)]
+pub struct OAuthCredentialView {
+    pub access_token: String,
+    /// Unix timestamp (seconds) when the access token expires, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    /// Human-readable account identifier (e.g. JWT `user_id`), if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
+/// Return the stored access token for an OAuth provider.
+///
+/// Intended for the provider settings UI so the user can inspect or copy
+/// their token and decide whether to re-auth. The refresh token is
+/// deliberately omitted.
+#[tauri::command]
+pub async fn get_oauth_token(
+    provider_id: String,
+    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
+) -> Result<Option<OAuthCredentialView>, String> {
+    let creds = oauth_manager
+        .get_credentials(&provider_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(creds.map(|c| OAuthCredentialView {
+        access_token: c.access_token,
+        expires_at: c.expires_at,
+        account_id: c.account_id,
+    }))
+}
+
 // ============================================================================
 // OAuth Client Commands (for MCP)
 // ============================================================================

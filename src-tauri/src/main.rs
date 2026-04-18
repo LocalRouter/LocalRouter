@@ -2299,6 +2299,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::cancel_oauth_flow,
             ui::commands::list_oauth_credentials,
             ui::commands::delete_oauth_credentials,
+            ui::commands::get_oauth_token,
             // OAuth client commands (for MCP)
             ui::commands::list_oauth_clients,
             ui::commands::create_oauth_client,

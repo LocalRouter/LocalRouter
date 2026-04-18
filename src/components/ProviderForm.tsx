@@ -5,6 +5,7 @@ import { isValidHttpUrl } from '@/utils/url'
 import Button from './ui/Button'
 import Input from './ui/Input'
 import { EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline'
+import type { OAuthCredentialView } from '@/types/tauri-commands'
 
 export interface SetupParameter {
   key: string
@@ -53,6 +54,88 @@ interface ProviderFormProps {
 const OAUTH_PROVIDER_MAP: Record<string, string> = {
   'github-copilot': 'github-copilot',
   'openai-chatgpt-plus': 'openai-codex',
+}
+
+/**
+ * Inline controls shown for an already-authenticated OAuth provider.
+ * Lets the user peek at / copy the stored access token and trigger a
+ * fresh OAuth flow if the saved credential needs replacing (e.g. the
+ * token was revoked upstream).
+ */
+function OAuthCredentialControls({
+  providerId,
+  onReconnect,
+}: {
+  providerId: string
+  onReconnect: () => void
+}) {
+  const [cred, setCred] = useState<OAuthCredentialView | null>(null)
+  const [showToken, setShowToken] = useState(false)
+
+  useEffect(() => {
+    invoke<OAuthCredentialView | null>('get_oauth_token', { providerId })
+      .then((c) => setCred(c))
+      .catch((e) => console.error('Failed to load OAuth credential:', e))
+  }, [providerId])
+
+  const tokenPreview = cred?.access_token
+    ? showToken
+      ? cred.access_token
+      : `${cred.access_token.slice(0, 12)}…${cred.access_token.slice(-4)}`
+    : null
+
+  const expiresLabel =
+    cred?.expires_at != null
+      ? new Date(cred.expires_at * 1000).toLocaleString()
+      : null
+
+  return (
+    <div className="p-3 bg-background rounded border space-y-2 text-xs">
+      {cred ? (
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-muted-foreground">Access token</span>
+            <div className="flex gap-1">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setShowToken((v) => !v)}
+                title={showToken ? 'Hide token' : 'Show token'}
+              >
+                {showToken ? <EyeSlashIcon className="h-3 w-3" /> : <EyeIcon className="h-3 w-3" />}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  if (cred.access_token) {
+                    navigator.clipboard.writeText(cred.access_token)
+                  }
+                }}
+                title="Copy token"
+              >
+                Copy
+              </Button>
+            </div>
+          </div>
+          <p className="font-mono break-all text-muted-foreground">{tokenPreview}</p>
+          {expiresLabel && (
+            <p className="text-muted-foreground">Expires: {expiresLabel}</p>
+          )}
+          {cred.account_id && (
+            <p className="text-muted-foreground">Account: {cred.account_id}</p>
+          )}
+        </>
+      ) : (
+        <p className="text-muted-foreground">No token details available.</p>
+      )}
+      <Button type="button" size="sm" variant="secondary" onClick={onReconnect}>
+        Reconnect
+      </Button>
+    </div>
+  )
 }
 
 export default function ProviderForm({
@@ -344,9 +427,18 @@ export default function ProviderForm({
               )}
 
               {oauthStatus === 'success' && (
-                <p className="text-sm text-green-600 dark:text-green-400">
-                  Successfully authenticated! You can now create the provider.
-                </p>
+                <div className="space-y-3">
+                  <p className="text-sm text-green-600 dark:text-green-400">
+                    Successfully authenticated.
+                  </p>
+
+                  {/* Token view + reconnect — only meaningful once we have
+                      a stored credential. `showToken` toggles between a
+                      masked preview and the raw access token. */}
+                  {oauthProviderId && (
+                    <OAuthCredentialControls providerId={oauthProviderId} onReconnect={startOAuthFlow} />
+                  )}
+                </div>
               )}
             </div>
           )
