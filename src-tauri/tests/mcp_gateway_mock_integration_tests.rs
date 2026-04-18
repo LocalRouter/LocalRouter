@@ -289,11 +289,7 @@ fn extract_result(response: &JsonRpcResponse) -> &serde_json::Value {
 /// prompts/list, …) need this boot-strap first. The two mock servers in
 /// `setup_gateway_with_two_servers` respond to `initialize` with the
 /// default mocks set up there, so this helper is just a thin wrapper.
-async fn init_session(
-    gateway: &McpGateway,
-    client_id: &str,
-    allowed_servers: Vec<String>,
-) {
+async fn init_session(gateway: &McpGateway, client_id: &str, allowed_servers: Vec<String>) {
     let init = JsonRpcRequest::new(
         Some(json!(0)),
         "initialize".to_string(),
@@ -726,7 +722,12 @@ async fn test_gateway_tools_call_routes_to_correct_server() {
     let list_request =
         JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
-    init_session(&gateway, "test-client-call", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-call",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-call",
@@ -783,7 +784,12 @@ async fn test_gateway_tools_call_unknown_tool() {
     let list_request =
         JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
     let allowed_servers = vec!["server1".to_string()];
-    init_session(&gateway, "test-client-unknown", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-unknown",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-unknown",
@@ -970,7 +976,12 @@ async fn test_resources_read_by_name() {
         Some(json!({})),
     );
 
-    init_session(&gateway, "test-client-res2", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-res2",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-res2",
@@ -1024,7 +1035,12 @@ async fn test_resources_read_not_found() {
         Some(json!({})),
     );
 
-    init_session(&gateway, "test-client-res3", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-res3",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-res3",
@@ -1074,7 +1090,12 @@ async fn test_resources_read_binary_content() {
         Some(json!({})),
     );
 
-    init_session(&gateway, "test-client-res4", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-res4",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-res4",
@@ -1194,7 +1215,12 @@ async fn test_prompts_get_routes_by_namespace() {
     let list_request =
         JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
 
-    init_session(&gateway, "test-client-prompt", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-prompt",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-prompt",
@@ -1255,7 +1281,12 @@ async fn test_prompts_get_with_arguments() {
     let list_request =
         JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
 
-    init_session(&gateway, "test-client-prompt2", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-prompt2",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-prompt2",
@@ -1306,7 +1337,12 @@ async fn test_prompts_get_not_found() {
     let list_request =
         JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
 
-    init_session(&gateway, "test-client-prompt3", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-prompt3",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-prompt3",
@@ -1445,7 +1481,12 @@ async fn test_tools_call_strips_namespace() {
     let list_request =
         JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
-    init_session(&gateway, "test-client-strip", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-strip",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-strip",
@@ -1493,7 +1534,12 @@ async fn test_tools_call_passes_arguments() {
     let list_request =
         JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
-    init_session(&gateway, "test-client-args2", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-args2",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-args2",
@@ -1684,7 +1730,12 @@ async fn test_notification_invalidates_tools_cache() {
     let request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
     // First request - caches tools
-    init_session(&gateway, "test-client-notif", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-notif",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let response1 = gateway
         .handle_request(
             "test-client-notif",
@@ -1728,7 +1779,12 @@ async fn test_notification_invalidates_resources_cache() {
     );
 
     // First request - caches resources
-    init_session(&gateway, "test-client-notif2", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-notif2",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let response1 = gateway
         .handle_request(
             "test-client-notif2",
@@ -1762,7 +1818,12 @@ async fn test_notification_invalidates_prompts_cache() {
     let request = JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
 
     // First request - caches prompts
-    init_session(&gateway, "test-client-notif3", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-notif3",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let response1 = gateway
         .handle_request(
             "test-client-notif3",
@@ -1882,7 +1943,12 @@ async fn test_tools_list_cached_latency() {
     let request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
     // First request - uncached
-    init_session(&gateway, "test-client-perf2", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-perf2",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-perf2",
@@ -1958,7 +2024,12 @@ async fn test_tools_call_overhead() {
     let list_request =
         JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
-    init_session(&gateway, "test-client-perf4", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-perf4",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-perf4",
@@ -2151,7 +2222,12 @@ async fn test_invalid_namespace_format() {
     let list_request =
         JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
-    init_session(&gateway, "test-client-invalid", allowed_servers.clone().clone()).await;
+    init_session(
+        &gateway,
+        "test-client-invalid",
+        allowed_servers.clone().clone(),
+    )
+    .await;
     let _ = gateway
         .handle_request(
             "test-client-invalid",

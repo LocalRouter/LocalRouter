@@ -56,6 +56,32 @@ When creating or modifying a Tauri command, update **all locations**:
 - [ ] Mock handler returns data matching response type
 - [ ] Run `npx tsc --noEmit` to verify types
 
+### Pre-Commit CI Parity (CRITICAL)
+
+CI has been failing repeatedly because local `clippy` lags the CI toolchain.
+**Before every commit, run the exact checks CI runs using the rustup stable
+toolchain (not the system/Homebrew `rustc`)**:
+
+```bash
+rustup update stable                                        # keep parity with CI
+rustup run stable cargo clippy --workspace --all-targets -- -D warnings
+rustup run stable cargo fmt --all -- --check
+rustup run stable cargo test --workspace
+```
+
+Why this matters:
+- CI uses `dtolnay/rust-toolchain@stable` which installs the latest stable at
+  run time (e.g. 1.95), so new clippy lints (`collapsible_match`,
+  `useless_conversion`, `sort_by_key`, …) fire there first.
+- Homebrew `rustc` may lag stable by several minor versions — do not trust it
+  for "clippy clean" verdicts.
+- Silently shipping a commit that fails CI wastes ~20 min per retry (runner
+  disk-free step + full workspace build). Always verify locally first.
+
+If a commit must be pushed before CI completes, immediately tail the run
+(`gh run list --limit 1; gh run view <id>`) and fix failures before
+moving on to other work.
+
 ### Privacy Policy (CRITICAL)
 - **No telemetry** - zero analytics or tracking
 - **No external assets** - all bundled at build time

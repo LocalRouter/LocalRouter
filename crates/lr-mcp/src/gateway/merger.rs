@@ -1836,7 +1836,7 @@ pub fn compute_catalog_compression_plan(
             }
         })
         .collect();
-    welcome_candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    welcome_candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
 
     // Performance shortcut: if total Phase 1 savings < bytes_to_save, apply all at once
     let total_phase1_savings: usize = welcome_candidates
@@ -1908,7 +1908,7 @@ pub fn compute_catalog_compression_plan(
             })
             .filter(|(_, size)| *size > 0)
             .collect();
-        server_def_candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        server_def_candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
 
         // Performance shortcut
         let total_phase2_savings: usize = server_def_candidates
