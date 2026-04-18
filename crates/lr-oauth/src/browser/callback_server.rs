@@ -298,12 +298,21 @@ impl CallbackServerManager {
             }
         };
 
-        // Build router
-        let app = Router::new().route("/callback", axum::routing::get(callback_handler));
+        // Build router. We accept both `/callback` (legacy, used by most
+        // providers) and `/auth/callback` — the OpenAI authorize endpoint
+        // only accepts redirect URIs pre-registered on their side, and
+        // `http://localhost:1455/auth/callback` is the one they publish
+        // for the Codex-style public client.
+        let app = Router::new()
+            .route("/callback", axum::routing::get(callback_handler.clone()))
+            .route("/auth/callback", axum::routing::get(callback_handler));
 
         // Start server
         let addr = format!("127.0.0.1:{}", port);
-        info!("Binding OAuth callback server to http://{}/callback", addr);
+        info!(
+            "Binding OAuth callback server to http://{}/callback (+ /auth/callback)",
+            addr
+        );
 
         let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
             AppError::OAuthBrowser(format!(

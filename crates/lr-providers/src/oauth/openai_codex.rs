@@ -24,9 +24,13 @@ use lr_oauth::browser::{FlowId, OAuthFlowConfig, OAuthFlowManager};
 use lr_types::{AppError, AppResult};
 
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const OPENAI_AUTHORIZE_URL: &str = "https://auth.openai.com/authorize";
+// Matches the Codex CLI flow: `/oauth/authorize` (not `/authorize`) and
+// the `localhost:1455/auth/callback` redirect that the OpenAI app is
+// registered against. Using any other path/host combination returns a
+// generic 400 at the authorize endpoint.
+const OPENAI_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
-const REDIRECT_URI: &str = "http://127.0.0.1:1455/callback";
+const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 pub const CALLBACK_PORT: u16 = 1455;
 
 /// JWT payload (simplified, for extracting account ID)
@@ -97,7 +101,24 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
     async fn start_oauth_flow(&self) -> AppResult<OAuthFlowResult> {
         info!("Starting OpenAI Codex OAuth flow");
 
-        // Create unified OAuth flow config
+        // Scopes and extra params mirror the Codex CLI flow. In particular:
+        //  - `offline_access` is required to get a refresh_token back.
+        //  - `api.connectors.read`/`.invoke` are the ChatGPT Plus/Pro
+        //    scopes that unlock the Responses API used by codex-style
+        //    clients.
+        //  - The extra params (`id_token_add_organizations`,
+        //    `codex_cli_simplified_flow`, `originator`) are what the
+        //    OpenAI authorize endpoint expects from this public client;
+        //    omitting them yields a 400 or a stripped-down access token.
+        let mut extra_auth_params = std::collections::HashMap::new();
+        extra_auth_params.insert("id_token_add_organizations".to_string(), "true".to_string());
+        extra_auth_params.insert("codex_cli_simplified_flow".to_string(), "true".to_string());
+        // Match the default `codex_cli_rs` originator from codex-rs
+        // (`codex-tui` is only set by the TUI). OpenAI's authorize
+        // endpoint validates this against an allowlist — using the
+        // canonical default is the safest choice for LocalRouter.
+        extra_auth_params.insert("originator".to_string(), "codex_cli_rs".to_string());
+
         let config = OAuthFlowConfig {
             client_id: OPENAI_CLIENT_ID.to_string(),
             client_secret: None, // OpenAI uses public client (PKCE only)
@@ -107,12 +128,15 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
                 "openid".to_string(),
                 "profile".to_string(),
                 "email".to_string(),
+                "offline_access".to_string(),
+                "api.connectors.read".to_string(),
+                "api.connectors.invoke".to_string(),
             ],
             redirect_uri: REDIRECT_URI.to_string(),
             callback_port: CALLBACK_PORT,
             keychain_service: "LocalRouter-ProviderTokens".to_string(),
             account_id: "openai-codex".to_string(),
-            extra_auth_params: std::collections::HashMap::new(),
+            extra_auth_params,
             extra_token_params: std::collections::HashMap::new(),
         };
 
@@ -223,6 +247,9 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
                 "openid".to_string(),
                 "profile".to_string(),
                 "email".to_string(),
+                "offline_access".to_string(),
+                "api.connectors.read".to_string(),
+                "api.connectors.invoke".to_string(),
             ],
             redirect_uri: REDIRECT_URI.to_string(),
             callback_port: CALLBACK_PORT,
