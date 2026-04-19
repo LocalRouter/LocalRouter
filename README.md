@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="website/public/icons/localrouter-logo.svg" alt="LocalRouter" width="80" />
+  <img src="website/public/favicon.svg" alt="LocalRouter" width="80" />
 </p>
 
 <h1 align="center">LocalRouter</h1>
