@@ -82,6 +82,7 @@ where
             let is_protected = path.starts_with("/v1/")
                 || path == "/chat/completions"
                 || path == "/completions"
+                || path == "/responses"
                 || path == "/embeddings"
                 || path == "/moderations"
                 || path == "/models"

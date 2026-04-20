@@ -234,6 +234,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         // Routes with /v1 prefix (all protected by blanket `/v1/` check in auth layer)
         .route("/v1/chat/completions", post(routes::chat_completions))
         .route("/v1/completions", post(routes::completions))
+        .route("/v1/responses", post(routes::create_response))
         .route("/v1/embeddings", post(routes::embeddings))
         .route("/v1/moderations", post(routes::moderations))
         .route("/v1/images/generations", post(routes::image_generations))
@@ -252,6 +253,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         // any missing entries.
         .route("/chat/completions", post(routes::chat_completions))
         .route("/completions", post(routes::completions))
+        .route("/responses", post(routes::create_response))
         .route("/embeddings", post(routes::embeddings))
         .route("/moderations", post(routes::moderations))
         .route("/images/generations", post(routes::image_generations))

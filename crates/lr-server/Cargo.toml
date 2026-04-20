@@ -53,6 +53,8 @@ lr-mcp-via-llm = { workspace = true }
 lr-memory = { workspace = true }
 lr-secret-scanner = { workspace = true }
 lr-monitor = { workspace = true }
+lr-responses-sessions = { workspace = true }
+dirs = { workspace = true }
 
 [features]
 default = []

@@ -14,12 +14,14 @@
 //! See `/Users/matus/.claude/plans/glittery-whistling-rabbit.md` for
 //! the full design and the mapping cheat-sheet.
 
+pub mod emit;
 pub mod http;
 pub mod request;
 pub mod response;
 pub mod stream;
 pub mod types;
 
+pub use emit::{completion_to_response_object, ResponsesEmitter, ResponsesSseFrame};
 pub use http::create_response;
 pub use http::stream_response;
 pub use request::translate_completion_request;
