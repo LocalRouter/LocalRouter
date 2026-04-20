@@ -25,15 +25,31 @@ const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
 pub struct MistralProvider {
     client: Client,
     api_key: String,
+    /// API base URL. Defaults to `https://api.mistral.ai/v1` but can be
+    /// overridden — notably to `https://codestral.mistral.ai/v1` so users
+    /// with a Codestral-specific API key can still authenticate. A regular
+    /// Mistral key won't authenticate against the Codestral endpoint and
+    /// vice-versa; the two credential scopes are disjoint.
+    base_url: String,
 }
 
 #[allow(dead_code)]
 impl MistralProvider {
-    /// Create a new Mistral provider with an API key
+    /// Create a new Mistral provider with an API key against the default
+    /// `api.mistral.ai/v1` endpoint.
     pub fn new(api_key: String) -> AppResult<Self> {
-        let client = crate::http_client::extended_client()?;
+        Self::with_base_url(api_key, MISTRAL_API_BASE.to_string())
+    }
 
-        Ok(Self { client, api_key })
+    /// Create a new Mistral provider with a custom base URL. Trailing
+    /// slashes are stripped so callers can pass either form.
+    pub fn with_base_url(api_key: String, base_url: String) -> AppResult<Self> {
+        let client = crate::http_client::extended_client()?;
+        Ok(Self {
+            client,
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        })
     }
 
     /// Create a new Mistral provider from stored API key
@@ -194,7 +210,7 @@ impl ModelProvider for MistralProvider {
         // A bad API key returns 401, correctly treated as unhealthy.
         let result = self
             .client
-            .get(format!("{}/models/mistral-small-latest", MISTRAL_API_BASE))
+            .get(format!("{}/models/mistral-small-latest", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await;
@@ -244,7 +260,7 @@ impl ModelProvider for MistralProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let url = format!("{}/models", MISTRAL_API_BASE);
+        let url = format!("{}/models", self.base_url);
 
         let response = self
             .client
@@ -371,7 +387,7 @@ impl ModelProvider for MistralProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", MISTRAL_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client
@@ -426,7 +442,7 @@ impl ModelProvider for MistralProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", MISTRAL_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client
@@ -556,5 +572,27 @@ mod tests {
         let provider = MistralProvider::new("test_key".to_string()).unwrap();
         let pricing = provider.get_pricing("mistral-large-latest").await.unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
+    }
+
+    #[test]
+    fn test_default_base_url_is_stripped_of_trailing_slash() {
+        // `new()` uses the compile-time constant which has no trailing
+        // slash — but verify the constructor does the strip anyway.
+        let provider = MistralProvider::with_base_url(
+            "k".to_string(),
+            "https://api.mistral.ai/v1/".to_string(),
+        )
+        .unwrap();
+        assert_eq!(provider.base_url, "https://api.mistral.ai/v1");
+    }
+
+    #[test]
+    fn test_codestral_base_url_is_honored() {
+        let provider = MistralProvider::with_base_url(
+            "k".to_string(),
+            "https://codestral.mistral.ai/v1".to_string(),
+        )
+        .unwrap();
+        assert_eq!(provider.base_url, "https://codestral.mistral.ai/v1");
     }
 }

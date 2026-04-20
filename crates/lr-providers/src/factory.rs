@@ -773,7 +773,7 @@ impl ProviderFactory for MistralProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "Mistral AI models including Mistral Large and Codestral"
+        "Mistral AI models including Mistral Large and Codestral. For Codestral-specific keys, set base_url to https://codestral.mistral.ai/v1."
     }
 
     fn default_free_tier(&self) -> FreeTierKind {
@@ -792,12 +792,27 @@ impl ProviderFactory for MistralProviderFactory {
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
-        vec![SetupParameter::required(
-            "api_key",
-            ParameterType::ApiKey,
-            "Mistral API key",
-            true,
-        )]
+        vec![
+            SetupParameter::required(
+                "api_key",
+                ParameterType::ApiKey,
+                "Mistral API key",
+                true,
+            ),
+            // Codestral uses a separate credential scope at a different
+            // host: Codestral keys authenticate against
+            // https://codestral.mistral.ai/v1, regular Mistral keys
+            // against https://api.mistral.ai/v1. The two are disjoint —
+            // a regular key 401s on the Codestral endpoint and vice-versa.
+            // Leaving this blank keeps the default for most users.
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "Optional: custom API base URL (e.g. https://codestral.mistral.ai/v1 for Codestral-specific keys)",
+                None::<String>,
+                false,
+            ),
+        ]
     }
 
     fn create(
@@ -812,12 +827,41 @@ impl ProviderFactory for MistralProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(MistralProvider::new(api_key)?))
+        // Empty string is treated the same as absent — users editing the
+        // form in the UI may end up with "" in the config map when they
+        // clear the field.
+        let base_url = config.get("base_url").and_then(|v| {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        let provider = match base_url {
+            Some(url) => MistralProvider::with_base_url(api_key, url)?,
+            None => MistralProvider::new(api_key)?,
+        };
+        Ok(Arc::new(provider))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
         if !config.contains_key("api_key") {
             return Err(AppError::Config("api_key is required".to_string()));
+        }
+        // If base_url is provided, it must be an http(s) URL. An empty
+        // string is treated as "not provided" (see create()).
+        if let Some(url) = config.get("base_url") {
+            let trimmed = url.trim();
+            if !trimmed.is_empty()
+                && !trimmed.starts_with("http://")
+                && !trimmed.starts_with("https://")
+            {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -2626,6 +2670,69 @@ mod tests {
         let notes = factory.free_tier_notes();
         assert!(notes.is_some());
         assert!(notes.unwrap().contains("experiment plan"));
+    }
+
+    // --- Mistral base_url override (Codestral) ---
+    //
+    // Codestral-specific API keys only authenticate against
+    // https://codestral.mistral.ai/v1. The factory exposes an optional
+    // base_url param so users can point the same Mistral provider at the
+    // Codestral host without a separate provider implementation.
+
+    #[test]
+    fn test_mistral_setup_parameters_expose_optional_base_url() {
+        let factory = MistralProviderFactory;
+        let params = factory.setup_parameters();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].key, "api_key");
+        assert!(params[0].required);
+        assert_eq!(params[1].key, "base_url");
+        assert!(!params[1].required);
+    }
+
+    #[test]
+    fn test_mistral_create_without_base_url_uses_default() {
+        let factory = MistralProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "mis_test".to_string());
+        let provider = factory.create("Mistral AI".to_string(), config);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_mistral_create_with_codestral_base_url_succeeds() {
+        let factory = MistralProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "cs_test".to_string());
+        config.insert(
+            "base_url".to_string(),
+            "https://codestral.mistral.ai/v1".to_string(),
+        );
+        let provider = factory.create("Mistral AI (Codestral)".to_string(), config);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_mistral_create_treats_blank_base_url_as_absent() {
+        // UI edit flow may leave an empty string in the config map when
+        // the user clears the field — that must behave like "not set",
+        // not like "invalid URL".
+        let factory = MistralProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "mis_test".to_string());
+        config.insert("base_url".to_string(), "".to_string());
+        let provider = factory.create("Mistral AI".to_string(), config);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_mistral_validate_rejects_non_http_base_url() {
+        let factory = MistralProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "mis_test".to_string());
+        config.insert("base_url".to_string(), "ftp://example.com".to_string());
+        let err = factory.validate_config(&config).unwrap_err();
+        assert!(format!("{err}").contains("http"));
     }
 
     #[test]
