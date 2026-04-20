@@ -2259,6 +2259,96 @@ impl ProviderFactory for ZhipuProviderFactory {
     }
 }
 
+/// Factory for DigitalOcean Gradient serverless inference providers
+///
+/// Wraps `OpenAICompatibleProvider` with a fixed base URL of
+/// `https://inference.do-ai.run/v1` (the default `GRADIENT_INFERENCE_ENDPOINT`
+/// used by the official Gradient SDK). Auth is a Gradient Model Access Key
+/// passed as `Authorization: Bearer <key>`, which is distinct from a DO
+/// Personal Access Token — the serverless inference endpoint only accepts the
+/// model access key.
+///
+/// Catalog: `models.dev` ships a "digitalocean" entry covering ~20 models
+/// (chat + embeddings), so `catalog_provider_id` is wired up for pricing
+/// enrichment and offline fallback.
+pub struct DigitalOceanProviderFactory;
+
+impl ProviderFactory for DigitalOceanProviderFactory {
+    fn provider_type(&self) -> &str {
+        "digitalocean"
+    }
+
+    fn display_name(&self) -> &str {
+        "DigitalOcean Gradient"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "DigitalOcean Gradient serverless inference (Llama, Mistral, Qwen, embeddings)"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        // DO bills serverless inference by token usage. Credits for new
+        // accounts are common but not guaranteed; treat as usage-billed.
+        FreeTierKind::None
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some(
+            "Usage-billed serverless inference. Requires a Gradient Model Access Key \
+             (not a DigitalOcean Personal Access Token). Generate one in the DO \
+             console under Gradient AI → Serverless Inference → Model access keys. \
+             New accounts commonly receive trial credits — see DO billing for the \
+             current offer.",
+        )
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Gradient Model Access Key (not a Personal Access Token)",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "digitalocean".to_string(),
+            "https://inference.do-ai.run/v1".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config(
+                "api_key is required (use a Gradient Model Access Key, not a Personal Access Token)"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some("digitalocean")
+    }
+}
+
 // ==================== SUBSCRIPTION PROVIDER FACTORIES ====================
 
 /// Factory for GitHub Copilot (OAuth subscription)
@@ -2968,6 +3058,62 @@ mod tests {
         assert!(factory.validate_config(&config).is_err());
     }
 
+    // --- DigitalOcean Gradient ---
+
+    #[test]
+    fn test_digitalocean_factory_metadata() {
+        let factory = DigitalOceanProviderFactory;
+        assert_eq!(factory.provider_type(), "digitalocean");
+        assert_eq!(factory.display_name(), "DigitalOcean Gradient");
+        assert_eq!(factory.category(), ProviderCategory::ThirdParty);
+        assert_eq!(factory.catalog_provider_id(), Some("digitalocean"));
+    }
+
+    #[test]
+    fn test_digitalocean_free_tier_and_notes() {
+        let factory = DigitalOceanProviderFactory;
+        assert_eq!(factory.default_free_tier(), FreeTierKind::None);
+        let notes = factory.free_tier_notes().unwrap();
+        assert!(notes.contains("Model Access Key"));
+        assert!(notes.contains("Personal Access Token"));
+    }
+
+    #[test]
+    fn test_digitalocean_setup_parameters() {
+        let factory = DigitalOceanProviderFactory;
+        let params = factory.setup_parameters();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].key, "api_key");
+        assert!(params[0].required);
+        assert!(params[0].sensitive);
+    }
+
+    #[test]
+    fn test_digitalocean_create_success() {
+        let factory = DigitalOceanProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "do_model_abc123".to_string());
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "digitalocean");
+    }
+
+    #[test]
+    fn test_digitalocean_validate_missing_key() {
+        let factory = DigitalOceanProviderFactory;
+        let config = HashMap::new();
+        let err = factory.validate_config(&config).unwrap_err();
+        // Error should steer users away from the wrong credential type
+        assert!(format!("{err}").contains("Model Access Key"));
+    }
+
+    #[test]
+    fn test_digitalocean_create_missing_key_fails() {
+        let factory = DigitalOceanProviderFactory;
+        let config = HashMap::new();
+        assert!(factory.create("test".to_string(), config).is_err());
+    }
+
     // ==================== Cross-cutting tests ====================
 
     #[test]
@@ -2980,6 +3126,7 @@ mod tests {
             Box::new(KlusterAIProviderFactory),
             Box::new(HuggingFaceProviderFactory),
             Box::new(ZhipuProviderFactory),
+            Box::new(DigitalOceanProviderFactory),
         ];
         for factory in &factories {
             assert!(
@@ -3014,6 +3161,10 @@ mod tests {
             HuggingFaceProviderFactory.catalog_provider_id(),
             Some("huggingface")
         );
+        assert_eq!(
+            DigitalOceanProviderFactory.catalog_provider_id(),
+            Some("digitalocean")
+        );
 
         // Providers without catalog data should return None
         let no_catalog: Vec<Box<dyn ProviderFactory>> = vec![
@@ -3040,6 +3191,7 @@ mod tests {
             Box::new(KlusterAIProviderFactory),
             Box::new(HuggingFaceProviderFactory),
             Box::new(ZhipuProviderFactory),
+            Box::new(DigitalOceanProviderFactory),
         ];
         let types: Vec<&str> = factories.iter().map(|f| f.provider_type()).collect();
         let mut deduped = types.clone();
@@ -3063,6 +3215,7 @@ mod tests {
             Box::new(KlusterAIProviderFactory),
             Box::new(HuggingFaceProviderFactory),
             Box::new(ZhipuProviderFactory),
+            Box::new(DigitalOceanProviderFactory),
         ];
         for factory in &factories {
             assert_eq!(

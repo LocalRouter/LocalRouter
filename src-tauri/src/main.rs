@@ -20,14 +20,14 @@ use localrouter::{
 
 use lr_providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CloudflareAIProviderFactory,
-    CohereProviderFactory, DeepInfraProviderFactory, GPT4AllProviderFactory, GeminiProviderFactory,
-    GitHubCopilotProviderFactory, GitHubModelsProviderFactory, GroqProviderFactory,
-    HuggingFaceProviderFactory, JanProviderFactory, KlusterAIProviderFactory,
-    LMStudioProviderFactory, LlamaCppProviderFactory, Llm7ProviderFactory, LocalAIProviderFactory,
-    MistralProviderFactory, NvidiaNimProviderFactory, OllamaProviderFactory,
-    OpenAICodexProviderFactory, OpenAICompatibleProviderFactory, OpenAIProviderFactory,
-    OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
-    XAIProviderFactory, ZhipuProviderFactory,
+    CohereProviderFactory, DeepInfraProviderFactory, DigitalOceanProviderFactory,
+    GPT4AllProviderFactory, GeminiProviderFactory, GitHubCopilotProviderFactory,
+    GitHubModelsProviderFactory, GroqProviderFactory, HuggingFaceProviderFactory,
+    JanProviderFactory, KlusterAIProviderFactory, LMStudioProviderFactory, LlamaCppProviderFactory,
+    Llm7ProviderFactory, LocalAIProviderFactory, MistralProviderFactory, NvidiaNimProviderFactory,
+    OllamaProviderFactory, OpenAICodexProviderFactory, OpenAICompatibleProviderFactory,
+    OpenAIProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
+    TogetherAIProviderFactory, XAIProviderFactory, ZhipuProviderFactory,
 };
 use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;
@@ -324,6 +324,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(KlusterAIProviderFactory));
     provider_registry.register_factory(Arc::new(HuggingFaceProviderFactory));
     provider_registry.register_factory(Arc::new(ZhipuProviderFactory));
+    provider_registry.register_factory(Arc::new(DigitalOceanProviderFactory));
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -395,6 +396,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::KlusterAI => "kluster_ai",
             config::ProviderType::HuggingFace => "huggingface",
             config::ProviderType::Zhipu => "zhipu",
+            config::ProviderType::DigitalOcean => "digitalocean",
             config::ProviderType::Custom => "openai_compatible",
         };
 
