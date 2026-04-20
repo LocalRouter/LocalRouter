@@ -144,6 +144,7 @@ pub mod oauth;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
+pub mod openai_responses;
 pub mod openrouter;
 pub mod perplexity;
 pub mod registry;

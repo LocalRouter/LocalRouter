@@ -660,6 +660,23 @@ impl ModelProvider for OpenAIProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
+        // ChatGPT Plus/Pro OAuth tokens authorize only the `/responses`
+        // endpoint on `chatgpt.com/backend-api/codex` — not
+        // `/chat/completions`. Translate the request through the
+        // Responses API module so subscription users actually get a
+        // reply (rather than the 404 they'd get against /chat/completions).
+        if self.is_chatgpt_backend() {
+            let req = crate::openai_responses::translate_completion_request(&request, false);
+            return crate::openai_responses::create_response(
+                &self.client,
+                &self.base_url,
+                &self.api_key,
+                self.name(),
+                req,
+            )
+            .await;
+        }
+
         let openai_request = OpenAIChatRequest {
             model: request.model.clone(),
             messages: request.messages.clone(),
@@ -748,6 +765,23 @@ impl ModelProvider for OpenAIProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+        // Same routing as `complete` above — ChatGPT Plus tokens go
+        // through `/responses`; everything else uses /chat/completions.
+        if self.is_chatgpt_backend() {
+            let model = request.model.clone();
+            let mut req = crate::openai_responses::translate_completion_request(&request, false);
+            req.stream = true;
+            return crate::openai_responses::stream_response(
+                &self.client,
+                &self.base_url,
+                &self.api_key,
+                self.name(),
+                model,
+                req,
+            )
+            .await;
+        }
+
         let openai_request = OpenAIChatRequest {
             model: request.model.clone(),
             messages: request.messages.clone(),
