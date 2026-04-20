@@ -196,3 +196,6 @@ codegen-units = 1
 panic = "abort"
 # Use "debuginfo" instead of true to preserve __TAURI_BUNDLE_TYPE symbol for updater
 strip = "debuginfo"
+
+[patch.crates-io]
+git2 = { version = "0.20.4", features = ["vendored-libgit2"] }
