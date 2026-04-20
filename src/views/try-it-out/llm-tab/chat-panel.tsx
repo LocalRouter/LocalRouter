@@ -64,6 +64,16 @@ export function ChatPanel({
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([])
+  // Which server endpoint the Chat panel talks to. Defaults to the
+  // familiar chat-completions path; switching to `responses` or
+  // `completions` lets the user try the Responses API end-to-end (via
+  // LocalRouter's new /v1/responses route) or the legacy completions
+  // endpoint without leaving the panel.
+  const [endpoint, setEndpoint] = useState<"chat" | "responses" | "completions">("chat")
+  // Last response_id returned by the `/v1/responses` upstream. Sent
+  // back as `previous_response_id` on subsequent turns so conversation
+  // threading works the same way ChatGPT does.
+  const lastResponseIdRef = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -209,53 +219,223 @@ export function ChatPanel({
       if (parameters.repetitionPenalty !== null) optionalParams.repetition_penalty = parameters.repetitionPenalty
       if (parameters.reasoningEffort !== null) optionalParams.reasoning_effort = parameters.reasoningEffort
 
-      const stream = await openaiClient.chat.completions.create(
-        {
-          model: selectedModel,
-          messages: apiMessages,
-          stream: true,
-          temperature: parameters.temperature,
-          max_tokens: parameters.maxTokens,
-          top_p: parameters.topP,
-          frequency_penalty: parameters.frequencyPenalty,
-          presence_penalty: parameters.presencePenalty,
-          stream_options: { include_usage: true },
-          ...optionalParams,
-        },
-        {
-          signal: abortControllerRef.current.signal,
-        }
-      )
-
       let completionTokens = 0
       let promptTokens = 0
       let reasoningTokens: number | undefined
       let modelUsed = selectedModel
 
-      // Stream response token by token
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || ""
-        if (content) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: m.content + content } : m
-            )
-          )
-        }
+      if (endpoint === "chat") {
+        const stream = await openaiClient.chat.completions.create(
+          {
+            model: selectedModel,
+            messages: apiMessages,
+            stream: true,
+            temperature: parameters.temperature,
+            max_tokens: parameters.maxTokens,
+            top_p: parameters.topP,
+            frequency_penalty: parameters.frequencyPenalty,
+            presence_penalty: parameters.presencePenalty,
+            stream_options: { include_usage: true },
+            ...optionalParams,
+          },
+          {
+            signal: abortControllerRef.current.signal,
+          }
+        )
 
-        // Capture usage from final chunk
-        if (chunk.usage) {
-          promptTokens = chunk.usage.prompt_tokens
-          completionTokens = chunk.usage.completion_tokens
-          const details = (chunk.usage as unknown as Record<string, unknown>).completion_tokens_details as
-            | { reasoning_tokens?: number; thinking_tokens?: number }
-            | undefined
-          if (details) {
-            reasoningTokens = details.reasoning_tokens ?? details.thinking_tokens
+        // Stream response token by token
+        for await (const chunk of stream) {
+          const content = chunk.choices[0]?.delta?.content || ""
+          if (content) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId ? { ...m, content: m.content + content } : m
+              )
+            )
+          }
+
+          // Capture usage from final chunk
+          if (chunk.usage) {
+            promptTokens = chunk.usage.prompt_tokens
+            completionTokens = chunk.usage.completion_tokens
+            const details = (chunk.usage as unknown as Record<string, unknown>).completion_tokens_details as
+              | { reasoning_tokens?: number; thinking_tokens?: number }
+              | undefined
+            if (details) {
+              reasoningTokens = details.reasoning_tokens ?? details.thinking_tokens
+            }
+          }
+          if (chunk.model) {
+            modelUsed = chunk.model
           }
         }
-        if (chunk.model) {
-          modelUsed = chunk.model
+      } else if (endpoint === "responses") {
+        // POST /v1/responses — LocalRouter's inbound Responses API.
+        // The OpenAI SDK's `responses` namespace expects Azure-style
+        // resource URLs, so we bypass it and call fetch() directly
+        // with the same base URL + bearer token the SDK is configured
+        // with.
+        const baseURL =
+          (openaiClient as unknown as { baseURL: string }).baseURL.replace(/\/$/, "")
+        const apiKey =
+          (openaiClient as unknown as { apiKey: string }).apiKey
+
+        // Flatten the last user message into Responses-API `input[]`.
+        // Prior turns are carried by `previous_response_id` — no need
+        // to resend them.
+        const input: Record<string, unknown>[] = []
+        if (userMessage.images && userMessage.images.length > 0) {
+          const content: Record<string, unknown>[] = []
+          for (const img of userMessage.images) {
+            content.push({ type: "input_image", image_url: img.dataUrl })
+          }
+          if (userMessage.content) {
+            content.push({ type: "input_text", text: userMessage.content })
+          }
+          input.push({ type: "message", role: "user", content })
+        } else {
+          input.push({
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: userMessage.content }],
+          })
+        }
+
+        const body = JSON.stringify({
+          model: selectedModel,
+          input,
+          stream: true,
+          store: true,
+          previous_response_id: lastResponseIdRef.current,
+          temperature: parameters.temperature,
+          top_p: parameters.topP,
+          max_output_tokens: parameters.maxTokens,
+          ...(parameters.reasoningEffort !== null && {
+            reasoning: { effort: parameters.reasoningEffort },
+          }),
+        })
+
+        const resp = await fetch(`${baseURL}/responses`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          body,
+          signal: abortControllerRef.current.signal,
+        })
+        if (!resp.ok) {
+          const errText = await resp.text()
+          throw new Error(`Responses API error ${resp.status}: ${errText}`)
+        }
+        if (!resp.body) {
+          throw new Error("Responses API returned empty body")
+        }
+
+        // Parse SSE frames. Each frame is `event: <name>\ndata: <json>\n\n`.
+        const reader = resp.body.getReader()
+        const decoder = new TextDecoder()
+        let buf = ""
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          let boundary = buf.indexOf("\n\n")
+          while (boundary !== -1) {
+            const frame = buf.slice(0, boundary)
+            buf = buf.slice(boundary + 2)
+            boundary = buf.indexOf("\n\n")
+            const dataLines: string[] = []
+            for (const line of frame.split("\n")) {
+              if (line.startsWith("data:")) dataLines.push(line.slice(5).trim())
+            }
+            if (dataLines.length === 0) continue
+            let payload: Record<string, unknown>
+            try {
+              payload = JSON.parse(dataLines.join("\n"))
+            } catch {
+              continue
+            }
+            switch (payload.type) {
+              case "response.created": {
+                const r = payload.response as Record<string, unknown> | undefined
+                if (r && typeof r.id === "string") {
+                  lastResponseIdRef.current = r.id
+                }
+                if (r && typeof r.model === "string") {
+                  modelUsed = r.model
+                }
+                break
+              }
+              case "response.output_text.delta": {
+                const delta = (payload.delta as string | undefined) ?? ""
+                if (delta) {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantId
+                        ? { ...m, content: m.content + delta }
+                        : m
+                    )
+                  )
+                }
+                break
+              }
+              case "response.completed": {
+                const r = payload.response as Record<string, unknown> | undefined
+                const usage = r?.usage as Record<string, number> | undefined
+                if (usage) {
+                  promptTokens = usage.input_tokens ?? 0
+                  completionTokens = usage.output_tokens ?? 0
+                }
+                break
+              }
+              case "response.failed":
+              case "response.incomplete": {
+                const err = payload.response as Record<string, unknown> | undefined
+                const msg = (err?.error as Record<string, unknown> | undefined)?.message
+                throw new Error(
+                  typeof msg === "string" ? msg : "Responses API stream failed"
+                )
+              }
+            }
+          }
+        }
+      } else {
+        // Legacy /v1/completions — text-only, no chat framing.
+        const prompt = apiMessages
+          .map((m) =>
+            typeof m.content === "string"
+              ? `${m.role}: ${m.content}`
+              : `${m.role}: [multimodal omitted]`
+          )
+          .join("\n")
+        const stream = await openaiClient.completions.create(
+          {
+            model: selectedModel,
+            prompt,
+            stream: true,
+            temperature: parameters.temperature,
+            max_tokens: parameters.maxTokens,
+            top_p: parameters.topP,
+            frequency_penalty: parameters.frequencyPenalty,
+            presence_penalty: parameters.presencePenalty,
+            ...optionalParams,
+          },
+          {
+            signal: abortControllerRef.current.signal,
+          }
+        )
+        for await (const chunk of stream) {
+          const text = chunk.choices[0]?.text || ""
+          if (text) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId ? { ...m, content: m.content + text } : m
+              )
+            )
+          }
+          if (chunk.model) modelUsed = chunk.model
         }
       }
 
@@ -322,13 +502,30 @@ export function ChatPanel({
     }
     setMessages([])
     setAttachedImages([])
+    // Clearing the chat also resets the Responses conversation chain
+    // so the next turn doesn't replay prior context server-side.
+    lastResponseIdRef.current = null
   }
 
   return (
     <Card className="flex flex-col h-full min-h-[400px]">
       <CardHeader className="pb-3 flex-shrink-0">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">Chat</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-base">Chat</CardTitle>
+            <select
+              className="h-7 rounded border border-input bg-background px-2 text-xs"
+              value={endpoint}
+              onChange={(e) =>
+                setEndpoint(e.target.value as "chat" | "responses" | "completions")
+              }
+              title="Which server endpoint to hit"
+            >
+              <option value="chat">Chat Completions</option>
+              <option value="responses">Responses</option>
+              <option value="completions">Completions (legacy)</option>
+            </select>
+          </div>
           <Button variant="outline" size="sm" onClick={clearChat}>
             Clear
           </Button>
