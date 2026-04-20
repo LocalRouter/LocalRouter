@@ -384,6 +384,19 @@ impl StdioTransport {
     }
 }
 
+impl Drop for StdioTransport {
+    fn drop(&mut self) {
+        // Abort the reader task
+        if let Some(task) = self.reader_task.write().take() {
+            task.abort();
+        }
+        // Kill the child process synchronously
+        if let Some(mut child) = self.child.write().take() {
+            let _ = child.start_kill();
+        }
+    }
+}
+
 #[async_trait]
 impl Transport for StdioTransport {
     async fn send_request(&self, mut request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
