@@ -147,7 +147,15 @@ pub async fn create_response(
     // Load session store lazily so a broken DB doesn't block the whole
     // server. Failures degrade to no-persistence behaviour.
     let session_store = responses_session_store(&state);
-    let retention = RetentionConfig::default();
+    // Pull retention from live config so users can override via
+    // settings.yaml without rebuilding.
+    let retention = {
+        let cfg = state.config_manager.get();
+        RetentionConfig {
+            retention_days: cfg.responses.retention_days as i64,
+            active_window_hours: cfg.responses.active_window_hours as i64,
+        }
+    };
 
     // If continuing a prior turn, reload its messages + tools.
     let (prior_messages, prior_tools) = if let Some(prev_id) = req.previous_response_id.as_deref() {
@@ -729,12 +737,13 @@ fn accumulate_tool_calls(
 // Session store accessor
 // ============================================================================
 
-/// Lazily open the SQLite session DB on first use. Wiring the store
+/// Lazily open the SQLite session DB on first use and spin up the
+/// background retention sweeper at the same time. Wiring the store
 /// into `AppState::new()` would cascade through every call site —
 /// this preserves the same single-instance semantics without the
 /// churn, and degrades to `None` on IO errors so the route still
 /// functions (just without persistence).
-fn responses_session_store(_state: &AppState) -> Option<ResponsesSessionStore> {
+fn responses_session_store(state: &AppState) -> Option<ResponsesSessionStore> {
     use std::sync::OnceLock;
     static STORE: OnceLock<Option<ResponsesSessionStore>> = OnceLock::new();
     STORE
@@ -744,7 +753,33 @@ fn responses_session_store(_state: &AppState) -> Option<ResponsesSessionStore> {
                 .join("responses-sessions")
                 .join("sessions.db");
             match ResponsesSessionStore::open(&path) {
-                Ok(s) => Some(s),
+                Ok(s) => {
+                    // Periodic retention sweep: every hour, drop rows
+                    // older than `retention_days`. The sweeper lives
+                    // for the app lifetime; when the store handle is
+                    // dropped the task exits naturally.
+                    let swept = s.clone();
+                    let cfg_manager = state.config_manager.clone();
+                    tokio::spawn(async move {
+                        let mut interval =
+                            tokio::time::interval(std::time::Duration::from_secs(3600));
+                        // Skip the first tick — it fires immediately
+                        // and we just opened the DB.
+                        interval.tick().await;
+                        loop {
+                            interval.tick().await;
+                            let cfg = cfg_manager.get();
+                            let retention = RetentionConfig {
+                                retention_days: cfg.responses.retention_days as i64,
+                                active_window_hours: cfg.responses.active_window_hours as i64,
+                            };
+                            if let Err(e) = swept.sweep_expired(&retention) {
+                                warn!("Responses sessions sweep failed: {}", e);
+                            }
+                        }
+                    });
+                    Some(s)
+                }
                 Err(e) => {
                     warn!(
                         "Failed to open responses sessions DB at {}: {}",

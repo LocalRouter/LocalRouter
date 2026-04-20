@@ -548,6 +548,51 @@ pub struct AppConfig {
     /// Global MCP gateway settings (sampling, elicitation behavior)
     #[serde(default)]
     pub mcp_gateway: McpGatewaySettings,
+
+    /// OpenAI Responses API session-store settings.
+    ///
+    /// Controls retention of `previous_response_id`-addressable
+    /// conversation state stored by the `/v1/responses` endpoint.
+    #[serde(default)]
+    pub responses: ResponsesApiConfig,
+}
+
+/// Retention policy for `/v1/responses` sessions persisted in
+/// `lr-responses-sessions`.
+///
+/// Defaults match OpenAI's documented behaviour (30-day retention) so
+/// clients can switch between their API and LocalRouter without
+/// surprises. Both windows are user-tunable via settings.yaml.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResponsesApiConfig {
+    /// Maximum age (in days) a stored session is kept before the
+    /// background sweeper prunes it. Default: 30.
+    #[serde(default = "default_responses_retention_days")]
+    pub retention_days: u32,
+
+    /// Maximum idle duration (in hours) that a
+    /// `previous_response_id` chain remains usable for continuation.
+    /// Sessions older than this are treated as expired on lookup
+    /// (rows remain in the DB until the retention sweep). Default: 24.
+    #[serde(default = "default_responses_active_window_hours")]
+    pub active_window_hours: u32,
+}
+
+impl Default for ResponsesApiConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: default_responses_retention_days(),
+            active_window_hours: default_responses_active_window_hours(),
+        }
+    }
+}
+
+fn default_responses_retention_days() -> u32 {
+    30
+}
+
+fn default_responses_active_window_hours() -> u32 {
+    24
 }
 
 /// Pricing override for a specific model
@@ -3554,6 +3599,7 @@ impl Default for AppConfig {
             secret_scanning: SecretScanningConfig::default(),
             memory: MemoryConfig::default(),
             mcp_gateway: McpGatewaySettings::default(),
+            responses: ResponsesApiConfig::default(),
         }
     }
 }
