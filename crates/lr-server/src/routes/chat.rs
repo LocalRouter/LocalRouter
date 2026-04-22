@@ -95,240 +95,15 @@ pub async fn chat_completions(
         return Err(llm_guard.capture_err(e));
     }
 
-    // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
-    // so all downstream hardcoded checks work consistently
-    if request.model != "localrouter/auto" {
-        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-            if let Some(ref ac) = strategy.auto_config {
-                if request.model == ac.model_name {
-                    request.model = "localrouter/auto".to_string();
-                }
-            }
-        }
-    }
-
-    // Auto-routing firewall check — only for explicit localrouter/auto requests
-    if request.model == "localrouter/auto" {
-        if let Ok((client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-            if let Some(auto_config) = &strategy.auto_config {
-                if auto_config.prioritized_models.is_empty() {
-                    return Err(llm_guard.capture_err(ApiErrorResponse::bad_request(
-                        "Auto routing has no prioritized models configured".to_string(),
-                    )));
-                }
-
-                // Show approval popup if permission is Ask, or if monitor intercept overrides Allow → Ask
-                if auto_config.permission.is_enabled()
-                    && (auto_config.permission.requires_approval()
-                        || state.mcp_gateway.firewall_manager.should_intercept(
-                            &client.id,
-                            lr_mcp::gateway::firewall::InterceptCategory::Llm,
-                        ))
-                {
-                    use lr_mcp::gateway::firewall::FirewallApprovalAction;
-
-                    // Check if this is an MCP via LLM client
-                    let is_mcp_via_llm = client.client_mode == lr_config::ClientMode::McpViaLlm;
-
-                    // Build the request portion, augmenting with MCP tools for MCP via LLM
-                    let mut request_json = serde_json::to_value(&request)
-                        .map(|mut v| {
-                            if let Some(obj) = v.as_object_mut() {
-                                obj.remove("stream");
-                            }
-                            v
-                        })
-                        .unwrap_or_default();
-
-                    if is_mcp_via_llm {
-                        // Pre-fetch MCP tools so the popup shows the augmented request
-                        let all_ids: Vec<String> = state
-                            .config_manager
-                            .get()
-                            .mcp_servers
-                            .iter()
-                            .map(|s| s.id.clone())
-                            .collect();
-                        let allowed = if client.mcp_permissions.global.is_enabled() {
-                            all_ids.clone()
-                        } else {
-                            all_ids
-                                .iter()
-                                .filter(|id| client.mcp_permissions.has_any_enabled_for_server(id))
-                                .cloned()
-                                .collect()
-                        };
-                        match state
-                            .mcp_via_llm_manager
-                            .list_tools_for_preview(state.mcp_gateway.clone(), &client, allowed)
-                            .await
-                        {
-                            Ok(tools) => {
-                                if let Some(obj) = request_json.as_object_mut() {
-                                    obj.insert("tools".to_string(), tools);
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Auto-router firewall: failed to pre-fetch MCP tools: {}",
-                                    e,
-                                );
-                            }
-                        }
-                    }
-
-                    // Build models preview for the popup
-                    let models_preview = auto_config
-                        .prioritized_models
-                        .iter()
-                        .take(5)
-                        .map(|(p, m)| format!("{}/{}", p, m))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-
-                    // Capture full request + candidate models for edit mode
-                    let auto_full_args = serde_json::json!({
-                        "candidate_models": auto_config.prioritized_models.iter()
-                            .map(|(p, m)| format!("{}/{}", p, m))
-                            .collect::<Vec<_>>(),
-                        "request": request_json,
-                    });
-
-                    let response = state
-                        .mcp_gateway
-                        .firewall_manager
-                        .request_auto_router_approval(
-                            client.id.clone(),
-                            client.name.clone(),
-                            models_preview,
-                            Some(auto_full_args),
-                            is_mcp_via_llm,
-                        )
-                        .await
-                        .map_err(|e| {
-                            ApiErrorResponse::internal_error(format!(
-                                "Auto-router approval failed: {}",
-                                e
-                            ))
-                        })
-                        .map_err(|e| llm_guard.capture_err(e))?;
-
-                    // Emit firewall decision for auto-router popup
-                    let ar_action_str = format!("{:?}", response.action);
-                    super::monitor_helpers::emit_firewall_decision(
-                        &state,
-                        client_auth.as_ref().map(|e| &e.0),
-                        Some(&session_id),
-                        "auto_router",
-                        &auto_config.model_name,
-                        &ar_action_str,
-                        None,
-                    );
-
-                    match response.action {
-                        FirewallApprovalAction::AllowOnce
-                        | FirewallApprovalAction::AllowSession
-                        | FirewallApprovalAction::Allow1Minute
-                        | FirewallApprovalAction::Allow1Hour
-                        | FirewallApprovalAction::AllowPermanent => {
-                            // Apply user edits if present
-                            if let Some(ref edits) = response.edited_arguments {
-                                let req_edits = edits.get("request").unwrap_or(edits);
-                                apply_firewall_request_edits(&mut request, req_edits);
-
-                                // Check if user selected a specific model (bypass auto-routing)
-                                let selected_model =
-                                    req_edits.get("model").and_then(|v| v.as_str());
-                                if let Some(model) = selected_model {
-                                    if model != "localrouter/auto" {
-                                        tracing::info!(
-                                            "Auto-routing overridden by user: using model '{}'",
-                                            model
-                                        );
-                                        request.model = model.to_string();
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            super::monitor_helpers::emit_access_denied_for_client(
-                                &state,
-                                &auth.api_key_id,
-                                Some(&session_id),
-                                "auto_routing_denied",
-                                "/v1/chat/completions",
-                                "Auto-routing denied by user",
-                                403,
-                            );
-                            return Err(llm_guard.capture_err(ApiErrorResponse::forbidden(
-                                "Auto-routing denied by user",
-                            )));
-                        }
-                    }
-                }
-            } else {
-                // No auto_config at all — reject localrouter/auto request
-                return Err(llm_guard.capture_err(ApiErrorResponse::not_found(
-                    "Auto routing is not configured for this client".to_string(),
-                )));
-            }
-        }
-    }
-
-    // Strategy-level model access checks
-    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        // Master switch: auto_config.permission Off blocks ALL models (including auto-router)
-        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-
-        // Check if this is the auto-router model (could be custom name)
-        let is_auto_model = request.model == "localrouter/auto"
-            || strategy
-                .auto_config
-                .as_ref()
-                .is_some_and(|ac| request.model == ac.model_name);
-
-        // Model whitelist: only for non-auto models (auto uses prioritized_models from router)
-        if !is_auto_model {
-            validate_strategy_model_access(&state, strategy, &request.model)
-                .map_err(|e| llm_guard.capture_err(e))?;
-        }
-    }
-
-    // Enforce client mode: block MCP-only clients from LLM endpoints
-    if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_llm_access_with_state(&state, client).map_err(|e| llm_guard.capture_err(e))?;
-    }
-
-    // Check model firewall permission (if using client auth and not auto-routing)
-    // Skip for MCP via LLM clients — firewall runs later with augmented request (tools injected)
-    if request.model != "localrouter/auto" {
-        let is_mcp_via_llm_client = client_auth
-            .as_ref()
-            .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
-            .is_some_and(|c| c.client_mode == lr_config::ClientMode::McpViaLlm);
-
-        // Get auto_config.permission to pass as strategy-level override
-        let strategy_permission = get_client_with_strategy(&state, &auth.api_key_id)
-            .ok()
-            .and_then(|(_, s)| s.auto_config.map(|ac| ac.permission));
-
-        if !is_mcp_via_llm_client {
-            let firewall_edits = check_model_firewall_permission(
-                &state,
-                client_auth.as_ref().map(|e| &e.0),
-                &request,
-                None,
-                strategy_permission,
-            )
-            .await
-            .map_err(|e| llm_guard.capture_err(e))?;
-
-            // Apply edited request fields from firewall edit mode
-            if let Some(edits) = firewall_edits {
-                apply_firewall_request_edits(&mut request, &edits);
-            }
-        }
-    }
+    apply_model_access_checks(
+        &state,
+        &auth,
+        client_auth.as_ref(),
+        &session_id,
+        &mut request,
+        &mut llm_guard,
+    )
+    .await?;
 
     // Check rate limits first (reject early before spawning parallel work)
     if let Err(e) = check_rate_limits(&state, &auth, &request).await {
@@ -920,6 +695,253 @@ fn apply_firewall_request_edits(request: &mut ChatCompletionRequest, edits: &ser
             request.stop = serde_json::from_value(v.clone()).ok();
         }
     }
+}
+
+/// All pre-LLM model-access checks, shared between `/v1/chat/completions`
+/// and `/v1/responses`:
+///
+/// 1. Normalize the custom auto-router model name to `localrouter/auto`.
+/// 2. Prioritized-models sanity + auto-router firewall approval popup
+///    (captures user edits and an optional specific-model override).
+/// 3. Strategy-level permission switch + model-whitelist check.
+/// 4. Client-mode enforcement (blocks MCP-only clients from LLM endpoints).
+/// 5. Per-model firewall permission (edits applied to `request`).
+///
+/// Mutates `request` in-place when the user edits the request via the
+/// firewall popup; returns `Err` if access is denied.
+pub(crate) async fn apply_model_access_checks(
+    state: &AppState,
+    auth: &AuthContext,
+    client_auth: Option<&Extension<ClientAuthContext>>,
+    session_id: &str,
+    request: &mut ChatCompletionRequest,
+    llm_guard: &mut super::monitor_helpers::LlmCallGuard,
+) -> ApiResult<()> {
+    // Normalize auto model name: bare "auto" or custom model_name →
+    // "localrouter/auto" so all downstream hardcoded checks work
+    // consistently.
+    if request.model != "localrouter/auto" {
+        if let Ok((_, ref strategy)) = get_client_with_strategy(state, &auth.api_key_id) {
+            if let Some(ref ac) = strategy.auto_config {
+                if request.model == ac.model_name {
+                    request.model = "localrouter/auto".to_string();
+                }
+            }
+        }
+    }
+
+    // Auto-routing firewall check — only for explicit localrouter/auto requests.
+    if request.model == "localrouter/auto" {
+        if let Ok((client, strategy)) = get_client_with_strategy(state, &auth.api_key_id) {
+            if let Some(auto_config) = &strategy.auto_config {
+                if auto_config.prioritized_models.is_empty() {
+                    return Err(llm_guard.capture_err(ApiErrorResponse::bad_request(
+                        "Auto routing has no prioritized models configured".to_string(),
+                    )));
+                }
+
+                // Show approval popup if permission is Ask, or if monitor
+                // intercept overrides Allow → Ask.
+                if auto_config.permission.is_enabled()
+                    && (auto_config.permission.requires_approval()
+                        || state.mcp_gateway.firewall_manager.should_intercept(
+                            &client.id,
+                            lr_mcp::gateway::firewall::InterceptCategory::Llm,
+                        ))
+                {
+                    use lr_mcp::gateway::firewall::FirewallApprovalAction;
+
+                    let is_mcp_via_llm = client.client_mode == lr_config::ClientMode::McpViaLlm;
+
+                    let mut request_json = serde_json::to_value(&request)
+                        .map(|mut v| {
+                            if let Some(obj) = v.as_object_mut() {
+                                obj.remove("stream");
+                            }
+                            v
+                        })
+                        .unwrap_or_default();
+
+                    if is_mcp_via_llm {
+                        let all_ids: Vec<String> = state
+                            .config_manager
+                            .get()
+                            .mcp_servers
+                            .iter()
+                            .map(|s| s.id.clone())
+                            .collect();
+                        let allowed = if client.mcp_permissions.global.is_enabled() {
+                            all_ids.clone()
+                        } else {
+                            all_ids
+                                .iter()
+                                .filter(|id| client.mcp_permissions.has_any_enabled_for_server(id))
+                                .cloned()
+                                .collect()
+                        };
+                        match state
+                            .mcp_via_llm_manager
+                            .list_tools_for_preview(state.mcp_gateway.clone(), &client, allowed)
+                            .await
+                        {
+                            Ok(tools) => {
+                                if let Some(obj) = request_json.as_object_mut() {
+                                    obj.insert("tools".to_string(), tools);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Auto-router firewall: failed to pre-fetch MCP tools: {}",
+                                    e,
+                                );
+                            }
+                        }
+                    }
+
+                    let models_preview = auto_config
+                        .prioritized_models
+                        .iter()
+                        .take(5)
+                        .map(|(p, m)| format!("{}/{}", p, m))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+
+                    let auto_full_args = serde_json::json!({
+                        "candidate_models": auto_config.prioritized_models.iter()
+                            .map(|(p, m)| format!("{}/{}", p, m))
+                            .collect::<Vec<_>>(),
+                        "request": request_json,
+                    });
+
+                    let response = state
+                        .mcp_gateway
+                        .firewall_manager
+                        .request_auto_router_approval(
+                            client.id.clone(),
+                            client.name.clone(),
+                            models_preview,
+                            Some(auto_full_args),
+                            is_mcp_via_llm,
+                        )
+                        .await
+                        .map_err(|e| {
+                            ApiErrorResponse::internal_error(format!(
+                                "Auto-router approval failed: {}",
+                                e
+                            ))
+                        })
+                        .map_err(|e| llm_guard.capture_err(e))?;
+
+                    let ar_action_str = format!("{:?}", response.action);
+                    super::monitor_helpers::emit_firewall_decision(
+                        state,
+                        client_auth.map(|e| &e.0),
+                        Some(session_id),
+                        "auto_router",
+                        &auto_config.model_name,
+                        &ar_action_str,
+                        None,
+                    );
+
+                    match response.action {
+                        FirewallApprovalAction::AllowOnce
+                        | FirewallApprovalAction::AllowSession
+                        | FirewallApprovalAction::Allow1Minute
+                        | FirewallApprovalAction::Allow1Hour
+                        | FirewallApprovalAction::AllowPermanent => {
+                            if let Some(ref edits) = response.edited_arguments {
+                                let req_edits = edits.get("request").unwrap_or(edits);
+                                apply_firewall_request_edits(request, req_edits);
+
+                                let selected_model =
+                                    req_edits.get("model").and_then(|v| v.as_str());
+                                if let Some(model) = selected_model {
+                                    if model != "localrouter/auto" {
+                                        tracing::info!(
+                                            "Auto-routing overridden by user: using model '{}'",
+                                            model
+                                        );
+                                        request.model = model.to_string();
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            super::monitor_helpers::emit_access_denied_for_client(
+                                state,
+                                &auth.api_key_id,
+                                Some(session_id),
+                                "auto_routing_denied",
+                                "/v1/chat/completions",
+                                "Auto-routing denied by user",
+                                403,
+                            );
+                            return Err(llm_guard.capture_err(ApiErrorResponse::forbidden(
+                                "Auto-routing denied by user",
+                            )));
+                        }
+                    }
+                }
+            } else {
+                return Err(llm_guard.capture_err(ApiErrorResponse::not_found(
+                    "Auto routing is not configured for this client".to_string(),
+                )));
+            }
+        }
+    }
+
+    // Strategy-level model access checks.
+    if let Ok((_, ref strategy)) = get_client_with_strategy(state, &auth.api_key_id) {
+        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
+
+        let is_auto_model = request.model == "localrouter/auto"
+            || strategy
+                .auto_config
+                .as_ref()
+                .is_some_and(|ac| request.model == ac.model_name);
+
+        if !is_auto_model {
+            validate_strategy_model_access(state, strategy, &request.model)
+                .map_err(|e| llm_guard.capture_err(e))?;
+        }
+    }
+
+    // Enforce client mode: block MCP-only clients from LLM endpoints.
+    if let Ok((ref client, _)) = get_client_with_strategy(state, &auth.api_key_id) {
+        check_llm_access_with_state(state, client).map_err(|e| llm_guard.capture_err(e))?;
+    }
+
+    // Per-model firewall permission (skipped for auto-routing and
+    // for MCP-via-LLM clients — those get their own firewall pass
+    // once MCP tools are injected into the augmented request).
+    if request.model != "localrouter/auto" {
+        let is_mcp_via_llm_client = client_auth
+            .as_ref()
+            .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
+            .is_some_and(|c| c.client_mode == lr_config::ClientMode::McpViaLlm);
+
+        let strategy_permission = get_client_with_strategy(state, &auth.api_key_id)
+            .ok()
+            .and_then(|(_, s)| s.auto_config.map(|ac| ac.permission));
+
+        if !is_mcp_via_llm_client {
+            let firewall_edits = check_model_firewall_permission(
+                state,
+                client_auth.map(|e| &e.0),
+                request,
+                None,
+                strategy_permission,
+            )
+            .await
+            .map_err(|e| llm_guard.capture_err(e))?;
+
+            if let Some(edits) = firewall_edits {
+                apply_firewall_request_edits(request, &edits);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Check model firewall permission for LLM access

@@ -188,7 +188,23 @@ pub async fn create_response(
     // limit, guardrail-scan, and secret-scan. This is the same shape
     // `/v1/chat/completions` receives — any hardening applied there
     // now applies here with no duplicated orchestration.
-    let chat_req = build_chat_completion_request(&req, prior_messages, prior_tools.clone())?;
+    let mut chat_req = build_chat_completion_request(&req, prior_messages, prior_tools.clone())?;
+
+    // Auto-routing firewall + strategy access checks (normalizes the
+    // model name, validates strategy permissions, shows the firewall
+    // approval popup for `localrouter/auto`, enforces MCP-only client
+    // mode). Identical to what `/v1/chat/completions` runs — factored
+    // out behind `super::chat::apply_model_access_checks` so the
+    // hardening stays in a single place.
+    super::chat::apply_model_access_checks(
+        &state,
+        &auth,
+        client_auth.as_ref(),
+        &session_id,
+        &mut chat_req,
+        &mut llm_guard,
+    )
+    .await?;
 
     // Run the shared pipeline (fail-fast order mirrors chat.rs).
     if let Err(e) = super::chat::validate_request(&chat_req) {
@@ -239,18 +255,58 @@ pub async fn create_response(
     let merged_messages = provider_request.messages.clone();
     let merged_tools = provider_request.tools.clone();
 
+    // Decide routing backend: the MCP-via-LLM orchestrator produces
+    // chat-completions-shape responses just like the router does, so
+    // we branch here and the Responses-emitter stays oblivious.
+    let client_for_routing =
+        super::helpers::get_client_with_strategy(&state, &auth.api_key_id).ok();
+    let use_mcp_via_llm = client_for_routing
+        .as_ref()
+        .map(|(c, _)| c.client_mode == lr_config::ClientMode::McpViaLlm)
+        .unwrap_or(false);
+
     if req.stream {
-        let stream = match state
-            .router
-            .stream_complete(&auth.api_key_id, provider_request)
-            .await
-        {
-            Ok((s, _routing_meta)) => s,
-            Err(e) => {
-                return Err(llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
-                    "Router error: {}",
-                    e
-                ))));
+        let stream = if use_mcp_via_llm {
+            let (client, _strategy) = client_for_routing
+                .as_ref()
+                .cloned()
+                .expect("client presence already verified above");
+            let allowed_servers = compute_allowed_mcp_servers(&state, &client);
+            match state
+                .mcp_via_llm_manager
+                .handle_streaming_request(
+                    state.mcp_gateway.clone(),
+                    state.router.clone(),
+                    &client,
+                    provider_request,
+                    allowed_servers,
+                    None,
+                    Some(llm_guard.event_id().to_string()),
+                    Some(session_id.clone()),
+                )
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    return Err(llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
+                        "MCP-via-LLM error: {}",
+                        e
+                    ))));
+                }
+            }
+        } else {
+            match state
+                .router
+                .stream_complete(&auth.api_key_id, provider_request)
+                .await
+            {
+                Ok((s, _routing_meta)) => s,
+                Err(e) => {
+                    return Err(llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
+                        "Router error: {}",
+                        e
+                    ))));
+                }
             }
         };
 
@@ -281,17 +337,45 @@ pub async fn create_response(
         return Ok(emit_sse);
     }
 
-    // Non-streaming path.
-    let (completion, _routing_meta) = state
-        .router
-        .complete(&auth.api_key_id, provider_request)
-        .await
-        .map_err(|e| {
-            llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
-                "Router error: {}",
-                e
-            )))
-        })?;
+    // Non-streaming path: same MCP-via-LLM vs router branch as above.
+    let completion = if use_mcp_via_llm {
+        let (client, _strategy) = client_for_routing
+            .as_ref()
+            .cloned()
+            .expect("client presence already verified above");
+        let allowed_servers = compute_allowed_mcp_servers(&state, &client);
+        state
+            .mcp_via_llm_manager
+            .handle_request(
+                state.mcp_gateway.clone(),
+                &state.router,
+                &client,
+                provider_request,
+                allowed_servers,
+                None,
+                Some(llm_guard.event_id().to_string()),
+                Some(session_id.clone()),
+            )
+            .await
+            .map_err(|e| {
+                llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
+                    "MCP-via-LLM error: {}",
+                    e
+                )))
+            })?
+    } else {
+        let (completion, _routing_meta) = state
+            .router
+            .complete(&auth.api_key_id, provider_request)
+            .await
+            .map_err(|e| {
+                llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
+                    "Router error: {}",
+                    e
+                )))
+            })?;
+        completion
+    };
 
     let response_object = completion_to_response_object(&completion, &response_id, created_at);
 
@@ -331,6 +415,29 @@ pub async fn create_response(
 
     let _ = llm_guard.into_event_id();
     Ok(JsonResponse(response_object).into_response())
+}
+
+/// Resolve the MCP servers this client is allowed to invoke via the
+/// orchestrator. Mirrors the equivalent block in chat.rs's
+/// `handle_mcp_via_llm`; kept inline here to avoid another helper
+/// extraction.
+fn compute_allowed_mcp_servers(state: &AppState, client: &lr_config::Client) -> Vec<String> {
+    let all_server_ids: Vec<String> = state
+        .config_manager
+        .get()
+        .mcp_servers
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+    if client.mcp_permissions.global.is_enabled() {
+        all_server_ids
+    } else {
+        all_server_ids
+            .iter()
+            .filter(|id| client.mcp_permissions.has_any_enabled_for_server(id))
+            .cloned()
+            .collect()
+    }
 }
 
 // ============================================================================
