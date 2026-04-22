@@ -19,12 +19,18 @@
 //!   `response.output_item.done` → `response.completed`) via
 //!   `lr_providers::openai_responses::ResponsesEmitter`.
 //!
-//! Known gaps documented as TODOs:
-//! - Guardrails, MCP-via-LLM orchestration, and firewall interception
-//!   are NOT yet integrated (they live inline in chat.rs). Clients
-//!   needing those should stay on `/v1/chat/completions` for now; a
-//!   follow-up refactor will extract the pipeline into
-//!   `routes/shared.rs` so both endpoints pick it up.
+//! The handler reuses the existing chat-completions pipeline helpers
+//! (now `pub(crate)` in `chat.rs`) so validation, rate limits,
+//! guardrails, secret scanning, and compression all apply verbatim —
+//! we translate `CreateResponseRequest` → `ChatCompletionRequest`
+//! early, feed the shared helpers, then convert to the provider
+//! shape via `convert_to_provider_request`.
+//!
+//! Known gaps (follow-ups):
+//! - MCP-via-LLM orchestration and firewall approval popups for
+//!   `localrouter/auto` are still chat-specific. Responses currently
+//!   goes through `state.router` directly; adding those requires
+//!   hoisting more of the chat.rs orchestrator.
 //! - Only `input` arrays with `message` / `function_call` /
 //!   `function_call_output` items are handled; reasoning items and
 //!   custom tools pass through untouched but aren't actively
@@ -42,9 +48,7 @@ use futures::StreamExt;
 use lr_providers::openai_responses::{
     completion_to_response_object, ResponsesEmitter, ResponsesSseFrame,
 };
-use lr_providers::{
-    ChatMessage, ChatMessageContent, CompletionRequest, ContentPart, ImageUrl, ResponseFormat, Tool,
-};
+use lr_providers::{ChatMessage, Tool};
 use lr_responses_sessions::{
     deserialize_history, serialize_history, ResponsesSession, ResponsesSessionStore,
     RetentionConfig,
@@ -54,8 +58,16 @@ use serde_json::Value;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
+use crate::types::{
+    ChatCompletionRequest, ChatMessage as ServerChatMessage, ContentPart as ServerContentPart,
+    FunctionCall as ServerFunctionCall, FunctionDefinition as ServerFunctionDefinition,
+    FunctionName as ServerFunctionName, ImageUrl as ServerImageUrl,
+    MessageContent as ServerMessageContent, ResponseFormat as ServerResponseFormat,
+    Tool as ServerTool, ToolCall as ServerToolCall, ToolChoice as ServerToolChoice,
+};
 
 // ============================================================================
 // Request / Response wire types
@@ -120,6 +132,7 @@ pub struct ReasoningRequest {
 pub async fn create_response(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     Json(req): Json<CreateResponseRequest>,
 ) -> ApiResult<Response> {
     // Correlate logs/monitor events across the turn.
@@ -127,14 +140,10 @@ pub async fn create_response(
     let response_id = format!("resp_{}", Uuid::new_v4().simple());
     let created_at = Utc::now().timestamp();
 
-    // Emit request-side monitor event so traffic inspection sees this
-    // hit like any other /v1/chat/completions request. (Intentionally
-    // shares the `/v1/responses` path string so the monitor UI shows
-    // the right endpoint column.)
     let request_json = serde_json::to_value(&req).unwrap_or(Value::Null);
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
-        None, // client_auth not threaded yet for the responses route
+        client_auth.as_ref(),
         Some(&session_id),
         "/v1/responses",
         &req.model,
@@ -143,12 +152,7 @@ pub async fn create_response(
     );
 
     let store_flag = req.store.unwrap_or(true);
-
-    // Load session store lazily so a broken DB doesn't block the whole
-    // server. Failures degrade to no-persistence behaviour.
     let session_store = responses_session_store(&state);
-    // Pull retention from live config so users can override via
-    // settings.yaml without rebuilding.
     let retention = {
         let cfg = state.config_manager.get();
         RetentionConfig {
@@ -165,8 +169,9 @@ pub async fn create_response(
         {
             Some(sess) => deserialize_history(&sess.messages_json, sess.tools_json.as_deref()),
             None => {
-                // Not a hard error — clients legitimately hit stale ids;
-                // we treat them as "start fresh" to avoid 404 loops.
+                // Clients legitimately hit stale ids; we treat them as
+                // "start fresh" rather than 404 so chained turns still
+                // compose reasonably.
                 debug!(
                     "previous_response_id {} not found / expired; continuing without history",
                     prev_id
@@ -178,10 +183,59 @@ pub async fn create_response(
         (Vec::new(), None)
     };
 
-    // Translate the inbound request into chat-completions shape.
-    let provider_request = build_provider_request(&req, prior_messages, prior_tools.clone())?;
+    // Build a server-side `ChatCompletionRequest` that the shared
+    // chat-completions pipeline already knows how to validate, rate-
+    // limit, guardrail-scan, and secret-scan. This is the same shape
+    // `/v1/chat/completions` receives — any hardening applied there
+    // now applies here with no duplicated orchestration.
+    let chat_req = build_chat_completion_request(&req, prior_messages, prior_tools.clone())?;
 
-    // Merged history the session row will capture on success.
+    // Run the shared pipeline (fail-fast order mirrors chat.rs).
+    if let Err(e) = super::chat::validate_request(&chat_req) {
+        return Err(llm_guard.capture_err(e));
+    }
+    if let Err(e) = super::chat::check_rate_limits(&state, &auth, &chat_req).await {
+        return Err(llm_guard.capture_err(e));
+    }
+
+    // Guardrails scan on the request (run serially before the LLM
+    // call; blocks here if a category action denies the request).
+    if let Some(result) =
+        super::chat::run_guardrails_scan(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
+            .await?
+    {
+        super::chat::handle_guardrail_approval(
+            &state,
+            client_auth.as_ref().map(|e| &e.0),
+            &chat_req,
+            result,
+            "request",
+        )
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
+    }
+
+    // Secret-scan the request. The helper internally triggers the
+    // approval popup on a hit and returns `Err` if the user denies or
+    // the finding is `Block`-classified.
+    super::chat::run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
+
+    // Prompt compression (no-op when disabled / model not configured).
+    let _compression_result =
+        super::chat::run_prompt_compression(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
+            .await;
+
+    // Now translate to the provider shape. This is the same helper
+    // `chat_completions` uses, so the conversion is lossless.
+    let provider_request = super::chat::convert_to_provider_request(&chat_req)
+        .map_err(|e| llm_guard.capture_err(e))?;
+
+    // Merged history the session row will capture on success (server
+    // -> provider conversion drops the `name` field etc., but the
+    // provider-shaped messages are what we already store everywhere
+    // else in the session schema).
     let merged_messages = provider_request.messages.clone();
     let merged_tools = provider_request.tools.clone();
 
@@ -280,25 +334,34 @@ pub async fn create_response(
 }
 
 // ============================================================================
-// Translation: CreateResponseRequest → CompletionRequest (provider shape)
+// Translation: CreateResponseRequest → server-side ChatCompletionRequest
 // ============================================================================
+//
+// We produce the same `ChatCompletionRequest` shape the chat-completions
+// route receives, so the shared pipeline helpers (validate, rate limits,
+// guardrails, secret scan, compression) can run without any
+// /responses-specific branching.
 
-fn build_provider_request(
+fn build_chat_completion_request(
     req: &CreateResponseRequest,
     prior_messages: Vec<ChatMessage>,
-    prior_tools: Option<Vec<Tool>>,
-) -> ApiResult<CompletionRequest> {
-    let mut messages: Vec<ChatMessage> = prior_messages;
+    prior_tools: Option<Vec<lr_providers::Tool>>,
+) -> ApiResult<ChatCompletionRequest> {
+    // Prior messages come from the session store as provider-shape
+    // `lr_providers::ChatMessage`; convert to server-shape messages.
+    let mut messages: Vec<ServerChatMessage> =
+        prior_messages.iter().map(provider_msg_to_server).collect();
+
     if let Some(instr) = req.instructions.as_deref() {
         if !instr.is_empty() {
             messages.insert(
                 0,
-                ChatMessage {
+                ServerChatMessage {
                     role: "system".into(),
-                    content: ChatMessageContent::Text(instr.to_string()),
+                    content: Some(ServerMessageContent::Text(instr.to_string())),
+                    name: None,
                     tool_calls: None,
                     tool_call_id: None,
-                    name: None,
                     reasoning_content: None,
                 },
             );
@@ -307,58 +370,59 @@ fn build_provider_request(
 
     // Translate input items into ChatMessages.
     let new_messages = match &req.input {
-        ResponseInput::Text(s) => vec![ChatMessage {
+        ResponseInput::Text(s) => vec![ServerChatMessage {
             role: "user".into(),
-            content: ChatMessageContent::Text(s.clone()),
+            content: Some(ServerMessageContent::Text(s.clone())),
+            name: None,
             tool_calls: None,
             tool_call_id: None,
-            name: None,
             reasoning_content: None,
         }],
         ResponseInput::Items(items) => items
             .iter()
-            .filter_map(response_item_to_chat_message)
+            .filter_map(response_item_to_server_message)
             .collect(),
     };
     messages.extend(new_messages);
 
-    // Tools: prefer caller's `tools` over any prior ones; if caller
-    // didn't specify, fall back to what we stored in the prior turn
-    // so chained turns don't lose them.
-    let tools: Option<Vec<Tool>> = match req.tools.as_ref() {
-        Some(list) => Some(list.iter().filter_map(value_to_tool).collect()),
-        None => prior_tools,
+    // Tools: prefer caller's `tools` over any prior ones.
+    let tools: Option<Vec<ServerTool>> = match req.tools.as_ref() {
+        Some(list) => Some(list.iter().filter_map(value_to_server_tool).collect()),
+        None => prior_tools.map(|ts| ts.iter().map(provider_tool_to_server).collect::<Vec<_>>()),
     };
 
-    let tool_choice = req.tool_choice.as_ref().and_then(value_to_tool_choice);
+    let tool_choice = req
+        .tool_choice
+        .as_ref()
+        .and_then(value_to_server_tool_choice);
 
     let response_format = req
         .response_format
         .as_ref()
-        .and_then(value_to_response_format);
+        .and_then(value_to_server_response_format);
 
-    Ok(CompletionRequest {
+    Ok(ChatCompletionRequest {
         model: req.model.clone(),
         messages,
         temperature: req.temperature,
-        max_tokens: req.max_output_tokens,
-        stream: req.stream,
         top_p: req.top_p,
+        max_tokens: None,
+        max_completion_tokens: req.max_output_tokens,
+        n: None,
+        stop: None,
+        stream: req.stream,
+        logprobs: None,
+        top_logprobs: None,
         frequency_penalty: None,
         presence_penalty: None,
-        stop: None,
         top_k: None,
         seed: None,
         repetition_penalty: None,
-        extensions: None,
+        response_format,
         tools,
         tool_choice,
-        response_format,
-        logprobs: None,
-        top_logprobs: None,
-        n: None,
-        logit_bias: None,
         parallel_tool_calls: req.parallel_tool_calls,
+        logit_bias: None,
         service_tier: None,
         store: req.store,
         metadata: None,
@@ -366,11 +430,77 @@ fn build_provider_request(
         audio: None,
         prediction: None,
         reasoning_effort: req.reasoning.as_ref().and_then(|r| r.effort.clone()),
-        pre_computed_routing: None,
+        extensions: None,
+        user: None,
     })
 }
 
-fn response_item_to_chat_message(item: &Value) -> Option<ChatMessage> {
+/// Downconvert `lr_providers::ChatMessage` (from the session store)
+/// to the server-side `ChatMessage` the pipeline helpers expect.
+/// Used only for historical replay — never the reverse.
+fn provider_msg_to_server(m: &ChatMessage) -> ServerChatMessage {
+    let content = match &m.content {
+        lr_providers::ChatMessageContent::Text(t) => {
+            if t.is_empty() {
+                None
+            } else {
+                Some(ServerMessageContent::Text(t.clone()))
+            }
+        }
+        lr_providers::ChatMessageContent::Parts(parts) => {
+            let mapped: Vec<ServerContentPart> = parts
+                .iter()
+                .map(|p| match p {
+                    lr_providers::ContentPart::Text { text } => {
+                        ServerContentPart::Text { text: text.clone() }
+                    }
+                    lr_providers::ContentPart::ImageUrl { image_url } => {
+                        ServerContentPart::ImageUrl {
+                            image_url: ServerImageUrl {
+                                url: image_url.url.clone(),
+                                detail: image_url.detail.clone(),
+                            },
+                        }
+                    }
+                })
+                .collect();
+            Some(ServerMessageContent::Parts(mapped))
+        }
+    };
+    let tool_calls = m.tool_calls.as_ref().map(|tcs| {
+        tcs.iter()
+            .map(|tc| ServerToolCall {
+                id: tc.id.clone(),
+                tool_type: tc.tool_type.clone(),
+                function: ServerFunctionCall {
+                    name: tc.function.name.clone(),
+                    arguments: tc.function.arguments.clone(),
+                },
+            })
+            .collect()
+    });
+    ServerChatMessage {
+        role: m.role.clone(),
+        content,
+        name: m.name.clone(),
+        tool_calls,
+        tool_call_id: m.tool_call_id.clone(),
+        reasoning_content: m.reasoning_content.clone(),
+    }
+}
+
+fn provider_tool_to_server(t: &lr_providers::Tool) -> ServerTool {
+    ServerTool {
+        tool_type: t.tool_type.clone(),
+        function: ServerFunctionDefinition {
+            name: t.function.name.clone(),
+            description: t.function.description.clone(),
+            parameters: t.function.parameters.clone(),
+        },
+    }
+}
+
+fn response_item_to_server_message(item: &Value) -> Option<ServerChatMessage> {
     let obj = item.as_object()?;
     let kind = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match kind {
@@ -381,13 +511,13 @@ fn response_item_to_chat_message(item: &Value) -> Option<ChatMessage> {
                 .unwrap_or("user")
                 .to_string();
             let content = obj.get("content")?;
-            let content = content_from_response_parts(content);
-            Some(ChatMessage {
+            let content = Some(content_from_response_parts(content));
+            Some(ServerChatMessage {
                 role,
                 content,
+                name: None,
                 tool_calls: None,
                 tool_call_id: None,
-                name: None,
                 reasoning_content: None,
             })
         }
@@ -399,16 +529,16 @@ fn response_item_to_chat_message(item: &Value) -> Option<ChatMessage> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Some(ChatMessage {
+            Some(ServerChatMessage {
                 role: "assistant".into(),
-                content: ChatMessageContent::Text(String::new()),
-                tool_calls: Some(vec![lr_providers::ToolCall {
+                content: None,
+                name: None,
+                tool_calls: Some(vec![ServerToolCall {
                     id: call_id,
                     tool_type: "function".into(),
-                    function: lr_providers::FunctionCall { name, arguments },
+                    function: ServerFunctionCall { name, arguments },
                 }]),
                 tool_call_id: None,
-                name: None,
                 reasoning_content: None,
             })
         }
@@ -419,28 +549,27 @@ fn response_item_to_chat_message(item: &Value) -> Option<ChatMessage> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Some(ChatMessage {
+            Some(ServerChatMessage {
                 role: "tool".into(),
-                content: ChatMessageContent::Text(output),
+                content: Some(ServerMessageContent::Text(output)),
+                name: None,
                 tool_calls: None,
                 tool_call_id: Some(call_id),
-                name: None,
                 reasoning_content: None,
             })
         }
-        _ => None, // reasoning, custom tool calls, etc. — dropped for v1
+        _ => None, // reasoning, custom tool calls — dropped for v1
     }
 }
 
-fn content_from_response_parts(content: &Value) -> ChatMessageContent {
-    // Either a single string or an array of typed parts.
+fn content_from_response_parts(content: &Value) -> ServerMessageContent {
     if let Some(s) = content.as_str() {
-        return ChatMessageContent::Text(s.to_string());
+        return ServerMessageContent::Text(s.to_string());
     }
     let Some(arr) = content.as_array() else {
-        return ChatMessageContent::Text(String::new());
+        return ServerMessageContent::Text(String::new());
     };
-    let mut parts: Vec<ContentPart> = Vec::new();
+    let mut parts: Vec<ServerContentPart> = Vec::new();
     for p in arr {
         let obj = match p.as_object() {
             Some(o) => o,
@@ -449,7 +578,7 @@ fn content_from_response_parts(content: &Value) -> ChatMessageContent {
         match obj.get("type").and_then(|v| v.as_str()) {
             Some("input_text") | Some("output_text") => {
                 if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
-                    parts.push(ContentPart::Text {
+                    parts.push(ServerContentPart::Text {
                         text: text.to_string(),
                     });
                 }
@@ -464,21 +593,21 @@ fn content_from_response_parts(content: &Value) -> ChatMessageContent {
                     .get("detail")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
-                parts.push(ContentPart::ImageUrl {
-                    image_url: ImageUrl { url, detail },
+                parts.push(ServerContentPart::ImageUrl {
+                    image_url: ServerImageUrl { url, detail },
                 });
             }
             _ => {}
         }
     }
     if parts.is_empty() {
-        ChatMessageContent::Text(String::new())
+        ServerMessageContent::Text(String::new())
     } else {
-        ChatMessageContent::Parts(parts)
+        ServerMessageContent::Parts(parts)
     }
 }
 
-fn value_to_tool(v: &Value) -> Option<Tool> {
+fn value_to_server_tool(v: &Value) -> Option<ServerTool> {
     let obj = v.as_object()?;
     let tool_type = obj
         .get("type")
@@ -491,9 +620,9 @@ fn value_to_tool(v: &Value) -> Option<Tool> {
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let parameters = obj.get("parameters").cloned().unwrap_or(Value::Null);
-    Some(Tool {
+    Some(ServerTool {
         tool_type,
-        function: lr_providers::FunctionDefinition {
+        function: ServerFunctionDefinition {
             name,
             description,
             parameters,
@@ -501,9 +630,9 @@ fn value_to_tool(v: &Value) -> Option<Tool> {
     })
 }
 
-fn value_to_tool_choice(v: &Value) -> Option<lr_providers::ToolChoice> {
+fn value_to_server_tool_choice(v: &Value) -> Option<ServerToolChoice> {
     if let Some(s) = v.as_str() {
-        return Some(lr_providers::ToolChoice::Auto(s.to_string()));
+        return Some(ServerToolChoice::Auto(s.to_string()));
     }
     let obj = v.as_object()?;
     let tool_type = obj
@@ -515,15 +644,15 @@ fn value_to_tool_choice(v: &Value) -> Option<lr_providers::ToolChoice> {
         .get("function")
         .and_then(|f| f.get("name"))
         .and_then(|v| v.as_str())?;
-    Some(lr_providers::ToolChoice::Specific {
+    Some(ServerToolChoice::Specific {
         tool_type,
-        function: lr_providers::FunctionName {
+        function: ServerFunctionName {
             name: name.to_string(),
         },
     })
 }
 
-fn value_to_response_format(v: &Value) -> Option<ResponseFormat> {
+fn value_to_server_response_format(v: &Value) -> Option<ServerResponseFormat> {
     let obj = v.as_object()?;
     let format_type = obj
         .get("type")
@@ -536,12 +665,14 @@ fn value_to_response_format(v: &Value) -> Option<ResponseFormat> {
             .or_else(|| obj.get("json_schema").and_then(|j| j.get("schema")))
             .cloned()
             .unwrap_or(Value::Null);
-        return Some(ResponseFormat::JsonSchema {
-            format_type,
+        return Some(ServerResponseFormat::JsonSchema {
+            r#type: format_type,
             schema,
         });
     }
-    Some(ResponseFormat::JsonObject { format_type })
+    Some(ServerResponseFormat::JsonObject {
+        r#type: format_type,
+    })
 }
 
 // ============================================================================

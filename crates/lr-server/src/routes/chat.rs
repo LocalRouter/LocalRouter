@@ -709,7 +709,7 @@ fn spawn_routellm_classification(
 }
 
 /// Validate the chat completion request
-fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
+pub(crate) fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
     if request.model.is_empty() {
         return Err(ApiErrorResponse::bad_request("model is required").with_param("model"));
     }
@@ -926,7 +926,7 @@ fn apply_firewall_request_edits(request: &mut ChatCompletionRequest, edits: &ser
 ///
 /// This enforces the model_permissions firewall for clients. When a model
 /// has "Ask" permission, the request is held pending user approval.
-async fn check_model_firewall_permission(
+pub(crate) async fn check_model_firewall_permission(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
@@ -1169,7 +1169,7 @@ fn has_side_effects(request: &ChatCompletionRequest) -> bool {
 /// or None if no scan is needed or content is safe.
 /// Run prompt compression if enabled for this client.
 /// Returns compressed messages or None if compression is not needed/enabled.
-async fn run_prompt_compression(
+pub(crate) async fn run_prompt_compression(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
@@ -1268,7 +1268,7 @@ async fn run_prompt_compression(
     Ok(Some(result))
 }
 
-async fn run_guardrails_scan(
+pub(crate) async fn run_guardrails_scan(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
@@ -1412,7 +1412,7 @@ async fn run_guardrails_scan(
 }
 
 /// Handle guardrail approval popup for detected violations
-async fn handle_guardrail_approval(
+pub(crate) async fn handle_guardrail_approval(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
@@ -1642,7 +1642,7 @@ fn build_flagged_text_preview(texts: &[lr_guardrails::text_extractor::ExtractedT
 /// Runs synchronously before guardrails since regex+entropy is sub-millisecond.
 /// If action=Ask, blocks the request and shows a popup for user decision.
 /// If action=Notify, allows the request but emits a notification event.
-async fn run_secret_scan_check(
+pub(crate) async fn run_secret_scan_check(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
@@ -1769,7 +1769,7 @@ async fn run_secret_scan_check(
 /// Handle a secret scan detection that requires user approval (Ask action).
 ///
 /// Blocks the request and shows a popup via the FirewallManager.
-async fn handle_secret_scan_approval(
+pub(crate) async fn handle_secret_scan_approval(
     state: &AppState,
     client_ctx: &ClientAuthContext,
     request: &ChatCompletionRequest,
@@ -1863,7 +1863,7 @@ async fn handle_secret_scan_approval(
 }
 
 /// Check rate limits before processing request
-async fn check_rate_limits(
+pub(crate) async fn check_rate_limits(
     state: &AppState,
     auth: &AuthContext,
     request: &ChatCompletionRequest,
@@ -1905,7 +1905,7 @@ async fn check_rate_limits(
 }
 
 /// Convert API request to provider request format
-fn convert_to_provider_request(
+pub(crate) fn convert_to_provider_request(
     request: &ChatCompletionRequest,
 ) -> ApiResult<ProviderCompletionRequest> {
     let messages = request
