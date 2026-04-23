@@ -26,6 +26,39 @@ pub async fn create_response(
     provider_name: &str,
     request: ResponsesApiRequest,
 ) -> AppResult<CompletionResponse> {
+    let (raw_value, raw_object) =
+        create_response_raw(client, base_url, access_token, request).await?;
+    let mut completion = super::response::response_to_completion(raw_object, provider_name);
+    // Stash the upstream JSON verbatim so `/v1/responses` adapters can
+    // bypass the lossy ChatCompletion translation and serve native
+    // fields (reasoning items, encrypted content carry-over, built-in
+    // tool results, `include[]`). Other adapters ignore the key.
+    let mut ext = completion.extensions.unwrap_or_default();
+    ext.insert(NATIVE_RESPONSES_API_EXT_KEY.to_string(), raw_value);
+    completion.extensions = Some(ext);
+    Ok(completion)
+}
+
+/// Key under which `OpenAIProvider` stashes the upstream Responses
+/// API JSON inside `CompletionResponse.extensions` when ChatGPT Plus
+/// routes through `/responses`. Adapters that speak native Responses
+/// (today: `routes/responses.rs`) pull the value out verbatim and
+/// bypass the lossy `response_to_completion` translation.
+pub const NATIVE_RESPONSES_API_EXT_KEY: &str = "__native_responses_api_object";
+
+/// Raw non-streaming `POST /responses` — returns both the verbatim
+/// upstream JSON (for native-format pass-through) and the decoded
+/// `ResponseObject` (for internal ChatCompletion translation).
+///
+/// We parse the body as a `Value` first, then deserialize that into
+/// `ResponseObject`, so the verbatim JSON is available to callers
+/// without requiring `Serialize` on our internal view of the response.
+pub async fn create_response_raw(
+    client: &Client,
+    base_url: &str,
+    access_token: &str,
+    request: ResponsesApiRequest,
+) -> AppResult<(serde_json::Value, ResponseObject)> {
     let url = format!("{}/responses", base_url);
     let response = client
         .post(&url)
@@ -45,14 +78,13 @@ pub async fn create_response(
         return Err(crate::http_client::classify_openai_error(status, &body));
     }
 
-    let parsed: ResponseObject = response
+    let raw_value: serde_json::Value = response
         .json()
         .await
         .map_err(|e| AppError::Provider(format!("Failed to parse /responses body: {}", e)))?;
-    Ok(super::response::response_to_completion(
-        parsed,
-        provider_name,
-    ))
+    let parsed: ResponseObject = serde_json::from_value(raw_value.clone())
+        .map_err(|e| AppError::Provider(format!("Failed to decode /responses body: {}", e)))?;
+    Ok((raw_value, parsed))
 }
 
 /// Streaming POST /responses.

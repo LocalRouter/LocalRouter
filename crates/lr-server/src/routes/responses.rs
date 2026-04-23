@@ -442,7 +442,15 @@ pub async fn create_response(
     };
     let metrics = finalize_metrics_and_monitor(&finalize_inputs, &completion).await;
 
-    let response_object = completion_to_response_object(&completion, &response_id, created_at);
+    // Native pass-through: when the provider is ChatGPT Plus (or any
+    // future native Responses backend), `OpenAIProvider` stashes the
+    // verbatim upstream JSON on `completion.extensions` under
+    // `NATIVE_RESPONSES_API_EXT_KEY`. We prefer that over the lossy
+    // `completion_to_response_object` translation so reasoning items,
+    // encrypted content carry-over, and built-in tool results reach
+    // the client intact. Falls back to the translator for every other
+    // provider.
+    let response_object = select_wire_body(&completion, &response_id, created_at);
     let wire_body = serde_json::to_value(&response_object).unwrap_or(Value::Null);
     let finish_reason = completion
         .choices
@@ -1208,4 +1216,177 @@ fn responses_session_store(state: &AppState) -> Option<ResponsesSessionStore> {
             }
         })
         .clone()
+}
+
+// ============================================================================
+// Wire-body selection: native Responses JSON (when the provider
+// produced it) vs. `completion_to_response_object` translation.
+// ============================================================================
+
+/// Pick the best wire-format body for the `/v1/responses` reply.
+///
+/// When the provider (today: ChatGPT Plus via `OpenAIProvider`)
+/// stashed the verbatim upstream Responses API JSON on
+/// `completion.extensions[NATIVE_RESPONSES_API_EXT_KEY]`, we use it
+/// directly — this is the native pass-through path that preserves
+/// reasoning items, encrypted-content carry-over, and built-in tool
+/// results that `response_to_completion` silently drops.
+///
+/// Otherwise we fall back to `completion_to_response_object`, which
+/// synthesizes a minimal Responses-shaped body from the
+/// ChatCompletion result.
+///
+/// In both cases we overwrite the top-level `id` with LocalRouter's
+/// own `response_id` so clients' `previous_response_id` round-trips
+/// hit our session store, not the upstream's opaque handle.
+fn select_wire_body(
+    completion: &lr_providers::CompletionResponse,
+    response_id: &str,
+    created_at: i64,
+) -> Value {
+    let native_raw = completion
+        .extensions
+        .as_ref()
+        .and_then(|ext| {
+            ext.get(lr_providers::openai_responses::NATIVE_RESPONSES_API_EXT_KEY)
+                .cloned()
+        })
+        .map(|mut v| {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("id".to_string(), Value::String(response_id.to_string()));
+            }
+            v
+        });
+    native_raw.unwrap_or_else(|| completion_to_response_object(completion, response_id, created_at))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lr_providers::{
+        ChatMessage as ProvMsg, ChatMessageContent as ProvContent, CompletionChoice,
+        CompletionResponse, TokenUsage as ProvUsage,
+    };
+
+    fn make_completion(
+        ext_payload: Option<serde_json::Value>,
+        content: &str,
+    ) -> CompletionResponse {
+        let mut completion = CompletionResponse {
+            id: "upstream-id".into(),
+            object: "chat.completion".into(),
+            created: 0,
+            provider: "openai".into(),
+            model: "gpt-5.4".into(),
+            choices: vec![CompletionChoice {
+                index: 0,
+                message: ProvMsg {
+                    role: "assistant".into(),
+                    content: ProvContent::Text(content.into()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".into()),
+                logprobs: None,
+            }],
+            usage: ProvUsage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            },
+            system_fingerprint: None,
+            service_tier: None,
+            extensions: None,
+            routellm_win_rate: None,
+            request_usage_entries: None,
+        };
+        if let Some(payload) = ext_payload {
+            let mut map = std::collections::HashMap::new();
+            map.insert(
+                lr_providers::openai_responses::NATIVE_RESPONSES_API_EXT_KEY.to_string(),
+                payload,
+            );
+            completion.extensions = Some(map);
+        }
+        completion
+    }
+
+    #[test]
+    fn select_wire_body_prefers_native_when_present() {
+        // Native JSON contains a reasoning output item that the
+        // ChatCompletion translator drops. We expect it to reach the
+        // wire body verbatim, with only the `id` overwritten.
+        let native = serde_json::json!({
+            "id": "chatgpt-opaque-id",
+            "object": "response",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "let me think"}],
+                    "encrypted_content": "BASE64-opaque-reasoning"
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "answer"}]
+                }
+            ],
+            "status": "completed"
+        });
+        let completion = make_completion(Some(native.clone()), "answer");
+
+        let wire = select_wire_body(&completion, "resp_lr_123", 42);
+
+        assert_eq!(
+            wire["id"].as_str(),
+            Some("resp_lr_123"),
+            "LocalRouter id must overwrite upstream id"
+        );
+        // Reasoning output item preserved — this is the whole point.
+        assert_eq!(wire["output"][0]["type"].as_str(), Some("reasoning"));
+        assert_eq!(
+            wire["output"][0]["encrypted_content"].as_str(),
+            Some("BASE64-opaque-reasoning")
+        );
+        // Message item still there after reasoning.
+        assert_eq!(wire["output"][1]["type"].as_str(), Some("message"));
+    }
+
+    #[test]
+    fn select_wire_body_falls_back_to_translator_when_native_missing() {
+        // No extension key → use `completion_to_response_object` which
+        // synthesizes a Responses-shaped body from the ChatCompletion.
+        let completion = make_completion(None, "hello from fallback");
+
+        let wire = select_wire_body(&completion, "resp_lr_fb", 100);
+
+        assert_eq!(wire["id"].as_str(), Some("resp_lr_fb"));
+        assert!(
+            wire["output"].is_array(),
+            "translator always produces an output array: {wire}"
+        );
+        // Message content must contain the assistant's text.
+        let text = wire["output"][0]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "hello from fallback");
+    }
+
+    #[test]
+    fn select_wire_body_rewrites_id_even_if_upstream_omits_it() {
+        // Edge case: upstream JSON object has no `id` key at all.
+        // Insertion path still works (serde_json inserts, doesn't
+        // require pre-existing key).
+        let native = serde_json::json!({
+            "object": "response",
+            "output": [],
+            "status": "completed"
+        });
+        let completion = make_completion(Some(native), "");
+
+        let wire = select_wire_body(&completion, "resp_lr_new", 0);
+        assert_eq!(wire["id"].as_str(), Some("resp_lr_new"));
+    }
 }

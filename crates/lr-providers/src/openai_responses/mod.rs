@@ -22,8 +22,9 @@ pub mod stream;
 pub mod types;
 
 pub use emit::{completion_to_response_object, ResponsesEmitter, ResponsesSseFrame};
-pub use http::create_response;
-pub use http::stream_response;
+pub use http::{
+    create_response, create_response_raw, stream_response, NATIVE_RESPONSES_API_EXT_KEY,
+};
 pub use request::translate_completion_request;
 pub use response::response_to_completion;
 pub use stream::responses_to_completion_chunks;
