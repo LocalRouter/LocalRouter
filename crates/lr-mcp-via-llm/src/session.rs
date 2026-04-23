@@ -93,10 +93,25 @@ pub struct McpViaLlmSession {
     /// Hashes of client-visible messages from the last request (before any injection).
     /// Used for session matching on subsequent requests.
     pub client_message_hashes: Vec<u64>,
+    /// Client-supplied deterministic session key (e.g. the Responses
+    /// API's `previous_response_id`). When present, session lookup
+    /// prefers an exact match on this key over the probabilistic
+    /// hash-based matching. `None` for sessions created from chat
+    /// completions (legacy / hash-only path).
+    pub explicit_key: Option<String>,
 }
 
 impl McpViaLlmSession {
+    #[allow(dead_code)] // kept for legacy test/integration_tests callers; production uses `new_with_key`.
     pub fn new(session_id: String, client_id: String) -> Self {
+        Self::new_with_key(session_id, client_id, None)
+    }
+
+    pub fn new_with_key(
+        session_id: String,
+        client_id: String,
+        explicit_key: Option<String>,
+    ) -> Self {
         let gateway_session_key = format!("mcp-via-llm-{}", session_id);
         Self {
             client_id,
@@ -109,6 +124,7 @@ impl McpViaLlmSession {
             transcript_path: None,
             memory_folder: None,
             client_message_hashes: Vec::new(),
+            explicit_key,
         }
     }
 

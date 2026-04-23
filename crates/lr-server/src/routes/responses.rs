@@ -292,6 +292,10 @@ pub async fn create_response(
                     None,
                     Some(llm_guard.event_id().to_string()),
                     Some(session_id.clone()),
+                    // Deterministic session key: reuses the orchestrator
+                    // session that produced the turn named by
+                    // `previous_response_id`, bypassing hash-matching.
+                    req.previous_response_id.clone(),
                 )
                 .await
             {
@@ -384,6 +388,9 @@ pub async fn create_response(
                 None,
                 Some(llm_guard.event_id().to_string()),
                 Some(session_id.clone()),
+                // See streaming variant above — deterministic
+                // session key via `previous_response_id`.
+                req.previous_response_id.clone(),
             )
             .await
             .map_err(|e| {

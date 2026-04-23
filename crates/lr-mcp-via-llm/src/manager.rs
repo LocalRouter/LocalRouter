@@ -141,15 +141,26 @@ impl McpViaLlmManager {
 
     /// Get an existing session or create a new one for this client.
     ///
-    /// When `incoming_messages` is provided, sessions are matched by comparing
-    /// normalized message hashes against stored client-visible hashes (fuzzy-resilient
-    /// to whitespace changes, Unicode normalization, and message truncation).
+    /// When `explicit_key` is `Some`, sessions are matched by an exact
+    /// equality on `McpViaLlmSession::explicit_key` first (for
+    /// deterministic continuations like the Responses API's
+    /// `previous_response_id`). A miss falls through to hash-based
+    /// matching, and on complete miss a new session is created — with
+    /// the explicit key stamped so the next turn hits the fast path.
     ///
-    /// When `None` (e.g., preview), falls back to the first available session.
+    /// When `incoming_messages` is provided and no explicit match was
+    /// found, sessions are matched by comparing normalized message
+    /// hashes against stored client-visible hashes (fuzzy-resilient to
+    /// whitespace changes, Unicode normalization, and message
+    /// truncation).
+    ///
+    /// When both are `None` (e.g., preview), falls back to the first
+    /// available session.
     pub(crate) fn get_or_create_session(
         &self,
         client_id: &str,
         incoming_messages: Option<&[ChatMessage]>,
+        explicit_key: Option<&str>,
     ) -> Arc<RwLock<McpViaLlmSession>> {
         let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
 
@@ -161,6 +172,27 @@ impl McpViaLlmManager {
         // Clean expired sessions
         sessions.retain(|s| !s.read().is_expired(ttl));
 
+        // Fast path: exact match on the client-supplied deterministic
+        // session key. Wins over hash-based matching even when the
+        // history has drifted significantly.
+        if let Some(key) = explicit_key {
+            for session in sessions.iter() {
+                let is_match = session
+                    .read()
+                    .explicit_key
+                    .as_deref()
+                    .is_some_and(|k| k == key);
+                if is_match {
+                    session.write().touch();
+                    tracing::debug!(
+                        "MCP via LLM: matched session for client {} via explicit key",
+                        &client_id[..8.min(client_id.len())]
+                    );
+                    return session.clone();
+                }
+            }
+        }
+
         // If no messages provided (preview) or empty, return first available or create new
         let incoming_messages = match incoming_messages {
             Some(msgs) if !msgs.is_empty() => msgs,
@@ -169,7 +201,11 @@ impl McpViaLlmManager {
                     session.write().touch();
                     return session.clone();
                 }
-                return self.create_new_session(&mut sessions, client_id);
+                return self.create_new_session(
+                    &mut sessions,
+                    client_id,
+                    explicit_key.map(|s| s.to_string()),
+                );
             }
         };
 
@@ -196,7 +232,18 @@ impl McpViaLlmManager {
         if best_score >= MATCH_THRESHOLD {
             if let Some(idx) = best_idx {
                 let session = sessions[idx].clone();
-                session.write().touch();
+                {
+                    let mut s = session.write();
+                    s.touch();
+                    // If this hit came via hash matching but the caller
+                    // also supplied an explicit key, stamp it now so
+                    // subsequent turns take the fast path.
+                    if let Some(key) = explicit_key {
+                        if s.explicit_key.is_none() {
+                            s.explicit_key = Some(key.to_string());
+                        }
+                    }
+                }
                 tracing::debug!(
                     "MCP via LLM: matched session for client {} (score={:.2}, {} stored hashes, {} incoming)",
                     &client_id[..8.min(client_id.len())],
@@ -215,7 +262,11 @@ impl McpViaLlmManager {
             best_score,
             sessions.len()
         );
-        self.create_new_session(&mut sessions, client_id)
+        self.create_new_session(
+            &mut sessions,
+            client_id,
+            explicit_key.map(|s| s.to_string()),
+        )
     }
 
     /// Create a new session and add it to the sessions list.
@@ -223,11 +274,13 @@ impl McpViaLlmManager {
         &self,
         sessions: &mut Vec<Arc<RwLock<McpViaLlmSession>>>,
         client_id: &str,
+        explicit_key: Option<String>,
     ) -> Arc<RwLock<McpViaLlmSession>> {
         let session_id = uuid::Uuid::new_v4().to_string();
-        let session = Arc::new(RwLock::new(McpViaLlmSession::new(
+        let session = Arc::new(RwLock::new(McpViaLlmSession::new_with_key(
             session_id,
             client_id.to_string(),
+            explicit_key,
         )));
         sessions.push(session.clone());
         session
@@ -292,7 +345,7 @@ impl McpViaLlmManager {
         client: &Client,
         allowed_servers: Vec<String>,
     ) -> Result<serde_json::Value, McpViaLlmError> {
-        let session = self.get_or_create_session(&client.id, None);
+        let session = self.get_or_create_session(&client.id, None, None);
 
         let (gateway_session_key, gateway_initialized) = {
             let s = session.read();
@@ -351,9 +404,14 @@ impl McpViaLlmManager {
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
         monitor_session_id: Option<String>,
+        explicit_session_key: Option<String>,
     ) -> Result<lr_providers::CompletionResponse, McpViaLlmError> {
         let config = self.config();
-        let session = self.get_or_create_session(&client.id, Some(&request.messages));
+        let session = self.get_or_create_session(
+            &client.id,
+            Some(&request.messages),
+            explicit_session_key.as_deref(),
+        );
         let memory_svc = self.memory_service();
 
         // Store client message hashes for future session matching (BEFORE reconstruction)
@@ -552,6 +610,7 @@ impl McpViaLlmManager {
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
         monitor_session_id: Option<String>,
+        explicit_session_key: Option<String>,
     ) -> Result<
         std::pin::Pin<
             Box<
@@ -562,7 +621,11 @@ impl McpViaLlmManager {
         McpViaLlmError,
     > {
         let config = self.config();
-        let session = self.get_or_create_session(&client.id, Some(&request.messages));
+        let session = self.get_or_create_session(
+            &client.id,
+            Some(&request.messages),
+            explicit_session_key.as_deref(),
+        );
         let memory_svc = self.memory_service();
 
         // Store client message hashes for future session matching (BEFORE reconstruction)

@@ -2230,6 +2230,7 @@ async fn handle_mcp_via_llm(
                 guardrail_gate,
                 Some(llm_event_id.clone()),
                 Some(session_id.clone()),
+                None,
             )
             .await
             .map_err(|e| {
@@ -2547,7 +2548,9 @@ async fn handle_mcp_via_llm(
             .into_response());
     }
 
-    // Non-streaming: run the agentic orchestrator
+    // Non-streaming: run the agentic orchestrator. Chat completions
+    // don't supply a deterministic session key — the orchestrator
+    // falls back to hash-based matching.
     let response = state
         .mcp_via_llm_manager
         .handle_request(
@@ -2559,6 +2562,7 @@ async fn handle_mcp_via_llm(
             guardrail_gate,
             Some(llm_event_id.clone()),
             Some(session_id.clone()),
+            None,
         )
         .await
         .map_err(|e| ApiErrorResponse::bad_gateway(format!("MCP via LLM error: {}", e)))?;

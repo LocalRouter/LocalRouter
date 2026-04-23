@@ -676,7 +676,7 @@ mod manager_tests {
         let mgr = McpViaLlmManager::new(config);
 
         // Create and backdate a session
-        let session = mgr.get_or_create_session("c1", None);
+        let session = mgr.get_or_create_session("c1", None, None);
         session.write().last_activity =
             std::time::Instant::now() - std::time::Duration::from_secs(10);
 
@@ -717,9 +717,9 @@ mod manager_tests {
     #[test]
     fn session_reuse_same_client_no_messages() {
         let mgr = McpViaLlmManager::new(cfg());
-        let s1 = mgr.get_or_create_session("c1", None);
+        let s1 = mgr.get_or_create_session("c1", None, None);
         let id1 = s1.read().gateway_session_key.clone();
-        let s2 = mgr.get_or_create_session("c1", None);
+        let s2 = mgr.get_or_create_session("c1", None, None);
         let id2 = s2.read().gateway_session_key.clone();
         assert_eq!(id1, id2);
     }
@@ -727,8 +727,8 @@ mod manager_tests {
     #[test]
     fn session_different_per_client() {
         let mgr = McpViaLlmManager::new(cfg());
-        let s1 = mgr.get_or_create_session("c1", None);
-        let s2 = mgr.get_or_create_session("c2", None);
+        let s1 = mgr.get_or_create_session("c1", None, None);
+        let s2 = mgr.get_or_create_session("c2", None, None);
         assert_ne!(s1.read().gateway_session_key, s2.read().gateway_session_key);
     }
 }
@@ -1180,12 +1180,12 @@ mod session_matching_manager_tests {
         let mgr = McpViaLlmManager::new(cfg());
         let msgs = vec![msg("user", "hello")];
 
-        let s1 = mgr.get_or_create_session("c1", Some(&msgs));
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs), None);
         let key1 = s1.read().gateway_session_key.clone();
 
         // No hashes stored yet, so a new session should be created
         let msgs2 = vec![msg("user", "different")];
-        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2), None);
         let key2 = s2.read().gateway_session_key.clone();
 
         // Both should be the same since first session has no stored hashes
@@ -1203,7 +1203,7 @@ mod session_matching_manager_tests {
         let msgs1 = vec![msg("user", "hello")];
 
         // Create first session and store hashes
-        let s1 = mgr.get_or_create_session("c1", Some(&msgs1));
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs1), None);
         let key1 = s1.read().gateway_session_key.clone();
         s1.write().client_message_hashes = compute_message_hashes(&msgs1);
 
@@ -1213,7 +1213,7 @@ mod session_matching_manager_tests {
             msg("assistant", "Hi"),
             msg("user", "How?"),
         ];
-        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2), None);
         let key2 = s2.read().gateway_session_key.clone();
 
         assert_eq!(key1, key2);
@@ -1225,13 +1225,13 @@ mod session_matching_manager_tests {
         let msgs1 = vec![msg("user", "hello")];
 
         // Create first session and store hashes
-        let s1 = mgr.get_or_create_session("c1", Some(&msgs1));
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs1), None);
         let key1 = s1.read().gateway_session_key.clone();
         s1.write().client_message_hashes = compute_message_hashes(&msgs1);
 
         // Completely different messages → should NOT match (score = 0)
         let msgs2 = vec![msg("user", "totally different conversation")];
-        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2), None);
         let key2 = s2.read().gateway_session_key.clone();
 
         assert_ne!(key1, key2);
@@ -1249,7 +1249,7 @@ mod session_matching_manager_tests {
             msg("assistant", "r2"),
         ];
 
-        let s1 = mgr.get_or_create_session("c1", Some(&msgs1));
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs1), None);
         let key1 = s1.read().gateway_session_key.clone();
         s1.write().client_message_hashes = compute_message_hashes(&msgs1);
 
@@ -1259,7 +1259,7 @@ mod session_matching_manager_tests {
             msg("assistant", "r2"),
             msg("user", "msg3"),
         ];
-        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2), None);
         let key2 = s2.read().gateway_session_key.clone();
 
         // Should match: suffix [msg2, r2] of stored matches prefix of incoming → 2/4 = 0.5
@@ -1272,12 +1272,12 @@ mod session_matching_manager_tests {
 
         // Create two sessions with different conversations
         let msgs_a = vec![msg("user", "conversation A")];
-        let s_a = mgr.get_or_create_session("c1", Some(&msgs_a));
+        let s_a = mgr.get_or_create_session("c1", Some(&msgs_a), None);
         let key_a = s_a.read().gateway_session_key.clone();
         s_a.write().client_message_hashes = compute_message_hashes(&msgs_a);
 
         let msgs_b = vec![msg("user", "conversation B")];
-        let s_b = mgr.get_or_create_session("c1", Some(&msgs_b));
+        let s_b = mgr.get_or_create_session("c1", Some(&msgs_b), None);
         let key_b = s_b.read().gateway_session_key.clone();
         s_b.write().client_message_hashes = compute_message_hashes(&msgs_b);
 
@@ -1289,7 +1289,7 @@ mod session_matching_manager_tests {
             msg("assistant", "Reply A"),
             msg("user", "Follow up A"),
         ];
-        let s = mgr.get_or_create_session("c1", Some(&msgs_a2));
+        let s = mgr.get_or_create_session("c1", Some(&msgs_a2), None);
         assert_eq!(s.read().gateway_session_key, key_a);
 
         // Continue conversation B → should match session B
@@ -1298,14 +1298,14 @@ mod session_matching_manager_tests {
             msg("assistant", "Reply B"),
             msg("user", "Follow up B"),
         ];
-        let s = mgr.get_or_create_session("c1", Some(&msgs_b2));
+        let s = mgr.get_or_create_session("c1", Some(&msgs_b2), None);
         assert_eq!(s.read().gateway_session_key, key_b);
     }
 
     #[test]
     fn find_session_by_gateway_key() {
         let mgr = McpViaLlmManager::new(cfg());
-        let s1 = mgr.get_or_create_session("c1", None);
+        let s1 = mgr.get_or_create_session("c1", None, None);
         let key = s1.read().gateway_session_key.clone();
 
         let found = mgr.find_session_by_gateway_key("c1", &key);
@@ -1324,13 +1324,67 @@ mod session_matching_manager_tests {
 
         // Create session with normal whitespace
         let msgs1 = vec![msg("user", "hello world")];
-        let s1 = mgr.get_or_create_session("c1", Some(&msgs1));
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs1), None);
         let key1 = s1.read().gateway_session_key.clone();
         s1.write().client_message_hashes = compute_message_hashes(&msgs1);
 
         // Same message but with different whitespace → should still match
         let msgs2 = vec![msg("user", "hello  world"), msg("assistant", "response")];
-        let s2 = mgr.get_or_create_session("c1", Some(&msgs2));
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2), None);
         assert_eq!(s2.read().gateway_session_key, key1);
+    }
+
+    // ── explicit session key (previous_response_id / Responses API) ───────
+
+    #[test]
+    fn explicit_key_fast_path_wins_over_hash_drift() {
+        // When the caller supplies an explicit key that matches a
+        // prior session, lookup should short-circuit on the key — even
+        // when the hash-based score would have rejected the session
+        // (e.g. because the visible history has drifted past the
+        // fuzzy-matching threshold).
+        let mgr = McpViaLlmManager::new(cfg());
+
+        // Seed a session and stamp an explicit key on it.
+        let seed = vec![msg("user", "initial")];
+        let s1 = mgr.get_or_create_session("c1", Some(&seed), Some("resp_abc"));
+        let key1 = s1.read().gateway_session_key.clone();
+        s1.write().client_message_hashes = compute_message_hashes(&seed);
+        assert_eq!(s1.read().explicit_key.as_deref(), Some("resp_abc"));
+
+        // Second call: history has drifted completely (hash match
+        // would return 0.0), but the explicit key still lines up.
+        let drifted = vec![msg("user", "totally unrelated content")];
+        let s2 = mgr.get_or_create_session("c1", Some(&drifted), Some("resp_abc"));
+        assert_eq!(s2.read().gateway_session_key, key1);
+    }
+
+    #[test]
+    fn explicit_key_stamped_on_hash_match() {
+        // Chat completions call (no explicit key) creates a session.
+        // The next call supplies both matching hashes AND an explicit
+        // key — the session should get its `explicit_key` stamped so
+        // subsequent turns can use the fast path.
+        let mgr = McpViaLlmManager::new(cfg());
+        let msgs = vec![msg("user", "hello")];
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs), None);
+        s1.write().client_message_hashes = compute_message_hashes(&msgs);
+        assert_eq!(s1.read().explicit_key, None);
+
+        let msgs2 = vec![msg("user", "hello"), msg("assistant", "hi")];
+        let s2 = mgr.get_or_create_session("c1", Some(&msgs2), Some("resp_xyz"));
+        assert_eq!(s2.read().gateway_session_key, s1.read().gateway_session_key);
+        assert_eq!(s2.read().explicit_key.as_deref(), Some("resp_xyz"));
+    }
+
+    #[test]
+    fn explicit_key_miss_creates_new_session_with_key_stamped() {
+        // No prior session matches the explicit key and there's no
+        // hash-matching fallback — new session is created, and the
+        // explicit key is stamped on it.
+        let mgr = McpViaLlmManager::new(cfg());
+        let msgs = vec![msg("user", "hello")];
+        let s1 = mgr.get_or_create_session("c1", Some(&msgs), Some("resp_first"));
+        assert_eq!(s1.read().explicit_key.as_deref(), Some("resp_first"));
     }
 }
