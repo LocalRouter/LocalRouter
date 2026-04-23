@@ -326,6 +326,24 @@ pub trait ModelProvider: Send + Sync {
         default_feature_support(self, instance_name)
     }
 
+    /// Support level for a given inbound LocalRouter API path.
+    ///
+    /// `path` is the short id used by the UI: `"chat_completions"`,
+    /// `"completions"`, or `"responses"`. Default assumes the provider
+    /// speaks a chat-style API natively, so LocalRouter can serve
+    /// `/v1/chat/completions` without translation, and that both the
+    /// legacy `/v1/completions` and `/v1/responses` shapes are
+    /// translated on top of it. Providers whose upstream *is* the
+    /// Responses API (OAuth'd ChatGPT Plus/Pro) invert that.
+    fn api_path_support(&self, path: &str) -> SupportLevel {
+        match path {
+            "chat_completions" => SupportLevel::Supported,
+            "completions" => SupportLevel::Translated,
+            "responses" => SupportLevel::Translated,
+            _ => SupportLevel::NotSupported,
+        }
+    }
+
     /// Whether this provider supports pulling (downloading) models on demand.
     ///
     /// Providers that return true must also implement `pull_model()`.

@@ -3226,6 +3226,21 @@ export interface GetProviderFeatureSupportParams {
 
 /** Params for get_feature_endpoint_matrix - no params needed */
 
+/**
+ * Per-path LocalRouter endpoint support for a provider instance.
+ * Rust: src-tauri/src/ui/commands_providers.rs - ApiPathSupport struct
+ */
+export interface ApiPathSupport {
+  chat_completions: SupportLevel
+  completions: SupportLevel
+  responses: SupportLevel
+}
+
+/** Params for get_api_path_support */
+export interface GetApiPathSupportParams {
+  instanceName: string
+}
+
 // ============================================================================
 // Memory Configuration Types
 // ============================================================================

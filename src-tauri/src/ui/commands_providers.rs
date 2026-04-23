@@ -1407,3 +1407,31 @@ pub async fn get_all_provider_feature_support(
 pub async fn get_feature_endpoint_matrix() -> Result<lr_providers::FeatureEndpointMatrix, String> {
     Ok(lr_providers::build_feature_endpoint_matrix())
 }
+
+/// Support level for the three chat-ish LocalRouter endpoints, per
+/// provider instance. Used by the Try It Out chat panel to annotate
+/// endpoint dropdown entries with "(Translated)" when LocalRouter has
+/// to emulate that path on top of a different upstream API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiPathSupport {
+    pub chat_completions: lr_providers::SupportLevel,
+    pub completions: lr_providers::SupportLevel,
+    pub responses: lr_providers::SupportLevel,
+}
+
+/// Report per-endpoint support for a specific provider instance.
+#[tauri::command]
+pub async fn get_api_path_support(
+    instance_name: String,
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<ApiPathSupport, String> {
+    let provider = registry
+        .get_provider(&instance_name)
+        .ok_or_else(|| format!("Provider instance '{}' not found", instance_name))?;
+
+    Ok(ApiPathSupport {
+        chat_completions: provider.api_path_support("chat_completions"),
+        completions: provider.api_path_support("completions"),
+        responses: provider.api_path_support("responses"),
+    })
+}

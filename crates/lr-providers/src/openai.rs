@@ -3,7 +3,7 @@
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
-    ProviderHealth, TokenUsage,
+    ProviderHealth, SupportLevel, TokenUsage,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -132,28 +132,99 @@ impl OpenAIProvider {
         self.base_url.starts_with(CHATGPT_BACKEND_API_BASE)
     }
 
-    /// Hardcoded model list for ChatGPT Plus/Pro subscriptions — the
-    /// chatgpt.com backend-api doesn't expose a public `/models`
-    /// endpoint, so we surface the known-accessible set. Keep this list
-    /// aligned with what Codex's own TUI exposes for subscription auth.
-    fn chatgpt_plus_models() -> Vec<ModelInfo> {
-        let ids = ["gpt-5-codex", "gpt-4o", "gpt-4o-mini", "o1", "o1-mini"];
+    /// Fallback model list for ChatGPT Plus/Pro subscriptions when the
+    /// remote `/models` catalog can't be reached. The ids match the
+    /// visible set codex-rs bundles as its offline catalog
+    /// (`models-manager/models.json`, `visibility: "list"`). The older
+    /// entries that were here — `gpt-5-codex`, `gpt-4o`, `gpt-4o-mini`,
+    /// `o1`, `o1-mini` — are *not* dispatchable via the ChatGPT-account
+    /// Codex backend; calling them returns 400 "not supported when
+    /// using Codex with a ChatGPT account".
+    ///
+    /// Model metadata (context window, capabilities) is resolved via
+    /// `lr-catalog` so this fallback stays in sync with the embedded
+    /// models.dev snapshot rather than carrying its own copy.
+    fn chatgpt_plus_fallback_models() -> Vec<ModelInfo> {
+        let ids = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"];
         ids.iter()
-            .map(|id| ModelInfo {
-                id: (*id).to_string(),
-                name: (*id).to_string(),
-                provider: "openai".to_string(),
-                parameter_count: None,
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![
-                    Capability::Chat,
-                    Capability::FunctionCalling,
-                    Capability::Vision,
-                ],
-                detailed_capabilities: None,
+            .map(|id| {
+                let catalog = lr_catalog::find_model("openai", id);
+                let mut caps = vec![Capability::Chat, Capability::FunctionCalling];
+                if catalog.map(|c| c.capabilities.vision).unwrap_or(true) {
+                    caps.push(Capability::Vision);
+                }
+                ModelInfo {
+                    id: (*id).to_string(),
+                    name: catalog
+                        .map(|c| c.name.to_string())
+                        .unwrap_or_else(|| (*id).to_string()),
+                    provider: "openai".to_string(),
+                    parameter_count: None,
+                    context_window: catalog.map(|c| c.context_length).unwrap_or(272_000),
+                    supports_streaming: true,
+                    capabilities: caps,
+                    detailed_capabilities: None,
+                }
             })
             .collect()
+    }
+
+    /// Hit the Codex backend `/models` catalog (the same one the
+    /// official `codex-rs` CLI fetches) and map visible entries to our
+    /// `ModelInfo`. Returns `None` on any failure so the caller can
+    /// fall back to the bundled list.
+    async fn fetch_chatgpt_plus_models(&self) -> Option<Vec<ModelInfo>> {
+        let url = format!("{}/models", self.base_url);
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("OpenAI-Beta", "responses=v1")
+            .send()
+            .await
+            .ok()?;
+
+        if !response.status().is_success() {
+            debug!(
+                "ChatGPT backend /models returned {}; using fallback list",
+                response.status()
+            );
+            return None;
+        }
+
+        let body: ChatGptModelsResponse = response.json().await.ok()?;
+        let mut models: Vec<ModelInfo> = body
+            .models
+            .into_iter()
+            .filter(|m| m.visibility.as_deref().map(|v| v == "list").unwrap_or(true))
+            .map(|m| {
+                let has_image = m
+                    .input_modalities
+                    .as_ref()
+                    .map(|mods| mods.iter().any(|s| s == "image"))
+                    .unwrap_or(false);
+                let mut caps = vec![Capability::Chat, Capability::FunctionCalling];
+                if has_image {
+                    caps.push(Capability::Vision);
+                }
+                ModelInfo {
+                    id: m.slug.clone(),
+                    name: m.display_name.unwrap_or(m.slug),
+                    provider: "openai".to_string(),
+                    parameter_count: None,
+                    context_window: m.context_window.unwrap_or(272_000),
+                    supports_streaming: true,
+                    capabilities: caps,
+                    detailed_capabilities: None,
+                }
+            })
+            .collect();
+
+        if models.is_empty() {
+            return None;
+        }
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        Some(models)
     }
 
     /// Get pricing information for known OpenAI models
@@ -272,6 +343,28 @@ struct OpenAIModel {
 #[derive(Debug, Deserialize)]
 struct OpenAIModelsResponse {
     data: Vec<OpenAIModel>,
+}
+
+/// Subset of the codex-rs `ModelsResponse` we care about (slug +
+/// surfacing hints). Fields not listed are ignored; the upstream
+/// catalog adds metadata frequently so we deliberately avoid a strict
+/// schema here.
+#[derive(Debug, Deserialize)]
+struct ChatGptModelsResponse {
+    models: Vec<ChatGptModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatGptModelEntry {
+    slug: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    visibility: Option<String>,
+    #[serde(default)]
+    context_window: Option<u32>,
+    #[serde(default)]
+    input_modalities: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -512,11 +605,15 @@ impl ModelProvider for OpenAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        // ChatGPT Plus/Pro OAuth tokens can't call `/v1/models`, and the
-        // backend-api equivalent isn't publicly documented. Return the
-        // known subscription-accessible list so the UI shows something.
+        // ChatGPT Plus/Pro OAuth tokens can't call `/v1/models`. The
+        // `chatgpt.com/backend-api/codex/models` catalog is what
+        // codex-rs itself fetches, so try that first and fall back to
+        // the bundled list on any error.
         if self.is_chatgpt_backend() {
-            return Ok(Self::chatgpt_plus_models());
+            if let Some(models) = self.fetch_chatgpt_plus_models().await {
+                return Ok(models);
+            }
+            return Ok(Self::chatgpt_plus_fallback_models());
         }
 
         let response = self
@@ -1288,6 +1385,32 @@ impl ModelProvider for OpenAIProvider {
         true
     }
 
+    /// OpenAI's public platform API speaks chat-completions, legacy
+    /// completions, and — as of recently — the Responses API natively.
+    /// ChatGPT Plus/Pro OAuth tokens *only* authorize the Responses
+    /// endpoint on `chatgpt.com/backend-api/codex`, so chat-completions
+    /// and legacy completions get translated to `/responses` by
+    /// LocalRouter when that auth mode is active.
+    fn api_path_support(&self, path: &str) -> SupportLevel {
+        use super::SupportLevel as L;
+        if self.is_chatgpt_backend() {
+            match path {
+                "responses" => L::Supported,
+                "chat_completions" | "completions" => L::Translated,
+                _ => L::NotSupported,
+            }
+        } else {
+            match path {
+                "chat_completions" | "completions" => L::Supported,
+                // OpenAI does expose /responses natively on its platform
+                // API, but LocalRouter currently proxies it through the
+                // translation layer, so report it as translated.
+                "responses" => L::Translated,
+                _ => L::NotSupported,
+            }
+        }
+    }
+
     fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
         let mut support = super::default_feature_support(self, instance_name);
 
@@ -1443,5 +1566,62 @@ mod tests {
     fn test_auth_header() {
         let provider = OpenAIProvider::new("sk-test123".to_string());
         assert_eq!(provider.auth_header(), "Bearer sk-test123");
+    }
+
+    #[test]
+    fn api_path_support_reflects_api_key_auth() {
+        let provider = OpenAIProvider::new("sk-test".to_string());
+        assert_eq!(
+            provider.api_path_support("chat_completions"),
+            SupportLevel::Supported
+        );
+        assert_eq!(
+            provider.api_path_support("completions"),
+            SupportLevel::Supported
+        );
+        assert_eq!(
+            provider.api_path_support("responses"),
+            SupportLevel::Translated
+        );
+        assert_eq!(
+            provider.api_path_support("unknown"),
+            SupportLevel::NotSupported
+        );
+    }
+
+    #[test]
+    fn api_path_support_reflects_chatgpt_oauth_backend() {
+        let provider = OpenAIProvider::with_base_url(
+            "oauth-token".to_string(),
+            CHATGPT_BACKEND_API_BASE.to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            provider.api_path_support("responses"),
+            SupportLevel::Supported
+        );
+        assert_eq!(
+            provider.api_path_support("chat_completions"),
+            SupportLevel::Translated
+        );
+        assert_eq!(
+            provider.api_path_support("completions"),
+            SupportLevel::Translated
+        );
+    }
+
+    #[test]
+    fn chatgpt_plus_fallback_list_covers_codex_visible_models() {
+        let models = OpenAIProvider::chatgpt_plus_fallback_models();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"gpt-5.4"));
+        assert!(ids.contains(&"gpt-5.4-mini"));
+        assert!(ids.contains(&"gpt-5.3-codex"));
+        assert!(ids.contains(&"gpt-5.2"));
+        // The old invalid ids must not sneak back in.
+        assert!(!ids.contains(&"o1"));
+        assert!(!ids.contains(&"o1-mini"));
+        assert!(!ids.contains(&"gpt-4o"));
+        assert!(!ids.contains(&"gpt-5-codex"));
     }
 }

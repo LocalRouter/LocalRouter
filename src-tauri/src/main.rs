@@ -2255,6 +2255,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_provider_feature_support,
             ui::commands::get_all_provider_feature_support,
             ui::commands::get_feature_endpoint_matrix,
+            ui::commands::get_api_path_support,
             // Server configuration commands
             ui::commands::get_server_config,
             ui::commands::update_server_config,

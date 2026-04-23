@@ -898,6 +898,11 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
             selectedModel={getEffectiveModel()}
             parameters={parameters}
             noModelsAvailable={!loadingModels && models.length === 0}
+            providerInstance={
+              mode === "direct"
+                ? selectedProvider
+                : providerModels.find(m => m.id === selectedModel)?.provider ?? null
+            }
           />
         </TabsContent>
 

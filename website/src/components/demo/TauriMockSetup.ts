@@ -1646,6 +1646,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
 
     return [openai, anthropic, gemini, ollama]
   },
+  'get_api_path_support': () => ({
+    chat_completions: 'supported' as const,
+    completions: 'translated' as const,
+    responses: 'translated' as const,
+  }),
   'get_feature_endpoint_matrix': (): FeatureEndpointMatrix => ({
     endpoints: ['Chat', 'Completions', 'Embeddings', 'Images', 'Audio', 'Moderations', 'Responses', 'Batches', 'Realtime'],
     client_modes: ['LLM Only', 'MCP Only', 'MCP & LLM', 'MCP via LLM'],

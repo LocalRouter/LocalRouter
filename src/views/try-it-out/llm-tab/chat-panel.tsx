@@ -1,5 +1,6 @@
 import * as React from "react"
 import { useState, useRef, useEffect, useCallback } from "react"
+import { invoke } from "@tauri-apps/api/core"
 import { Send, Bot, User, Square, ImagePlus, X, AlertCircle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
@@ -7,6 +8,7 @@ import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import type OpenAI from "openai"
+import type { ApiPathSupport, GetApiPathSupportParams, SupportLevel } from "@/types/tauri-commands"
 
 interface MessageMetadata {
   model?: string
@@ -51,6 +53,12 @@ interface ChatPanelProps {
   selectedModel: string
   parameters: ModelParameters
   noModelsAvailable?: boolean
+  /**
+   * Provider instance name that currently serves `selectedModel`. Used
+   * to annotate the endpoint dropdown with "(Translated)" when
+   * LocalRouter has to emulate a path on top of a non-native upstream.
+   */
+  providerInstance?: string | null
 }
 
 export function ChatPanel({
@@ -59,6 +67,7 @@ export function ChatPanel({
   selectedModel,
   parameters,
   noModelsAvailable,
+  providerInstance,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -70,6 +79,9 @@ export function ChatPanel({
   // LocalRouter's new /v1/responses route) or the legacy completions
   // endpoint without leaving the panel.
   const [endpoint, setEndpoint] = useState<"chat" | "responses" | "completions">("chat")
+  // Per-path support for the provider instance that serves the current
+  // model. `null` until the lookup lands (or no provider known).
+  const [pathSupport, setPathSupport] = useState<ApiPathSupport | null>(null)
   // Last response_id returned by the `/v1/responses` upstream. Sent
   // back as `previous_response_id` on subsequent turns so conversation
   // threading works the same way ChatGPT does.
@@ -86,6 +98,29 @@ export function ChatPanel({
       }
     }
   }, [])
+
+  // Resolve per-path support for the provider serving this model so the
+  // dropdown can mark translated endpoints. Skip when no provider is
+  // known (e.g. "all providers" client mode with no match yet).
+  useEffect(() => {
+    let cancelled = false
+    if (!providerInstance) {
+      setPathSupport(null)
+      return
+    }
+    invoke<ApiPathSupport>('get_api_path_support', {
+      instanceName: providerInstance,
+    } satisfies GetApiPathSupportParams)
+      .then(s => { if (!cancelled) setPathSupport(s) })
+      .catch(() => { if (!cancelled) setPathSupport(null) })
+    return () => { cancelled = true }
+  }, [providerInstance])
+
+  const endpointLabel = (base: string, level: SupportLevel | undefined): string => {
+    if (level === 'translated') return `${base} (Translated)`
+    if (level === 'not_supported' || level === 'not_implemented') return `${base} (Unavailable)`
+    return base
+  }
 
   // Detect demo mode (running at /demo route, typically in iframe)
   const isDemo = typeof window !== "undefined" && window.location.pathname === "/demo"
@@ -519,11 +554,21 @@ export function ChatPanel({
               onChange={(e) =>
                 setEndpoint(e.target.value as "chat" | "responses" | "completions")
               }
-              title="Which server endpoint to hit"
+              title={
+                pathSupport
+                  ? "(Translated) = LocalRouter emulates this path on top of a different upstream API."
+                  : "Which server endpoint to hit"
+              }
             >
-              <option value="chat">Chat Completions</option>
-              <option value="responses">Responses</option>
-              <option value="completions">Completions (legacy)</option>
+              <option value="chat">
+                {endpointLabel('Chat Completions', pathSupport?.chat_completions)}
+              </option>
+              <option value="responses">
+                {endpointLabel('Responses', pathSupport?.responses)}
+              </option>
+              <option value="completions">
+                {endpointLabel('Completions (legacy)', pathSupport?.completions)}
+              </option>
             </select>
           </div>
           <Button variant="outline" size="sm" onClick={clearChat}>
