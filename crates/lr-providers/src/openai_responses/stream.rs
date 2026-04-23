@@ -93,7 +93,23 @@ fn drain_frames(buf: &mut String, state: &mut StreamState) -> Vec<AppResult<Comp
 
         match serde_json::from_str::<ResponsesSseEnvelope>(&data_payload) {
             Ok(env) => {
+                // Parse the raw frame JSON once so we can attach it to
+                // every chunk the state machine emits for this event.
+                // Adapters that speak native Responses SSE (today:
+                // `routes/responses.rs`) pass these envelopes through
+                // verbatim instead of re-synthesizing them from the
+                // lossy ChunkDelta view.
+                let raw_value = serde_json::from_str::<serde_json::Value>(&data_payload).ok();
                 for out in state.on_event(env, &data_payload) {
+                    let out = match (out, raw_value.clone()) {
+                        (Ok(mut chunk), Some(raw)) => {
+                            let mut ext = chunk.extensions.unwrap_or_default();
+                            ext.insert(NATIVE_RESPONSES_SSE_EXT_KEY.to_string(), raw);
+                            chunk.extensions = Some(ext);
+                            Ok(chunk)
+                        }
+                        (out, _) => out,
+                    };
                     emitted.push(out);
                 }
             }
@@ -106,6 +122,12 @@ fn drain_frames(buf: &mut String, state: &mut StreamState) -> Vec<AppResult<Comp
 
     emitted
 }
+
+/// Key under which `responses_to_completion_chunks` stashes the raw
+/// Responses API SSE envelope JSON on each `CompletionChunk`'s
+/// `extensions`. Adapters that speak native Responses SSE pass these
+/// through verbatim instead of re-serializing via `ResponsesEmitter`.
+pub const NATIVE_RESPONSES_SSE_EXT_KEY: &str = "__native_responses_sse_envelope";
 
 /// Locate the byte offset of the next `\n\n` (or `\r\n\r\n`) frame
 /// boundary in `buf`, if present.
@@ -595,5 +617,36 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tc\",\"output
             chunks.last().unwrap().choices[0].finish_reason.as_deref(),
             Some("tool_calls")
         );
+    }
+
+    #[test]
+    fn chunks_carry_raw_sse_envelope_under_native_key() {
+        // Every emitted chunk should have the upstream SSE envelope
+        // attached verbatim under `NATIVE_RESPONSES_SSE_EXT_KEY` so
+        // `routes/responses.rs` can stream it through unchanged for
+        // ChatGPT Plus (where reasoning deltas + encrypted content
+        // would otherwise be lost to the ChatCompletion translation).
+        let sse = "event: response.output_text.delta\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\",\"response_id\":\"resp_1\"}\n\
+\n\
+";
+        let chunks: Vec<_> = collect_chunks(sse)
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let envelope = chunks
+            .iter()
+            .find_map(|c| {
+                c.extensions
+                    .as_ref()
+                    .and_then(|ext| ext.get(NATIVE_RESPONSES_SSE_EXT_KEY))
+            })
+            .expect("at least one chunk carries the raw envelope");
+        assert_eq!(
+            envelope["type"].as_str(),
+            Some("response.output_text.delta")
+        );
+        assert_eq!(envelope["delta"].as_str(), Some("hi"));
+        assert_eq!(envelope["response_id"].as_str(), Some("resp_1"));
     }
 }

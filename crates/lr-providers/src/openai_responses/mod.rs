@@ -27,4 +27,4 @@ pub use http::{
 };
 pub use request::translate_completion_request;
 pub use response::response_to_completion;
-pub use stream::responses_to_completion_chunks;
+pub use stream::{responses_to_completion_chunks, NATIVE_RESPONSES_SSE_EXT_KEY};

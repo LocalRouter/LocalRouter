@@ -936,6 +936,11 @@ fn build_stream_response(
     let mut reasoning_tokens_observed: Option<u64> = None;
     let provider_name_observed: Option<String> = None;
     let mut model_name_observed: Option<String> = None;
+    // True once we see any chunk carrying a raw Responses SSE
+    // envelope — signals we're in native pass-through mode and should
+    // not emit the emitter's synthesized finish frames (upstream
+    // already sent `response.completed`).
+    let mut saw_native_envelope = false;
 
     let emitted = async_stream::stream! {
         // Opening event.
@@ -1001,14 +1006,51 @@ fn build_stream_response(
                     }
                 }
             }
-            for frame in emitter.on_chunk(chunk) {
-                yield sse_event(frame);
+            // Native pass-through: if the upstream Responses API
+            // emitted raw SSE envelopes (e.g. ChatGPT Plus, where the
+            // translator stashes them via NATIVE_RESPONSES_SSE_EXT_KEY),
+            // forward each envelope verbatim so reasoning deltas,
+            // encrypted-content carry-over, and built-in tool events
+            // reach the client intact. Otherwise fall back to the
+            // `ResponsesEmitter` re-serialization.
+            let native_envelope = chunk.extensions.as_ref().and_then(|ext| {
+                ext.get(lr_providers::openai_responses::NATIVE_RESPONSES_SSE_EXT_KEY)
+                    .cloned()
+            });
+            if let Some(envelope) = native_envelope {
+                saw_native_envelope = true;
+                let event_type = envelope
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("message")
+                    .to_string();
+                // Rewrite top-level `response.id` to LocalRouter's
+                // response_id, same as the non-streaming path — this
+                // keeps `previous_response_id` continuations pointing
+                // at our session store, not the upstream handle.
+                let envelope = rewrite_envelope_response_id(envelope, &response_id);
+                yield sse_event(ResponsesSseFrame {
+                    event: event_type,
+                    data: envelope,
+                });
+                // Still advance the emitter's internal counters so
+                // `final_response_object` reflects the same shape for
+                // the telemetry wire body.
+                let _ = emitter.on_chunk(chunk);
+            } else {
+                for frame in emitter.on_chunk(chunk) {
+                    yield sse_event(frame);
+                }
             }
         }
 
-        // Finish frames.
-        for frame in emitter.finish(finish_reason.as_deref()) {
-            yield sse_event(frame);
+        // Finish frames: skip when upstream was native Responses SSE
+        // (it already emitted `response.completed` itself). Otherwise
+        // emit the synthesized finish frames.
+        if !saw_native_envelope {
+            for frame in emitter.finish(finish_reason.as_deref()) {
+                yield sse_event(frame);
+            }
         }
 
         // Finalize telemetry: cost, metrics, tray graph, access log,
@@ -1223,6 +1265,30 @@ fn responses_session_store(state: &AppState) -> Option<ResponsesSessionStore> {
 // produced it) vs. `completion_to_response_object` translation.
 // ============================================================================
 
+/// Overwrite the top-level `response.id` inside a Responses API SSE
+/// envelope with LocalRouter's own response_id, leaving everything
+/// else verbatim. Used in the streaming native pass-through path.
+///
+/// Envelopes come in two shapes, both handled here:
+///   - Events wrapping a full response object: `{type, response: {...}}`
+///   - Delta events referencing a response by id: `{type, response_id, ...}`
+fn rewrite_envelope_response_id(mut envelope: Value, response_id: &str) -> Value {
+    if let Some(obj) = envelope.as_object_mut() {
+        // Shape 1: `{type, response: {id, ...}}`
+        if let Some(resp) = obj.get_mut("response").and_then(|v| v.as_object_mut()) {
+            resp.insert("id".to_string(), Value::String(response_id.to_string()));
+        }
+        // Shape 2: `{type, response_id: "..."}`
+        if obj.contains_key("response_id") {
+            obj.insert(
+                "response_id".to_string(),
+                Value::String(response_id.to_string()),
+            );
+        }
+    }
+    envelope
+}
+
 /// Pick the best wire-format body for the `/v1/responses` reply.
 ///
 /// When the provider (today: ChatGPT Plus via `OpenAIProvider`)
@@ -1372,6 +1438,44 @@ mod tests {
         // Message content must contain the assistant's text.
         let text = wire["output"][0]["content"][0]["text"].as_str().unwrap();
         assert_eq!(text, "hello from fallback");
+    }
+
+    #[test]
+    fn rewrite_envelope_handles_both_shapes() {
+        // Shape 1: event carrying a full response object under
+        // `response`. Typical of `response.created` / `completed`.
+        let shape1 = serde_json::json!({
+            "type": "response.created",
+            "response": {
+                "id": "chatgpt-opaque-id",
+                "status": "in_progress"
+            }
+        });
+        let rewritten = rewrite_envelope_response_id(shape1, "resp_lr_1");
+        assert_eq!(rewritten["response"]["id"].as_str(), Some("resp_lr_1"));
+        assert_eq!(
+            rewritten["response"]["status"].as_str(),
+            Some("in_progress")
+        );
+
+        // Shape 2: delta event referencing a response by id. Typical
+        // of `response.output_text.delta`.
+        let shape2 = serde_json::json!({
+            "type": "response.output_text.delta",
+            "response_id": "chatgpt-opaque-id",
+            "delta": "hello"
+        });
+        let rewritten = rewrite_envelope_response_id(shape2, "resp_lr_2");
+        assert_eq!(rewritten["response_id"].as_str(), Some("resp_lr_2"));
+        assert_eq!(rewritten["delta"].as_str(), Some("hello"));
+
+        // Envelope with neither field — pass-through untouched.
+        let shape_other = serde_json::json!({
+            "type": "response.in_progress",
+            "foo": "bar"
+        });
+        let rewritten = rewrite_envelope_response_id(shape_other.clone(), "resp_lr_3");
+        assert_eq!(rewritten, shape_other);
     }
 
     #[test]
