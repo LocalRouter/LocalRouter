@@ -16,6 +16,7 @@ use chrono::Utc;
 use futures::stream::StreamExt;
 use uuid::Uuid;
 
+use super::finalize::{estimate_token_count, maybe_repair_json_content};
 use super::helpers::{
     check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
     validate_strategy_model_access,
@@ -4406,84 +4407,8 @@ async fn handle_streaming_parallel(
         .into_response())
 }
 
-/// Apply JSON repair to content if enabled and the request uses a JSON response format.
-fn maybe_repair_json_content(
-    content: String,
-    request: &ChatCompletionRequest,
-    state: &AppState,
-    auth: &AuthContext,
-) -> String {
-    // Only repair if response_format is JSON
-    let schema = match &request.response_format {
-        Some(crate::types::ResponseFormat::JsonObject { .. }) => None,
-        Some(crate::types::ResponseFormat::JsonSchema { schema, .. }) => Some(schema),
-        _ => return content,
-    };
-
-    // Check global config
-    let config = state.config_manager.get();
-    let repair_config = &config.json_repair;
-
-    // Check per-client override
-    let client = state.client_manager.get_client(&auth.api_key_id);
-    let enabled = client
-        .as_ref()
-        .and_then(|c| c.json_repair.enabled)
-        .unwrap_or(repair_config.enabled);
-    if !enabled {
-        return content;
-    }
-
-    let syntax_repair = client
-        .as_ref()
-        .and_then(|c| c.json_repair.syntax_repair)
-        .unwrap_or(repair_config.syntax_repair);
-    let schema_coercion = client
-        .as_ref()
-        .and_then(|c| c.json_repair.schema_coercion)
-        .unwrap_or(repair_config.schema_coercion);
-
-    let options = lr_json_repair::RepairOptions {
-        syntax_repair,
-        schema_coercion,
-        strip_extra_fields: repair_config.strip_extra_fields,
-        add_defaults: repair_config.add_defaults,
-        normalize_enums: repair_config.normalize_enums,
-    };
-
-    let result = lr_json_repair::repair_content(&content, schema, &options);
-    if result.was_modified {
-        tracing::info!(
-            repairs = result.repairs.len(),
-            "JSON repair applied {} fix(es) to response",
-            result.repairs.len()
-        );
-        // Track JSON repairs for dashboard (persisted to metrics DB)
-        state
-            .metrics_collector
-            .record_feature_event("feature_json_repair", 0, 0.0);
-    }
-    result.repaired
-}
-
-/// Estimate token count from messages (rough estimate)
-fn estimate_token_count(messages: &[ChatMessage]) -> u64 {
-    messages
-        .iter()
-        .map(|msg| {
-            match &msg.content {
-                Some(MessageContent::Text(text)) => {
-                    // Rough estimate: ~4 chars per token
-                    (text.len() / 4).max(1) as u64
-                }
-                Some(MessageContent::Parts(parts)) => {
-                    parts.len() as u64 * 100 // Very rough estimate
-                }
-                None => 0,
-            }
-        })
-        .sum()
-}
+// `maybe_repair_json_content` and `estimate_token_count` live in
+// `super::finalize` now — imported at the top of this file.
 
 #[cfg(test)]
 mod tests {

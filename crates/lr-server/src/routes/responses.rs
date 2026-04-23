@@ -37,6 +37,7 @@
 //!   interpreted.
 
 use std::convert::Infallible;
+use std::time::Instant;
 
 use axum::{
     extract::{Extension, State},
@@ -49,6 +50,10 @@ use lr_providers::openai_responses::{
     completion_to_response_object, ResponsesEmitter, ResponsesSseFrame,
 };
 use lr_providers::{ChatMessage, Tool};
+
+use super::finalize::{
+    finalize_metrics_and_monitor, update_response_body_and_record_generation, FinalizeInputs,
+};
 use lr_responses_sessions::{
     deserialize_history, serialize_history, ResponsesSession, ResponsesSessionStore,
     RetentionConfig,
@@ -138,7 +143,9 @@ pub async fn create_response(
     // Correlate logs/monitor events across the turn.
     let session_id = Uuid::new_v4().to_string();
     let response_id = format!("resp_{}", Uuid::new_v4().simple());
-    let created_at = Utc::now().timestamp();
+    let started_at = Instant::now();
+    let created_at_dt = Utc::now();
+    let created_at = created_at_dt.timestamp();
 
     let request_json = serde_json::to_value(&req).unwrap_or(Value::Null);
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
@@ -239,9 +246,11 @@ pub async fn create_response(
         .map_err(|e| llm_guard.capture_err(e))?;
 
     // Prompt compression (no-op when disabled / model not configured).
-    let _compression_result =
+    let compression_result =
         super::chat::run_prompt_compression(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
-            .await;
+            .await
+            .ok()
+            .flatten();
 
     // Now translate to the provider shape. This is the same helper
     // `chat_completions` uses, so the conversion is lossless.
@@ -266,7 +275,7 @@ pub async fn create_response(
         .unwrap_or(false);
 
     if req.stream {
-        let stream = if use_mcp_via_llm {
+        let (stream, routing_metadata) = if use_mcp_via_llm {
             let (client, _strategy) = client_for_routing
                 .as_ref()
                 .cloned()
@@ -286,7 +295,7 @@ pub async fn create_response(
                 )
                 .await
             {
-                Ok(s) => s,
+                Ok(s) => (s, None),
                 Err(e) => {
                     return Err(llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
                         "MCP-via-LLM error: {}",
@@ -300,7 +309,7 @@ pub async fn create_response(
                 .stream_complete(&auth.api_key_id, provider_request)
                 .await
             {
-                Ok((s, _routing_meta)) => s,
+                Ok((s, routing_meta)) => (s, routing_meta),
                 Err(e) => {
                     return Err(llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
                         "Router error: {}",
@@ -310,8 +319,20 @@ pub async fn create_response(
             }
         };
 
+        let incremental_prompt_tokens = chat_req
+            .messages
+            .last()
+            .map(|msg| super::finalize::estimate_token_count(std::slice::from_ref(msg)) as u32)
+            .unwrap_or(0);
+
+        // Consume the guard BEFORE handing off to the spawned stream:
+        // we record completion ourselves at stream-end via
+        // `finalize_streaming_at_end`.
+        let llm_event_id = llm_guard.into_event_id();
+
         let emit_sse = build_stream_response(
             state.clone(),
+            auth.clone(),
             session_store.clone(),
             stream,
             StreamWrapperCtx {
@@ -327,24 +348,32 @@ pub async fn create_response(
                     .metadata
                     .as_ref()
                     .and_then(|v| serde_json::to_string(v).ok()),
+                llm_event_id,
+                started_at,
+                created_at_dt,
+                incremental_prompt_tokens,
+                compression_tokens_saved: compression_result
+                    .as_ref()
+                    .filter(|r| r.original_tokens > r.compressed_tokens)
+                    .map(|r| (r.original_tokens - r.compressed_tokens) as u64)
+                    .unwrap_or(0),
+                routing_metadata,
             },
         );
 
-        // `llm_guard`'s Drop impl records error-on-drop; consume it
-        // explicitly since this SSE stream path completes asynchronously
-        // and we've already handed off to the stream.
-        let _ = llm_guard.into_event_id();
         return Ok(emit_sse);
     }
 
     // Non-streaming path: same MCP-via-LLM vs router branch as above.
-    let completion = if use_mcp_via_llm {
+    // We also capture the router's routing metadata (if any) so the
+    // finalize step can attach it to the monitor event.
+    let (completion, routing_metadata) = if use_mcp_via_llm {
         let (client, _strategy) = client_for_routing
             .as_ref()
             .cloned()
             .expect("client presence already verified above");
         let allowed_servers = compute_allowed_mcp_servers(&state, &client);
-        state
+        let c = state
             .mcp_via_llm_manager
             .handle_request(
                 state.mcp_gateway.clone(),
@@ -362,9 +391,10 @@ pub async fn create_response(
                     "MCP-via-LLM error: {}",
                     e
                 )))
-            })?
+            })?;
+        (c, None)
     } else {
-        let (completion, _routing_meta) = state
+        let (completion, routing_meta) = state
             .router
             .complete(&auth.api_key_id, provider_request)
             .await
@@ -374,10 +404,58 @@ pub async fn create_response(
                     e
                 )))
             })?;
-        completion
+        (completion, routing_meta)
     };
 
+    // Compute the incremental prompt-tokens the same way chat.rs does
+    // — only the last message, since history is accumulated across
+    // turns via `previous_response_id`.
+    let incremental_prompt_tokens = chat_req
+        .messages
+        .last()
+        .map(|msg| super::finalize::estimate_token_count(std::slice::from_ref(msg)) as u32)
+        .unwrap_or(completion.usage.prompt_tokens);
+
+    let finalize_inputs = FinalizeInputs {
+        state: &state,
+        auth: &auth,
+        llm_event_id: llm_guard.event_id(),
+        generation_id: &response_id,
+        started_at,
+        created_at: created_at_dt,
+        incremental_prompt_tokens,
+        compression_tokens_saved: compression_result
+            .as_ref()
+            .filter(|r| r.original_tokens > r.compressed_tokens)
+            .map(|r| (r.original_tokens - r.compressed_tokens) as u64)
+            .unwrap_or(0),
+        routing_metadata: routing_metadata.as_ref(),
+        user: None,
+        streamed: false,
+    };
+    let metrics = finalize_metrics_and_monitor(&finalize_inputs, &completion).await;
+
     let response_object = completion_to_response_object(&completion, &response_id, created_at);
+    let wire_body = serde_json::to_value(&response_object).unwrap_or(Value::Null);
+    let finish_reason = completion
+        .choices
+        .first()
+        .and_then(|c| c.finish_reason.clone());
+    let tokens = crate::types::TokenUsage {
+        prompt_tokens: incremental_prompt_tokens,
+        completion_tokens: completion.usage.completion_tokens,
+        total_tokens: incremental_prompt_tokens + completion.usage.completion_tokens,
+        prompt_tokens_details: completion.usage.prompt_tokens_details.clone(),
+        completion_tokens_details: completion.usage.completion_tokens_details.clone(),
+    };
+    update_response_body_and_record_generation(
+        &finalize_inputs,
+        &completion,
+        &metrics,
+        &wire_body,
+        finish_reason,
+        tokens,
+    );
 
     // Persist the turn if requested.
     if store_flag {
@@ -413,6 +491,8 @@ pub async fn create_response(
         }
     }
 
+    // Guard's `into_event_id` defuses the auto-error-on-drop — we've
+    // already completed the event above via `finalize_metrics_and_monitor`.
     let _ = llm_guard.into_event_id();
     Ok(JsonResponse(response_object).into_response())
 }
@@ -796,10 +876,17 @@ struct StreamWrapperCtx {
     merged_tools: Option<Vec<Tool>>,
     api_key_id: String,
     metadata_json: Option<String>,
+    llm_event_id: String,
+    started_at: Instant,
+    created_at_dt: chrono::DateTime<Utc>,
+    incremental_prompt_tokens: u32,
+    compression_tokens_saved: u64,
+    routing_metadata: Option<serde_json::Value>,
 }
 
 fn build_stream_response(
-    _state: AppState,
+    state: AppState,
+    auth: AuthContext,
     session_store: Option<ResponsesSessionStore>,
     upstream: std::pin::Pin<
         Box<dyn futures::Stream<Item = lr_types::AppResult<lr_providers::CompletionChunk>> + Send>,
@@ -816,6 +903,12 @@ fn build_stream_response(
         merged_tools,
         api_key_id,
         metadata_json,
+        llm_event_id,
+        started_at,
+        created_at_dt,
+        incremental_prompt_tokens,
+        compression_tokens_saved,
+        routing_metadata,
     } = ctx;
 
     // Produce SSE `Event`s as the chat-completions stream flows in.
@@ -823,6 +916,11 @@ fn build_stream_response(
     let mut finish_reason: Option<String> = None;
     let mut assistant_text = String::new();
     let mut tool_calls: Vec<lr_providers::ToolCall> = Vec::new();
+    let mut completion_tokens_observed: u32 = 0;
+    let mut prompt_tokens_observed: u32 = 0;
+    let mut reasoning_tokens_observed: Option<u64> = None;
+    let provider_name_observed: Option<String> = None;
+    let mut model_name_observed: Option<String> = None;
 
     let emitted = async_stream::stream! {
         // Opening event.
@@ -854,6 +952,9 @@ fn build_stream_response(
             };
             // Capture finish_reason / text / tool_calls for the
             // persisted session row.
+            if model_name_observed.is_none() && !chunk.model.is_empty() {
+                model_name_observed = Some(chunk.model.clone());
+            }
             for choice in &chunk.choices {
                 if let Some(c) = &choice.delta.content {
                     assistant_text.push_str(c);
@@ -865,6 +966,26 @@ fn build_stream_response(
                     finish_reason = Some(fr.clone());
                 }
             }
+            // If the provider shipped usage inside `extensions.usage`
+            // (OpenAI / Gemini both do this on the final chunk), pick
+            // it up for accurate metrics rather than estimating.
+            if let Some(ext) = chunk.extensions.as_ref() {
+                if let Some(usage) = ext.get("usage").and_then(|v| v.as_object()) {
+                    if let Some(pt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
+                        prompt_tokens_observed = pt as u32;
+                    }
+                    if let Some(ct) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
+                        completion_tokens_observed = ct as u32;
+                    }
+                    if let Some(rt) = usage
+                        .get("completion_tokens_details")
+                        .and_then(|d| d.get("reasoning_tokens"))
+                        .and_then(|v| v.as_u64())
+                    {
+                        reasoning_tokens_observed = Some(rt);
+                    }
+                }
+            }
             for frame in emitter.on_chunk(chunk) {
                 yield sse_event(frame);
             }
@@ -874,6 +995,57 @@ fn build_stream_response(
         for frame in emitter.finish(finish_reason.as_deref()) {
             yield sse_event(frame);
         }
+
+        // Finalize telemetry: cost, metrics, tray graph, access log,
+        // `complete_llm_call`, `update_llm_call_response_body`, and
+        // the generation-tracker row. Falls back to text-length-based
+        // token estimation when the upstream stream didn't surface a
+        // `usage` object.
+        let completion_tokens = if completion_tokens_observed > 0 {
+            completion_tokens_observed
+        } else {
+            (assistant_text.len() / 4).max(1) as u32
+        };
+        let prompt_tokens = if prompt_tokens_observed > 0 {
+            prompt_tokens_observed
+        } else {
+            incremental_prompt_tokens
+        };
+        let provider_for_finalize = provider_name_observed
+            .clone()
+            .or_else(|| model.split_once('/').map(|(p, _)| p.to_string()))
+            .unwrap_or_else(|| "router".to_string());
+        let model_for_finalize = model_name_observed.clone().unwrap_or_else(|| model.clone());
+        let final_body = emitter.final_response_object(
+            if finish_reason.as_deref() == Some("tool_calls") { "incomplete" } else { "completed" },
+        );
+        let wire_body = serde_json::to_value(&final_body).unwrap_or(Value::Null);
+        let finalize_inputs = crate::routes::finalize::FinalizeInputs {
+            state: &state,
+            auth: &auth,
+            llm_event_id: &llm_event_id,
+            generation_id: &response_id,
+            started_at,
+            created_at: created_at_dt,
+            incremental_prompt_tokens: prompt_tokens,
+            compression_tokens_saved,
+            routing_metadata: routing_metadata.as_ref(),
+            user: None,
+            streamed: true,
+        };
+        crate::routes::finalize::finalize_streaming_at_end(
+            &finalize_inputs,
+            crate::routes::finalize::StreamingFinalizeSummary {
+                provider: provider_for_finalize,
+                model: model_for_finalize,
+                prompt_tokens,
+                completion_tokens,
+                reasoning_tokens: reasoning_tokens_observed,
+                finish_reason: finish_reason.clone(),
+                content_preview: assistant_text.clone(),
+            },
+            &wire_body,
+        ).await;
 
         // Persist the session on success (best-effort — don't fail
         // the stream if the write fails).
