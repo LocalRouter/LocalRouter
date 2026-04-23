@@ -91,8 +91,11 @@ impl ResponsesSessionStore {
             let _ = std::fs::create_dir_all(parent);
         }
         let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // journal_mode returns a result row, so use prepare+query
+        let _ = conn
+            .prepare("PRAGMA journal_mode=WAL")?
+            .query_row([], |_| Ok(()));
+        conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
         Self::init_schema(&conn)?;
         info!("Responses session store opened at {}", path.display());
         Ok(Self {
