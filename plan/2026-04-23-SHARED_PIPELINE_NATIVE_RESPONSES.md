@@ -1,5 +1,22 @@
 # Shared Pipeline + Native Responses Refactor
 
+## Status (2026-04-23)
+
+- ✅ **Commit 1 landed** — `routes/finalize.rs` created;
+  `/v1/responses` telemetry gap fixed (streaming + non-streaming).
+- ✅ **Commit 7 landed** — MCP-via-LLM explicit session key via
+  `previous_response_id` (3 new tests).
+- ⏭️ Commits 2–3 (pipeline.rs / dispatch.rs extraction) — deferred.
+  Structural refactor only; existing `pub(crate)` helpers already
+  work for the three adapters.
+- ⏭️ Commit 4 (responses.rs full re-port) — partial; telemetry gap
+  closed, adapter still calls chat.rs helpers rather than a shared
+  `run_turn_pipeline`.
+- ⏭️ Commit 5 (completions.rs parity uplift) — deferred; blocks on
+  Commit 2.
+- ⏭️ Commit 6 (ResponsesProvider trait + native ChatGPT pass-through)
+  — deferred; biggest remaining user value. ~500 LOC.
+
 ## Context
 
 LocalRouter exposes three LLM HTTP surfaces — `/v1/chat/completions`,
