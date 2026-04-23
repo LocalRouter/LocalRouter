@@ -2,20 +2,30 @@
 
 ## Status (2026-04-23)
 
-- ✅ **Commit 1 landed** — `routes/finalize.rs` created;
+- ✅ **Commit 1 landed** (ed08d705) — `routes/finalize.rs` created;
   `/v1/responses` telemetry gap fixed (streaming + non-streaming).
-- ✅ **Commit 7 landed** — MCP-via-LLM explicit session key via
-  `previous_response_id` (3 new tests).
+- ✅ **Commit 5 partial landed** (8a354791) — `/v1/completions`
+  now emits `update_llm_call_routing` on all three paths. Full
+  feature-parity uplift (compression / RouteLLM / MCP-via-LLM /
+  free-tier fallback / JSON repair) still deferred behind the
+  pipeline.rs extraction.
+- ✅ **Commit 6 landed** (89380cc6 non-streaming, 7150d49b streaming)
+  — ChatGPT Plus native Responses pass-through. Upstream SSE
+  envelopes + non-streaming JSON are stashed on
+  `CompletionResponse.extensions` / `CompletionChunk.extensions`
+  under `NATIVE_RESPONSES_{API,SSE}_EXT_KEY`; `routes/responses.rs`
+  prefers these over the lossy translator so reasoning items,
+  encrypted-content carry-over, and built-in tool results reach
+  clients intact. Only `response.id` / `response_id` is rewritten
+  to LocalRouter's own id so session continuations still work.
+- ✅ **Commit 7 landed** (0dec0d95) — MCP-via-LLM explicit session
+  key via `previous_response_id` (3 new tests).
 - ⏭️ Commits 2–3 (pipeline.rs / dispatch.rs extraction) — deferred.
   Structural refactor only; existing `pub(crate)` helpers already
   work for the three adapters.
-- ⏭️ Commit 4 (responses.rs full re-port) — partial; telemetry gap
-  closed, adapter still calls chat.rs helpers rather than a shared
-  `run_turn_pipeline`.
-- ⏭️ Commit 5 (completions.rs parity uplift) — deferred; blocks on
-  Commit 2.
-- ⏭️ Commit 6 (ResponsesProvider trait + native ChatGPT pass-through)
-  — deferred; biggest remaining user value. ~500 LOC.
+- ⏭️ Commit 4 (responses.rs full re-port to shared `run_turn_pipeline`)
+  — partial; telemetry gap closed, adapter still calls chat.rs
+  helpers directly rather than a consolidated pipeline entry point.
 
 ## Context
 
