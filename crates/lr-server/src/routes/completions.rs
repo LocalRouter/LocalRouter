@@ -871,6 +871,9 @@ async fn handle_non_streaming_parallel(
         started_at,
         created_at,
         llm_event_id,
+        // MCP-via-LLM path: router metadata is not available at this
+        // site (the orchestrator drives routing internally).
+        None,
     )
     .await
 }
@@ -887,13 +890,15 @@ async fn handle_non_streaming(
     let started_at = Instant::now();
     let created_at = Utc::now();
 
-    // Call router to get completion
-    let response = match state
+    // Call router to get completion. Routing metadata is emitted
+    // onto the `LlmCall` monitor event below so auto-routing
+    // decisions show up alongside the completion.
+    let (response, routing_metadata) = match state
         .router
         .complete(&auth.api_key_id, provider_request)
         .await
     {
-        Ok((resp, _routing_meta)) => resp,
+        Ok((resp, routing_meta)) => (resp, routing_meta),
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
@@ -949,6 +954,7 @@ async fn handle_non_streaming(
         started_at,
         created_at,
         llm_event_id,
+        routing_metadata,
     )
     .await
 }
@@ -965,6 +971,7 @@ async fn build_non_streaming_response(
     started_at: Instant,
     created_at: chrono::DateTime<Utc>,
     llm_event_id: String,
+    routing_metadata: Option<serde_json::Value>,
 ) -> ApiResult<Response> {
     let completed_at = Instant::now();
 
@@ -1042,6 +1049,9 @@ async fn build_non_streaming_response(
             .as_ref()
             .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
             .map(|t| t as u64);
+        if let Some(ref meta) = routing_metadata {
+            super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, meta);
+        }
         super::monitor_helpers::complete_llm_call(
             &state,
             &llm_event_id,
@@ -1145,13 +1155,15 @@ async fn handle_streaming(
     // Clone model before moving provider_request
     let model = provider_request.model.clone();
 
-    // Call router to get streaming completion
-    let stream = match state
+    // Call router to get streaming completion. Routing metadata is
+    // forwarded into the spawned stream task below so auto-routing
+    // decisions show up on the monitor event.
+    let (stream, routing_metadata) = match state
         .router
         .stream_complete(&auth.api_key_id, provider_request)
         .await
     {
-        Ok((s, _routing_meta)) => s,
+        Ok((s, routing_meta)) => (s, routing_meta),
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
@@ -1384,6 +1396,9 @@ async fn handle_streaming(
         );
 
         // Complete the pending monitor event with final streaming data
+        if let Some(ref meta) = routing_metadata {
+            super::monitor_helpers::update_llm_call_routing(&state_clone, &llm_event_id, meta);
+        }
         super::monitor_helpers::complete_llm_call(
             &state_clone,
             &llm_event_id,
@@ -1475,12 +1490,12 @@ async fn handle_streaming_parallel(
     let model = provider_request.model.clone();
 
     // Start LLM streaming request immediately
-    let stream = match state
+    let (stream, routing_metadata) = match state
         .router
         .stream_complete(&auth.api_key_id, provider_request)
         .await
     {
-        Ok((s, _routing_meta)) => s,
+        Ok((s, routing_meta)) => (s, routing_meta),
         Err(e) => {
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
@@ -1819,6 +1834,9 @@ async fn handle_streaming_parallel(
             );
 
             // Complete the pending monitor event with final streaming data
+            if let Some(ref meta) = routing_metadata {
+                super::monitor_helpers::update_llm_call_routing(&state_clone, &llm_event_id, meta);
+            }
             super::monitor_helpers::complete_llm_call(
                 &state_clone,
                 &llm_event_id,
