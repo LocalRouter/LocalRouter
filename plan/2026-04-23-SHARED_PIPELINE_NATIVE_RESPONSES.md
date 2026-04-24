@@ -20,31 +20,31 @@
   to LocalRouter's own id so session continuations still work.
 - ✅ **Commit 7 landed** (0dec0d95) — MCP-via-LLM explicit session
   key via `previous_response_id` (3 new tests).
-- ✅ **Finalize-helper migration landed** across all three endpoints.
-  Non-streaming + streaming telemetry in chat.rs (0cf6e4b9 / db8af8c4)
-  and completions.rs (64c8d212 / 4e1df314) now routes through the
-  shared `finalize_metrics_and_monitor` +
+- ✅ **Finalize-helper migration landed** across all three endpoints
+  and all 5 chat handlers. Non-streaming + streaming telemetry in
+  chat.rs (0cf6e4b9 / db8af8c4 / 5402a77d) and completions.rs
+  (64c8d212 / 4e1df314) now routes through the shared
+  `finalize_metrics_and_monitor` +
   `update_response_body_and_record_generation` +
-  `finalize_streaming_at_end` helpers. Net: ~640 LOC of duplicated
-  inline telemetry removed. chat.rs 5,165 → 4,773 LOC;
-  completions.rs 2,118 → 1,858 LOC. Only `handle_mcp_via_llm`
-  streaming stays inline because the orchestrator emits its own
-  per-iteration monitor events with tool-call metadata that the
-  generic helper would overwrite.
-- ⏭️ Commits 2–3 (pipeline.rs / dispatch.rs extraction) — deferred.
-  Pre-LLM validation + rate-limit + guardrail + secret-scan +
-  compression + RouteLLM stages could be consolidated behind a
-  `run_turn_pipeline` entry point, and the four handler variants
-  (streaming × parallel) could collapse to two. Purely structural;
-  existing `pub(crate)` helpers in chat.rs already work for the
-  three adapters.
-- ⏭️ Commit 4 (responses.rs full re-port) — partial; telemetry gap
-  closed (landed above), adapter still calls chat.rs helpers
-  directly rather than a consolidated pipeline entry point. Blocks
-  on the pipeline.rs extraction.
+  `finalize_streaming_at_end` helpers. The MCP-via-LLM streaming
+  path joined via a new `skip_monitor_completion: bool` flag on
+  `FinalizeInputs` (5402a77d) — orchestrator owns the monitor
+  event, but cost / metrics / tray / access log / generation row
+  all fire through the shared helper.
+- ✅ **Commit 2 landed** (ac646b37) — `routes/pipeline.rs` extracted
+  from chat.rs (~1,600 LOC of 12 pipeline stages moved verbatim).
+  chat.rs dropped from 4,715 to 3,135 LOC (-33.5%) in that commit
+  alone; session total: 5,165 → 3,135 LOC (-39.3%).
+- ⏭️ Commit 3 (dispatch.rs extraction) — the four handler variants
+  (streaming × parallel) could still collapse. Structural only.
+- ⏭️ `run_turn_pipeline` entry point — adapters still compose
+  pipeline stages inline. Building this is the natural next step
+  once we want the responses.rs / completions.rs adapters to
+  shrink to thin wrappers.
 - ⏭️ Completions.rs feature parity — compression / RouteLLM /
   MCP-via-LLM / free-tier fallback / JSON repair still don't run
-  for `/v1/completions`. Blocks on the pipeline.rs extraction.
+  for `/v1/completions`. Each one is a targeted add now that
+  pipeline.rs exists and the helpers are trivially reusable.
 
 ## Context
 
