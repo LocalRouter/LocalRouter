@@ -3547,120 +3547,27 @@ async fn handle_streaming(
         )
         .await;
 
-        let completed_at = Instant::now();
         let completion_content = content_accumulator.lock().clone();
         let finish_reason_final = finish_reason.lock().clone();
 
-        // Estimate tokens for this message only (not the entire conversation)
-        // Count only the last user message (the new message that was just sent)
-        let last_user_message_tokens = if let Some(last_msg) = request_messages.last() {
-            estimate_token_count(std::slice::from_ref(last_msg))
-        } else {
-            0
-        };
-        let prompt_tokens = last_user_message_tokens as u32;
+        // Estimate tokens for this message only (not the entire
+        // conversation). Chat stream tokens are rough estimates —
+        // ~4 chars / token for the accumulated output, and only the
+        // last user message counts for prompt (no cumulative history
+        // billing).
+        let prompt_tokens = request_messages
+            .last()
+            .map(|m| estimate_token_count(std::slice::from_ref(m)) as u32)
+            .unwrap_or(0);
         let completion_tokens = (completion_content.len() / 4).max(1) as u32;
-        let total_tokens = prompt_tokens + completion_tokens;
 
-        // Infer provider from model name (format: "provider/model" or just "model")
         let provider = if let Some((p, _)) = model_clone.split_once('/') {
             p.to_string()
         } else {
             "router".to_string()
         };
 
-        // Estimate cost (using approximation since streaming doesn't return exact counts)
-        let pricing = match state_clone.provider_registry.get_provider(&provider) {
-            Some(p) => p.get_pricing(&model_clone).await.ok(),
-            None => None,
-        }
-        .unwrap_or_else(lr_providers::PricingInfo::free);
-
-        // Track cost saved by compression (using input token price)
-        if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
-            let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-            state_clone.metrics_collector.record_feature_event(
-                "feature_compression",
-                0,
-                cost_saved,
-            );
-        }
-
-        let cost = {
-            let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-            let output_cost = (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
-            input_cost + output_cost
-        };
-
-        // Get client's strategy_id for metrics
-        let strategy_id = state_clone
-            .client_manager
-            .get_client(&auth_clone.api_key_id)
-            .map(|c| c.strategy_id.clone())
-            .unwrap_or_else(|| "default".to_string());
-
-        // Record success metrics for streaming (with estimated tokens)
-        let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
-        state_clone
-            .metrics_collector
-            .record_success(&lr_monitoring::metrics::RequestMetrics {
-                api_key_name: &auth_clone.api_key_id,
-                provider: &provider,
-                model: &model_clone,
-                strategy_id: &strategy_id,
-                input_tokens: prompt_tokens as u64,
-                output_tokens: completion_tokens as u64,
-                cost_usd: cost,
-                latency_ms,
-            });
-
-        // Record tokens for tray graph
-        if let Some(ref tray_graph) = *state_clone.tray_graph_manager.read() {
-            tray_graph.record_tokens((prompt_tokens + completion_tokens) as u64);
-        }
-
-        // Log to access log (persistent storage)
-        if let Err(e) = state_clone.access_logger.log_success(
-            &auth_clone.api_key_id,
-            &provider,
-            &model_clone,
-            prompt_tokens as u64,
-            completion_tokens as u64,
-            cost,
-            latency_ms,
-            &gen_id_clone,
-        ) {
-            tracing::warn!("Failed to write access log: {}", e);
-        }
-
-        // Emit event for real-time UI updates
-        state_clone.emit_event(
-            "metrics-updated",
-            &serde_json::json!({
-                "timestamp": created_at_clone.to_rfc3339(),
-            })
-            .to_string(),
-        );
-
-        // Complete the LlmCall monitor event with final streaming data
-        super::monitor_helpers::complete_llm_call(
-            &state_clone,
-            &llm_event_id,
-            &provider,
-            &model_clone,
-            200,
-            prompt_tokens as u64,
-            completion_tokens as u64,
-            None,
-            Some(cost),
-            latency_ms,
-            Some(&finish_reason_final),
-            &completion_content,
-            true,
-        );
-
-        // Store reconstructed response body for monitor UI inspection
-        let response_body = super::monitor_helpers::build_streaming_response_body(
+        let wire_body = super::monitor_helpers::build_streaming_response_body(
             &gen_id_clone,
             &model_clone,
             &completion_content,
@@ -3669,43 +3576,34 @@ async fn handle_streaming(
             completion_tokens as u64,
             created_at_clone.timestamp(),
         );
-        super::monitor_helpers::update_llm_call_response_body(
-            &state_clone,
-            &llm_event_id,
-            &response_body,
-        );
 
-        let generation_details = GenerationDetails {
-            id: gen_id_clone,
-            model: model_clone,
-            provider: provider.clone(),
+        let finalize_inputs = super::finalize::FinalizeInputs {
+            state: &state_clone,
+            auth: &auth_clone,
+            llm_event_id: &llm_event_id,
+            generation_id: &gen_id_clone,
+            started_at,
             created_at: created_at_clone,
-            finish_reason: finish_reason_final,
-            tokens: TokenUsage {
+            incremental_prompt_tokens: prompt_tokens,
+            compression_tokens_saved,
+            routing_metadata: None,
+            user: request_user,
+            streamed: true,
+        };
+        super::finalize::finalize_streaming_at_end(
+            &finalize_inputs,
+            super::finalize::StreamingFinalizeSummary {
+                provider,
+                model: model_clone,
                 prompt_tokens,
                 completion_tokens,
-                total_tokens,
-                prompt_tokens_details: None,
-                completion_tokens_details: None,
+                reasoning_tokens: None,
+                finish_reason: Some(finish_reason_final),
+                content_preview: completion_content,
             },
-            cost: Some(crate::types::CostDetails {
-                prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
-                completion_cost: (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k,
-                reasoning_cost: None,
-                total_cost: cost,
-                currency: "USD".to_string(),
-            }),
-            started_at,
-            completed_at,
-            provider_health: None,
-            api_key_id: auth_clone.api_key_id,
-            user: request_user,
-            stream: true,
-        };
-
-        state_clone
-            .generation_tracker
-            .record(generation_details.id.clone(), generation_details);
+            &wire_body,
+        )
+        .await;
     });
 
     Ok(Sse::new(sse_stream)
@@ -4133,16 +4031,12 @@ async fn handle_streaming_parallel(
                 }
             }
 
-            // Record metrics (same as handle_streaming)
-            let completed_at = Instant::now();
-            let last_user_message_tokens = if let Some(last_msg) = request_messages.last() {
-                estimate_token_count(std::slice::from_ref(last_msg))
-            } else {
-                0
-            };
-            let prompt_tokens = last_user_message_tokens as u32;
+            // Shared finalize — matches the `handle_streaming` path.
+            let prompt_tokens = request_messages
+                .last()
+                .map(|m| estimate_token_count(std::slice::from_ref(m)) as u32)
+                .unwrap_or(0);
             let completion_tokens = (content_accumulator.len() / 4).max(1) as u32;
-            let total_tokens = prompt_tokens + completion_tokens;
 
             let provider = if let Some((p, _)) = model_clone.split_once('/') {
                 p.to_string()
@@ -4150,85 +4044,7 @@ async fn handle_streaming_parallel(
                 "router".to_string()
             };
 
-            let pricing = match state_clone.provider_registry.get_provider(&provider) {
-                Some(p) => p.get_pricing(&model_clone).await.ok(),
-                None => None,
-            }
-            .unwrap_or_else(lr_providers::PricingInfo::free);
-
-            // Track cost saved by compression (using input token price)
-            if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
-                let cost_saved =
-                    (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-                state_clone.metrics_collector.record_feature_event(
-                    "feature_compression",
-                    0,
-                    cost_saved,
-                );
-            }
-
-            let cost = {
-                let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-                let output_cost = (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
-                input_cost + output_cost
-            };
-
-            let strategy_id = state_clone
-                .client_manager
-                .get_client(&auth_clone.api_key_id)
-                .map(|c| c.strategy_id.clone())
-                .unwrap_or_else(|| "default".to_string());
-
-            let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
-            state_clone
-                .metrics_collector
-                .record_success(&lr_monitoring::metrics::RequestMetrics {
-                    api_key_name: &auth_clone.api_key_id,
-                    provider: &provider,
-                    model: &model_clone,
-                    strategy_id: &strategy_id,
-                    input_tokens: prompt_tokens as u64,
-                    output_tokens: completion_tokens as u64,
-                    cost_usd: cost,
-                    latency_ms,
-                });
-
-            if let Some(ref tray_graph) = *state_clone.tray_graph_manager.read() {
-                tray_graph.record_tokens((prompt_tokens + completion_tokens) as u64);
-            }
-
-            if let Err(e) = state_clone.access_logger.log_success(
-                &auth_clone.api_key_id,
-                &provider,
-                &model_clone,
-                prompt_tokens as u64,
-                completion_tokens as u64,
-                cost,
-                latency_ms,
-                &gen_id_clone,
-            ) {
-                tracing::warn!("Failed to write access log: {}", e);
-            }
-
-            // Complete the LlmCall monitor event with final streaming data
-            super::monitor_helpers::complete_llm_call(
-                &state_clone,
-                &llm_event_id,
-                &provider,
-                &model_clone,
-                200,
-                prompt_tokens as u64,
-                completion_tokens as u64,
-                None,
-                Some(cost),
-                latency_ms,
-                Some(&finish_reason_val),
-                &content_accumulator,
-                true,
-            );
-
-            // Store reconstructed response body for monitor UI inspection
-            let response_body = super::monitor_helpers::build_streaming_response_body(
+            let wire_body = super::monitor_helpers::build_streaming_response_body(
                 &gen_id_clone,
                 &model_clone,
                 &content_accumulator,
@@ -4237,52 +4053,34 @@ async fn handle_streaming_parallel(
                 completion_tokens as u64,
                 created_at.timestamp(),
             );
-            super::monitor_helpers::update_llm_call_response_body(
-                &state_clone,
-                &llm_event_id,
-                &response_body,
-            );
 
-            state_clone.emit_event(
-                "metrics-updated",
-                &serde_json::json!({
-                    "timestamp": created_at.to_rfc3339(),
-                })
-                .to_string(),
-            );
-
-            let generation_details = GenerationDetails {
-                id: gen_id_clone,
-                model: model_clone,
-                provider: provider.clone(),
+            let finalize_inputs = super::finalize::FinalizeInputs {
+                state: &state_clone,
+                auth: &auth_clone,
+                llm_event_id: &llm_event_id,
+                generation_id: &gen_id_clone,
+                started_at,
                 created_at,
-                finish_reason: finish_reason_val,
-                tokens: TokenUsage {
+                incremental_prompt_tokens: prompt_tokens,
+                compression_tokens_saved,
+                routing_metadata: None,
+                user: request_user,
+                streamed: true,
+            };
+            super::finalize::finalize_streaming_at_end(
+                &finalize_inputs,
+                super::finalize::StreamingFinalizeSummary {
+                    provider,
+                    model: model_clone,
                     prompt_tokens,
                     completion_tokens,
-                    total_tokens,
-                    prompt_tokens_details: None,
-                    completion_tokens_details: None,
+                    reasoning_tokens: None,
+                    finish_reason: Some(finish_reason_val),
+                    content_preview: content_accumulator,
                 },
-                cost: Some(crate::types::CostDetails {
-                    prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
-                    completion_cost: (completion_tokens as f64 / 1000.0)
-                        * pricing.output_cost_per_1k,
-                    reasoning_cost: None,
-                    total_cost: cost,
-                    currency: "USD".to_string(),
-                }),
-                started_at,
-                completed_at,
-                provider_health: None,
-                api_key_id: auth_clone.api_key_id,
-                user: request_user,
-                stream: true,
-            };
-
-            state_clone
-                .generation_tracker
-                .record(generation_details.id.clone(), generation_details);
+                &wire_body,
+            )
+            .await;
         });
     }
 
