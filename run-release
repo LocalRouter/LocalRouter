@@ -52,7 +52,7 @@ sleep 3
 
 # Start backend
 echo -e "${BLUE}Starting backend...${NC}"
-./target/release/localrouter &
+LOCALROUTER_KEYCHAIN=file ./target/release/localrouter &
 BACKEND_PID=$!
 echo -e "${GREEN}Backend started (PID: $BACKEND_PID)${NC}"
 

@@ -3450,6 +3450,9 @@ pub enum ProviderType {
     /// Zhipu AI (GLM models)
     #[serde(rename = "zhipu")]
     Zhipu,
+    /// DigitalOcean Gradient serverless inference
+    #[serde(rename = "digitalocean")]
+    DigitalOcean,
     /// Custom provider
     Custom,
 }
@@ -4545,6 +4548,7 @@ sampling_permission: "off"
             (ProviderType::KlusterAI, "kluster_ai"),
             (ProviderType::HuggingFace, "huggingface"),
             (ProviderType::Zhipu, "zhipu"),
+            (ProviderType::DigitalOcean, "digitalocean"),
         ];
         for (variant, expected_str) in &variants {
             // Serialize to JSON string
@@ -4572,6 +4576,7 @@ sampling_permission: "off"
             ProviderType::KlusterAI,
             ProviderType::HuggingFace,
             ProviderType::Zhipu,
+            ProviderType::DigitalOcean,
         ];
         for variant in &variants {
             let yaml = serde_yaml::to_string(variant).unwrap();

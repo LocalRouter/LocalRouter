@@ -74,3 +74,13 @@ crates/lr-catalog/catalog/.last_fetch
 .aider*
 .claude/settings.local.json
 .claude/worktrees/
+
+.gemini/
+gha-creds-*.json
+crates/lr-catalog/catalog/modelsdev_raw.json
+src-tauri/gen/schemas/acl-manifests.json
+src-tauri/gen/schemas/desktop-schema.json
+src-tauri/gen/schemas/macOS-schema.json
+
+# Kiro local agent overrides
+.kiro/agents/

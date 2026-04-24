@@ -773,7 +773,7 @@ impl ProviderFactory for MistralProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "Mistral AI models including Mistral Large and Codestral"
+        "Mistral AI models including Mistral Large and Codestral. For Codestral-specific keys, set base_url to https://codestral.mistral.ai/v1."
     }
 
     fn default_free_tier(&self) -> FreeTierKind {
@@ -792,12 +792,27 @@ impl ProviderFactory for MistralProviderFactory {
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
-        vec![SetupParameter::required(
-            "api_key",
-            ParameterType::ApiKey,
-            "Mistral API key",
-            true,
-        )]
+        vec![
+            SetupParameter::required(
+                "api_key",
+                ParameterType::ApiKey,
+                "Mistral API key",
+                true,
+            ),
+            // Codestral uses a separate credential scope at a different
+            // host: Codestral keys authenticate against
+            // https://codestral.mistral.ai/v1, regular Mistral keys
+            // against https://api.mistral.ai/v1. The two are disjoint —
+            // a regular key 401s on the Codestral endpoint and vice-versa.
+            // Leaving this blank keeps the default for most users.
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "Optional: custom API base URL (e.g. https://codestral.mistral.ai/v1 for Codestral-specific keys)",
+                None::<String>,
+                false,
+            ),
+        ]
     }
 
     fn create(
@@ -812,12 +827,41 @@ impl ProviderFactory for MistralProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(MistralProvider::new(api_key)?))
+        // Empty string is treated the same as absent — users editing the
+        // form in the UI may end up with "" in the config map when they
+        // clear the field.
+        let base_url = config.get("base_url").and_then(|v| {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        let provider = match base_url {
+            Some(url) => MistralProvider::with_base_url(api_key, url)?,
+            None => MistralProvider::new(api_key)?,
+        };
+        Ok(Arc::new(provider))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
         if !config.contains_key("api_key") {
             return Err(AppError::Config("api_key is required".to_string()));
+        }
+        // If base_url is provided, it must be an http(s) URL. An empty
+        // string is treated as "not provided" (see create()).
+        if let Some(url) = config.get("base_url") {
+            let trimmed = url.trim();
+            if !trimmed.is_empty()
+                && !trimmed.starts_with("http://")
+                && !trimmed.starts_with("https://")
+            {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -2259,6 +2303,96 @@ impl ProviderFactory for ZhipuProviderFactory {
     }
 }
 
+/// Factory for DigitalOcean Gradient serverless inference providers
+///
+/// Wraps `OpenAICompatibleProvider` with a fixed base URL of
+/// `https://inference.do-ai.run/v1` (the default `GRADIENT_INFERENCE_ENDPOINT`
+/// used by the official Gradient SDK). Auth is a Gradient Model Access Key
+/// passed as `Authorization: Bearer <key>`, which is distinct from a DO
+/// Personal Access Token — the serverless inference endpoint only accepts the
+/// model access key.
+///
+/// Catalog: `models.dev` ships a "digitalocean" entry covering ~20 models
+/// (chat + embeddings), so `catalog_provider_id` is wired up for pricing
+/// enrichment and offline fallback.
+pub struct DigitalOceanProviderFactory;
+
+impl ProviderFactory for DigitalOceanProviderFactory {
+    fn provider_type(&self) -> &str {
+        "digitalocean"
+    }
+
+    fn display_name(&self) -> &str {
+        "DigitalOcean Gradient"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "DigitalOcean Gradient serverless inference (Llama, Mistral, Qwen, embeddings)"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        // DO bills serverless inference by token usage. Credits for new
+        // accounts are common but not guaranteed; treat as usage-billed.
+        FreeTierKind::None
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some(
+            "Usage-billed serverless inference. Requires a Gradient Model Access Key \
+             (not a DigitalOcean Personal Access Token). Generate one in the DO \
+             console under Gradient AI → Serverless Inference → Model access keys. \
+             New accounts commonly receive trial credits — see DO billing for the \
+             current offer.",
+        )
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Gradient Model Access Key (not a Personal Access Token)",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "digitalocean".to_string(),
+            "https://inference.do-ai.run/v1".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config(
+                "api_key is required (use a Gradient Model Access Key, not a Personal Access Token)"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some("digitalocean")
+    }
+}
+
 // ==================== SUBSCRIPTION PROVIDER FACTORIES ====================
 
 /// Factory for GitHub Copilot (OAuth subscription)
@@ -2536,6 +2670,69 @@ mod tests {
         let notes = factory.free_tier_notes();
         assert!(notes.is_some());
         assert!(notes.unwrap().contains("experiment plan"));
+    }
+
+    // --- Mistral base_url override (Codestral) ---
+    //
+    // Codestral-specific API keys only authenticate against
+    // https://codestral.mistral.ai/v1. The factory exposes an optional
+    // base_url param so users can point the same Mistral provider at the
+    // Codestral host without a separate provider implementation.
+
+    #[test]
+    fn test_mistral_setup_parameters_expose_optional_base_url() {
+        let factory = MistralProviderFactory;
+        let params = factory.setup_parameters();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].key, "api_key");
+        assert!(params[0].required);
+        assert_eq!(params[1].key, "base_url");
+        assert!(!params[1].required);
+    }
+
+    #[test]
+    fn test_mistral_create_without_base_url_uses_default() {
+        let factory = MistralProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "mis_test".to_string());
+        let provider = factory.create("Mistral AI".to_string(), config);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_mistral_create_with_codestral_base_url_succeeds() {
+        let factory = MistralProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "cs_test".to_string());
+        config.insert(
+            "base_url".to_string(),
+            "https://codestral.mistral.ai/v1".to_string(),
+        );
+        let provider = factory.create("Mistral AI (Codestral)".to_string(), config);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_mistral_create_treats_blank_base_url_as_absent() {
+        // UI edit flow may leave an empty string in the config map when
+        // the user clears the field — that must behave like "not set",
+        // not like "invalid URL".
+        let factory = MistralProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "mis_test".to_string());
+        config.insert("base_url".to_string(), "".to_string());
+        let provider = factory.create("Mistral AI".to_string(), config);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_mistral_validate_rejects_non_http_base_url() {
+        let factory = MistralProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "mis_test".to_string());
+        config.insert("base_url".to_string(), "ftp://example.com".to_string());
+        let err = factory.validate_config(&config).unwrap_err();
+        assert!(format!("{err}").contains("http"));
     }
 
     #[test]
@@ -2968,6 +3165,62 @@ mod tests {
         assert!(factory.validate_config(&config).is_err());
     }
 
+    // --- DigitalOcean Gradient ---
+
+    #[test]
+    fn test_digitalocean_factory_metadata() {
+        let factory = DigitalOceanProviderFactory;
+        assert_eq!(factory.provider_type(), "digitalocean");
+        assert_eq!(factory.display_name(), "DigitalOcean Gradient");
+        assert_eq!(factory.category(), ProviderCategory::ThirdParty);
+        assert_eq!(factory.catalog_provider_id(), Some("digitalocean"));
+    }
+
+    #[test]
+    fn test_digitalocean_free_tier_and_notes() {
+        let factory = DigitalOceanProviderFactory;
+        assert_eq!(factory.default_free_tier(), FreeTierKind::None);
+        let notes = factory.free_tier_notes().unwrap();
+        assert!(notes.contains("Model Access Key"));
+        assert!(notes.contains("Personal Access Token"));
+    }
+
+    #[test]
+    fn test_digitalocean_setup_parameters() {
+        let factory = DigitalOceanProviderFactory;
+        let params = factory.setup_parameters();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].key, "api_key");
+        assert!(params[0].required);
+        assert!(params[0].sensitive);
+    }
+
+    #[test]
+    fn test_digitalocean_create_success() {
+        let factory = DigitalOceanProviderFactory;
+        let mut config = HashMap::new();
+        config.insert("api_key".to_string(), "do_model_abc123".to_string());
+        let provider = factory.create("test".to_string(), config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "digitalocean");
+    }
+
+    #[test]
+    fn test_digitalocean_validate_missing_key() {
+        let factory = DigitalOceanProviderFactory;
+        let config = HashMap::new();
+        let err = factory.validate_config(&config).unwrap_err();
+        // Error should steer users away from the wrong credential type
+        assert!(format!("{err}").contains("Model Access Key"));
+    }
+
+    #[test]
+    fn test_digitalocean_create_missing_key_fails() {
+        let factory = DigitalOceanProviderFactory;
+        let config = HashMap::new();
+        assert!(factory.create("test".to_string(), config).is_err());
+    }
+
     // ==================== Cross-cutting tests ====================
 
     #[test]
@@ -2980,6 +3233,7 @@ mod tests {
             Box::new(KlusterAIProviderFactory),
             Box::new(HuggingFaceProviderFactory),
             Box::new(ZhipuProviderFactory),
+            Box::new(DigitalOceanProviderFactory),
         ];
         for factory in &factories {
             assert!(
@@ -3014,6 +3268,10 @@ mod tests {
             HuggingFaceProviderFactory.catalog_provider_id(),
             Some("huggingface")
         );
+        assert_eq!(
+            DigitalOceanProviderFactory.catalog_provider_id(),
+            Some("digitalocean")
+        );
 
         // Providers without catalog data should return None
         let no_catalog: Vec<Box<dyn ProviderFactory>> = vec![
@@ -3040,6 +3298,7 @@ mod tests {
             Box::new(KlusterAIProviderFactory),
             Box::new(HuggingFaceProviderFactory),
             Box::new(ZhipuProviderFactory),
+            Box::new(DigitalOceanProviderFactory),
         ];
         let types: Vec<&str> = factories.iter().map(|f| f.provider_type()).collect();
         let mut deduped = types.clone();
@@ -3063,6 +3322,7 @@ mod tests {
             Box::new(KlusterAIProviderFactory),
             Box::new(HuggingFaceProviderFactory),
             Box::new(ZhipuProviderFactory),
+            Box::new(DigitalOceanProviderFactory),
         ];
         for factory in &factories {
             assert_eq!(

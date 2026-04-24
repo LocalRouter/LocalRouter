@@ -153,6 +153,7 @@ const EMOJI_MAP: Record<string, string> = {
   huggingface: '🤗',
   'hugging-face': '🤗',
   zhipu: '🇨🇳',
+  digitalocean: '🌊',
 
   // OAuth Providers
   'github-copilot': '🐙',

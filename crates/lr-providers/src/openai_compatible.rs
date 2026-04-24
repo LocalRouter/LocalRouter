@@ -48,21 +48,47 @@ impl OpenAICompatibleProvider {
 }
 
 // OpenAI API response types (reused from OpenAI provider)
-
+//
+// `object`, `created`, and `owned_by` are deliberately Optional so this
+// struct can deserialize model-list entries from services that diverge
+// from the strict OpenAI schema but still expose `id`:
+//
+//   - GitHub Models (`models.github.ai`, post-GA): bare array of
+//     `{id, name, publisher, summary, rate_limit_tier, ...}` — no `object`.
+//   - Cloudflare Workers AI (via the CF-envelope fallback below):
+//     `{id, name, description, task, ...}` — no `object`.
+//   - LocalAI / LM Studio older versions: omit `created` / `owned_by`.
+//
+// The id is all downstream needs; everything else is metadata we don't
+// consume, and `#[allow(dead_code)]` on an Option is still meaningful
+// because serde_json uses the field when present.
 #[derive(Debug, Deserialize)]
 struct OpenAIModel {
     id: String,
     #[allow(dead_code)]
-    object: String,
+    #[serde(default)]
+    object: Option<String>,
     #[allow(dead_code)]
-    created: i64,
+    #[serde(default)]
+    created: Option<i64>,
     #[allow(dead_code)]
-    owned_by: String,
+    #[serde(default)]
+    owned_by: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAIModelsResponse {
     data: Vec<OpenAIModel>,
+}
+
+/// Cloudflare Workers AI `/ai/models/search` envelope:
+/// `{ "success": true, "result": [ ... ], "result_info": {...} }`.
+/// The generic adapter tries this shape after the OpenAI envelope and
+/// the bare array both fail, which covers both Cloudflare and any other
+/// provider that wraps a model list under `result`.
+#[derive(Debug, Deserialize)]
+struct CloudflareModelsResponse {
+    result: Vec<OpenAIModel>,
 }
 
 #[derive(Debug, Serialize)]
@@ -280,9 +306,18 @@ impl ModelProvider for OpenAICompatibleProvider {
             .await
             .map_err(|e| AppError::Provider(format!("Failed to read models response: {}", e)))?;
 
+        // Parse response. Try, in order:
+        //   1. Standard OpenAI envelope: `{"data": [...]}`
+        //   2. Bare array: `[...]` (GitHub Models, some Azure endpoints)
+        //   3. Cloudflare-style envelope: `{"result": [...], "success": true}`
+        //
+        // The `OpenAIModel` struct is lenient — only `id` is required — so
+        // services with extra fields (GitHub's `publisher`/`summary`, CF's
+        // `task`/`description`) still deserialize cleanly.
         let model_list: Vec<OpenAIModel> = serde_json::from_str::<OpenAIModelsResponse>(&body)
             .map(|r| r.data)
             .or_else(|_| serde_json::from_str::<Vec<OpenAIModel>>(&body))
+            .or_else(|_| serde_json::from_str::<CloudflareModelsResponse>(&body).map(|r| r.result))
             .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
 
         let models = model_list
@@ -705,5 +740,83 @@ mod tests {
         let pricing = provider.get_pricing("any-model").await.unwrap();
         assert_eq!(pricing.input_cost_per_1k, 0.0);
         assert_eq!(pricing.output_cost_per_1k, 0.0);
+    }
+
+    // --- Model-list parser fallbacks ---
+    //
+    // These tests exercise the three envelope shapes the generic adapter
+    // accepts. They are regression coverage for the pre-fix failures:
+    //   - GitHub Models: "missing field `object`" on a bare array.
+    //   - Cloudflare Workers AI: "invalid type: map, expected a sequence"
+    //     on the CF wrapper response.
+
+    #[test]
+    fn test_model_list_parses_openai_envelope() {
+        let body = r#"{
+            "object": "list",
+            "data": [
+                {"id": "gpt-4", "object": "model", "created": 1, "owned_by": "openai"},
+                {"id": "gpt-3.5-turbo", "object": "model", "created": 2, "owned_by": "openai"}
+            ]
+        }"#;
+        let parsed: OpenAIModelsResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.data.len(), 2);
+        assert_eq!(parsed.data[0].id, "gpt-4");
+    }
+
+    #[test]
+    fn test_model_list_parses_bare_array_without_object_field() {
+        // GitHub Models response shape (post-GA) — no `object`,
+        // extra `publisher` / `summary` fields we simply ignore.
+        let body = r#"[
+            {"id": "openai/gpt-4.1", "name": "GPT-4.1", "publisher": "openai", "summary": "x"},
+            {"id": "meta/llama-3-70b", "name": "Llama 3 70B", "publisher": "meta"}
+        ]"#;
+        let parsed: Vec<OpenAIModel> = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].id, "openai/gpt-4.1");
+        assert!(parsed[0].object.is_none());
+        assert!(parsed[0].owned_by.is_none());
+    }
+
+    #[test]
+    fn test_model_list_parses_cloudflare_envelope() {
+        // Cloudflare Workers AI `/ai/models/search` response.
+        let body = r#"{
+            "success": true,
+            "result": [
+                {"id": "@cf/meta/llama-3-8b-instruct", "name": "Llama 3 8B"},
+                {"id": "@cf/mistral/mistral-7b-instruct-v0.1"}
+            ],
+            "result_info": {"count": 2, "page": 1, "per_page": 100, "total_count": 2}
+        }"#;
+        let parsed: CloudflareModelsResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.result.len(), 2);
+        assert_eq!(parsed.result[0].id, "@cf/meta/llama-3-8b-instruct");
+    }
+
+    #[test]
+    fn test_model_list_chain_picks_right_shape() {
+        // End-to-end: exercise the .or_else chain in the order the
+        // real code applies it. Each branch returns a non-empty list;
+        // the assert validates the ids parsed so a stray shape would
+        // be caught.
+        fn parse(body: &str) -> Vec<String> {
+            let list: Vec<OpenAIModel> = serde_json::from_str::<OpenAIModelsResponse>(body)
+                .map(|r| r.data)
+                .or_else(|_| serde_json::from_str::<Vec<OpenAIModel>>(body))
+                .or_else(|_| {
+                    serde_json::from_str::<CloudflareModelsResponse>(body).map(|r| r.result)
+                })
+                .unwrap();
+            list.into_iter().map(|m| m.id).collect()
+        }
+
+        assert_eq!(parse(r#"{"data":[{"id":"a"},{"id":"b"}]}"#), vec!["a", "b"]);
+        assert_eq!(parse(r#"[{"id":"c"},{"id":"d"}]"#), vec!["c", "d"]);
+        assert_eq!(
+            parse(r#"{"success":true,"result":[{"id":"e"}],"result_info":{}}"#),
+            vec!["e"]
+        );
     }
 }
