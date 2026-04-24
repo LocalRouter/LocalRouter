@@ -221,16 +221,38 @@ export function ProvidersPanel({
     setFeatureSupport(null)
   }, [selectedId])
 
-  // Load feature support and models when a provider is selected
+  // Load feature support and models when a provider is selected.
+  // Uses a cancellation flag so a slow response for a previous provider cannot
+  // overwrite the fresh data for the currently-selected one.
   useEffect(() => {
     if (!selectedId) return
+    let cancelled = false
+
     invoke<ProviderFeatureSupport>("get_provider_feature_support", {
       instanceName: selectedId,
     } satisfies GetProviderFeatureSupportParams)
-      .then(setFeatureSupport)
+      .then((result) => { if (!cancelled) setFeatureSupport(result) })
       .catch((err) => console.error("Failed to load feature support:", err))
-    loadDetailedModels(selectedId)
+
+    setDetailedModelsLoading(true)
+    setSelectedModelId(null)
+    invoke<DetailedModel[]>("list_all_models_detailed")
+      .then((allModels) => {
+        if (cancelled) return
+        setDetailedModels(allModels.filter(m => m.provider_instance === selectedId))
+      })
+      .catch((error) => {
+        if (cancelled) return
+        console.error("Failed to load detailed models:", error)
+        setDetailedModels([])
+      })
+      .finally(() => {
+        if (!cancelled) setDetailedModelsLoading(false)
+      })
+
     loadFreeTierStatus(selectedId)
+
+    return () => { cancelled = true }
   }, [selectedId])
 
   // Load providers and initialize health checks (only on first load)
@@ -321,20 +343,6 @@ export function ProvidersPanel({
       toast.error("Failed to set usage")
     }
   }, [setUsageValues, loadFreeTierStatus])
-
-  const loadDetailedModels = useCallback(async (instanceName: string) => {
-    setDetailedModelsLoading(true)
-    setSelectedModelId(null)
-    try {
-      const allModels = await invoke<DetailedModel[]>("list_all_models_detailed")
-      setDetailedModels(allModels.filter(m => m.provider_instance === instanceName))
-    } catch (error) {
-      console.error("Failed to load detailed models:", error)
-      setDetailedModels([])
-    } finally {
-      setDetailedModelsLoading(false)
-    }
-  }, [])
 
   const handleToggle = async (provider: Provider) => {
     try {
@@ -553,6 +561,7 @@ export function ProvidersPanel({
                   {selectedProvider.enabled && (
                   <TabsContent value="try-it-out">
                     <LlmTab
+                      key={selectedProvider.instance_name}
                       initialMode="direct"
                       initialProvider={selectedProvider.instance_name}
                       hideModeSwitcher

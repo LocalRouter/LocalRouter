@@ -660,6 +660,7 @@ export function McpServersPanel({
                 {selectedServer.enabled && (
                 <TabsContent value="try-it-out">
                   <McpTab
+                    key={selectedServer.id}
                     initialMode="direct"
                     initialDirectTarget={`server:${selectedServer.id}`}
                     hideModeSwitcher
