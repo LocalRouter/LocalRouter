@@ -51,7 +51,7 @@ pub async fn chat_completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(mut request): Json<ChatCompletionRequest>,
+    Json(request): Json<ChatCompletionRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "chat");
@@ -74,169 +74,31 @@ pub async fn chat_completions(
     // Record client activity for connection graph
     state.record_client_activity(&auth.api_key_id);
 
-    // Validate request
-    if let Err(e) = super::pipeline::validate_request(&request) {
-        super::monitor_helpers::emit_validation_error(
-            &state,
-            client_auth.as_ref(),
-            Some(&session_id),
-            "/v1/chat/completions",
-            e.error.error.param.as_deref(),
-            &e.error.error.message,
-            400,
-        );
-        return Err(llm_guard.capture_err(e));
-    }
-
-    super::pipeline::apply_model_access_checks(
+    // Canonical pre-LLM pipeline: validate → access checks → rate
+    // limits → secret scan → guardrails (parallel) → compression +
+    // RouteLLM (parallel) → convert. All 7 stages live in
+    // `routes/pipeline.rs::run_turn_pipeline` now; /v1/responses
+    // drives the same entry point with different `PipelineCaps`.
+    let turn = super::pipeline::run_turn_pipeline(
         &state,
         &auth,
         client_auth.as_ref(),
-        &session_id,
-        &mut request,
+        request,
         &mut llm_guard,
+        "/v1/chat/completions",
+        session_id.clone(),
+        super::pipeline::PipelineCaps::chat(),
     )
     .await?;
-
-    // Check rate limits first (reject early before spawning parallel work)
-    if let Err(e) = super::pipeline::check_rate_limits(&state, &auth, &request).await {
-        super::monitor_helpers::emit_rate_limit_event(
-            &state,
-            client_auth.as_ref(),
-            Some(&session_id),
-            "rate_limit_exceeded",
-            "/v1/chat/completions",
-            &e.error.error.message,
-            429,
-            None,
-        );
-        return Err(llm_guard.capture_err(e));
-    }
-
-    // Secret scanning: check outbound request for leaked secrets (before guardrails)
-    super::pipeline::run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request)
-        .await
-        .map_err(|e| llm_guard.capture_err(e))?;
-
-    // Start guardrail scan in parallel (only if safety engine is available)
-    let guardrail_handle = if client_auth.is_some()
-        && state
-            .safety_engine
-            .read()
-            .as_ref()
-            .is_some_and(|e| e.has_models())
-    {
-        let state_ref = state.clone();
-        let client_ctx = client_auth.as_ref().map(|e| e.0.clone());
-        let request_clone = request.clone();
-        Some(tokio::spawn(async move {
-            super::pipeline::run_guardrails_scan(&state_ref, client_ctx.as_ref(), &request_clone)
-                .await
-        }))
-    } else {
-        None
-    };
-
-    // Start prompt compression in parallel (only if compression is enabled)
-    let compression_handle = if state.compression_service.read().is_some()
-        && state.config_manager.get().prompt_compression.enabled
-    {
-        let state_ref = state.clone();
-        let client_ctx = client_auth.as_ref().map(|e| e.0.clone());
-        let request_clone = request.clone();
-        Some(tokio::spawn(async move {
-            super::pipeline::run_prompt_compression(&state_ref, client_ctx.as_ref(), &request_clone)
-                .await
-        }))
-    } else {
-        None
-    };
-
-    // Start RouteLLM classification in parallel (only for localrouter/auto)
-    let routellm_handle = if request.model == "localrouter/auto" {
-        super::pipeline::spawn_routellm_classification(
-            &state,
-            client_auth.as_ref().map(|e| &e.0),
-            &request,
-        )
-    } else {
-        None
-    };
-
-    // Await compression result (must complete before converting to provider format)
-    let compression_result = if let Some(handle) = compression_handle {
-        handle.await.map_err(|e| {
-            llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
-                "Compression task failed: {}",
-                e
-            )))
-        })?
-    } else {
-        Ok(None)
-    };
-
-    // Track compression tokens saved for cost calculation after pricing is available
-    let mut compression_tokens_saved: u64 = 0;
-
-    // Apply compression: replace request messages if compression succeeded
-    if let Ok(Some(compressed)) = &compression_result {
-        tracing::info!(
-            "Prompt compressed: {} -> {} msgs, ~{:.0}% reduction ({}ms)",
-            compressed.original_count,
-            compressed.compressed_messages.len(),
-            if compressed.original_tokens > 0 {
-                100.0
-                    - (compressed.compressed_tokens as f64 / compressed.original_tokens as f64
-                        * 100.0)
-            } else {
-                0.0
-            },
-            compressed.duration_ms,
-        );
-        // Track tokens saved by compression
-        if compressed.original_tokens > compressed.compressed_tokens {
-            let saved = (compressed.original_tokens - compressed.compressed_tokens) as u64;
-            state
-                .metrics_collector
-                .record_feature_event("feature_compression", saved, 0.0);
-            compression_tokens_saved = saved;
-        }
-        request.messages = compressed
-            .compressed_messages
-            .iter()
-            .map(|m| ChatMessage {
-                role: m.role.clone(),
-                content: Some(MessageContent::Text(m.content.clone())),
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-                reasoning_content: None,
-            })
-            .collect();
-    } else if let Err(e) = &compression_result {
-        tracing::warn!("Prompt compression failed (continuing without): {}", e);
-    }
-
-    // Await RouteLLM classification result
-    let routellm_result = if let Some(handle) = routellm_handle {
-        handle.await.map_err(|e| {
-            llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
-                "RouteLLM task failed: {}",
-                e
-            )))
-        })?
-    } else {
-        None
-    };
-
-    // Convert to provider format (uses possibly-compressed messages)
-    let mut provider_request = super::pipeline::convert_to_provider_request(&request)
-        .map_err(|e| llm_guard.capture_err(e))?;
-
-    // Inject pre-computed RouteLLM routing into provider request
-    if let Some(routing) = routellm_result {
-        provider_request.pre_computed_routing = Some(routing);
-    }
+    let super::pipeline::TurnContext {
+        chat_req,
+        provider_request,
+        compression_tokens_saved,
+        guardrail_handle,
+        ..
+    } = turn;
+    // Keep the original names for the rest of this handler.
+    let request = chat_req;
 
     // Log request summary with all active features
     {

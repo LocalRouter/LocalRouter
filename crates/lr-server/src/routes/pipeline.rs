@@ -1858,13 +1858,41 @@ pub(crate) async fn run_turn_pipeline(
         None
     };
 
-    // Stage 6: compression (awaited synchronously — compression output
-    // mutates `chat_req.messages`; downstream stages need the final
-    // form).
+    // Stages 6–7: compression + RouteLLM. Both spawn as tasks (so
+    // they run concurrently with the in-flight guardrails scan) and
+    // we await them together via `tokio::join!` before converting
+    // to the provider shape — RouteLLM's result bakes into
+    // `provider_request.pre_computed_routing`, and compression may
+    // mutate `chat_req.messages`, so both must resolve before the
+    // conversion step.
+    let compression_task = if caps.allow_compression
+        && state.compression_service.read().is_some()
+        && state.config_manager.get().prompt_compression.enabled
+    {
+        let state_ref = state.clone();
+        let client_ctx = client_auth.map(|e| e.0.clone());
+        let request_clone = chat_req.clone();
+        Some(tokio::spawn(async move {
+            run_prompt_compression(&state_ref, client_ctx.as_ref(), &request_clone).await
+        }))
+    } else {
+        None
+    };
+    let routellm_task = if caps.allow_routellm && chat_req.model == "localrouter/auto" {
+        spawn_routellm_classification(state, client_auth.map(|e| &e.0), &chat_req)
+    } else {
+        None
+    };
+
+    // Await compression
     let mut compression_tokens_saved: u64 = 0;
-    if caps.allow_compression {
-        let compression_result =
-            run_prompt_compression(state, client_auth.map(|e| &e.0), &chat_req).await;
+    if let Some(handle) = compression_task {
+        let compression_result = handle.await.map_err(|e| {
+            llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
+                "Compression task failed: {}",
+                e
+            )))
+        })?;
         if let Ok(Some(compressed)) = compression_result {
             if compressed.original_tokens > compressed.compressed_tokens {
                 let saved = (compressed.original_tokens - compressed.compressed_tokens) as u64;
@@ -1888,25 +1916,14 @@ pub(crate) async fn run_turn_pipeline(
         }
     }
 
-    // Stage 7: RouteLLM classification (before convert, since the
-    // result is baked onto `provider_request.pre_computed_routing`).
-    // Runs concurrently with compression today because compression
-    // has already awaited above, but the helper returns the spawned
-    // handle's result for `localrouter/auto` requests only — other
-    // models skip.
-    let routellm_routing = if caps.allow_routellm && chat_req.model == "localrouter/auto" {
-        if let Some(handle) =
-            spawn_routellm_classification(state, client_auth.map(|e| &e.0), &chat_req)
-        {
-            handle.await.map_err(|e| {
-                llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
-                    "RouteLLM task failed: {}",
-                    e
-                )))
-            })?
-        } else {
-            None
-        }
+    // Await RouteLLM
+    let routellm_routing = if let Some(handle) = routellm_task {
+        handle.await.map_err(|e| {
+            llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
+                "RouteLLM task failed: {}",
+                e
+            )))
+        })?
     } else {
         None
     };
