@@ -292,7 +292,6 @@ pub(crate) async fn finalize_metrics_and_monitor(
 /// so the shared finalize path can run against it at end-of-stream.
 /// The fields mirror the pieces `complete_llm_call` + access log +
 /// metrics consume; each adapter feeds what its chunks expose.
-#[allow(dead_code)]
 pub(crate) struct StreamingFinalizeSummary {
     pub provider: String,
     pub model: String,
@@ -314,7 +313,6 @@ pub(crate) struct StreamingFinalizeSummary {
 /// `/v1/responses`, or a reconstructed chat-completion JSON for chat
 /// / completions). Generation-tracker recording also happens here
 /// so every endpoint's streams show up in `/v1/generation/{id}`.
-#[allow(dead_code)]
 pub(crate) async fn finalize_streaming_at_end(
     inputs: &FinalizeInputs<'_>,
     summary: StreamingFinalizeSummary,
