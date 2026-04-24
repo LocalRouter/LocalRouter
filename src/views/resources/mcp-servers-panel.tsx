@@ -196,6 +196,17 @@ export function McpServersPanel({
     }
   }, [servers, selectedId, serverName, transportType, command, url, envVars, headers, authMethod, bearerToken])
 
+  // Keep a ref to the latest save function so the auto-save effect below can
+  // invoke it without taking it as a dependency. If we put `saveServerConfig`
+  // in the effect deps, `loadServersOnly()` inside the save would update
+  // `servers`, which recreates `saveServerConfig`, which re-fires the effect
+  // and reschedules another save — a tight loop that also repeatedly rebuilds
+  // the system tray menu (closing it on macOS).
+  const saveServerConfigRef = useRef(saveServerConfig)
+  useEffect(() => {
+    saveServerConfigRef.current = saveServerConfig
+  }, [saveServerConfig])
+
   // Debounced auto-save when form fields change
   useEffect(() => {
     if (isPopulatingForm.current) return
@@ -203,13 +214,13 @@ export function McpServersPanel({
 
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
     autoSaveTimer.current = setTimeout(() => {
-      saveServerConfig()
+      saveServerConfigRef.current()
     }, 600)
 
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
     }
-  }, [serverName, transportType, command, url, envVars, headers, authMethod, bearerToken, saveServerConfig, detailTab, selectedId])
+  }, [serverName, transportType, command, url, envVars, headers, authMethod, bearerToken, detailTab, selectedId])
 
   useEffect(() => {
     loadServers()
