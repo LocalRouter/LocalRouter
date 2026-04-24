@@ -16,8 +16,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::helpers::{
-    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
-    get_enabled_client, get_enabled_client_from_manager, validate_strategy_model_access,
+    check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager,
 };
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
@@ -26,11 +25,10 @@ use crate::types::{
     CompletionChoice, CompletionChunk, CompletionChunkChoice, CompletionRequest,
     CompletionResponse, PromptInput, TokenUsage,
 };
-use lr_providers::{
-    ChatMessage as ProviderChatMessage, ChatMessageContent,
-    CompletionRequest as ProviderCompletionRequest,
-};
-use lr_router::UsageInfo;
+use lr_providers::CompletionRequest as ProviderCompletionRequest;
+
+#[cfg(test)]
+use lr_providers::{ChatMessage as ProviderChatMessage, ChatMessageContent};
 
 /// POST /v1/completions
 /// Legacy completion endpoint - converts prompt to chat format
@@ -56,7 +54,7 @@ pub async fn completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(mut request): Json<CompletionRequest>,
+    Json(request): Json<CompletionRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "completion");
@@ -86,79 +84,35 @@ pub async fn completions(
         check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
     }
 
-    // Validate request
-    if let Err(e) = validate_request(&request) {
-        super::monitor_helpers::emit_validation_error(
-            &state,
-            client_auth.as_ref(),
-            Some(&session_id),
-            "/v1/completions",
-            e.error.error.param.as_deref(),
-            &e.error.error.message,
-            400,
-        );
-        return Err(llm_guard.capture_err(e));
-    }
-
-    // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
-    if request.model != "localrouter/auto" {
-        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-            if let Some(ref ac) = strategy.auto_config {
-                if request.model == ac.model_name {
-                    request.model = "localrouter/auto".to_string();
-                }
-            }
-        }
-    }
-
-    // Strategy-level model access checks
-    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        let is_auto_model = request.model == "localrouter/auto";
-        if !is_auto_model {
-            validate_strategy_model_access(&state, strategy, &request.model)
-                .map_err(|e| llm_guard.capture_err(e))?;
-        }
-    }
-
-    // Secret scanning: check outbound request for leaked secrets (before guardrails)
-    run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &request)
-        .await
-        .map_err(|e| llm_guard.capture_err(e))?;
-
-    // Start guardrail scan in parallel
-    let guardrail_handle = {
-        let state_ref = state.clone();
-        let client_ctx = client_auth.as_ref().map(|e| e.0.clone());
-        let request_clone = request.clone();
-        tokio::spawn(async move {
-            run_guardrails_scan(&state_ref, client_ctx.as_ref(), &request_clone).await
-        })
-    };
-
-    // Check rate limits (in parallel with guardrails scan)
-    if let Err(e) = check_rate_limits(&state, &auth, &request).await {
-        super::monitor_helpers::emit_rate_limit_event(
-            &state,
-            client_auth.as_ref(),
-            Some(&session_id),
-            "rate_limit_exceeded",
-            "/v1/completions",
-            &e.error.error.message,
-            429,
-            None,
-        );
-        return Err(llm_guard.capture_err(e));
-    }
+    // Run the shared pipeline (validate → access checks → rate
+    // limits → secret scan → guardrails → compression → RouteLLM →
+    // convert). Legacy `/v1/completions` inherits the same feature
+    // set as `/v1/chat/completions` by routing through the canonical
+    // entry point with a `CompletionRequest → ChatCompletionRequest`
+    // adapter.
+    let chat_req =
+        legacy_to_chat_completion_request(&request).map_err(|e| llm_guard.capture_err(e))?;
+    let turn = super::pipeline::run_turn_pipeline(
+        &state,
+        &auth,
+        client_auth.as_ref(),
+        chat_req,
+        &mut llm_guard,
+        "/v1/completions",
+        session_id,
+        super::pipeline::PipelineCaps::completions(),
+    )
+    .await?;
+    let super::pipeline::TurnContext {
+        provider_request,
+        guardrail_handle,
+        ..
+    } = turn;
 
     // Log request summary
     {
         let client_id_short = &auth.api_key_id[..8.min(auth.api_key_id.len())];
-        let guardrails_active = state
-            .safety_engine
-            .read()
-            .as_ref()
-            .is_some_and(|e| e.has_models());
+        let guardrails_active = guardrail_handle.is_some();
         tracing::info!(
             "Completion request: client={}, model={}, stream={}, guardrails={}",
             client_id_short,
@@ -168,57 +122,16 @@ pub async fn completions(
         );
     }
 
-    // Convert prompt to chat messages format
-    let messages =
-        convert_prompt_to_messages(&request.prompt).map_err(|e| llm_guard.capture_err(e))?;
-
-    // Create provider request
-    let provider_request = ProviderCompletionRequest {
-        model: request.model.clone(),
-        messages,
-        temperature: request.temperature,
-        max_tokens: request.max_tokens,
-        stream: request.stream,
-        top_p: request.top_p,
-        frequency_penalty: request.frequency_penalty,
-        presence_penalty: request.presence_penalty,
-        stop: request.stop.as_ref().map(|s| match s {
-            crate::types::StopSequence::Single(s) => vec![s.clone()],
-            crate::types::StopSequence::Multiple(v) => v.clone(),
-        }),
-        // Extended parameters (not supported in legacy completions endpoint)
-        top_k: None,
-        seed: None,
-        repetition_penalty: None,
-        extensions: None,
-        // Tool calling (not supported in legacy completions endpoint)
-        tools: None,
-        tool_choice: None,
-        // Response format (not supported in legacy completions endpoint)
-        response_format: None,
-        // Log probabilities (not supported in legacy completions endpoint)
-        logprobs: None,
-        top_logprobs: None,
-        pre_computed_routing: None,
-        n: request.n,
-        logit_bias: None,
-        parallel_tool_calls: None,
-        service_tier: None,
-        store: None,
-        metadata: None,
-        modalities: None,
-        audio: None,
-        prediction: None,
-        reasoning_effort: None,
-    };
-
     // Determine if we can run guardrails in parallel with the LLM request
     let config = state.config_manager.get();
-    let use_parallel = config.guardrails.parallel_guardrails && !has_side_effects(&request);
+    let use_parallel = config.guardrails.parallel_guardrails
+        && !has_side_effects(&request)
+        && guardrail_handle.is_some();
 
     if use_parallel {
         // Defuse the guard: parallel handler functions manage their own completion.
         let llm_event_id = llm_guard.into_event_id();
+        let guardrail_handle = guardrail_handle.unwrap();
 
         if request.stream {
             handle_streaming_parallel(
@@ -244,26 +157,40 @@ pub async fn completions(
             .await
         }
     } else {
-        // Sequential mode: keep guard alive through guardrail checks.
-        let guardrail_result = guardrail_handle
-            .await
-            .map_err(|e| {
-                llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
-                    "Guardrail check failed: {}",
-                    e
-                )))
-            })?
-            .map_err(|e| llm_guard.capture_err(e))?;
+        // Sequential mode: if the pipeline spawned a guardrail scan
+        // (parallel caps but parallel dispatch disabled by side-
+        // effects), await and approve here. If guardrails ran
+        // inline already, `guardrail_handle` is `None` and there's
+        // nothing to do.
+        if let Some(handle) = guardrail_handle {
+            let guardrail_result = handle
+                .await
+                .map_err(|e| {
+                    llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
+                        "Guardrail check failed: {}",
+                        e
+                    )))
+                })?
+                .map_err(|e| llm_guard.capture_err(e))?;
 
-        if let Some(check_result) = guardrail_result {
-            handle_guardrail_approval(
-                &state,
-                client_auth.as_ref().map(|e| &e.0),
-                &request,
-                check_result,
-            )
-            .await
-            .map_err(|e| llm_guard.capture_err(e))?;
+            if let Some(check_result) = guardrail_result {
+                super::pipeline::handle_guardrail_approval(
+                    &state,
+                    client_auth.as_ref().map(|e| &e.0),
+                    // Synthesize a throwaway ChatCompletionRequest for
+                    // the approval popup — the helper only inspects
+                    // `model` and `messages` for display. We'd re-
+                    // convert `&request` but the conversion just built
+                    // a ChatCompletionRequest moments ago; the minimal
+                    // ask here is OK since the popup is cosmetic.
+                    &legacy_to_chat_completion_request(&request)
+                        .map_err(|e| llm_guard.capture_err(e))?,
+                    check_result,
+                    "request",
+                )
+                .await
+                .map_err(|e| llm_guard.capture_err(e))?;
+            }
         }
 
         // Now defuse — sub-functions manage their own completion from here
@@ -294,6 +221,7 @@ pub async fn completions(
 }
 
 /// Validate completion request
+#[cfg(test)]
 fn validate_request(request: &CompletionRequest) -> ApiResult<()> {
     if request.model.is_empty() {
         return Err(ApiErrorResponse::bad_request("model is required").with_param("model"));
@@ -362,84 +290,6 @@ fn has_side_effects(request: &CompletionRequest) -> bool {
     // Legacy completions have no tools; only check model name
     let model = request.model.to_lowercase();
     model.contains("sonar")
-}
-
-/// Run guardrails scan on request content using safety engine
-async fn run_guardrails_scan(
-    state: &AppState,
-    client_context: Option<&ClientAuthContext>,
-    request: &CompletionRequest,
-) -> ApiResult<Option<lr_guardrails::SafetyCheckResult>> {
-    let Some(client_ctx) = client_context else {
-        return Ok(None);
-    };
-    let engine = state.safety_engine.read().clone();
-    let Some(engine) = engine else {
-        return Ok(None);
-    };
-
-    if !engine.has_models() {
-        return Ok(None);
-    }
-
-    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
-    let config = state.config_manager.get();
-
-    if !config.guardrails.scan_requests {
-        return Ok(None);
-    }
-
-    // Resolve effective category actions: per-client override > global default
-    let effective_category_actions = client
-        .guardrails
-        .category_actions
-        .as_deref()
-        .unwrap_or(&config.guardrails.category_actions);
-
-    if effective_category_actions.is_empty() {
-        return Ok(None);
-    }
-
-    if state
-        .guardrail_approval_tracker
-        .has_valid_bypass(&client.id)
-        && !state.mcp_gateway.firewall_manager.should_intercept(
-            &client.id,
-            lr_mcp::gateway::firewall::InterceptCategory::Guardrails,
-        )
-    {
-        return Ok(None);
-    }
-
-    let request_json = serde_json::to_value(request).unwrap_or_default();
-    let result = engine.check_input(&request_json).await;
-
-    if result.is_safe {
-        return Ok(None);
-    }
-
-    // Apply category action overrides
-    let overrides: Vec<(String, lr_guardrails::CategoryAction)> = effective_category_actions
-        .iter()
-        .filter_map(|entry| {
-            let action: lr_guardrails::CategoryAction =
-                serde_json::from_value(serde_json::Value::String(entry.action.clone())).ok()?;
-            Some((entry.category.clone(), action))
-        })
-        .collect();
-    let result = result.apply_client_category_overrides(&overrides);
-    if result.is_safe {
-        return Ok(None);
-    }
-
-    tracing::info!(
-        "Safety check: {} flagged categories for client {} (model: {})",
-        result.actions_required.len(),
-        client.id,
-        request.model,
-    );
-
-    Ok(Some(result))
 }
 
 /// Handle guardrail approval popup for detected violations
@@ -568,187 +418,8 @@ fn build_flagged_text_preview(texts: &[lr_guardrails::text_extractor::ExtractedT
     }
 }
 
-/// Check outbound completion request for leaked secrets.
-async fn run_secret_scan_check(
-    state: &AppState,
-    client_ctx: Option<&ClientAuthContext>,
-    request: &CompletionRequest,
-) -> ApiResult<()> {
-    let Some(client_ctx) = client_ctx else {
-        return Ok(());
-    };
-    let config = state.config_manager.get();
-    let client = state.client_manager.get_client(&client_ctx.client_id);
-
-    let effective_action = client
-        .as_ref()
-        .and_then(|c| c.secret_scanning.action.as_ref())
-        .unwrap_or(&config.secret_scanning.action);
-
-    if *effective_action == lr_config::SecretScanAction::Off {
-        return Ok(());
-    }
-
-    if state
-        .secret_scan_approval_tracker
-        .has_valid_bypass(&client_ctx.client_id)
-        && !state.mcp_gateway.firewall_manager.should_intercept(
-            &client_ctx.client_id,
-            lr_mcp::gateway::firewall::InterceptCategory::SecretScan,
-        )
-    {
-        return Ok(());
-    }
-
-    // Clone Arc out of the RwLock to avoid holding the guard across await points
-    let scanner = {
-        let guard = state.secret_scanner.read();
-        guard.as_ref().cloned()
-    };
-    let Some(scanner) = scanner else {
-        return Ok(());
-    };
-    if !scanner.has_rules() {
-        return Ok(());
-    }
-
-    let request_json = serde_json::to_value(request).unwrap_or_default();
-    let guardrail_texts = lr_guardrails::text_extractor::extract_request_text(&request_json);
-    let texts: Vec<lr_secret_scanner::ExtractedText> = guardrail_texts
-        .iter()
-        .enumerate()
-        .map(|(i, t)| lr_secret_scanner::ExtractedText {
-            label: t.label.clone(),
-            text: t.text.clone(),
-            message_index: i,
-        })
-        .collect();
-
-    let result = scanner.scan(&texts);
-    if result.findings.is_empty() {
-        return Ok(());
-    }
-
-    tracing::info!(
-        "Secret scan found {} potential secrets in completion request from client {}",
-        result.findings.len(),
-        client_ctx.client_id
-    );
-
-    match effective_action {
-        lr_config::SecretScanAction::Notify => {
-            let payload =
-                serde_json::to_string(&result.findings).unwrap_or_else(|_| "[]".to_string());
-            state.emit_event("secret-scan-notify", &payload);
-            Ok(())
-        }
-        lr_config::SecretScanAction::Ask => {
-            use lr_mcp::gateway::firewall::{
-                FirewallApprovalAction, SecretFindingSummary, SecretScanApprovalDetails,
-            };
-
-            let client_name = client
-                .as_ref()
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| client_ctx.client_id.clone());
-
-            let details = SecretScanApprovalDetails {
-                findings: result
-                    .findings
-                    .iter()
-                    .map(|f| SecretFindingSummary {
-                        rule_id: f.rule_id.clone(),
-                        rule_description: f.rule_description.clone(),
-                        category: f.category.clone(),
-                        matched_text: f.matched_text.clone(),
-                        entropy: f.entropy,
-                    })
-                    .collect(),
-                scan_duration_ms: result.scan_duration_ms,
-            };
-
-            let preview = result
-                .findings
-                .iter()
-                .map(|f| {
-                    format!(
-                        "[{}] {} (entropy: {:.2})",
-                        f.category, f.rule_description, f.entropy
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let response = state
-                .mcp_gateway
-                .firewall_manager
-                .request_secret_scan_approval(
-                    client_ctx.client_id.clone(),
-                    client_name,
-                    request.model.clone(),
-                    details,
-                    preview,
-                )
-                .await
-                .map_err(|e| {
-                    ApiErrorResponse::internal_error(format!("Secret scan approval failed: {}", e))
-                })?;
-
-            match response.action {
-                FirewallApprovalAction::AllowOnce
-                | FirewallApprovalAction::AllowSession
-                | FirewallApprovalAction::Allow1Minute
-                | FirewallApprovalAction::Allow1Hour
-                | FirewallApprovalAction::AllowPermanent => Ok(()),
-                _ => Err(ApiErrorResponse::forbidden(
-                    "Request blocked: potential secrets detected in outbound request",
-                )),
-            }
-        }
-        lr_config::SecretScanAction::Off => Ok(()),
-    }
-}
-
-/// Check rate limits before processing request
-async fn check_rate_limits(
-    state: &AppState,
-    auth: &AuthContext,
-    request: &CompletionRequest,
-) -> ApiResult<()> {
-    // Estimate usage for rate limit check (rough estimate)
-    let estimated_tokens = estimate_prompt_tokens(&request.prompt);
-    let max_output_tokens = request.max_tokens.unwrap_or(100);
-    let usage_estimate = UsageInfo {
-        input_tokens: estimated_tokens,
-        output_tokens: max_output_tokens as u64,
-        cost_usd: 0.0, // Can't estimate cost without knowing provider
-    };
-
-    let rate_limit_result = state
-        .rate_limiter
-        .check_api_key(&auth.api_key_id, &usage_estimate)
-        .await
-        .map_err(|e| ApiErrorResponse::internal_error(format!("Rate limit check failed: {}", e)))?;
-
-    if !rate_limit_result.allowed {
-        let mut error = ApiErrorResponse::rate_limited(format!(
-            "Rate limit exceeded: {}/{} used",
-            rate_limit_result.current_usage, rate_limit_result.limit
-        ));
-
-        if let Some(retry_after) = rate_limit_result.retry_after_secs {
-            error.error = error
-                .error
-                .with_code(format!("retry_after_{}", retry_after));
-        }
-
-        return Err(error);
-    }
-
-    Ok(())
-}
-
 /// Convert prompt(s) to chat message format
+#[cfg(test)]
 fn convert_prompt_to_messages(prompt: &PromptInput) -> ApiResult<Vec<ProviderChatMessage>> {
     let prompts = match prompt {
         PromptInput::Single(p) => vec![p.clone()],
@@ -769,6 +440,74 @@ fn convert_prompt_to_messages(prompt: &PromptInput) -> ApiResult<Vec<ProviderCha
         .collect();
 
     Ok(messages)
+}
+
+/// Convert a legacy `/v1/completions` request into a
+/// `ChatCompletionRequest` the shared pipeline can drive.
+///
+/// Each `prompt` entry becomes a user-role `ChatMessage` with
+/// `content: Text(...)`. Legacy fields that chat completions
+/// doesn't carry (logprobs/top_logprobs for the legacy-text-shape,
+/// `n`, `stop`, etc.) are preserved so that
+/// `convert_to_provider_request` regenerates an equivalent
+/// `ProviderCompletionRequest`.
+fn legacy_to_chat_completion_request(
+    req: &CompletionRequest,
+) -> ApiResult<crate::types::ChatCompletionRequest> {
+    let messages = match &req.prompt {
+        PromptInput::Single(p) => vec![crate::types::ChatMessage {
+            role: "user".to_string(),
+            content: Some(crate::types::MessageContent::Text(p.clone())),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }],
+        PromptInput::Multiple(ps) => ps
+            .iter()
+            .map(|p| crate::types::ChatMessage {
+                role: "user".to_string(),
+                content: Some(crate::types::MessageContent::Text(p.clone())),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            })
+            .collect(),
+    };
+
+    Ok(crate::types::ChatCompletionRequest {
+        model: req.model.clone(),
+        messages,
+        temperature: req.temperature,
+        top_p: req.top_p,
+        max_tokens: req.max_tokens,
+        max_completion_tokens: None,
+        n: req.n,
+        stop: req.stop.clone(),
+        stream: req.stream,
+        logprobs: None,
+        top_logprobs: None,
+        frequency_penalty: req.frequency_penalty,
+        presence_penalty: req.presence_penalty,
+        top_k: None,
+        seed: None,
+        repetition_penalty: None,
+        response_format: None,
+        tools: None,
+        tool_choice: None,
+        parallel_tool_calls: None,
+        logit_bias: None,
+        service_tier: None,
+        store: None,
+        metadata: None,
+        modalities: None,
+        audio: None,
+        prediction: None,
+        reasoning_effort: None,
+        extensions: None,
+        user: req.user.clone(),
+    })
 }
 
 /// Handle non-streaming completion

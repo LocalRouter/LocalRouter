@@ -1727,6 +1727,19 @@ impl PipelineCaps {
             parallel_guardrails: false,
         }
     }
+
+    /// Defaults for legacy `/v1/completions` — every stage enabled.
+    /// Historically completions didn't run compression or RouteLLM;
+    /// threading them through `run_turn_pipeline` brings the legacy
+    /// endpoint up to feature parity at no extra cost (both are
+    /// no-ops for the typical single-prompt case).
+    pub(crate) fn completions() -> Self {
+        Self {
+            allow_compression: true,
+            allow_routellm: true,
+            parallel_guardrails: true,
+        }
+    }
 }
 
 /// Aggregated output of `run_turn_pipeline`. The caller drives the
