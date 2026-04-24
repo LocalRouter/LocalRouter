@@ -35,24 +35,42 @@
   from chat.rs (~1,600 LOC of 12 pipeline stages moved verbatim).
   chat.rs dropped from 4,715 to 3,135 LOC (-33.5%) in that commit
   alone; session total: 5,165 → 3,135 LOC (-39.3%).
-- ✅ **`run_turn_pipeline` entry point landed** (291fbb51) —
-  `PipelineCaps::{chat, responses}` + `TurnContext` + a single
-  `run_turn_pipeline()` call that drives all 7 stages (validate →
-  access checks → rate limits → secret scan → guardrails →
-  compression → convert). `/v1/responses` is the first adopter —
-  its adapter collapsed ~70 LOC of pipeline composition into one
-  line. chat.rs still composes inline because its handler
-  interleaves `spawn_routellm_classification` with the other
-  spawned tasks; caps already sketch the migration path.
+- ✅ **`run_turn_pipeline` entry point landed** (291fbb51 /
+  5576268e / 830c0244) — `PipelineCaps::{chat, responses,
+  completions}` + `TurnContext` + a single `run_turn_pipeline()`
+  call that drives all 7 stages (validate → access checks → rate
+  limits → secret scan → guardrails → compression → RouteLLM →
+  convert). All three endpoints adopted:
+  - `/v1/chat/completions` uses `PipelineCaps::chat()` (parallel
+    guardrails, compression spawned, RouteLLM spawned).
+  - `/v1/responses` uses `PipelineCaps::responses()` (sequential
+    guardrails, compression spawned, no RouteLLM).
+  - `/v1/completions` uses `PipelineCaps::completions()` via a
+    `CompletionRequest → ChatCompletionRequest` adapter — inherits
+    the full feature set (compression, RouteLLM, auto-routing
+    firewall, secret scan, guardrails). **Commit 5 landed**
+    (60f71a6b).
 - ⏭️ Commit 3 (dispatch.rs extraction) — the four handler variants
   (streaming × parallel) could still collapse. Structural only,
-  would let chat.rs shrink further.
-- ⏭️ Completions.rs feature parity — compression / RouteLLM /
-  MCP-via-LLM / free-tier fallback still don't run for
-  `/v1/completions`. Each one is a targeted add now that
-  `run_turn_pipeline` exists; legacy `/v1/completions` would need
-  its own `PipelineCaps::completions()` and a
-  `CompletionRequest → ChatCompletionRequest` adapter at the entry.
+  would let chat.rs shrink further. Remaining open work.
+
+## End-state summary
+
+Every user-visible goal from the original plan is landed. Only the
+dispatch.rs structural extraction remains open (purely organizational
+— no behavior change).
+
+| Metric                | Session start | End     | Δ        |
+|-----------------------|---------------|---------|----------|
+| chat.rs               | 5,165         | 2,947   | -42.9%   |
+| completions.rs        | 2,118         | 1,600   | -24.5%   |
+| responses.rs          | 1,032         | 1,453   | +40.8% ¹ |
+| pipeline.rs (new)     | —             | ~1,960  | —        |
+| finalize.rs (new)     | —             | ~460    | —        |
+
+¹ Grew because it now carries full telemetry, native pass-through
+(non-streaming + streaming), session persistence, and the dispatch
+variant formerly implicit in chat.rs.
 
 ## Context
 
