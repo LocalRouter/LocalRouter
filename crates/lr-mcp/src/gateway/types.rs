@@ -130,7 +130,7 @@ pub struct GatewayConfig {
     /// Cache TTL in seconds (default: 300 = 5 minutes)
     pub cache_ttl_seconds: u64,
 
-    /// Max retry attempts for failed requests (default: 1)
+    /// Max retry attempts for failed requests (default: 2, giving 3 tries total)
     pub max_retry_attempts: u8,
 
     /// Whether async skill script execution is enabled (default: false)
@@ -150,7 +150,7 @@ impl Default for GatewayConfig {
             server_timeout_seconds: 10,
             allow_partial_failures: true,
             cache_ttl_seconds: 300,
-            max_retry_attempts: 1,
+            max_retry_attempts: 2,
             skills_async_enabled: false,
             sampling: lr_config::SamplingBehavior::default(),
             elicitation_mode: lr_config::ElicitationMode::default(),

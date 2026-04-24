@@ -126,7 +126,7 @@ async fn test_gateway_config_defaults() {
     assert_eq!(config.server_timeout_seconds, 10);
     assert!(config.allow_partial_failures);
     assert_eq!(config.cache_ttl_seconds, 300);
-    assert_eq!(config.max_retry_attempts, 1);
+    assert_eq!(config.max_retry_attempts, 2);
 }
 
 #[tokio::test]
