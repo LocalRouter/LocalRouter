@@ -2406,23 +2406,29 @@ async fn handle_mcp_via_llm(
             },
         );
 
-        // Record generation details after stream completes
+        // Record generation details after stream completes.
+        //
+        // Note: `skip_monitor_completion: true` on `FinalizeInputs`
+        // tells the shared helper to skip `complete_llm_call` +
+        // `update_llm_call_response_body` — the MCP-via-LLM
+        // orchestrator (orchestrator_stream.rs) completes those
+        // per-iteration with full tool-call metadata, and
+        // overwriting them here with a text-only view would lose
+        // fidelity. All other telemetry (cost / metrics / tray /
+        // access log / `metrics-updated` event / generation
+        // tracker) still fires.
         tokio::spawn(async move {
             let _ =
                 tokio::time::timeout(tokio::time::Duration::from_secs(300), completion_rx).await;
 
-            let completed_at = Instant::now();
             let completion_content = content_accumulator.lock().clone();
             let finish_reason_final = finish_reason.lock().clone();
 
-            let last_user_message_tokens = if let Some(last_msg) = request_messages.last() {
-                estimate_token_count(std::slice::from_ref(last_msg))
-            } else {
-                0
-            };
-            let prompt_tokens = last_user_message_tokens as u32;
+            let prompt_tokens = request_messages
+                .last()
+                .map(|m| estimate_token_count(std::slice::from_ref(m)) as u32)
+                .unwrap_or(0);
             let completion_tokens = (completion_content.len() / 4).max(1) as u32;
-            let total_tokens = prompt_tokens + completion_tokens;
 
             let provider = if let Some((p, _)) = model_clone.split_once('/') {
                 p.to_string()
@@ -2430,111 +2436,44 @@ async fn handle_mcp_via_llm(
                 "router".to_string()
             };
 
-            let pricing = match state_clone.provider_registry.get_provider(&provider) {
-                Some(p) => p.get_pricing(&model_clone).await.ok(),
-                None => None,
-            }
-            .unwrap_or_else(lr_providers::PricingInfo::free);
-
-            if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
-                let cost_saved =
-                    (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-                state_clone.metrics_collector.record_feature_event(
-                    "feature_compression",
-                    0,
-                    cost_saved,
-                );
-            }
-
-            let cost = {
-                let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-                let output_cost = (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
-                input_cost + output_cost
-            };
-
-            let strategy_id = state_clone
-                .client_manager
-                .get_client(&auth_clone.api_key_id)
-                .map(|c| c.strategy_id.clone())
-                .unwrap_or_else(|| "default".to_string());
-
-            let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
-            state_clone
-                .metrics_collector
-                .record_success(&lr_monitoring::metrics::RequestMetrics {
-                    api_key_name: &auth_clone.api_key_id,
-                    provider: &provider,
-                    model: &model_clone,
-                    strategy_id: &strategy_id,
-                    input_tokens: prompt_tokens as u64,
-                    output_tokens: completion_tokens as u64,
-                    cost_usd: cost,
-                    latency_ms,
-                });
-
-            if let Some(ref tray_graph) = *state_clone.tray_graph_manager.read() {
-                tray_graph.record_tokens((prompt_tokens + completion_tokens) as u64);
-            }
-
-            if let Err(e) = state_clone.access_logger.log_success(
-                &auth_clone.api_key_id,
-                &provider,
+            let wire_body = super::monitor_helpers::build_streaming_response_body(
+                &gen_id_clone,
                 &model_clone,
+                &completion_content,
+                &finish_reason_final,
                 prompt_tokens as u64,
                 completion_tokens as u64,
-                cost,
-                latency_ms,
-                &gen_id_clone,
-            ) {
-                tracing::warn!("Failed to write access log: {}", e);
-            }
-
-            state_clone.emit_event(
-                "metrics-updated",
-                &serde_json::json!({
-                    "timestamp": created_at_clone.to_rfc3339(),
-                })
-                .to_string(),
+                created_at_clone.timestamp(),
             );
 
-            // NOTE: Do NOT call complete_llm_call / update_llm_call_response_body here.
-            // The MCP-via-LLM orchestrator (orchestrator_stream.rs) already completes
-            // per-iteration events with the correct model, provider, content_preview,
-            // and response_body (including tool_calls). Calling them here would overwrite
-            // the orchestrator's response_body with a text-only version that lacks tool_calls.
-
-            let generation_details = GenerationDetails {
-                id: gen_id_clone,
-                model: model_clone,
-                provider: provider.clone(),
+            let finalize_inputs = super::finalize::FinalizeInputs {
+                state: &state_clone,
+                auth: &auth_clone,
+                llm_event_id: &llm_event_id,
+                generation_id: &gen_id_clone,
+                started_at,
                 created_at: created_at_clone,
-                finish_reason: finish_reason_final,
-                tokens: TokenUsage {
+                incremental_prompt_tokens: prompt_tokens,
+                compression_tokens_saved,
+                routing_metadata: None,
+                user: request_user,
+                streamed: true,
+                skip_monitor_completion: true,
+            };
+            super::finalize::finalize_streaming_at_end(
+                &finalize_inputs,
+                super::finalize::StreamingFinalizeSummary {
+                    provider,
+                    model: model_clone,
                     prompt_tokens,
                     completion_tokens,
-                    total_tokens,
-                    prompt_tokens_details: None,
-                    completion_tokens_details: None,
+                    reasoning_tokens: None,
+                    finish_reason: Some(finish_reason_final),
+                    content_preview: completion_content,
                 },
-                cost: Some(crate::types::CostDetails {
-                    prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
-                    completion_cost: (completion_tokens as f64 / 1000.0)
-                        * pricing.output_cost_per_1k,
-                    reasoning_cost: None,
-                    total_cost: cost,
-                    currency: "USD".to_string(),
-                }),
-                started_at,
-                completed_at,
-                provider_health: None,
-                api_key_id: auth_clone.api_key_id,
-                user: request_user,
-                stream: true,
-            };
-
-            state_clone
-                .generation_tracker
-                .record(generation_details.id.clone(), generation_details);
+                &wire_body,
+            )
+            .await;
         });
 
         // Append [DONE] sentinel after all data chunks (required by OpenAI streaming protocol)
@@ -3107,6 +3046,7 @@ async fn build_non_streaming_response(
         routing_metadata: routing_metadata.as_ref(),
         user: request.user.clone(),
         streamed: false,
+        skip_monitor_completion: false,
     };
     let metrics = super::finalize::finalize_metrics_and_monitor(&finalize_inputs, &response).await;
 
@@ -3589,6 +3529,7 @@ async fn handle_streaming(
             routing_metadata: None,
             user: request_user,
             streamed: true,
+            skip_monitor_completion: false,
         };
         super::finalize::finalize_streaming_at_end(
             &finalize_inputs,
@@ -4066,6 +4007,7 @@ async fn handle_streaming_parallel(
                 routing_metadata: None,
                 user: request_user,
                 streamed: true,
+                skip_monitor_completion: false,
             };
             super::finalize::finalize_streaming_at_end(
                 &finalize_inputs,

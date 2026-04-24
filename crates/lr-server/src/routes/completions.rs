@@ -990,6 +990,7 @@ async fn build_non_streaming_response(
         routing_metadata: routing_metadata.as_ref(),
         user: request.user.clone(),
         streamed: false,
+        skip_monitor_completion: false,
     };
     let metrics = super::finalize::finalize_metrics_and_monitor(&finalize_inputs, &response).await;
 
@@ -1258,6 +1259,7 @@ async fn handle_streaming(
             routing_metadata: routing_metadata.as_ref(),
             user: request_user,
             streamed: true,
+            skip_monitor_completion: false,
         };
         super::finalize::finalize_streaming_at_end(
             &finalize_inputs,
@@ -1608,6 +1610,7 @@ async fn handle_streaming_parallel(
                 routing_metadata: routing_metadata.as_ref(),
                 user: request_user,
                 streamed: true,
+                skip_monitor_completion: false,
             };
             super::finalize::finalize_streaming_at_end(
                 &finalize_inputs,

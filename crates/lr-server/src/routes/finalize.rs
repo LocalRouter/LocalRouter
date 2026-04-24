@@ -127,6 +127,14 @@ pub(crate) struct FinalizeInputs<'a> {
     /// True for streaming endpoints — recorded in
     /// `complete_llm_call` and `GenerationDetails`.
     pub streamed: bool,
+    /// Skip `complete_llm_call` + `update_llm_call_response_body` in
+    /// the shared finalize helpers. Used by the MCP-via-LLM path
+    /// where the orchestrator emits richer per-iteration monitor
+    /// events with tool-call metadata that the generic finalize
+    /// view would overwrite. All other telemetry (cost / metrics /
+    /// tray / access log / `metrics-updated` / generation tracker)
+    /// still fires.
+    pub skip_monitor_completion: bool,
 }
 
 /// Per-turn numbers computed by `finalize_metrics_and_monitor`. The
@@ -263,6 +271,14 @@ pub(crate) async fn finalize_metrics_and_monitor(
 
     if let Some(meta) = routing_metadata {
         super::monitor_helpers::update_llm_call_routing(state, llm_event_id, meta);
+    }
+    if inputs.skip_monitor_completion {
+        return FinalizeMetrics {
+            cost,
+            latency_ms,
+            pricing,
+            completed_at,
+        };
     }
     super::monitor_helpers::complete_llm_call(
         state,
@@ -403,7 +419,13 @@ pub(crate) fn update_response_body_and_record_generation(
         ..
     } = *inputs;
 
-    super::monitor_helpers::update_llm_call_response_body(state, llm_event_id, wire_body);
+    // MCP-via-LLM callers set `skip_monitor_completion = true` — the
+    // orchestrator already populated `response_body` per-iteration
+    // with full tool-call metadata, and overwriting it here with the
+    // adapter's text-only view would lose fidelity.
+    if !inputs.skip_monitor_completion {
+        super::monitor_helpers::update_llm_call_response_body(state, llm_event_id, wire_body);
+    }
 
     let prompt_cost =
         (incremental_prompt_tokens as f64 / 1000.0) * metrics.pricing.input_cost_per_1k;

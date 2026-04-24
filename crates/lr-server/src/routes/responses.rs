@@ -439,6 +439,7 @@ pub async fn create_response(
         routing_metadata: routing_metadata.as_ref(),
         user: None,
         streamed: false,
+        skip_monitor_completion: false,
     };
     let metrics = finalize_metrics_and_monitor(&finalize_inputs, &completion).await;
 
@@ -1089,6 +1090,7 @@ fn build_stream_response(
             routing_metadata: routing_metadata.as_ref(),
             user: None,
             streamed: true,
+            skip_monitor_completion: false,
         };
         crate::routes::finalize::finalize_streaming_at_end(
             &finalize_inputs,
