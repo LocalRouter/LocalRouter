@@ -35,7 +35,7 @@ use crate::types::{ChatCompletionRequest, ChatMessage, MessageContent};
 use lr_providers::{
     ChatMessage as ProviderChatMessage, ChatMessageContent as ProviderMessageContent,
     CompletionRequest as ProviderCompletionRequest, ContentPart as ProviderContentPart,
-    ImageUrl as ProviderImageUrl,
+    ImageUrl as ProviderImageUrl, PreComputedRouting,
 };
 use lr_router::UsageInfo;
 
@@ -1616,6 +1616,70 @@ pub(crate) fn convert_to_provider_request(
     })
 }
 
+/// Spawn a RouteLLM classification for `localrouter/auto` requests.
+///
+/// Returns `None` when the client has no RouteLLM config, no
+/// RouteLLM service is loaded, or the client/strategy resolves to
+/// nothing. When spawned, the task returns an `Option<PreComputedRouting>`
+/// the caller stamps onto the provider request so the router can skip
+/// its own classification step.
+pub(crate) fn spawn_routellm_classification(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+    request: &ChatCompletionRequest,
+) -> Option<tokio::task::JoinHandle<Option<PreComputedRouting>>> {
+    let client_id = &client_context?.client_id;
+    let config = state.config_manager.get();
+    let client = config.clients.iter().find(|c| c.id == *client_id)?;
+    let strategy = config
+        .strategies
+        .iter()
+        .find(|s| s.id == client.strategy_id)?;
+    let auto_config = strategy.auto_config.as_ref()?;
+    let routellm_config = auto_config.routellm_config.as_ref().filter(|c| c.enabled)?;
+    let service = state.router.get_routellm_service()?.clone();
+    let threshold = routellm_config.threshold;
+    let request_clone = request.clone();
+    let metrics_collector = state.metrics_collector.clone();
+
+    Some(tokio::spawn(async move {
+        let prompt = request_clone
+            .messages
+            .iter()
+            .filter_map(|m| match &m.content {
+                Some(MessageContent::Text(text)) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        match service.predict_with_threshold(&prompt, threshold).await {
+            Ok((is_strong, win_rate)) => {
+                tracing::info!(
+                    "RouteLLM classification: win_rate={:.3}, threshold={:.3}, selected={}",
+                    win_rate,
+                    threshold,
+                    if is_strong { "strong" } else { "weak" }
+                );
+                // Track strong/weak classification for dashboard (persisted to metrics DB)
+                if is_strong {
+                    metrics_collector.record_feature_event("feature_routellm_strong", 0, 0.0);
+                } else {
+                    metrics_collector.record_feature_event("feature_routellm_weak", 0, 0.0);
+                }
+                Some(PreComputedRouting {
+                    is_strong,
+                    win_rate,
+                })
+            }
+            Err(e) => {
+                tracing::warn!("RouteLLM classification failed: {}", e);
+                None
+            }
+        }
+    }))
+}
+
 // ============================================================================
 // Shared pipeline entry point: `run_turn_pipeline`
 // ============================================================================
@@ -1824,17 +1888,35 @@ pub(crate) async fn run_turn_pipeline(
         }
     }
 
-    // Stage 7: convert to provider request
-    let provider_request =
-        convert_to_provider_request(&chat_req).map_err(|e| llm_guard.capture_err(e))?;
+    // Stage 7: RouteLLM classification (before convert, since the
+    // result is baked onto `provider_request.pre_computed_routing`).
+    // Runs concurrently with compression today because compression
+    // has already awaited above, but the helper returns the spawned
+    // handle's result for `localrouter/auto` requests only — other
+    // models skip.
+    let routellm_routing = if caps.allow_routellm && chat_req.model == "localrouter/auto" {
+        if let Some(handle) =
+            spawn_routellm_classification(state, client_auth.map(|e| &e.0), &chat_req)
+        {
+            handle.await.map_err(|e| {
+                llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
+                    "RouteLLM task failed: {}",
+                    e
+                )))
+            })?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    // Stage 8: RouteLLM — currently handled by the chat.rs handler
-    // itself because `spawn_routellm_classification` lives there and
-    // needs to run alongside compression/guardrails. Exposed via
-    // `caps.allow_routellm` for future consolidation; until then,
-    // callers that want it keep invoking `spawn_routellm_classification`
-    // inline. Responses.rs doesn't need it.
-    let _ = caps.allow_routellm;
+    // Stage 8: convert to provider request (with routing stamped on)
+    let mut provider_request =
+        convert_to_provider_request(&chat_req).map_err(|e| llm_guard.capture_err(e))?;
+    if let Some(routing) = routellm_routing {
+        provider_request.pre_computed_routing = Some(routing);
+    }
 
     Ok(TurnContext {
         chat_req,

@@ -26,7 +26,7 @@ use crate::types::{
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionTokenLogprob, ChatMessage,
     ChunkDelta, MessageContent, TokenUsage, TopLogprob,
 };
-use lr_providers::{CompletionRequest as ProviderCompletionRequest, PreComputedRouting};
+use lr_providers::CompletionRequest as ProviderCompletionRequest;
 
 /// POST /v1/chat/completions
 /// Send a chat completion request
@@ -154,7 +154,11 @@ pub async fn chat_completions(
 
     // Start RouteLLM classification in parallel (only for localrouter/auto)
     let routellm_handle = if request.model == "localrouter/auto" {
-        spawn_routellm_classification(&state, client_auth.as_ref().map(|e| &e.0), &request)
+        super::pipeline::spawn_routellm_classification(
+            &state,
+            client_auth.as_ref().map(|e| &e.0),
+            &request,
+        )
     } else {
         None
     };
@@ -419,64 +423,8 @@ pub async fn chat_completions(
     }
 }
 
-/// Spawn RouteLLM classification as a parallel task.
-/// Returns None if RouteLLM is not configured/enabled for this client.
-fn spawn_routellm_classification(
-    state: &AppState,
-    client_context: Option<&ClientAuthContext>,
-    request: &ChatCompletionRequest,
-) -> Option<tokio::task::JoinHandle<Option<PreComputedRouting>>> {
-    let client_id = &client_context?.client_id;
-    let config = state.config_manager.get();
-    let client = config.clients.iter().find(|c| c.id == *client_id)?;
-    let strategy = config
-        .strategies
-        .iter()
-        .find(|s| s.id == client.strategy_id)?;
-    let auto_config = strategy.auto_config.as_ref()?;
-    let routellm_config = auto_config.routellm_config.as_ref().filter(|c| c.enabled)?;
-    let service = state.router.get_routellm_service()?.clone();
-    let threshold = routellm_config.threshold;
-    let request_clone = request.clone();
-    let metrics_collector = state.metrics_collector.clone();
-
-    Some(tokio::spawn(async move {
-        let prompt = request_clone
-            .messages
-            .iter()
-            .filter_map(|m| match &m.content {
-                Some(MessageContent::Text(text)) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        match service.predict_with_threshold(&prompt, threshold).await {
-            Ok((is_strong, win_rate)) => {
-                tracing::info!(
-                    "RouteLLM classification: win_rate={:.3}, threshold={:.3}, selected={}",
-                    win_rate,
-                    threshold,
-                    if is_strong { "strong" } else { "weak" }
-                );
-                // Track strong/weak classification for dashboard (persisted to metrics DB)
-                if is_strong {
-                    metrics_collector.record_feature_event("feature_routellm_strong", 0, 0.0);
-                } else {
-                    metrics_collector.record_feature_event("feature_routellm_weak", 0, 0.0);
-                }
-                Some(PreComputedRouting {
-                    is_strong,
-                    win_rate,
-                })
-            }
-            Err(e) => {
-                tracing::warn!("RouteLLM classification failed: {}", e);
-                None
-            }
-        }
-    }))
-}
+// `spawn_routellm_classification` lives in `super::pipeline` now —
+// called from `run_turn_pipeline` when `caps.allow_routellm` is set.
 
 /// Check whether a request may cause side effects that require sequential guardrails.
 ///
