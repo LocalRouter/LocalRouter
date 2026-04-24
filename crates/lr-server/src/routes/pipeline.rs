@@ -1615,3 +1615,233 @@ pub(crate) fn convert_to_provider_request(
         pre_computed_routing: None,
     })
 }
+
+// ============================================================================
+// Shared pipeline entry point: `run_turn_pipeline`
+// ============================================================================
+
+/// Per-endpoint capability flags. Adapters opt into the features
+/// they want to run for a given turn. Each stage in
+/// `run_turn_pipeline` consults the corresponding flag.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PipelineCaps {
+    /// Run prompt compression (mutates the request's messages
+    /// in-place when the compressor produces a shorter version).
+    pub allow_compression: bool,
+    /// Resolve `localrouter/auto` requests via RouteLLM classification
+    /// and bake the decision into `provider_request.pre_computed_routing`.
+    pub allow_routellm: bool,
+    /// Spawn the guardrail scan as a parallel `JoinHandle` (returned
+    /// on `TurnContext`). When `false`, the scan runs sequentially
+    /// inside `run_turn_pipeline` and any result is handled via
+    /// `handle_guardrail_approval` before the helper returns.
+    pub parallel_guardrails: bool,
+}
+
+impl PipelineCaps {
+    /// Defaults for `/v1/chat/completions` — every stage enabled,
+    /// guardrails spawn as a parallel handle so the caller can
+    /// dispatch the LLM call while the scan runs.
+    #[allow(dead_code)] // preset for future chat.rs migration to run_turn_pipeline
+    pub(crate) fn chat() -> Self {
+        Self {
+            allow_compression: true,
+            allow_routellm: true,
+            parallel_guardrails: true,
+        }
+    }
+
+    /// Defaults for `/v1/responses` — compression runs, RouteLLM
+    /// does not (the adapter never sees `localrouter/auto` in its
+    /// model field because `/responses` resolves models differently),
+    /// guardrails run sequentially (simpler; no parallelism win for
+    /// the typical single-turn pattern).
+    pub(crate) fn responses() -> Self {
+        Self {
+            allow_compression: true,
+            allow_routellm: false,
+            parallel_guardrails: false,
+        }
+    }
+}
+
+/// Aggregated output of `run_turn_pipeline`. The caller drives the
+/// LLM dispatch with this in hand, then threads it into the
+/// `finalize::*` helpers so cost / metrics / monitor events stay
+/// consistent across endpoints.
+#[derive(Debug)]
+pub(crate) struct TurnContext {
+    /// Possibly-mutated chat request (compression may have replaced
+    /// `messages`).
+    pub chat_req: ChatCompletionRequest,
+    /// Provider-shape request ready for `router.complete` /
+    /// `router.stream_complete` or the MCP-via-LLM orchestrator.
+    pub provider_request: ProviderCompletionRequest,
+    /// Session ID threaded onto monitor events for this turn.
+    #[allow(dead_code)]
+    pub session_id: String,
+    /// Stage-counted endpoint label (e.g. `/v1/chat/completions`)
+    /// — echoed on any error monitor events the shared helper emits.
+    #[allow(dead_code)]
+    pub endpoint: &'static str,
+    /// Number of prompt tokens compression removed from the original
+    /// message payload. Passed to the finalize helper for the
+    /// `feature_compression` cost-saved metric.
+    pub compression_tokens_saved: u64,
+    /// When `caps.parallel_guardrails = true` and a scan was spawned,
+    /// this is the in-flight task. Caller awaits it before mutating
+    /// side effects (tool calls, etc.) and feeds the result into
+    /// `handle_guardrail_approval`. Responses.rs (sequential mode)
+    /// sees `None` here and doesn't need to await.
+    #[allow(dead_code)]
+    pub guardrail_handle:
+        Option<tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>>,
+}
+
+/// Canonical pre-LLM pipeline. Runs validate → access checks → rate
+/// limits → secret scan → guardrails → compression → RouteLLM →
+/// provider-request conversion in order, gated by `caps`.
+///
+/// Emits validation / rate-limit monitor events with the supplied
+/// `endpoint` label. Returns a `TurnContext` the caller threads
+/// into dispatch and finalize.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_turn_pipeline(
+    state: &AppState,
+    auth: &AuthContext,
+    client_auth: Option<&Extension<ClientAuthContext>>,
+    mut chat_req: ChatCompletionRequest,
+    llm_guard: &mut super::monitor_helpers::LlmCallGuard,
+    endpoint: &'static str,
+    session_id: String,
+    caps: PipelineCaps,
+) -> ApiResult<TurnContext> {
+    // Stage 1: validate
+    if let Err(e) = validate_request(&chat_req) {
+        super::monitor_helpers::emit_validation_error(
+            state,
+            client_auth,
+            Some(&session_id),
+            endpoint,
+            e.error.error.param.as_deref(),
+            &e.error.error.message,
+            400,
+        );
+        return Err(llm_guard.capture_err(e));
+    }
+
+    // Stage 2: access checks (strategy / auto-routing firewall / MCP mode gate)
+    apply_model_access_checks(
+        state,
+        auth,
+        client_auth,
+        &session_id,
+        &mut chat_req,
+        llm_guard,
+    )
+    .await?;
+
+    // Stage 3: rate limits
+    if let Err(e) = check_rate_limits(state, auth, &chat_req).await {
+        super::monitor_helpers::emit_rate_limit_event(
+            state,
+            client_auth,
+            Some(&session_id),
+            "rate_limit_exceeded",
+            endpoint,
+            &e.error.error.message,
+            429,
+            None,
+        );
+        return Err(llm_guard.capture_err(e));
+    }
+
+    // Stage 4: secret scan
+    run_secret_scan_check(state, client_auth.map(|e| &e.0), &chat_req)
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
+
+    // Stage 5: guardrails (parallel or sequential per caps)
+    let guardrail_handle = if caps.parallel_guardrails
+        && client_auth.is_some()
+        && state
+            .safety_engine
+            .read()
+            .as_ref()
+            .is_some_and(|e| e.has_models())
+    {
+        let state_ref = state.clone();
+        let client_ctx = client_auth.map(|e| e.0.clone());
+        let request_clone = chat_req.clone();
+        Some(tokio::spawn(async move {
+            run_guardrails_scan(&state_ref, client_ctx.as_ref(), &request_clone).await
+        }))
+    } else {
+        // Sequential path: await + block here if the scan denies.
+        if let Some(result) =
+            run_guardrails_scan(state, client_auth.map(|e| &e.0), &chat_req).await?
+        {
+            handle_guardrail_approval(
+                state,
+                client_auth.map(|e| &e.0),
+                &chat_req,
+                result,
+                "request",
+            )
+            .await
+            .map_err(|e| llm_guard.capture_err(e))?;
+        }
+        None
+    };
+
+    // Stage 6: compression (awaited synchronously — compression output
+    // mutates `chat_req.messages`; downstream stages need the final
+    // form).
+    let mut compression_tokens_saved: u64 = 0;
+    if caps.allow_compression {
+        let compression_result =
+            run_prompt_compression(state, client_auth.map(|e| &e.0), &chat_req).await;
+        if let Ok(Some(compressed)) = compression_result {
+            if compressed.original_tokens > compressed.compressed_tokens {
+                let saved = (compressed.original_tokens - compressed.compressed_tokens) as u64;
+                state
+                    .metrics_collector
+                    .record_feature_event("feature_compression", saved, 0.0);
+                compression_tokens_saved = saved;
+            }
+            chat_req.messages = compressed
+                .compressed_messages
+                .iter()
+                .map(|m| ChatMessage {
+                    role: m.role.clone(),
+                    content: Some(MessageContent::Text(m.content.clone())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                })
+                .collect();
+        }
+    }
+
+    // Stage 7: convert to provider request
+    let provider_request =
+        convert_to_provider_request(&chat_req).map_err(|e| llm_guard.capture_err(e))?;
+
+    // Stage 8: RouteLLM — currently handled by the chat.rs handler
+    // itself because `spawn_routellm_classification` lives there and
+    // needs to run alongside compression/guardrails. Exposed via
+    // `caps.allow_routellm` for future consolidation; until then,
+    // callers that want it keep invoking `spawn_routellm_classification`
+    // inline. Responses.rs doesn't need it.
+    let _ = caps.allow_routellm;
+
+    Ok(TurnContext {
+        chat_req,
+        provider_request,
+        session_id,
+        endpoint,
+        compression_tokens_saved,
+        guardrail_handle,
+    })
+}

@@ -191,74 +191,34 @@ pub async fn create_response(
     };
 
     // Build a server-side `ChatCompletionRequest` that the shared
-    // chat-completions pipeline already knows how to validate, rate-
-    // limit, guardrail-scan, and secret-scan. This is the same shape
+    // pipeline already knows how to validate, rate-limit,
+    // guardrail-scan, and secret-scan. This is the same shape
     // `/v1/chat/completions` receives — any hardening applied there
     // now applies here with no duplicated orchestration.
-    let mut chat_req = build_chat_completion_request(&req, prior_messages, prior_tools.clone())?;
+    let chat_req = build_chat_completion_request(&req, prior_messages, prior_tools.clone())?;
 
-    // Auto-routing firewall + strategy access checks (normalizes the
-    // model name, validates strategy permissions, shows the firewall
-    // approval popup for `localrouter/auto`, enforces MCP-only client
-    // mode). Identical to what `/v1/chat/completions` runs — factored
-    // out behind `super::pipeline::apply_model_access_checks` so the
-    // hardening stays in a single place.
-    super::pipeline::apply_model_access_checks(
+    // Single entry point for the 7-stage pipeline (validate → access
+    // checks → rate limits → secret scan → guardrails → compression →
+    // convert). `PipelineCaps::responses()` runs guardrails
+    // sequentially and skips RouteLLM (responses.rs doesn't surface
+    // `localrouter/auto` as a model).
+    let turn = super::pipeline::run_turn_pipeline(
         &state,
         &auth,
         client_auth.as_ref(),
-        &session_id,
-        &mut chat_req,
+        chat_req,
         &mut llm_guard,
+        "/v1/responses",
+        session_id.clone(),
+        super::pipeline::PipelineCaps::responses(),
     )
     .await?;
-
-    // Run the shared pipeline (fail-fast order mirrors chat.rs).
-    if let Err(e) = super::pipeline::validate_request(&chat_req) {
-        return Err(llm_guard.capture_err(e));
-    }
-    if let Err(e) = super::pipeline::check_rate_limits(&state, &auth, &chat_req).await {
-        return Err(llm_guard.capture_err(e));
-    }
-
-    // Guardrails scan on the request (run serially before the LLM
-    // call; blocks here if a category action denies the request).
-    if let Some(result) =
-        super::pipeline::run_guardrails_scan(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
-            .await?
-    {
-        super::pipeline::handle_guardrail_approval(
-            &state,
-            client_auth.as_ref().map(|e| &e.0),
-            &chat_req,
-            result,
-            "request",
-        )
-        .await
-        .map_err(|e| llm_guard.capture_err(e))?;
-    }
-
-    // Secret-scan the request. The helper internally triggers the
-    // approval popup on a hit and returns `Err` if the user denies or
-    // the finding is `Block`-classified.
-    super::pipeline::run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
-        .await
-        .map_err(|e| llm_guard.capture_err(e))?;
-
-    // Prompt compression (no-op when disabled / model not configured).
-    let compression_result = super::pipeline::run_prompt_compression(
-        &state,
-        client_auth.as_ref().map(|e| &e.0),
-        &chat_req,
-    )
-    .await
-    .ok()
-    .flatten();
-
-    // Now translate to the provider shape. This is the same helper
-    // `chat_completions` uses, so the conversion is lossless.
-    let provider_request = super::pipeline::convert_to_provider_request(&chat_req)
-        .map_err(|e| llm_guard.capture_err(e))?;
+    let super::pipeline::TurnContext {
+        chat_req,
+        provider_request,
+        compression_tokens_saved,
+        ..
+    } = turn;
 
     // Merged history the session row will capture on success (server
     // -> provider conversion drops the `name` field etc., but the
@@ -359,11 +319,7 @@ pub async fn create_response(
                 started_at,
                 created_at_dt,
                 incremental_prompt_tokens,
-                compression_tokens_saved: compression_result
-                    .as_ref()
-                    .filter(|r| r.original_tokens > r.compressed_tokens)
-                    .map(|r| (r.original_tokens - r.compressed_tokens) as u64)
-                    .unwrap_or(0),
+                compression_tokens_saved,
                 routing_metadata,
             },
         );
@@ -434,11 +390,7 @@ pub async fn create_response(
         started_at,
         created_at: created_at_dt,
         incremental_prompt_tokens,
-        compression_tokens_saved: compression_result
-            .as_ref()
-            .filter(|r| r.original_tokens > r.compressed_tokens)
-            .map(|r| (r.original_tokens - r.compressed_tokens) as u64)
-            .unwrap_or(0),
+        compression_tokens_saved,
         routing_metadata: routing_metadata.as_ref(),
         user: None,
         streamed: false,
