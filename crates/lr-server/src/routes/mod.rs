@@ -14,6 +14,7 @@ pub mod models;
 pub mod moderations;
 pub mod monitor_helpers;
 pub mod oauth;
+pub mod pipeline;
 pub mod responses;
 
 pub use audio::{audio_speech, audio_transcriptions, audio_translations};

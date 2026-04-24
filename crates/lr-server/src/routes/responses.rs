@@ -201,9 +201,9 @@ pub async fn create_response(
     // model name, validates strategy permissions, shows the firewall
     // approval popup for `localrouter/auto`, enforces MCP-only client
     // mode). Identical to what `/v1/chat/completions` runs — factored
-    // out behind `super::chat::apply_model_access_checks` so the
+    // out behind `super::pipeline::apply_model_access_checks` so the
     // hardening stays in a single place.
-    super::chat::apply_model_access_checks(
+    super::pipeline::apply_model_access_checks(
         &state,
         &auth,
         client_auth.as_ref(),
@@ -214,20 +214,20 @@ pub async fn create_response(
     .await?;
 
     // Run the shared pipeline (fail-fast order mirrors chat.rs).
-    if let Err(e) = super::chat::validate_request(&chat_req) {
+    if let Err(e) = super::pipeline::validate_request(&chat_req) {
         return Err(llm_guard.capture_err(e));
     }
-    if let Err(e) = super::chat::check_rate_limits(&state, &auth, &chat_req).await {
+    if let Err(e) = super::pipeline::check_rate_limits(&state, &auth, &chat_req).await {
         return Err(llm_guard.capture_err(e));
     }
 
     // Guardrails scan on the request (run serially before the LLM
     // call; blocks here if a category action denies the request).
     if let Some(result) =
-        super::chat::run_guardrails_scan(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
+        super::pipeline::run_guardrails_scan(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
             .await?
     {
-        super::chat::handle_guardrail_approval(
+        super::pipeline::handle_guardrail_approval(
             &state,
             client_auth.as_ref().map(|e| &e.0),
             &chat_req,
@@ -241,20 +241,23 @@ pub async fn create_response(
     // Secret-scan the request. The helper internally triggers the
     // approval popup on a hit and returns `Err` if the user denies or
     // the finding is `Block`-classified.
-    super::chat::run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
+    super::pipeline::run_secret_scan_check(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
         .await
         .map_err(|e| llm_guard.capture_err(e))?;
 
     // Prompt compression (no-op when disabled / model not configured).
-    let compression_result =
-        super::chat::run_prompt_compression(&state, client_auth.as_ref().map(|e| &e.0), &chat_req)
-            .await
-            .ok()
-            .flatten();
+    let compression_result = super::pipeline::run_prompt_compression(
+        &state,
+        client_auth.as_ref().map(|e| &e.0),
+        &chat_req,
+    )
+    .await
+    .ok()
+    .flatten();
 
     // Now translate to the provider shape. This is the same helper
     // `chat_completions` uses, so the conversion is lossless.
-    let provider_request = super::chat::convert_to_provider_request(&chat_req)
+    let provider_request = super::pipeline::convert_to_provider_request(&chat_req)
         .map_err(|e| llm_guard.capture_err(e))?;
 
     // Merged history the session row will capture on success (server
