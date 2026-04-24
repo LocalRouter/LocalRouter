@@ -248,7 +248,6 @@ impl McpServerManager {
     }
 
     /// Emit a monitor event if the callback is set. Returns the event ID.
-    #[allow(clippy::too_many_arguments)]
     fn emit_monitor_event(
         &self,
         event_type: lr_monitor::MonitorEventType,

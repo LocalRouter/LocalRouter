@@ -136,7 +136,6 @@ impl CompressionService {
     }
 
     /// Compress chat messages for the pipeline
-    #[allow(clippy::too_many_arguments)]
     pub async fn compress_messages(
         &self,
         messages: &[CompressedMessage],

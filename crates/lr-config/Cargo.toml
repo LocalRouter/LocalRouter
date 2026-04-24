@@ -27,3 +27,6 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 tempfile = "3.8"
+
+[lints]
+workspace = true

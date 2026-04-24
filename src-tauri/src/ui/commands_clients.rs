@@ -716,7 +716,6 @@ pub async fn get_client_tools_indexing(
 
 /// Set client tools indexing permission at global or tool level.
 /// Pass state=None to clear an override (revert to inherit).
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn set_client_tools_indexing(
     client_id: String,
@@ -964,7 +963,6 @@ pub async fn create_strategy(
 }
 
 /// Update a routing strategy
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn update_strategy(
     strategy_id: String,
@@ -1258,7 +1256,6 @@ pub async fn get_feature_clients_status(
 // ============================================================================
 
 /// Submit a response to a pending firewall approval request
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn submit_firewall_approval(
     app: tauri::AppHandle,
@@ -1734,7 +1731,6 @@ pub async fn submit_firewall_approval(
 ///
 /// Uses the unified `check_needs_approval` for clients found in config.
 /// If a client is not found in config or the check returns `Ask`, the popup stays open.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn reevaluate_pending_approvals(
     app: &tauri::AppHandle,
     firewall_manager: &lr_mcp::gateway::firewall::FirewallManager,

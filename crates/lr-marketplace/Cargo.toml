@@ -28,3 +28,6 @@ urlencoding = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.8"
+
+[lints]
+workspace = true

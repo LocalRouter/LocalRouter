@@ -102,7 +102,6 @@ pub(crate) fn sanitize_tool_call_arguments(message: &mut ChatMessage) {
 pub type TransformedRequestCallback =
     Option<Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>>;
 
-#[allow(clippy::too_many_arguments)]
 pub async fn run_agentic_loop(
     gateway: Arc<McpGateway>,
     router: &Router,
@@ -902,7 +901,6 @@ pub async fn run_agentic_loop(
 /// `incoming_request` is the client's new request (containing tool results).
 /// We use it as the base for model/temperature/etc. and replace the messages
 /// with our reconstructed history.
-#[allow(clippy::too_many_arguments)]
 pub async fn resume_after_mixed(
     gateway: Arc<McpGateway>,
     router: &Router,

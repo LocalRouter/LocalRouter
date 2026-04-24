@@ -255,7 +255,6 @@ impl MemoryService {
 
     /// Search memories using ContentStore's native search (returns full SearchResult
     /// with line numbers for use with read). Supports combined query/queries.
-    #[allow(clippy::too_many_arguments)]
     pub fn search_combined(
         &self,
         client_id: &str,

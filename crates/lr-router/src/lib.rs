@@ -244,7 +244,6 @@ impl RouterError {
 ///
 /// The `resolved_model` parameter should be in `provider/model` format (e.g., "openai/gpt-4o")
 /// and will be set on each chunk to ensure clients know which model actually processed the request.
-#[allow(clippy::too_many_arguments)]
 async fn wrap_stream_with_usage_tracking(
     stream: Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
     client_id: String,

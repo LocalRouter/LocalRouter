@@ -25,3 +25,6 @@ which = { workspace = true }
 command-group = { version = "5.0", features = ["with-tokio"] }
 executors = { git = "https://github.com/BloopAI/vibe-kanban.git", package = "executors" }
 workspace_utils = { git = "https://github.com/BloopAI/vibe-kanban.git", package = "utils" }
+
+[lints]
+workspace = true

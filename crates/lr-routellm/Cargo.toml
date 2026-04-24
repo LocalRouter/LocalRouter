@@ -38,3 +38,6 @@ candle-transformers = { version = "0.8", features = ["metal"] }
 candle-core = "0.8"
 candle-nn = "0.8"
 candle-transformers = "0.8"
+
+[lints]
+workspace = true

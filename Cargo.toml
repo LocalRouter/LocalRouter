@@ -37,6 +37,22 @@ authors = ["Matus Faro"]
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/LocalRouter/LocalRouter"
 
+# Clippy lints silenced workspace-wide. Everything else stays at its default
+# level — correctness/suspicious/perf still catch real bugs and are worth
+# keeping. The list below is only the lints that produce noise without
+# meaningfully catching issues in this codebase.
+#
+# Crates opt in by adding `[lints] workspace = true` to their Cargo.toml.
+[workspace.lints.clippy]
+# Arbitrary threshold; callers here are fine with 8+ args (builders, etc.).
+# Was being #[allow]'d inline in several places before this was centralized.
+too_many_arguments = "allow"
+# Separating two ifs often reads better than nesting the condition.
+collapsible_if = "allow"
+# Pedantic (off by default); listed for clarity in case -W pedantic is ever
+# added.
+module_name_repetitions = "allow"
+
 [workspace.dependencies]
 # Internal crates
 lr-types = { path = "crates/lr-types" }

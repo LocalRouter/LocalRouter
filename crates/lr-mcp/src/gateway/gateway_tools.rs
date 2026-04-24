@@ -559,7 +559,6 @@ impl McpGateway {
     /// Apply a unified FirewallCheckResult, returning a FirewallDecisionResult.
     ///
     /// For Allow/Deny, returns immediately. For Ask, requests user approval via popup.
-    #[allow(clippy::too_many_arguments)]
     async fn apply_firewall_result(
         &self,
         session: &Arc<RwLock<GatewaySession>>,

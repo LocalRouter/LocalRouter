@@ -31,3 +31,6 @@ dirs = { workspace = true }
 name = "vector_search"
 harness = false
 required-features = ["vector"]
+
+[lints]
+workspace = true

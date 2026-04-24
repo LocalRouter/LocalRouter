@@ -241,7 +241,6 @@ impl McpGateway {
     }
 
     /// Emit a monitor event if the callback is set. Returns the event ID.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_monitor_event(
         &self,
         event_type: lr_monitor::MonitorEventType,
@@ -547,7 +546,6 @@ impl McpGateway {
     /// `session_id` is an optional per-connection identifier (UUID). When provided,
     /// it is used as the session key, allowing multiple simultaneous connections
     /// from the same client. When `None`, `client_id` is used as the session key.
-    #[allow(clippy::too_many_arguments)]
     pub async fn handle_request_with_skills(
         &self,
         client_id: &str,

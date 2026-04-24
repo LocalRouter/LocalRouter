@@ -20,3 +20,6 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 once_cell = { workspace = true }
 tracing = { workspace = true }
+
+[lints]
+workspace = true

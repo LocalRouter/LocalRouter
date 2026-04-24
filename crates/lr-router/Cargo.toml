@@ -26,3 +26,6 @@ anyhow = { workspace = true }
 
 tempfile = "3.8"
 uuid = { workspace = true }
+
+[lints]
+workspace = true

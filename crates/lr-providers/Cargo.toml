@@ -39,3 +39,6 @@ tauri = { workspace = true }
 
 tempfile = "3.8"
 serial_test = { workspace = true }
+
+[lints]
+workspace = true

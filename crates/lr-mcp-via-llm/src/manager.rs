@@ -393,7 +393,6 @@ impl McpViaLlmManager {
     ///
     /// If `guardrail_gate` is provided, the orchestrator will await it after the
     /// first LLM call returns but before executing any tools or returning a response.
-    #[allow(clippy::too_many_arguments)]
     pub async fn handle_request(
         &self,
         gateway: Arc<McpGateway>,
@@ -599,7 +598,6 @@ impl McpViaLlmManager {
     ///
     /// If `guardrail_gate` is provided, the orchestrator will await it after the
     /// first LLM stream completes but before executing any tools or sending the finish chunk.
-    #[allow(clippy::too_many_arguments)]
     pub async fn handle_streaming_request(
         &self,
         gateway: Arc<McpGateway>,

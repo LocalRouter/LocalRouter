@@ -29,7 +29,6 @@ impl LlmCallGuard {
     }
 
     /// Complete the LLM call event with success data, consuming the guard.
-    #[allow(clippy::too_many_arguments)]
     pub fn complete(
         self,
         state: &AppState,
@@ -192,7 +191,6 @@ pub fn update_llm_call_transformed(
 }
 
 /// Complete the LlmCall event with response data (non-streaming or stream finished).
-#[allow(clippy::too_many_arguments)]
 pub fn complete_llm_call(
     state: &AppState,
     event_id: &str,
@@ -461,7 +459,6 @@ pub fn emit_access_denied_for_client(
 // ---- Rate Limiting events ----
 
 /// Emit a RateLimitEvent monitor event.
-#[allow(clippy::too_many_arguments)]
 pub fn emit_rate_limit_event(
     state: &AppState,
     client_auth: Option<&Extension<ClientAuthContext>>,
@@ -761,7 +758,6 @@ pub fn complete_secret_scan(
 // ---- Routing events ----
 
 /// Emit a RoutingDecision event when final model routing is determined.
-#[allow(clippy::too_many_arguments)]
 pub fn emit_routing_decision(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
@@ -793,7 +789,6 @@ pub fn emit_routing_decision(
 // ---- Prompt compression events ----
 
 /// Emit a PromptCompression event after compression completes.
-#[allow(clippy::too_many_arguments)]
 pub fn emit_prompt_compression(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,

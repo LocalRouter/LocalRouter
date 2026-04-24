@@ -71,7 +71,6 @@ impl Default for ServerConfig {
 /// - POST /servers/:server_id (MCP individual server)
 ///
 /// Returns the AppState, JoinHandle, and the actual port used
-#[allow(clippy::too_many_arguments)]
 pub async fn start_server(
     config: ServerConfig,
     router: Arc<AppRouter>,

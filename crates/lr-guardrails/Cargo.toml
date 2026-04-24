@@ -27,3 +27,6 @@ tauri-support = ["tauri"]
 [dev-dependencies]
 tempfile = "3.8"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

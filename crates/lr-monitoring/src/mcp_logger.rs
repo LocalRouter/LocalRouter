@@ -84,7 +84,6 @@ impl McpAccessLogEntry {
     }
 
     /// Create a new MCP access log entry for a failed request
-    #[allow(clippy::too_many_arguments)]
     pub fn error(
         client_id: impl Into<String>,
         server_id: impl Into<String>,
@@ -326,7 +325,6 @@ impl McpAccessLogger {
     }
 
     /// Log a failed MCP request
-    #[allow(clippy::too_many_arguments)]
     pub fn log_failure(
         &self,
         client_id: &str,

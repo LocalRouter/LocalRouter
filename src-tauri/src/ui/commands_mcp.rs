@@ -309,7 +309,6 @@ pub async fn list_mcp_servers(
 /// # Returns
 /// * The created server info
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn create_mcp_server(
     name: String,
     transport: String,

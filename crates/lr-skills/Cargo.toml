@@ -26,3 +26,6 @@ dashmap = { workspace = true }
 serde_yaml = { workspace = true }
 
 tempfile = "3.8"
+
+[lints]
+workspace = true

@@ -277,7 +277,6 @@ impl FirewallManager {
     ///
     /// This is an async operation that waits for the user response.
     /// Returns the user's action, or auto-denies on timeout.
-    #[allow(clippy::too_many_arguments)]
     pub async fn request_approval(
         &self,
         client_id: String,
@@ -312,7 +311,6 @@ impl FirewallManager {
     ///
     /// Similar to `request_approval` but for LLM model access.
     /// The popup shows different options (Allow for 1 Hour instead of Allow for Session).
-    #[allow(clippy::too_many_arguments)]
     pub async fn request_model_approval(
         &self,
         client_id: String,
@@ -465,7 +463,6 @@ impl FirewallManager {
     }
 
     /// Internal approval request handler
-    #[allow(clippy::too_many_arguments)]
     async fn request_approval_internal(
         &self,
         client_id: String,

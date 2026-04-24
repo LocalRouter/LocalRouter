@@ -822,7 +822,6 @@ pub struct AppState {
 }
 
 impl AppState {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<Router>,
         rate_limiter: Arc<RateLimiterManager>,

@@ -39,7 +39,6 @@ impl MonitorEventStore {
     ///
     /// The caller provides the event data; this method assigns the ID, sequence,
     /// and timestamp. If the store is at capacity, the oldest event is evicted.
-    #[allow(clippy::too_many_arguments)]
     pub fn push(
         &self,
         event_type: MonitorEventType,
