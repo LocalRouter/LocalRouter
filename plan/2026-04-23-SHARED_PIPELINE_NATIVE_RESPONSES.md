@@ -35,16 +35,24 @@
   from chat.rs (~1,600 LOC of 12 pipeline stages moved verbatim).
   chat.rs dropped from 4,715 to 3,135 LOC (-33.5%) in that commit
   alone; session total: 5,165 → 3,135 LOC (-39.3%).
+- ✅ **`run_turn_pipeline` entry point landed** (291fbb51) —
+  `PipelineCaps::{chat, responses}` + `TurnContext` + a single
+  `run_turn_pipeline()` call that drives all 7 stages (validate →
+  access checks → rate limits → secret scan → guardrails →
+  compression → convert). `/v1/responses` is the first adopter —
+  its adapter collapsed ~70 LOC of pipeline composition into one
+  line. chat.rs still composes inline because its handler
+  interleaves `spawn_routellm_classification` with the other
+  spawned tasks; caps already sketch the migration path.
 - ⏭️ Commit 3 (dispatch.rs extraction) — the four handler variants
-  (streaming × parallel) could still collapse. Structural only.
-- ⏭️ `run_turn_pipeline` entry point — adapters still compose
-  pipeline stages inline. Building this is the natural next step
-  once we want the responses.rs / completions.rs adapters to
-  shrink to thin wrappers.
+  (streaming × parallel) could still collapse. Structural only,
+  would let chat.rs shrink further.
 - ⏭️ Completions.rs feature parity — compression / RouteLLM /
-  MCP-via-LLM / free-tier fallback / JSON repair still don't run
-  for `/v1/completions`. Each one is a targeted add now that
-  pipeline.rs exists and the helpers are trivially reusable.
+  MCP-via-LLM / free-tier fallback still don't run for
+  `/v1/completions`. Each one is a targeted add now that
+  `run_turn_pipeline` exists; legacy `/v1/completions` would need
+  its own `PipelineCaps::completions()` and a
+  `CompletionRequest → ChatCompletionRequest` adapter at the entry.
 
 ## Context
 
