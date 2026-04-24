@@ -3082,139 +3082,43 @@ async fn build_non_streaming_response(
     llm_event_id: String,
     routing_metadata: Option<serde_json::Value>,
 ) -> ApiResult<Response> {
-    let completed_at = Instant::now();
-
-    // Calculate cost from router (get pricing info)
-    let pricing = match state.provider_registry.get_provider(&response.provider) {
-        Some(p) => p.get_pricing(&response.model).await.ok(),
-        None => None,
-    }
-    .unwrap_or_else(lr_providers::PricingInfo::free);
-
-    // Track cost saved by compression (using input token price)
-    if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
-        let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;
-        state
-            .metrics_collector
-            .record_feature_event("feature_compression", 0, cost_saved);
-    }
-
     // For chat messages, calculate incremental token count (last message only)
-    // instead of cumulative (all conversation history)
+    // instead of cumulative (all conversation history).
     let incremental_prompt_tokens = if let Some(last_msg) = request.messages.last() {
         estimate_token_count(std::slice::from_ref(last_msg)) as u32
     } else {
         response.usage.prompt_tokens
     };
 
-    let cost = {
-        let input_cost = (incremental_prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-        let output_cost =
-            (response.usage.completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
-        input_cost + output_cost
+    // Shared finalize: cost, metrics, tray graph, access log,
+    // `metrics-updated` tray event, `update_llm_call_routing` +
+    // `complete_llm_call`. Lives in `routes/finalize.rs` so the three
+    // LLM endpoints (`/v1/chat/completions`, `/v1/responses`,
+    // `/v1/completions`) emit identical telemetry.
+    let finalize_inputs = super::finalize::FinalizeInputs {
+        state: &state,
+        auth: &auth,
+        llm_event_id: &llm_event_id,
+        generation_id: &generation_id,
+        started_at,
+        created_at,
+        incremental_prompt_tokens,
+        compression_tokens_saved,
+        routing_metadata: routing_metadata.as_ref(),
+        user: request.user.clone(),
+        streamed: false,
     };
-
-    // Get client's strategy_id for metrics
-    let strategy_id = state
-        .client_manager
-        .get_client(&auth.api_key_id)
-        .map(|c| c.strategy_id.clone())
-        .unwrap_or_else(|| "default".to_string());
-
-    // Record success metrics for all five tiers
-    let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
-    state
-        .metrics_collector
-        .record_success(&lr_monitoring::metrics::RequestMetrics {
-            api_key_name: &auth.api_key_id,
-            provider: &response.provider,
-            model: &response.model,
-            strategy_id: &strategy_id,
-            input_tokens: incremental_prompt_tokens as u64,
-            output_tokens: response.usage.completion_tokens as u64,
-            cost_usd: cost,
-            latency_ms,
-        });
-
-    // Record tokens for tray graph (real-time tracking for Fast/Medium modes)
-    if let Some(ref tray_graph) = *state.tray_graph_manager.read() {
-        tray_graph
-            .record_tokens((incremental_prompt_tokens + response.usage.completion_tokens) as u64);
-    }
-
-    // Log to access log (persistent storage)
-    if let Err(e) = state.access_logger.log_success(
-        &auth.api_key_id,
-        &response.provider,
-        &response.model,
-        incremental_prompt_tokens as u64,
-        response.usage.completion_tokens as u64,
-        cost,
-        latency_ms,
-        &generation_id,
-    ) {
-        tracing::warn!("Failed to write access log: {}", e);
-    }
-
-    // Emit event for real-time UI updates
-    state.emit_event(
-        "metrics-updated",
-        &serde_json::json!({
-            "timestamp": created_at.to_rfc3339(),
-        })
-        .to_string(),
-    );
-
-    // Emit monitor event for traffic inspection
-    {
-        let content_preview = response
-            .choices
-            .first()
-            .map(|c| match &c.message.content {
-                lr_providers::ChatMessageContent::Text(t) => t.clone(),
-                lr_providers::ChatMessageContent::Parts(parts) => parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        lr_providers::ContentPart::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(""),
-            })
-            .unwrap_or_default();
-        let finish_reason = response
-            .choices
-            .first()
-            .and_then(|c| c.finish_reason.as_deref());
-        let reasoning_tokens = response
-            .usage
-            .completion_tokens_details
-            .as_ref()
-            .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
-            .map(|t| t as u64);
-        if let Some(ref meta) = routing_metadata {
-            super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, meta);
-        }
-        super::monitor_helpers::complete_llm_call(
-            &state,
-            &llm_event_id,
-            &response.provider,
-            &response.model,
-            200,
-            incremental_prompt_tokens as u64,
-            response.usage.completion_tokens as u64,
-            reasoning_tokens,
-            Some(cost),
-            latency_ms,
-            finish_reason,
-            &content_preview,
-            false,
-        );
-    }
+    let metrics = super::finalize::finalize_metrics_and_monitor(&finalize_inputs, &response).await;
 
     // Note: Router already records usage for rate limiting, so we don't need to do it here
 
-    // Convert provider response to API response
+    // Convert provider response to API response.
+    //
+    // We borrow `response` rather than consuming it because the
+    // shared finalize tail below still needs it for generation-row
+    // metadata (provider / model / usage). Cloning the choices vec
+    // is cheap — the heavy fields (content, tool_calls) are typically
+    // a few KB each.
     let api_response = ChatCompletionResponse {
         id: generation_id.clone(),
         object: "chat.completion".to_string(),
@@ -3222,6 +3126,7 @@ async fn build_non_streaming_response(
         model: response.model.clone(),
         choices: response
             .choices
+            .clone()
             .into_iter()
             .map(|choice| {
                 // Convert provider message content to server message content
@@ -3314,11 +3219,11 @@ async fn build_non_streaming_response(
             prompt_tokens: incremental_prompt_tokens,
             completion_tokens: response.usage.completion_tokens,
             total_tokens: incremental_prompt_tokens + response.usage.completion_tokens,
-            prompt_tokens_details: response.usage.prompt_tokens_details,
-            completion_tokens_details: response.usage.completion_tokens_details,
+            prompt_tokens_details: response.usage.prompt_tokens_details.clone(),
+            completion_tokens_details: response.usage.completion_tokens_details.clone(),
         },
-        system_fingerprint: response.system_fingerprint,
-        service_tier: response.service_tier,
+        system_fingerprint: response.system_fingerprint.clone(),
+        service_tier: response.service_tier.clone(),
         extensions: None, // Provider-specific extensions (Phase 1)
         request_usage_entries: response.request_usage_entries.as_ref().map(|entries| {
             entries
@@ -3334,46 +3239,22 @@ async fn build_non_streaming_response(
         }),
     };
 
-    // Store full response body in monitor event for inspection
-    if let Ok(response_json) = serde_json::to_value(&api_response) {
-        super::monitor_helpers::update_llm_call_response_body(
-            &state,
-            &llm_event_id,
-            &response_json,
-        );
-    }
-
-    // Track generation details
-    let generation_details = GenerationDetails {
-        id: generation_id,
-        model: response.model.clone(),
-        provider: response.provider.clone(),
-        created_at,
-        finish_reason: api_response
-            .choices
-            .first()
-            .and_then(|c| c.finish_reason.clone())
-            .unwrap_or_else(|| "unknown".to_string()),
-        tokens: api_response.usage.clone(),
-        cost: Some(crate::types::CostDetails {
-            prompt_cost: (incremental_prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
-            completion_cost: (response.usage.completion_tokens as f64 / 1000.0)
-                * pricing.output_cost_per_1k,
-            reasoning_cost: None,
-            total_cost: cost,
-            currency: "USD".to_string(),
-        }),
-        started_at,
-        completed_at,
-        provider_health: None,
-        api_key_id: auth.api_key_id,
-        user: request.user,
-        stream: false,
-    };
-
-    state
-        .generation_tracker
-        .record(generation_details.id.clone(), generation_details);
+    // Shared finalize tail: stash the wire-format body on the
+    // `LlmCall` monitor event and record a `GenerationDetails` row
+    // with pricing-derived cost breakdown.
+    let wire_body = serde_json::to_value(&api_response).unwrap_or(serde_json::Value::Null);
+    let finish_reason = api_response
+        .choices
+        .first()
+        .and_then(|c| c.finish_reason.clone());
+    super::finalize::update_response_body_and_record_generation(
+        &finalize_inputs,
+        &response,
+        &metrics,
+        &wire_body,
+        finish_reason,
+        api_response.usage.clone(),
+    );
 
     Ok(Json(api_response).into_response())
 }
