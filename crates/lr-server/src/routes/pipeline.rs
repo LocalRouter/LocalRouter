@@ -1706,7 +1706,6 @@ impl PipelineCaps {
     /// Defaults for `/v1/chat/completions` — every stage enabled,
     /// guardrails spawn as a parallel handle so the caller can
     /// dispatch the LLM call while the scan runs.
-    #[allow(dead_code)] // preset for future chat.rs migration to run_turn_pipeline
     pub(crate) fn chat() -> Self {
         Self {
             allow_compression: true,
@@ -1956,4 +1955,47 @@ pub(crate) async fn run_turn_pipeline(
         compression_tokens_saved,
         guardrail_handle,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipeline_caps_chat_enables_everything() {
+        // The chat endpoint is the most aggressive — it parallelizes
+        // guardrails with dispatch, runs RouteLLM for `localrouter/auto`,
+        // and spawns prompt compression. A regression that quietly
+        // disables one of these would silently degrade
+        // `/v1/chat/completions`.
+        let caps = PipelineCaps::chat();
+        assert!(caps.allow_compression);
+        assert!(caps.allow_routellm);
+        assert!(caps.parallel_guardrails);
+    }
+
+    #[test]
+    fn pipeline_caps_responses_skips_routellm_and_runs_serial() {
+        // /v1/responses adapter sets its own model on the wire (no
+        // `localrouter/auto`); RouteLLM is a no-op. Sequential
+        // guardrails are intentional — no parallelism win for the
+        // typical single-turn `/responses` pattern.
+        let caps = PipelineCaps::responses();
+        assert!(caps.allow_compression);
+        assert!(!caps.allow_routellm);
+        assert!(!caps.parallel_guardrails);
+    }
+
+    #[test]
+    fn pipeline_caps_completions_matches_chat() {
+        // Legacy `/v1/completions` inherits the chat feature set
+        // through the CompletionRequest → ChatCompletionRequest
+        // adapter. If completions ever needed to differ from chat
+        // (e.g. compression off because legacy clients never benefit
+        // from collapsed prompts), this test guards the diff.
+        let caps = PipelineCaps::completions();
+        assert!(caps.allow_compression);
+        assert!(caps.allow_routellm);
+        assert!(caps.parallel_guardrails);
+    }
 }
