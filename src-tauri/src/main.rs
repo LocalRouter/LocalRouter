@@ -2451,6 +2451,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Strategy management commands
             ui::commands::list_strategies,
             ui::commands::get_strategy,
+            ui::commands::recover_client_strategy,
             ui::commands::create_strategy,
             ui::commands::update_strategy,
             ui::commands::delete_strategy,

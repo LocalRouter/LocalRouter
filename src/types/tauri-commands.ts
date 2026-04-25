@@ -1709,6 +1709,11 @@ export interface GetStrategyParams {
   strategyId: string
 }
 
+/** Params for recover_client_strategy */
+export interface RecoverClientStrategyParams {
+  clientId: string
+}
+
 /** Params for update_strategy */
 export interface UpdateStrategyParams {
   strategyId: string

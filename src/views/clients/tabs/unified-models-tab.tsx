@@ -215,6 +215,18 @@ export function UnifiedModelsTab({
     }
   }, [])
 
+  // Re-fetch when strategies change in the backend (e.g. self-heal
+  // auto-created our missing strategy). Without this, a tab opened
+  // before the heal finished stays stuck on "Strategy not found".
+  useEffect(() => {
+    const sub = listenSafe("strategies-changed", () => {
+      const reqId = ++loadReqIdRef.current
+      loadData(reqId)
+    })
+    return () => sub.cleanup()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client.strategy_id])
+
   const loadData = async (reqId: number = ++loadReqIdRef.current) => {
     try {
       const strategyData = await invoke<StrategyConfig>("get_strategy", {
@@ -595,8 +607,28 @@ export function UnifiedModelsTab({
       <div className="space-y-4">
         <Card>
           <CardContent className="py-8">
-            <div className="text-center text-destructive">
-              Strategy not found
+            <div className="flex flex-col items-center gap-3">
+              <div className="text-center text-destructive">
+                Strategy not found for this client.
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    await invoke("recover_client_strategy", {
+                      clientId: client.client_id,
+                    })
+                    const reqId = ++loadReqIdRef.current
+                    loadData(reqId)
+                    toast.success("Strategy recovered")
+                  } catch (e) {
+                    toast.error(`Recovery failed: ${e}`)
+                  }
+                }}
+              >
+                Recover strategy
+              </Button>
             </div>
           </CardContent>
         </Card>

@@ -1427,6 +1427,24 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   'list_strategies': () => mockData.strategies,
   'get_strategy': (args) => mockData.strategies.find(s => s.id === args?.strategyId || s.id === args?.id),
+  'recover_client_strategy': (args) => {
+    const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
+    if (!client) throw new Error(`Client not found: ${args?.clientId}`)
+    const existing = mockData.strategies.find(s => s.id === client.strategy_id)
+    if (existing) return existing
+    const newStrategy = {
+      id: client.strategy_id,
+      name: `${client.name}'s strategy`,
+      parent: client.id,
+      model_permissions: { global: 'allow' as const, providers: {}, models: {} },
+      auto_config: null,
+      rate_limits: [],
+      free_tier_only: false,
+      free_tier_fallback: 'off' as const,
+    }
+    mockData.strategies.push(newStrategy as any)
+    return newStrategy
+  },
   'create_strategy': (args) => {
     const newStrategy = {
       id: `strategy-${generateId()}`,

@@ -902,6 +902,7 @@ pub async fn list_strategies(
 pub async fn get_strategy(
     strategy_id: String,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
 ) -> Result<lr_config::Strategy, String> {
     {
         let config = config_manager.get();
@@ -943,10 +944,66 @@ pub async fn get_strategy(
             "Auto-created strategy '{}' for orphan client (self-heal).",
             strategy_id
         );
+        if let Err(e) = app.emit("strategies-changed", ()) {
+            tracing::error!("Failed to emit strategies-changed event: {}", e);
+        }
         return Ok(strategy_clone);
     }
 
     Err(format!("Strategy not found: {}", strategy_id))
+}
+
+/// Recover a client's missing strategy by auto-creating one for it.
+///
+/// User-triggered escape hatch from the LLM tab when `get_strategy`
+/// dead-ended with "Strategy not found" (e.g. after a manual config
+/// edit, or a binary that pre-dated the heal-on-load pass). Reuses
+/// the client's existing `strategy_id` so the link stays intact.
+#[tauri::command]
+pub async fn recover_client_strategy(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<lr_config::Strategy, String> {
+    let (strategy_id, client_name) = {
+        let config = config_manager.get();
+        let client = config
+            .clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| format!("Client not found: {}", client_id))?;
+        (client.strategy_id.clone(), client.name.clone())
+    };
+
+    // If the strategy already exists, just return it (idempotent).
+    {
+        let config = config_manager.get();
+        if let Some(strategy) = config.strategies.iter().find(|s| s.id == strategy_id) {
+            return Ok(strategy.clone());
+        }
+    }
+
+    let strategy = lr_config::Strategy::new_for_client_with_id(
+        strategy_id.clone(),
+        client_id,
+        client_name.clone(),
+    );
+    let strategy_clone = strategy.clone();
+    config_manager
+        .update(|cfg| {
+            cfg.strategies.push(strategy);
+        })
+        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    tracing::warn!(
+        "Recovered orphan strategy '{}' for client '{}' (user-triggered).",
+        strategy_id,
+        client_name
+    );
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
+    }
+    Ok(strategy_clone)
 }
 
 /// Create a new routing strategy
