@@ -1606,4 +1606,143 @@ mod tests {
         assert_eq!(messages[0].content.as_text(), "Hello");
         assert_eq!(messages[1].content.as_text(), "World");
     }
+
+    // === legacy_to_chat_completion_request tests ===
+    //
+    // These guard the CompletionRequest → ChatCompletionRequest
+    // adapter that drives the shared pipeline for `/v1/completions`.
+    // Regressions here would silently strip fields from legacy
+    // requests after the migration to run_turn_pipeline.
+
+    #[test]
+    fn test_legacy_to_chat_preserves_sampling_params() {
+        let req = CompletionRequest {
+            model: "gpt-4".to_string(),
+            prompt: PromptInput::Single("hi".to_string()),
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            max_tokens: Some(256),
+            n: Some(2),
+            stream: false,
+            stop: Some(crate::types::StopSequence::Single("\n".to_string())),
+            frequency_penalty: Some(0.5),
+            presence_penalty: Some(-0.5),
+            logprobs: Some(3),
+            user: Some("user-123".to_string()),
+        };
+        let chat = legacy_to_chat_completion_request(&req).unwrap();
+        assert_eq!(chat.model, "gpt-4");
+        assert_eq!(chat.temperature, Some(0.7));
+        assert_eq!(chat.top_p, Some(0.9));
+        assert_eq!(chat.max_tokens, Some(256));
+        assert_eq!(chat.n, Some(2));
+        assert_eq!(chat.frequency_penalty, Some(0.5));
+        assert_eq!(chat.presence_penalty, Some(-0.5));
+        assert_eq!(chat.user.as_deref(), Some("user-123"));
+        // legacy logprobs (Option<u32>) is intentionally dropped —
+        // ChatCompletionRequest.logprobs is Option<bool> and the
+        // legacy provider request didn't carry token-count logprobs
+        // either. Document the deliberate gap.
+        assert_eq!(chat.logprobs, None);
+        assert_eq!(chat.top_logprobs, None);
+    }
+
+    #[test]
+    fn test_legacy_to_chat_single_prompt_becomes_one_user_message() {
+        let req = CompletionRequest {
+            model: "m".to_string(),
+            prompt: PromptInput::Single("answer this".to_string()),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            n: None,
+            stream: false,
+            stop: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logprobs: None,
+            user: None,
+        };
+        let chat = legacy_to_chat_completion_request(&req).unwrap();
+        assert_eq!(chat.messages.len(), 1);
+        assert_eq!(chat.messages[0].role, "user");
+        assert!(matches!(
+            &chat.messages[0].content,
+            Some(crate::types::MessageContent::Text(t)) if t == "answer this"
+        ));
+    }
+
+    #[test]
+    fn test_legacy_to_chat_multi_prompt_becomes_multiple_messages() {
+        // Note: this preserves the original behavior of
+        // `convert_prompt_to_messages` — each prompt entry maps to
+        // its own user message rather than a single multi-prompt
+        // batched call. Behavior may not match OpenAI's legacy
+        // semantics for `n` parallel completions over an array
+        // prompt; matches what the pre-migration handler did.
+        let req = CompletionRequest {
+            model: "m".to_string(),
+            prompt: PromptInput::Multiple(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            n: None,
+            stream: false,
+            stop: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logprobs: None,
+            user: None,
+        };
+        let chat = legacy_to_chat_completion_request(&req).unwrap();
+        assert_eq!(chat.messages.len(), 3);
+        for (i, expected) in ["a", "b", "c"].iter().enumerate() {
+            assert_eq!(chat.messages[i].role, "user");
+            assert!(matches!(
+                &chat.messages[i].content,
+                Some(crate::types::MessageContent::Text(t)) if t == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn test_legacy_to_chat_zeros_chat_only_fields() {
+        // Fields present on ChatCompletionRequest but not legacy
+        // CompletionRequest must be `None` after conversion. A
+        // regression that defaulted these to `Some(...)` would
+        // accidentally enable features the legacy client never asked
+        // for (e.g. tools, response_format, top_k).
+        let req = CompletionRequest {
+            model: "m".to_string(),
+            prompt: PromptInput::Single("x".to_string()),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            n: None,
+            stream: false,
+            stop: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logprobs: None,
+            user: None,
+        };
+        let chat = legacy_to_chat_completion_request(&req).unwrap();
+        assert!(chat.tools.is_none());
+        assert!(chat.tool_choice.is_none());
+        assert!(chat.response_format.is_none());
+        assert!(chat.top_k.is_none());
+        assert!(chat.seed.is_none());
+        assert!(chat.repetition_penalty.is_none());
+        assert!(chat.parallel_tool_calls.is_none());
+        assert!(chat.logit_bias.is_none());
+        assert!(chat.service_tier.is_none());
+        assert!(chat.store.is_none());
+        assert!(chat.metadata.is_none());
+        assert!(chat.modalities.is_none());
+        assert!(chat.audio.is_none());
+        assert!(chat.prediction.is_none());
+        assert!(chat.reasoning_effort.is_none());
+        assert!(chat.extensions.is_none());
+        assert!(chat.max_completion_tokens.is_none());
+    }
 }
