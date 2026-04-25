@@ -28,16 +28,23 @@ export function ClientConfigTab({ client }: ConfigTabProps) {
 
   // Fetch the secret from keychain when component mounts or client changes
   useEffect(() => {
+    let cancelled = false
+    // Reset so the previous client's secret never leaks into the UI while the
+    // new fetch is in flight.
+    setSecret(null)
+    setLoadingSecret(true)
+
     const fetchSecret = async () => {
-      setLoadingSecret(true)
       try {
         const value = await invoke<string>("get_client_value", { id: client.id })
+        if (cancelled) return
         setSecret(value)
       } catch (error) {
+        if (cancelled) return
         console.error("Failed to fetch client secret:", error)
         setSecret(null)
       } finally {
-        setLoadingSecret(false)
+        if (!cancelled) setLoadingSecret(false)
       }
     }
     fetchSecret()
@@ -48,6 +55,7 @@ export function ClientConfigTab({ client }: ConfigTabProps) {
     })
 
     return () => {
+      cancelled = true
       l.cleanup()
     }
   }, [client.id])

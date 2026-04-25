@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { FEATURES } from "@/constants/features"
@@ -33,7 +33,10 @@ export function ClientJsonRepairTab({ client, onUpdate, onViewChange }: JsonRepa
   const [globalConfig, setGlobalConfig] = useState<JsonRepairConfig | null>(null)
   const [loading, setLoading] = useState(true)
 
+  const loadReqIdRef = useRef(0)
+
   const loadConfig = useCallback(async () => {
+    const reqId = ++loadReqIdRef.current
     try {
       const [clientConfig, global] = await Promise.all([
         invoke<ClientJsonRepairConfig>("get_client_json_repair_config", {
@@ -41,6 +44,7 @@ export function ClientJsonRepairTab({ client, onUpdate, onViewChange }: JsonRepa
         } satisfies GetClientJsonRepairConfigParams as Record<string, unknown>),
         invoke<JsonRepairConfig>("get_json_repair_config"),
       ])
+      if (loadReqIdRef.current !== reqId) return
       setConfig({
         enabled: clientConfig.enabled ?? null,
         syntax_repair: clientConfig.syntax_repair ?? null,
@@ -48,15 +52,20 @@ export function ClientJsonRepairTab({ client, onUpdate, onViewChange }: JsonRepa
       })
       setGlobalConfig(global)
     } catch (err) {
+      if (loadReqIdRef.current !== reqId) return
       console.error("Failed to load JSON repair config:", err)
       toast.error("Failed to load JSON repair configuration")
     } finally {
-      setLoading(false)
+      if (loadReqIdRef.current === reqId) setLoading(false)
     }
   }, [client.id])
 
   useEffect(() => {
+    setLoading(true)
     loadConfig()
+    return () => {
+      loadReqIdRef.current++
+    }
   }, [loadConfig])
 
   const saveConfig = async (newConfig: ClientJsonRepairConfig) => {

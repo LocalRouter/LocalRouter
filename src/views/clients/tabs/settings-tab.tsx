@@ -51,10 +51,17 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
     ? CLIENT_TEMPLATES.find(t => t.id === client.template_id) || null
     : null
 
-  // Sync name state when client prop updates
+  // Sync name state when the selected client changes — and drop any pending
+  // debounced save from the previous client so its timer can't fire and
+  // clobber the freshly-loaded name.
   useEffect(() => {
+    if (nameTimeoutRef.current) {
+      clearTimeout(nameTimeoutRef.current)
+      nameTimeoutRef.current = null
+    }
     setName(client.name)
-  }, [client.name])
+    setSaving(false)
+  }, [client.client_id, client.name])
 
   // Cleanup timeout on unmount
   useEffect(() => {

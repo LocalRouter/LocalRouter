@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { FEATURES } from "@/constants/features"
@@ -30,8 +30,12 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
   })
   const [globalConfig, setGlobalConfig] = useState<PromptCompressionConfig | null>(null)
   const [loading, setLoading] = useState(true)
+  // Bumped on each load so superseded responses (from a previous client) are
+  // discarded if they arrive after the new fetch.
+  const loadReqIdRef = useRef(0)
 
   const loadConfig = useCallback(async () => {
+    const reqId = ++loadReqIdRef.current
     try {
       const [clientConfig, global] = await Promise.all([
         invoke<ClientPromptCompressionConfig>("get_client_compression_config", {
@@ -39,18 +43,24 @@ export function ClientCompressionTab({ client, onUpdate, onViewChange }: Compres
         } satisfies GetClientCompressionConfigParams as Record<string, unknown>),
         invoke<PromptCompressionConfig>("get_compression_config"),
       ])
+      if (loadReqIdRef.current !== reqId) return
       setConfig({ ...clientConfig, enabled: clientConfig.enabled ?? null })
       setGlobalConfig(global)
     } catch (err) {
+      if (loadReqIdRef.current !== reqId) return
       console.error("Failed to load compression config:", err)
       toast.error("Failed to load compression configuration")
     } finally {
-      setLoading(false)
+      if (loadReqIdRef.current === reqId) setLoading(false)
     }
   }, [client.id])
 
   useEffect(() => {
+    setLoading(true)
     loadConfig()
+    return () => {
+      loadReqIdRef.current++
+    }
   }, [loadConfig])
 
   const saveConfig = async (newConfig: ClientPromptCompressionConfig) => {

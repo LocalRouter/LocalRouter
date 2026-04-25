@@ -106,13 +106,37 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
   }
 
   useEffect(() => {
+    // Reset before fetching so stale values from the previous client don't
+    // briefly render, and so the second load can't be overwritten by the
+    // first one's late-arriving response.
+    setEffectiveConfig(null)
+    setStrategy(null)
+
+    let cancelled = false
+
     invoke<ClientEffectiveConfig>("get_client_effective_config", {
       clientId: client.client_id,
-    } satisfies GetClientEffectiveConfigParams).then(setEffectiveConfig).catch(console.error)
+    } satisfies GetClientEffectiveConfigParams)
+      .then((data) => {
+        if (!cancelled) setEffectiveConfig(data)
+      })
+      .catch((err) => {
+        if (!cancelled) console.error(err)
+      })
 
     invoke<Strategy>("get_strategy", {
       strategyId: client.strategy_id,
-    }).then(setStrategy).catch(console.error)
+    })
+      .then((data) => {
+        if (!cancelled) setStrategy(data)
+      })
+      .catch((err) => {
+        if (!cancelled) console.error(err)
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [client.client_id, client.strategy_id, client.context_management_enabled])
 
   // Build graph filtered to just this client

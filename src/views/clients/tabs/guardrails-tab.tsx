@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { FEATURES } from "@/constants/features"
@@ -37,7 +37,10 @@ export function ClientGuardrailsTab({ client, onUpdate }: ClientGuardrailsTabPro
   const [categories, setCategories] = useState<SafetyCategoryInfo[]>([])
   const [loading, setLoading] = useState(true)
 
+  const loadReqIdRef = useRef(0)
+
   const loadConfig = useCallback(async () => {
+    const reqId = ++loadReqIdRef.current
     try {
       const [clientConfig, global, cats] = await Promise.all([
         invoke<ClientGuardrailsConfig>("get_client_guardrails_config", {
@@ -46,19 +49,25 @@ export function ClientGuardrailsTab({ client, onUpdate }: ClientGuardrailsTabPro
         invoke<GuardrailsConfig>("get_guardrails_config"),
         invoke<SafetyCategoryInfo[]>("get_all_safety_categories"),
       ])
+      if (loadReqIdRef.current !== reqId) return
       setGuardrailsConfig(clientConfig)
       setGlobalConfig(global)
       setCategories(cats)
     } catch (err) {
+      if (loadReqIdRef.current !== reqId) return
       console.error("Failed to load guardrails config:", err)
       toast.error("Failed to load guardrails configuration")
     } finally {
-      setLoading(false)
+      if (loadReqIdRef.current === reqId) setLoading(false)
     }
   }, [client.id])
 
   useEffect(() => {
+    setLoading(true)
     loadConfig()
+    return () => {
+      loadReqIdRef.current++
+    }
   }, [loadConfig])
 
   const saveConfig = async (newConfig: ClientGuardrailsConfig) => {

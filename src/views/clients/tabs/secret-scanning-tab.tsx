@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { FEATURES } from "@/constants/features"
@@ -42,7 +42,10 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
   const [globalConfig, setGlobalConfig] = useState<SecretScanningConfig | null>(null)
   const [loading, setLoading] = useState(true)
 
+  const loadReqIdRef = useRef(0)
+
   const loadConfig = useCallback(async () => {
+    const reqId = ++loadReqIdRef.current
     try {
       const [clientConfig, global] = await Promise.all([
         invoke<ClientSecretScanningConfig>("get_client_secret_scanning_config", {
@@ -50,18 +53,24 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
         } as Record<string, unknown>),
         invoke<SecretScanningConfig>("get_secret_scanning_config"),
       ])
+      if (loadReqIdRef.current !== reqId) return
       setConfig(clientConfig)
       setGlobalConfig(global)
     } catch (err) {
+      if (loadReqIdRef.current !== reqId) return
       console.error("Failed to load secret scanning config:", err)
       toast.error("Failed to load secret scanning configuration")
     } finally {
-      setLoading(false)
+      if (loadReqIdRef.current === reqId) setLoading(false)
     }
   }, [client.id])
 
   useEffect(() => {
+    setLoading(true)
     loadConfig()
+    return () => {
+      loadReqIdRef.current++
+    }
   }, [loadConfig])
 
   const saveConfig = async (newConfig: ClientSecretScanningConfig) => {

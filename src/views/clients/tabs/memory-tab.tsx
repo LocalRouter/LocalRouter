@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { FEATURES } from "@/constants/features"
@@ -36,7 +36,10 @@ export function ClientMemoryTab({ client, onUpdate }: ClientMemoryTabProps) {
   const [memoryConfig, setMemoryConfig] = useState<MemoryConfig | null>(null)
   const [loading, setLoading] = useState(true)
 
+  const loadReqIdRef = useRef(0)
+
   const loadConfig = useCallback(async () => {
+    const reqId = ++loadReqIdRef.current
     try {
       const [result, globalMemoryConfig] = await Promise.all([
         invoke<{ memory_enabled: boolean | null }>("get_client_memory_config", {
@@ -44,17 +47,23 @@ export function ClientMemoryTab({ client, onUpdate }: ClientMemoryTabProps) {
         }),
         invoke<MemoryConfig>("get_memory_config"),
       ])
+      if (loadReqIdRef.current !== reqId) return
       setMemoryEnabled(result.memory_enabled)
       setMemoryConfig(globalMemoryConfig)
     } catch (err) {
+      if (loadReqIdRef.current !== reqId) return
       console.error("Failed to load memory config:", err)
     } finally {
-      setLoading(false)
+      if (loadReqIdRef.current === reqId) setLoading(false)
     }
   }, [client.id])
 
   useEffect(() => {
+    setLoading(true)
     loadConfig()
+    return () => {
+      loadReqIdRef.current++
+    }
   }, [loadConfig])
 
   const toggleMemory = async (enabled: boolean) => {

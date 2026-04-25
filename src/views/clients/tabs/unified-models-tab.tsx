@@ -183,29 +183,44 @@ export function UnifiedModelsTab({
   const updateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingUpdatesRef = useRef<Partial<StrategyConfig> | null>(null)
   const rateLimitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Monotonic request id — used to discard responses from superseded loads
+  // (e.g. when the user switches client mid-fetch and the older response
+  // arrives after the newer one).
+  const loadReqIdRef = useRef(0)
 
   // -------------------------------------------------------------------------
-  // Load strategy on mount
+  // Load strategy when the selected client (strategy) changes
   // -------------------------------------------------------------------------
 
   useEffect(() => {
-    loadData()
+    // Reset state immediately so stale data from the previous client never
+    // renders, even briefly, and so the loading guard kicks in.
+    setStrategy(null)
+    setLoading(true)
+    // Don't cancel pending debounced saves — their setTimeout closures captured
+    // the previous strategy.id, so they correctly persist edits to the OLD
+    // strategy. Cancelling here would silently drop the user's last edit.
+
+    const reqId = ++loadReqIdRef.current
+    loadData(reqId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client.strategy_id])
 
-  // Cleanup debounce timeouts on unmount
+  // Cleanup debounce timeouts and invalidate in-flight loads on unmount
   useEffect(() => {
     return () => {
+      loadReqIdRef.current++
       if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)
       if (rateLimitTimeoutRef.current) clearTimeout(rateLimitTimeoutRef.current)
     }
   }, [])
 
-  const loadData = async () => {
-    setLoading(true)
+  const loadData = async (reqId: number = ++loadReqIdRef.current) => {
     try {
       const strategyData = await invoke<StrategyConfig>("get_strategy", {
         strategyId: client.strategy_id,
       })
+      if (loadReqIdRef.current !== reqId) return
       const normalized = ensureAutoConfig(strategyData)
       setStrategy(normalized)
 
@@ -232,21 +247,23 @@ export function UnifiedModelsTab({
         }
       }
     } catch (error) {
+      if (loadReqIdRef.current !== reqId) return
       console.error("Failed to load strategy:", error)
     } finally {
-      setLoading(false)
+      if (loadReqIdRef.current === reqId) setLoading(false)
     }
 
     // Load pricing and free tier data in the background (non-blocking)
-    loadPricingData()
+    loadPricingData(reqId)
   }
 
-  const loadPricingData = async () => {
+  const loadPricingData = async (reqId: number) => {
     try {
       const [detailedModels, ftStatuses] = await Promise.all([
         invoke<DetailedModelInfo[]>("list_all_models_detailed"),
         invoke<ProviderFreeTierStatus[]>("get_free_tier_status"),
       ])
+      if (loadReqIdRef.current !== reqId) return
       const pricingMap: Record<string, ModelPricingInfo> = {}
       const paramMap: Record<string, string> = {}
       const capMap: Record<string, string[]> = {}
@@ -278,6 +295,7 @@ export function UnifiedModelsTab({
       }
       setFreeTierKinds(ftMap)
     } catch (pricingError) {
+      if (loadReqIdRef.current !== reqId) return
       console.error("Failed to load pricing/free tier data:", pricingError)
     }
   }
