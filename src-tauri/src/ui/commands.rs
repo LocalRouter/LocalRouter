@@ -1022,7 +1022,7 @@ pub async fn get_llm_logs(
     }
 
     // Sort by timestamp (newest first) to handle entries spanning midnight
-    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
 
     // Apply offset and limit
     let entries: Vec<_> = entries.into_iter().skip(offset).take(limit).collect();
@@ -1120,7 +1120,7 @@ pub async fn get_mcp_logs(
     }
 
     // Sort by timestamp (newest first) to handle entries spanning midnight
-    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
 
     // Apply offset and limit
     let entries: Vec<_> = entries.into_iter().skip(offset).take(limit).collect();
