@@ -1,6 +1,6 @@
 //! Configuration storage - loading and saving YAML files
 
-use super::{migration, validation, AppConfig, Strategy};
+use super::{migration, validation, AppConfig, ProviderType, Strategy};
 use chrono::Utc;
 use lr_types::{AppError, AppResult};
 use lr_utils::paths;
@@ -20,6 +20,52 @@ use tracing::{debug, error, info, warn};
 /// The new strategy uses `Strategy::new_for_client(client.id, client.name)`
 /// so it's parented to the client and matches what the create-client
 /// path would have produced originally.
+/// Drop stale legacy-shape "ChatGPT Plus" provider entries that were
+/// stored as `Custom` (openai_compatible) before the dedicated
+/// `openai-chatgpt-plus` factory existed. Such entries:
+///   - fail to load every startup with `"base_url is required"`,
+///   - block re-adding ChatGPT Plus from the UI because the name
+///     collision triggers `"Duplicate provider name: ChatGPT Plus"`
+///     in `validate_providers`,
+///   - have no salvageable runtime state — the OAuth token lives in
+///     the keychain, not the config row.
+///
+/// We drop them iff:
+///   - `provider_type == Custom`,
+///   - `provider_config` is empty / missing `base_url`,
+///   - `name == "ChatGPT Plus"` (case-insensitive).
+fn heal_stale_chatgpt_plus(config: &mut AppConfig) {
+    let before = config.providers.len();
+    config.providers.retain(|p| {
+        let is_chatgpt_plus = p.name.eq_ignore_ascii_case("ChatGPT Plus");
+        let is_custom = matches!(p.provider_type, ProviderType::Custom);
+        let has_base_url = p
+            .provider_config
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .and_then(|o| o.get("base_url"))
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        if is_chatgpt_plus && is_custom && !has_base_url {
+            warn!(
+                "Dropping stale legacy-shape 'ChatGPT Plus' provider entry (Custom without base_url) — re-add via the UI to use the dedicated openai-chatgpt-plus factory."
+            );
+            false
+        } else {
+            true
+        }
+    });
+    let dropped = before - config.providers.len();
+    if dropped > 0 {
+        info!(
+            "Healed {} stale legacy 'ChatGPT Plus' provider entr{}.",
+            dropped,
+            if dropped == 1 { "y" } else { "ies" }
+        );
+    }
+}
+
 fn heal_orphan_client_strategies(config: &mut AppConfig) {
     use std::collections::HashSet;
     let known: HashSet<String> = config.strategies.iter().map(|s| s.id.clone()).collect();
@@ -165,6 +211,13 @@ async fn load_config_from_file(path: &Path) -> AppResult<AppConfig> {
     // or a prior bug). Without this, the LLM tab shows
     // "Strategy not found" for the affected client.
     heal_orphan_client_strategies(&mut config);
+
+    // Self-heal: drop stale "ChatGPT Plus" entries that predate the
+    // dedicated `openai-chatgpt-plus` factory. Older configs stored
+    // it as `Custom` (openai_compatible) without a base_url, which
+    // fails to load every startup. Without this, re-adding ChatGPT
+    // Plus from the UI errors out with "Duplicate provider name".
+    heal_stale_chatgpt_plus(&mut config);
 
     // Validate configuration
     validation::validate_config(&config)?;

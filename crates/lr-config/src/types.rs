@@ -3464,6 +3464,19 @@ pub enum ProviderType {
     /// Zhipu AI (GLM models)
     #[serde(rename = "zhipu")]
     Zhipu,
+    /// ChatGPT Plus / Pro subscription (codex_cli OAuth → chatgpt.com/backend-api/codex)
+    ///
+    /// Distinct from `OpenAI` because it routes to a different
+    /// upstream (chatgpt.com backend-api/codex) and uses OAuth
+    /// rather than an API key. The factory key
+    /// (`openai-chatgpt-plus`) doesn't share metadata or pricing
+    /// with the platform OpenAI provider.
+    #[serde(
+        rename = "openai-chatgpt-plus",
+        alias = "chatgpt_plus",
+        alias = "ChatGPTPlus"
+    )]
+    ChatGPTPlus,
     /// Custom provider
     Custom,
 }

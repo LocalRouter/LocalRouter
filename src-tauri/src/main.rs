@@ -395,6 +395,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::KlusterAI => "kluster_ai",
             config::ProviderType::HuggingFace => "huggingface",
             config::ProviderType::Zhipu => "zhipu",
+            config::ProviderType::ChatGPTPlus => "openai-chatgpt-plus",
             config::ProviderType::Custom => "openai_compatible",
         };
 
@@ -1775,6 +1776,101 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     provider_registry.list_providers().len(),
                     mcp_server_manager.list_configs().len()
                 );
+
+                // Kick a one-shot initial health check so the UI doesn't
+                // sit on `Pending` spinners forever when the user has
+                // periodic checks disabled. Without this, the providers
+                // panel stays in "Loading..." state until the user
+                // manually hits Refresh.
+                {
+                    let health_cache = state.health_cache.clone();
+                    let provider_registry_for_init = provider_registry.clone();
+                    let mcp_server_manager_for_init = mcp_server_manager.clone();
+                    let timeout_secs = config_manager.get().health_check.timeout_secs;
+                    let app_handle_for_emit = app.handle().clone();
+                    tokio::spawn(async move {
+                        info!("Running initial one-shot health check pass...");
+                        use providers::health_cache::ItemHealth;
+                        for info in provider_registry_for_init.list_providers() {
+                            if !info.enabled {
+                                health_cache.update_provider(
+                                    &info.instance_name,
+                                    ItemHealth::disabled(info.instance_name.clone()),
+                                );
+                                continue;
+                            }
+                            if let Some(provider) =
+                                provider_registry_for_init.get_provider(&info.instance_name)
+                            {
+                                let health = tokio::time::timeout(
+                                    std::time::Duration::from_secs(timeout_secs),
+                                    provider.health_check(),
+                                )
+                                .await;
+                                let item = match health {
+                                    Ok(h) => match h.status {
+                                        providers::HealthStatus::Healthy => {
+                                            ItemHealth::healthy(info.instance_name.clone(), h.latency_ms)
+                                        }
+                                        providers::HealthStatus::Degraded => {
+                                            ItemHealth::degraded(
+                                                info.instance_name.clone(),
+                                                h.latency_ms,
+                                                h.error_message
+                                                    .unwrap_or_else(|| "Degraded".to_string()),
+                                            )
+                                        }
+                                        providers::HealthStatus::Unhealthy => {
+                                            ItemHealth::unhealthy(
+                                                info.instance_name.clone(),
+                                                h.error_message
+                                                    .unwrap_or_else(|| "Unhealthy".to_string()),
+                                            )
+                                        }
+                                    },
+                                    Err(_) => ItemHealth::unhealthy(
+                                        info.instance_name.clone(),
+                                        format!("Health check timeout ({}s)", timeout_secs),
+                                    ),
+                                };
+                                health_cache.update_provider(&info.instance_name, item);
+                            }
+                        }
+                        for cfg in mcp_server_manager_for_init.list_configs() {
+                            if !cfg.enabled {
+                                health_cache.update_mcp_server(
+                                    &cfg.id,
+                                    ItemHealth::disabled(cfg.name.clone()),
+                                );
+                                continue;
+                            }
+                            let h = mcp_server_manager_for_init.get_server_health(&cfg.id).await;
+                            use lr_mcp::manager::HealthStatus as McpHealthStatus;
+                            let item = match h.status {
+                                McpHealthStatus::Ready => ItemHealth::ready(h.server_name.clone()),
+                                McpHealthStatus::Healthy => {
+                                    ItemHealth::healthy(h.server_name.clone(), h.latency_ms)
+                                }
+                                McpHealthStatus::Unhealthy | McpHealthStatus::Unknown => {
+                                    ItemHealth::unhealthy(
+                                        h.server_name.clone(),
+                                        h.error.unwrap_or_else(|| "Unhealthy".to_string()),
+                                    )
+                                }
+                            };
+                            health_cache.update_mcp_server(&cfg.id, item);
+                        }
+                        if let Err(e) = app_handle_for_emit
+                            .emit("health-status-changed", health_cache.get())
+                        {
+                            tracing::warn!(
+                                "Failed to emit health-status-changed after initial pass: {}",
+                                e
+                            );
+                        }
+                        info!("Initial health check pass complete");
+                    });
+                }
 
                 // Start periodic health check task (always spawned, checks enabled flag dynamically)
                 let health_check_config = config_manager.get().health_check.clone();

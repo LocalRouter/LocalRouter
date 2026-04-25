@@ -47,7 +47,7 @@ impl AnthropicClaudeOAuthProvider {
 
 impl Default for AnthropicClaudeOAuthProvider {
     fn default() -> Self {
-        Self::new(CachedKeychain::system())
+        Self::new(CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system()))
     }
 }
 
@@ -183,7 +183,7 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
 
         // Use unified token exchanger
         let token_exchanger = lr_oauth::browser::TokenExchanger::new();
-        let keychain = CachedKeychain::system();
+        let keychain = CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system());
 
         let new_tokens = token_exchanger
             .refresh_tokens(&config, refresh_token, &keychain)

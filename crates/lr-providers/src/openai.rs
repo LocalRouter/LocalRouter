@@ -82,7 +82,7 @@ impl OpenAIProvider {
     /// * `Ok(Self)` if either OAuth tokens or API key are available
     /// * `Err(AppError)` if neither OAuth nor API key authentication is available
     pub fn from_oauth_or_key(provider_name: Option<&str>) -> AppResult<Self> {
-        let keychain = CachedKeychain::system();
+        let keychain = CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system());
 
         // Try OAuth first.
         //
@@ -115,7 +115,7 @@ impl OpenAIProvider {
     /// * `true` if OAuth access token exists in keychain
     /// * `false` otherwise
     pub fn has_oauth_credentials() -> bool {
-        let keychain = CachedKeychain::system();
+        let keychain = CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system());
         keychain
             .get(
                 OAUTH_KEYCHAIN_SERVICE,
@@ -145,7 +145,17 @@ impl OpenAIProvider {
     /// `lr-catalog` so this fallback stays in sync with the embedded
     /// models.dev snapshot rather than carrying its own copy.
     fn chatgpt_plus_fallback_models() -> Vec<ModelInfo> {
-        let ids = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"];
+        // Order is newest-first so the model picker defaults to the
+        // latest. Update this list when codex-rs adds new visible
+        // entries to its `models-manager/models.json`.
+        let ids = [
+            "gpt-5.5",
+            "gpt-5.5-mini",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+            "gpt-5.2",
+        ];
         ids.iter()
             .map(|id| {
                 let catalog = lr_catalog::find_model("openai", id);
@@ -727,9 +737,17 @@ impl ModelProvider for OpenAIProvider {
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
+        // Strip any "<provider>/" prefix — the model field on a
+        // CompletionResponse can come back as "ChatGPT Plus/gpt-5.4"
+        // when the request used a provider-qualified model id, but
+        // the catalog and fallback tables only know bare model ids
+        // ("gpt-5.4"). Without this, every ChatGPT Plus turn would
+        // log a "not found in catalog" warning and zero out cost.
+        let model_id = model.rsplit_once('/').map(|(_, m)| m).unwrap_or(model);
+
         // Try catalog first (embedded OpenRouter data)
-        if let Some(catalog_model) = lr_catalog::find_model("openai", model) {
-            tracing::debug!("Using catalog pricing for OpenAI model: {}", model);
+        if let Some(catalog_model) = lr_catalog::find_model("openai", model_id) {
+            tracing::debug!("Using catalog pricing for OpenAI model: {}", model_id);
             return Ok(PricingInfo {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
                 output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
@@ -739,20 +757,20 @@ impl ModelProvider for OpenAIProvider {
         }
 
         // Fallback to hardcoded pricing (for models not in catalog)
-        if let Some(pricing) = Self::get_model_pricing(model) {
-            tracing::debug!("Using fallback pricing for OpenAI model: {}", model);
+        if let Some(pricing) = Self::get_model_pricing(model_id) {
+            tracing::debug!("Using fallback pricing for OpenAI model: {}", model_id);
             return Ok(pricing);
         }
 
         // Log unmapped models
         tracing::warn!(
             "Model '{}' not found in catalog or fallback pricing (provider: openai)",
-            model
+            model_id
         );
 
         Err(AppError::Provider(format!(
             "Pricing information not available for model: {}",
-            model
+            model_id
         )))
     }
 
@@ -1614,6 +1632,11 @@ mod tests {
     fn chatgpt_plus_fallback_list_covers_codex_visible_models() {
         let models = OpenAIProvider::chatgpt_plus_fallback_models();
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        // Latest-first ordering — the picker uses the head of the list
+        // as the default suggestion.
+        assert_eq!(ids.first().copied(), Some("gpt-5.5"));
+        assert!(ids.contains(&"gpt-5.5"));
+        assert!(ids.contains(&"gpt-5.5-mini"));
         assert!(ids.contains(&"gpt-5.4"));
         assert!(ids.contains(&"gpt-5.4-mini"));
         assert!(ids.contains(&"gpt-5.3-codex"));
@@ -1623,5 +1646,33 @@ mod tests {
         assert!(!ids.contains(&"o1-mini"));
         assert!(!ids.contains(&"gpt-4o"));
         assert!(!ids.contains(&"gpt-5-codex"));
+    }
+
+    #[tokio::test]
+    async fn pricing_strips_provider_prefix_from_model_id() {
+        // The CompletionResponse for ChatGPT Plus turns can come back
+        // with `model = "ChatGPT Plus/gpt-5.4"` (the provider-qualified
+        // form clients submit). `get_pricing` must strip the provider
+        // prefix before consulting the catalog/fallback tables.
+        let provider = OpenAIProvider::new("test-key".to_string());
+
+        // Bare id resolves
+        let bare = provider.get_pricing("gpt-5.4").await;
+        // Prefixed id resolves to the same pricing
+        let prefixed = provider.get_pricing("ChatGPT Plus/gpt-5.4").await;
+        match (bare, prefixed) {
+            (Ok(b), Ok(p)) => {
+                assert!((b.input_cost_per_1k - p.input_cost_per_1k).abs() < f64::EPSILON);
+                assert!((b.output_cost_per_1k - p.output_cost_per_1k).abs() < f64::EPSILON);
+            }
+            // If the catalog doesn't ship gpt-5.4 yet (test env quirk),
+            // both forms must at least agree on Err — the prefix strip
+            // shouldn't produce a different outcome than the bare id.
+            (Err(_), Err(_)) => {}
+            other => panic!(
+                "prefix strip must produce the same outcome as the bare id, got {:?}",
+                other
+            ),
+        }
     }
 }

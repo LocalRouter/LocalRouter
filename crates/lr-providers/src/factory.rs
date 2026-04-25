@@ -2305,7 +2305,7 @@ impl ProviderFactory for GitHubCopilotProviderFactory {
         // with the OAuth token from keychain
         use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
 
-        let keychain = CachedKeychain::system();
+        let keychain = CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system());
         let access_token = keychain
             .get("LocalRouter-ProviderTokens", "github-copilot_access_token")?
             .ok_or_else(|| {

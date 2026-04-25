@@ -80,7 +80,7 @@ impl AnthropicProvider {
     /// * `Ok(Self)` if either OAuth tokens or API key are available
     /// * `Err(AppError)` if neither OAuth nor API key authentication is available
     pub fn from_oauth_or_key(provider_name: Option<&str>) -> AppResult<Self> {
-        let keychain = CachedKeychain::system();
+        let keychain = CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system());
 
         // Try OAuth first
         if let Ok(Some(access_token)) = keychain.get(
@@ -103,7 +103,7 @@ impl AnthropicProvider {
     /// * `true` if OAuth access token exists in keychain
     /// * `false` otherwise
     pub fn has_oauth_credentials() -> bool {
-        let keychain = CachedKeychain::system();
+        let keychain = CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system());
         keychain
             .get(
                 OAUTH_KEYCHAIN_SERVICE,
