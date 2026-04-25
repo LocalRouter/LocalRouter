@@ -404,8 +404,22 @@ impl Strategy {
 
     /// Create a new strategy owned by a client
     pub fn new_for_client(client_id: String, client_name: String) -> Self {
+        Self::new_for_client_with_id(Uuid::new_v4().to_string(), client_id, client_name)
+    }
+
+    /// Create a new strategy owned by a client with an explicit id.
+    ///
+    /// Used by self-heal paths that need to recreate a strategy whose
+    /// id is already referenced by a client — keeping the same id
+    /// preserves the client → strategy link without rewriting the
+    /// client's `strategy_id` field.
+    pub fn new_for_client_with_id(
+        strategy_id: String,
+        client_id: String,
+        client_name: String,
+    ) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: strategy_id,
             name: client_strategy_name(&client_name),
             parent: Some(client_id),
             model_permissions: ModelPermissions {

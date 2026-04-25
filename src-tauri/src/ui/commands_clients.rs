@@ -903,13 +903,50 @@ pub async fn get_strategy(
     strategy_id: String,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<lr_config::Strategy, String> {
-    let config = config_manager.get();
-    config
-        .strategies
-        .iter()
-        .find(|s| s.id == strategy_id)
-        .cloned()
-        .ok_or_else(|| format!("Strategy not found: {}", strategy_id))
+    {
+        let config = config_manager.get();
+        if let Some(strategy) = config.strategies.iter().find(|s| s.id == strategy_id) {
+            return Ok(strategy.clone());
+        }
+    }
+
+    // Self-heal: a runtime call to `get_strategy` can land here if a
+    // client's `strategy_id` got out of sync with `cfg.strategies` —
+    // most commonly when an upstream config-load path was skipped (e.g.
+    // a fresh ConfigManager without the strategy push), or a past
+    // partial save left the client referencing a dropped strategy.
+    // If a client is currently using this `strategy_id`, auto-create a
+    // matching strategy so the LLM tab can render instead of dead-ending
+    // with "Strategy not found".
+    let healed = {
+        let config = config_manager.get();
+        config
+            .clients
+            .iter()
+            .find(|c| c.strategy_id == strategy_id)
+            .map(|c| (c.id.clone(), c.name.clone()))
+    };
+    if let Some((client_id, client_name)) = healed {
+        let strategy = lr_config::Strategy::new_for_client_with_id(
+            strategy_id.clone(),
+            client_id,
+            client_name,
+        );
+        let strategy_clone = strategy.clone();
+        config_manager
+            .update(|cfg| {
+                cfg.strategies.push(strategy);
+            })
+            .map_err(|e| e.to_string())?;
+        config_manager.save().await.map_err(|e| e.to_string())?;
+        tracing::warn!(
+            "Auto-created strategy '{}' for orphan client (self-heal).",
+            strategy_id
+        );
+        return Ok(strategy_clone);
+    }
+
+    Err(format!("Strategy not found: {}", strategy_id))
 }
 
 /// Create a new routing strategy

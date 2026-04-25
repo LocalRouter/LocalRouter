@@ -243,11 +243,15 @@ async fn handle_websocket(
                 }
                 msg_opt = receiver.next() => {
                     match msg_opt {
-                        Some(Ok(Message::Text(text))) => {
-                            // Handle ping/pong for keepalive
-                            if text.as_str().trim() == "ping" {
-                                let _ = tx_clone.send(Message::Text("pong".into()));
-                            }
+                        // Ping/pong keepalive — match guard form is
+                        // required by clippy 1.95+ (`collapsible_match`
+                        // forbids the inner `if` over the bound text).
+                        Some(Ok(Message::Text(text))) if text.as_str().trim() == "ping" => {
+                            let _ = tx_clone.send(Message::Text("pong".into()));
+                        }
+                        Some(Ok(Message::Text(_))) => {
+                            // Non-ping text frames: silently consume — JSON-RPC
+                            // payloads come over `Message::Binary` instead.
                         }
                         Some(Ok(Message::Close(_))) => {
                             tracing::debug!(

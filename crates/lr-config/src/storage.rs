@@ -1,12 +1,54 @@
 //! Configuration storage - loading and saving YAML files
 
-use super::{migration, validation, AppConfig};
+use super::{migration, validation, AppConfig, Strategy};
 use chrono::Utc;
 use lr_types::{AppError, AppResult};
 use lr_utils::paths;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, error, info, warn};
+
+/// Auto-create a strategy for any client whose `strategy_id` doesn't
+/// resolve to an existing strategy.
+///
+/// Run on every config load (after migration, before validation) so a
+/// client that lost its strategy — through any path: partial save,
+/// past bug, manual config edit, copying a config from a different
+/// machine — gets a fresh default strategy and recovers automatically
+/// instead of dead-ending in the UI with "Strategy not found".
+///
+/// The new strategy uses `Strategy::new_for_client(client.id, client.name)`
+/// so it's parented to the client and matches what the create-client
+/// path would have produced originally.
+fn heal_orphan_client_strategies(config: &mut AppConfig) {
+    use std::collections::HashSet;
+    let known: HashSet<String> = config.strategies.iter().map(|s| s.id.clone()).collect();
+    let mut to_create: Vec<(String, String)> = Vec::new();
+    for client in &config.clients {
+        if !known.contains(&client.strategy_id) {
+            warn!(
+                "Client '{}' references missing strategy '{}'; auto-creating it (self-heal on load).",
+                client.name, client.strategy_id
+            );
+            // Reuse the dangling strategy_id so the client → strategy
+            // link stays intact without mutating the client.
+            let new_strategy = Strategy::new_for_client_with_id(
+                client.strategy_id.clone(),
+                client.id.clone(),
+                client.name.clone(),
+            );
+            to_create.push((new_strategy.id.clone(), client.name.clone()));
+            config.strategies.push(new_strategy);
+        }
+    }
+    if !to_create.is_empty() {
+        info!(
+            "Healed {} orphan client(s) by auto-creating their strategies: {:?}",
+            to_create.len(),
+            to_create.iter().map(|(_, n)| n).collect::<Vec<_>>()
+        );
+    }
+}
 
 /// Maximum number of timestamped backups to keep
 const MAX_BACKUPS: usize = 3;
@@ -115,6 +157,14 @@ async fn load_config_from_file(path: &Path) -> AppResult<AppConfig> {
         );
         config = migration::migrate_config(config)?;
     }
+
+    // Self-heal: auto-create strategies for any client whose
+    // `strategy_id` doesn't resolve to a real strategy. This recovers
+    // from any past state where strategy creation succeeded but the
+    // strategy got dropped (e.g. partial save, corrupt config copy,
+    // or a prior bug). Without this, the LLM tab shows
+    // "Strategy not found" for the affected client.
+    heal_orphan_client_strategies(&mut config);
 
     // Validate configuration
     validation::validate_config(&config)?;
