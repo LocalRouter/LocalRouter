@@ -215,7 +215,7 @@ pub async fn chat_completions(
             )
             .await
         } else {
-            handle_non_streaming_parallel(
+            handle_non_streaming(
                 state,
                 auth,
                 client_auth,
@@ -228,7 +228,8 @@ pub async fn chat_completions(
             .await
         }
     } else {
-        // Sequential mode: keep guard alive through guardrail checks.
+        // Sequential mode: await guardrails inline, then dispatch
+        // through the unified handlers with `guardrail_handle = None`.
         // If guardrails error, the guard's Drop auto-completes as Error.
         let guardrail_result = if let Some(handle) = guardrail_handle {
             handle
@@ -277,6 +278,7 @@ pub async fn chat_completions(
                 client_auth,
                 request,
                 provider_request,
+                None,
                 compression_tokens_saved,
                 llm_event_id,
             )
@@ -920,136 +922,9 @@ async fn handle_mcp_via_llm(
 type GuardrailHandle =
     Option<tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>>;
 
-/// Handle non-streaming chat completion with parallel guardrails.
-/// Starts LLM request immediately and awaits guardrails concurrently.
-#[allow(clippy::too_many_arguments)]
-async fn handle_non_streaming_parallel(
-    state: AppState,
-    auth: AuthContext,
-    client_auth: Option<Extension<ClientAuthContext>>,
-    request: ChatCompletionRequest,
-    provider_request: ProviderCompletionRequest,
-    guardrail_handle: GuardrailHandle,
-    compression_tokens_saved: u64,
-    llm_event_id: String,
-) -> ApiResult<Response> {
-    let generation_id = format!("gen-{}", Uuid::new_v4());
-    let started_at = Instant::now();
-    let created_at = Utc::now();
-
-    // Start LLM request immediately (don't wait for guardrails)
-    // Clone for potential paid fallback retry after free-tier exhaustion
-    let provider_request_fallback = provider_request.clone();
-    let llm_handle = {
-        let router = state.router.clone();
-        let api_key_id = auth.api_key_id.clone();
-        tokio::spawn(async move { router.complete(&api_key_id, provider_request).await })
-    };
-
-    // Wait for guardrail scan (if spawned) and LLM response concurrently
-    let (guardrail_result, llm_result) = if let Some(handle) = guardrail_handle {
-        let (g, l) = tokio::join!(handle, llm_handle);
-        (Some(g), l)
-    } else {
-        (None, llm_handle.await)
-    };
-
-    // Process guardrail result first — if denied, discard LLM response
-    if let Some(guardrail_res) = guardrail_result {
-        let guardrail_result = guardrail_res.map_err(|e| {
-            ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
-        })??;
-
-        if let Some(check_result) = guardrail_result {
-            super::pipeline::handle_guardrail_approval(
-                &state,
-                client_auth.as_ref().map(|e| &e.0),
-                &request,
-                check_result,
-                "request",
-            )
-            .await?;
-        }
-    }
-
-    // Guardrails passed — unwrap LLM response
-    let llm_result = llm_result
-        .map_err(|e| ApiErrorResponse::internal_error(format!("LLM request failed: {}", e)))?;
-
-    let (response, routing_metadata) = match llm_result {
-        Ok((resp, meta)) => (resp, meta),
-        Err(lr_types::AppError::FreeTierFallbackAvailable {
-            retry_after_secs,
-            exhausted_models,
-        }) => {
-            check_free_tier_fallback(
-                &state,
-                &auth.api_key_id,
-                &exhausted_models,
-                retry_after_secs,
-            )
-            .await?;
-            state
-                .router
-                .complete_with_paid_fallback(&auth.api_key_id, provider_request_fallback)
-                .await
-                .map_err(|e| ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)))?
-        }
-        Err(e) => {
-            let latency = Instant::now().duration_since(started_at).as_millis() as u64;
-            let strategy_id = state
-                .client_manager
-                .get_client(&auth.api_key_id)
-                .map(|c| c.strategy_id.clone())
-                .unwrap_or_else(|| "default".to_string());
-            state.metrics_collector.record_failure(
-                &auth.api_key_id,
-                "unknown",
-                "unknown",
-                &strategy_id,
-                latency,
-            );
-            if let Err(log_err) = state.access_logger.log_failure(
-                &auth.api_key_id,
-                "unknown",
-                "unknown",
-                latency,
-                &generation_id,
-                502,
-            ) {
-                tracing::warn!("Failed to write access log: {}", log_err);
-            }
-            super::monitor_helpers::complete_llm_call_error(
-                &state,
-                &llm_event_id,
-                "unknown",
-                "unknown",
-                502,
-                &e.to_string(),
-            );
-            return Err(ApiErrorResponse::bad_gateway(format!(
-                "Provider error: {}",
-                e
-            )));
-        }
-    };
-
-    // Reuse shared response-building logic
-    build_non_streaming_response(
-        state,
-        auth,
-        client_auth,
-        request,
-        response,
-        generation_id,
-        started_at,
-        created_at,
-        compression_tokens_saved,
-        llm_event_id,
-        routing_metadata,
-    )
-    .await
-}
+// `handle_non_streaming_parallel` was collapsed into
+// `handle_non_streaming` below — the parallel variant is now selected
+// by passing `Some(guardrail_handle)` to the unified handler.
 
 /// Check if a free-tier fallback should be allowed, denied, or needs approval.
 /// Returns Ok(()) if the request should proceed with paid models.
@@ -1137,12 +1012,25 @@ async fn check_free_tier_fallback(
 }
 
 /// Handle non-streaming chat completion (sequential guardrails — already resolved)
+/// Drive a non-streaming chat completion turn. When
+/// `guardrail_handle` is `Some`, the LLM call runs concurrently with
+/// the in-flight guardrail scan and the scan's result is awaited
+/// before any side-effect-producing work; when `None`, guardrails
+/// already completed inline upstream and the LLM call runs on the
+/// current task.
+///
+/// Both paths share the same free-tier fallback retry, error-path
+/// telemetry, and `build_non_streaming_response` finalize call —
+/// previously this lived in two near-duplicate functions
+/// (`handle_non_streaming` + `handle_non_streaming_parallel`).
+#[allow(clippy::too_many_arguments)]
 async fn handle_non_streaming(
     state: AppState,
     auth: AuthContext,
     client_auth: Option<Extension<ClientAuthContext>>,
     request: ChatCompletionRequest,
     provider_request: ProviderCompletionRequest,
+    guardrail_handle: GuardrailHandle,
     compression_tokens_saved: u64,
     llm_event_id: String,
 ) -> ApiResult<Response> {
@@ -1150,13 +1038,45 @@ async fn handle_non_streaming(
     let started_at = Instant::now();
     let created_at = Utc::now();
 
-    // Call router to get completion
-    let (response, routing_metadata) = match state
-        .router
-        .complete(&auth.api_key_id, provider_request.clone())
-        .await
-    {
-        Ok(result) => result,
+    // Clone for potential paid fallback retry after free-tier exhaustion.
+    let provider_request_fallback = provider_request.clone();
+
+    // Run the LLM call. In parallel mode we spawn it so it overlaps
+    // with the in-flight guardrail scan; in sequential mode we await
+    // it directly (guardrails already approved upstream).
+    let llm_outcome = if let Some(g_handle) = guardrail_handle {
+        let router = state.router.clone();
+        let api_key_id = auth.api_key_id.clone();
+        let llm_handle =
+            tokio::spawn(async move { router.complete(&api_key_id, provider_request).await });
+        let (guardrail_result, llm_result) = tokio::join!(g_handle, llm_handle);
+
+        // Process guardrail result first — if denied, discard LLM response.
+        let guardrail_result = guardrail_result.map_err(|e| {
+            ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
+        })??;
+        if let Some(check_result) = guardrail_result {
+            super::pipeline::handle_guardrail_approval(
+                &state,
+                client_auth.as_ref().map(|e| &e.0),
+                &request,
+                check_result,
+                "request",
+            )
+            .await?;
+        }
+
+        llm_result
+            .map_err(|e| ApiErrorResponse::internal_error(format!("LLM request failed: {}", e)))?
+    } else {
+        state
+            .router
+            .complete(&auth.api_key_id, provider_request)
+            .await
+    };
+
+    let (response, routing_metadata) = match llm_outcome {
+        Ok((resp, meta)) => (resp, meta),
         Err(lr_types::AppError::FreeTierFallbackAvailable {
             retry_after_secs,
             exhausted_models,
@@ -1172,12 +1092,12 @@ async fn handle_non_streaming(
             // Approved — retry with paid models
             state
                 .router
-                .complete_with_paid_fallback(&auth.api_key_id, provider_request)
+                .complete_with_paid_fallback(&auth.api_key_id, provider_request_fallback)
                 .await
                 .map_err(|e| ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)))?
         }
         Err(e) => {
-            // Record failure metrics
+            // Record failure metrics + access log + monitor error event.
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -1191,8 +1111,6 @@ async fn handle_non_streaming(
                 &strategy_id,
                 latency,
             );
-
-            // Emit monitor error event
             super::monitor_helpers::complete_llm_call_error(
                 &state,
                 &llm_event_id,
@@ -1201,19 +1119,16 @@ async fn handle_non_streaming(
                 502,
                 &e.to_string(),
             );
-
-            // Log to access log (persistent storage)
             if let Err(log_err) = state.access_logger.log_failure(
                 &auth.api_key_id,
                 "unknown",
                 "unknown",
                 latency,
                 &generation_id,
-                502, // Bad Gateway
+                502,
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
-
             return Err(ApiErrorResponse::bad_gateway(format!(
                 "Provider error: {}",
                 e
