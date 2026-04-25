@@ -1495,4 +1495,39 @@ mod tests {
         let wire = select_wire_body(&completion, "resp_lr_new", 0);
         assert_eq!(wire["id"].as_str(), Some("resp_lr_new"));
     }
+
+    #[test]
+    fn select_wire_body_handles_corrupt_extension_gracefully() {
+        // Defensive: if a future provider stashes something other
+        // than a JSON object under NATIVE_RESPONSES_API_EXT_KEY (a
+        // string, an array, null, etc.), `select_wire_body` should
+        // still return *something* without panicking. The current
+        // implementation just passes the value through without the
+        // id rewrite — not ideal, but fails open rather than closed.
+        for corrupt in [
+            serde_json::Value::String("not an object".into()),
+            serde_json::Value::Array(vec![]),
+            serde_json::Value::Number(serde_json::Number::from(42)),
+            serde_json::Value::Bool(true),
+            serde_json::Value::Null,
+        ] {
+            let completion = make_completion(Some(corrupt.clone()), "x");
+            // Must not panic.
+            let wire = select_wire_body(&completion, "resp_lr_x", 0);
+            // For non-objects, the id rewrite is skipped; we just
+            // pass through. The response is at least defined.
+            assert_eq!(wire, corrupt, "corrupt extension passed through");
+        }
+    }
+
+    #[test]
+    fn rewrite_envelope_handles_non_object() {
+        // `rewrite_envelope_response_id` should also degrade
+        // gracefully when handed a non-object envelope. (Today the
+        // upstream Responses API SSE always sends objects, but
+        // future malformed data shouldn't bring down the stream.)
+        let envelope = serde_json::Value::String("not an envelope".into());
+        let rewritten = rewrite_envelope_response_id(envelope.clone(), "resp_x");
+        assert_eq!(rewritten, envelope);
+    }
 }
