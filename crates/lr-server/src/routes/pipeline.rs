@@ -1905,26 +1905,51 @@ pub(crate) async fn run_turn_pipeline(
                 e
             )))
         })?;
-        if let Ok(Some(compressed)) = compression_result {
-            if compressed.original_tokens > compressed.compressed_tokens {
-                let saved = (compressed.original_tokens - compressed.compressed_tokens) as u64;
-                state
-                    .metrics_collector
-                    .record_feature_event("feature_compression", saved, 0.0);
-                compression_tokens_saved = saved;
+        match compression_result {
+            Ok(Some(compressed)) => {
+                tracing::info!(
+                    "Prompt compressed: {} -> {} msgs, ~{:.0}% reduction ({}ms)",
+                    compressed.original_count,
+                    compressed.compressed_messages.len(),
+                    if compressed.original_tokens > 0 {
+                        100.0
+                            - (compressed.compressed_tokens as f64
+                                / compressed.original_tokens as f64
+                                * 100.0)
+                    } else {
+                        0.0
+                    },
+                    compressed.duration_ms,
+                );
+                if compressed.original_tokens > compressed.compressed_tokens {
+                    let saved = (compressed.original_tokens - compressed.compressed_tokens) as u64;
+                    state
+                        .metrics_collector
+                        .record_feature_event("feature_compression", saved, 0.0);
+                    compression_tokens_saved = saved;
+                }
+                chat_req.messages = compressed
+                    .compressed_messages
+                    .iter()
+                    .map(|m| ChatMessage {
+                        role: m.role.clone(),
+                        content: Some(MessageContent::Text(m.content.clone())),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        reasoning_content: None,
+                    })
+                    .collect();
             }
-            chat_req.messages = compressed
-                .compressed_messages
-                .iter()
-                .map(|m| ChatMessage {
-                    role: m.role.clone(),
-                    content: Some(MessageContent::Text(m.content.clone())),
-                    name: None,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    reasoning_content: None,
-                })
-                .collect();
+            Ok(None) => {
+                // Compression disabled or skipped — no-op, normal case.
+            }
+            Err(e) => {
+                // Graceful degradation: warn and continue with the
+                // un-compressed request. Loses the original chat.rs
+                // visibility otherwise.
+                tracing::warn!("Prompt compression failed (continuing without): {}", e);
+            }
         }
     }
 

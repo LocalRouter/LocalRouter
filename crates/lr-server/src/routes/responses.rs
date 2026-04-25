@@ -897,6 +897,12 @@ fn build_stream_response(
     // not emit the emitter's synthesized finish frames (upstream
     // already sent `response.completed`).
     let mut saw_native_envelope = false;
+    // Captures the last `response.completed` envelope when in native
+    // pass-through mode. Used as the wire_body for telemetry so the
+    // monitor UI shows the upstream's canonical response object —
+    // including reasoning items the emitter's synthesized
+    // `final_response_object` would lose.
+    let mut native_completed_envelope: Option<Value> = None;
 
     let emitted = async_stream::stream! {
         // Opening event.
@@ -985,6 +991,16 @@ fn build_stream_response(
                 // keeps `previous_response_id` continuations pointing
                 // at our session store, not the upstream handle.
                 let envelope = rewrite_envelope_response_id(envelope, &response_id);
+                // Capture the canonical final response object from the
+                // last `response.completed` event — used as the wire
+                // body for monitor telemetry below so the UI sees the
+                // upstream's full response (including reasoning items)
+                // rather than the emitter's synthesized stand-in.
+                if event_type == "response.completed" {
+                    if let Some(resp) = envelope.get("response") {
+                        native_completed_envelope = Some(resp.clone());
+                    }
+                }
                 yield sse_event(ResponsesSseFrame {
                     event: event_type,
                     data: envelope,
@@ -1029,10 +1045,21 @@ fn build_stream_response(
             .or_else(|| model.split_once('/').map(|(p, _)| p.to_string()))
             .unwrap_or_else(|| "router".to_string());
         let model_for_finalize = model_name_observed.clone().unwrap_or_else(|| model.clone());
-        let final_body = emitter.final_response_object(
-            if finish_reason.as_deref() == Some("tool_calls") { "incomplete" } else { "completed" },
-        );
-        let wire_body = serde_json::to_value(&final_body).unwrap_or(Value::Null);
+        // In native pass-through mode, prefer the upstream's canonical
+        // `response.completed` envelope (preserves reasoning items,
+        // built-in tool results) over the emitter's synthesized
+        // `final_response_object`. Falls back when the upstream
+        // sequence didn't carry that event (defensive).
+        let wire_body = native_completed_envelope.clone().unwrap_or_else(|| {
+            let final_body = emitter.final_response_object(
+                if finish_reason.as_deref() == Some("tool_calls") {
+                    "incomplete"
+                } else {
+                    "completed"
+                },
+            );
+            serde_json::to_value(&final_body).unwrap_or(Value::Null)
+        });
         let finalize_inputs = crate::routes::finalize::FinalizeInputs {
             state: &state,
             auth: &auth,
