@@ -106,6 +106,7 @@ pub async fn completions(
     let super::pipeline::TurnContext {
         provider_request,
         guardrail_handle,
+        compression_tokens_saved,
         ..
     } = turn;
 
@@ -141,6 +142,7 @@ pub async fn completions(
                 request,
                 provider_request,
                 guardrail_handle,
+                compression_tokens_saved,
                 llm_event_id,
             )
             .await
@@ -152,6 +154,7 @@ pub async fn completions(
                 request,
                 provider_request,
                 guardrail_handle,
+                compression_tokens_saved,
                 llm_event_id,
             )
             .await
@@ -203,6 +206,7 @@ pub async fn completions(
                 client_auth,
                 request,
                 provider_request,
+                compression_tokens_saved,
                 llm_event_id,
             )
             .await
@@ -213,6 +217,7 @@ pub async fn completions(
                 client_auth,
                 request,
                 provider_request,
+                compression_tokens_saved,
                 llm_event_id,
             )
             .await
@@ -523,6 +528,7 @@ async fn handle_non_streaming_parallel(
     request: CompletionRequest,
     provider_request: ProviderCompletionRequest,
     guardrail_handle: GuardrailHandle,
+    compression_tokens_saved: u64,
     llm_event_id: String,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
@@ -606,18 +612,21 @@ async fn handle_non_streaming_parallel(
         generation_id,
         started_at,
         created_at,
+        compression_tokens_saved,
         llm_event_id,
         routing_metadata,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_non_streaming(
     state: AppState,
     auth: AuthContext,
     _client_auth: Option<Extension<ClientAuthContext>>,
     request: CompletionRequest,
     provider_request: ProviderCompletionRequest,
+    compression_tokens_saved: u64,
     llm_event_id: String,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
@@ -687,6 +696,7 @@ async fn handle_non_streaming(
         generation_id,
         started_at,
         created_at,
+        compression_tokens_saved,
         llm_event_id,
         routing_metadata,
     )
@@ -704,6 +714,7 @@ async fn build_non_streaming_response(
     generation_id: String,
     started_at: Instant,
     created_at: chrono::DateTime<Utc>,
+    compression_tokens_saved: u64,
     llm_event_id: String,
     routing_metadata: Option<serde_json::Value>,
 ) -> ApiResult<Response> {
@@ -720,7 +731,7 @@ async fn build_non_streaming_response(
         started_at,
         created_at,
         incremental_prompt_tokens: response.usage.prompt_tokens,
-        compression_tokens_saved: 0,
+        compression_tokens_saved,
         routing_metadata: routing_metadata.as_ref(),
         user: request.user.clone(),
         streamed: false,
@@ -777,12 +788,14 @@ async fn build_non_streaming_response(
 }
 
 /// Handle streaming completion
+#[allow(clippy::too_many_arguments)]
 async fn handle_streaming(
     state: AppState,
     auth: AuthContext,
     _client_auth: Option<Extension<ClientAuthContext>>,
     request: CompletionRequest,
     provider_request: ProviderCompletionRequest,
+    compression_tokens_saved: u64,
     llm_event_id: String,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
@@ -989,7 +1002,7 @@ async fn handle_streaming(
             started_at,
             created_at: created_at_clone,
             incremental_prompt_tokens: prompt_tokens,
-            compression_tokens_saved: 0,
+            compression_tokens_saved,
             routing_metadata: routing_metadata.as_ref(),
             user: request_user,
             streamed: true,
@@ -1026,6 +1039,7 @@ async fn handle_streaming_parallel(
     request: CompletionRequest,
     provider_request: ProviderCompletionRequest,
     guardrail_handle: GuardrailHandle,
+    compression_tokens_saved: u64,
     llm_event_id: String,
 ) -> ApiResult<Response> {
     use tokio::sync::{mpsc, watch};
@@ -1340,7 +1354,7 @@ async fn handle_streaming_parallel(
                 started_at,
                 created_at,
                 incremental_prompt_tokens: prompt_tokens,
-                compression_tokens_saved: 0,
+                compression_tokens_saved,
                 routing_metadata: routing_metadata.as_ref(),
                 user: request_user,
                 streamed: true,
