@@ -529,16 +529,13 @@ async fn handle_non_streaming_parallel(
     let started_at = Instant::now();
     let created_at = Utc::now();
 
-    // Start LLM request immediately
+    // Start LLM request immediately. Preserve the router's routing
+    // metadata so `build_non_streaming_response` can attach it to the
+    // monitor event — matches `handle_non_streaming`'s behavior.
     let llm_handle = {
         let router = state.router.clone();
         let api_key_id = auth.api_key_id.clone();
-        tokio::spawn(async move {
-            router
-                .complete(&api_key_id, provider_request)
-                .await
-                .map(|(r, _)| r)
-        })
+        tokio::spawn(async move { router.complete(&api_key_id, provider_request).await })
     };
 
     // Wait for both concurrently
@@ -559,8 +556,8 @@ async fn handle_non_streaming_parallel(
         .await?;
     }
 
-    // Unwrap LLM response
-    let response = llm_result
+    // Unwrap LLM response (and router's routing metadata)
+    let (response, routing_metadata) = llm_result
         .map_err(|e| ApiErrorResponse::internal_error(format!("LLM request failed: {}", e)))?
         .map_err(|e| {
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
@@ -610,9 +607,7 @@ async fn handle_non_streaming_parallel(
         started_at,
         created_at,
         llm_event_id,
-        // MCP-via-LLM path: router metadata is not available at this
-        // site (the orchestrator drives routing internally).
-        None,
+        routing_metadata,
     )
     .await
 }
