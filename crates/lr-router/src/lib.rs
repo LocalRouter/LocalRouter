@@ -381,6 +381,15 @@ fn calculate_cost(
     input_cost + output_cost + reasoning_cost
 }
 
+/// How a requested model matches a provider's model list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchKind {
+    /// Provider exposes the model id verbatim (case-insensitive).
+    Exact,
+    /// Provider exposes the model only after stripping a `prefix/` and/or `:tag`.
+    Normalized,
+}
+
 /// Router for handling completion requests with API key-based model selection
 pub struct Router {
     config_manager: Arc<ConfigManager>,
@@ -786,8 +795,13 @@ impl Router {
         Ok(())
     }
 
-    /// Find provider for a model when no provider is specified in model string
-    /// Searches through strategy's allowed models to find which provider has this model
+    /// Find provider for a model when no provider is specified in model string.
+    ///
+    /// Match priority: exact id match (case-insensitive) wins over normalized
+    /// match. Without this, a request for `gpt-5.5` would tie between ChatGPT
+    /// Plus (which exposes id `gpt-5.5`) and OpenRouter (which exposes
+    /// `openai/gpt-5.5`, normalizing to the same value), and iteration order
+    /// would silently pick the wrong provider.
     async fn find_provider_for_model(
         &self,
         model: &str,
@@ -796,51 +810,80 @@ impl Router {
         let normalized_requested = Self::normalize_model_id(model);
         let allowed = &strategy.allowed_models;
 
-        // Check selected_models first (individual model selections)
+        let mut exact_match: Option<String> = None;
+        let mut normalized_match: Option<String> = None;
+
+        // selected_models: explicit (provider, model) pairs already chosen by the user.
         for (prov, mod_name) in &allowed.selected_models {
-            let normalized_allowed = Self::normalize_model_id(mod_name);
-            if normalized_allowed == normalized_requested {
-                return Ok((prov.clone(), model.to_string()));
-            }
-        }
-
-        // Check providers in selected_providers
-        for prov in &allowed.selected_providers {
-            if let Some(provider_instance) = self.provider_registry.get_provider(prov) {
-                if let Ok(models) = provider_instance.list_models().await {
-                    if models.iter().any(|m| {
-                        let normalized_provider_model = Self::normalize_model_id(&m.id);
-                        normalized_provider_model == normalized_requested
-                    }) {
-                        return Ok((prov.clone(), model.to_string()));
-                    }
+            if mod_name.eq_ignore_ascii_case(model) {
+                if exact_match.is_none() {
+                    exact_match = Some(prov.clone());
                 }
+            } else if normalized_match.is_none()
+                && Self::normalize_model_id(mod_name) == normalized_requested
+            {
+                normalized_match = Some(prov.clone());
             }
         }
 
-        // If selected_all is true, search all providers
+        // Build the ordered list of provider instances to live-scan.
+        let mut candidates: Vec<String> = allowed.selected_providers.clone();
         if allowed.selected_all {
-            for instance_info in self.provider_registry.list_providers() {
-                if let Some(provider_instance) = self
-                    .provider_registry
-                    .get_provider(&instance_info.instance_name)
-                {
-                    if let Ok(models) = provider_instance.list_models().await {
-                        if models.iter().any(|m| {
-                            let normalized_provider_model = Self::normalize_model_id(&m.id);
-                            normalized_provider_model == normalized_requested
-                        }) {
-                            return Ok((instance_info.instance_name.clone(), model.to_string()));
-                        }
-                    }
+            for inst in self.provider_registry.list_providers() {
+                if !candidates.iter().any(|c| c == &inst.instance_name) {
+                    candidates.push(inst.instance_name);
                 }
             }
+        }
+
+        for prov in candidates {
+            if exact_match.is_some() {
+                break;
+            }
+            let Some(provider_instance) = self.provider_registry.get_provider(&prov) else {
+                continue;
+            };
+            let Ok(models) = provider_instance.list_models().await else {
+                continue;
+            };
+            let model_ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+            match Self::classify_match(model, &model_ids) {
+                Some(MatchKind::Exact) => exact_match = Some(prov),
+                Some(MatchKind::Normalized) if normalized_match.is_none() => {
+                    normalized_match = Some(prov);
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(prov) = exact_match.or(normalized_match) {
+            return Ok((prov, model.to_string()));
         }
 
         Err(AppError::Router(format!(
             "Model '{}' is not allowed by this strategy",
             model
         )))
+    }
+
+    /// Classify how a list of provider-supplied model ids matches a requested model.
+    /// Exact id match (case-insensitive) is preferred over normalized match.
+    fn classify_match(requested: &str, available_ids: &[&str]) -> Option<MatchKind> {
+        let normalized_requested = Self::normalize_model_id(requested);
+        let mut found_normalized = false;
+        for id in available_ids {
+            if id.eq_ignore_ascii_case(requested) {
+                return Some(MatchKind::Exact);
+            }
+            if !found_normalized && Self::normalize_model_id(id) == normalized_requested {
+                found_normalized = true;
+            }
+        }
+        if found_normalized {
+            Some(MatchKind::Normalized)
+        } else {
+            None
+        }
     }
 
     /// Normalize a model ID for comparison
@@ -3249,5 +3292,61 @@ mod tests {
         assert_eq!(Router::normalize_model_id("OpenAI/GPT-4:Turbo"), "gpt-4");
         // Case: "OLLAMA/LLaMA2:Latest" -> "llama2"
         assert_eq!(Router::normalize_model_id("OLLAMA/LLaMA2:Latest"), "llama2");
+    }
+
+    // ============================================================================
+    // Test classify_match — exact id match preferred over normalized
+    // ============================================================================
+
+    #[test]
+    fn test_classify_match_exact() {
+        assert_eq!(
+            Router::classify_match("gpt-5.5", &["gpt-5.5", "gpt-5.5-mini"]),
+            Some(MatchKind::Exact)
+        );
+    }
+
+    #[test]
+    fn test_classify_match_exact_case_insensitive() {
+        assert_eq!(
+            Router::classify_match("GPT-5.5", &["gpt-5.5"]),
+            Some(MatchKind::Exact)
+        );
+    }
+
+    #[test]
+    fn test_classify_match_normalized_only() {
+        // OpenRouter exposes models as `vendor/model`; bare request matches only via normalization.
+        assert_eq!(
+            Router::classify_match("gpt-5.5", &["openai/gpt-5.5", "anthropic/claude-3"]),
+            Some(MatchKind::Normalized)
+        );
+    }
+
+    #[test]
+    fn test_classify_match_no_match() {
+        assert_eq!(
+            Router::classify_match("gpt-5.5", &["gpt-4", "claude-3"]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_classify_match_exact_wins_over_normalized_in_same_list() {
+        // If both an exact and a normalized-only candidate live in the same
+        // provider's list, exact still wins.
+        assert_eq!(
+            Router::classify_match("gpt-5.5", &["openai/gpt-5.5", "gpt-5.5"]),
+            Some(MatchKind::Exact)
+        );
+    }
+
+    #[test]
+    fn test_classify_match_normalized_handles_tags() {
+        // Ollama-style tags should still match via normalization.
+        assert_eq!(
+            Router::classify_match("llama2", &["llama2:latest"]),
+            Some(MatchKind::Normalized)
+        );
     }
 }
