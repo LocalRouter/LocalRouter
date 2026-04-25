@@ -916,7 +916,12 @@ fn build_stream_response(
             let chunk = match chunk_result {
                 Ok(c) => c,
                 Err(e) => {
-                    // Emit an error frame and terminate.
+                    // Emit an error frame, complete the LlmCall monitor
+                    // event with the error so it doesn't dangle in
+                    // `Pending`, and terminate. We previously just
+                    // returned here, leaving the event un-completed —
+                    // which left the UI's "in flight" indicator stuck
+                    // and dropped the failure from the access log.
                     let frame = ResponsesSseFrame {
                         event: "response.failed".into(),
                         data: serde_json::json!({
@@ -929,6 +934,19 @@ fn build_stream_response(
                         }),
                     };
                     yield sse_event(frame);
+                    let provider_for_err = model_name_observed
+                        .as_deref()
+                        .and_then(|m| m.split_once('/').map(|(p, _)| p.to_string()))
+                        .unwrap_or_else(|| "router".to_string());
+                    let model_for_err = model_name_observed.clone().unwrap_or_else(|| model.clone());
+                    super::monitor_helpers::complete_llm_call_error(
+                        &state,
+                        &llm_event_id,
+                        &provider_for_err,
+                        &model_for_err,
+                        502,
+                        &e.to_string(),
+                    );
                     return;
                 }
             };
