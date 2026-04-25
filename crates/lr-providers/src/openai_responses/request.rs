@@ -127,9 +127,23 @@ pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> Res
         .map(|ts| ts.iter().map(tool_to_value).collect::<Vec<_>>())
         .unwrap_or_default();
 
+    // The ChatGPT backend (`chatgpt.com/backend-api/codex/responses`)
+    // rejects requests with empty `instructions` as
+    // `400 {"detail":"Instructions are required"}`. Most clients
+    // hitting `/v1/chat/completions` against ChatGPT Plus don't send
+    // a system message, so we'd silently 400 their requests. Fall
+    // back to a minimal generic prompt when the caller didn't supply
+    // one — matches Codex CLI's behavior of always sending a non-
+    // empty system prompt.
+    let instructions = if instructions_parts.is_empty() {
+        DEFAULT_INSTRUCTIONS.to_string()
+    } else {
+        instructions_parts.join("\n")
+    };
+
     ResponsesApiRequest {
         model: req.model.clone(),
-        instructions: instructions_parts.join("\n"),
+        instructions,
         input,
         tools,
         tool_choice: "auto".into(),
@@ -144,6 +158,12 @@ pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> Res
         previous_response_id: None,
     }
 }
+
+/// Fallback used when the chat-completions request had no system /
+/// developer message and the upstream demands non-empty instructions
+/// (today: ChatGPT Plus's `/responses` endpoint). Kept minimal so it
+/// doesn't bias the model away from the user's actual request.
+pub(crate) const DEFAULT_INSTRUCTIONS: &str = "You are a helpful assistant.";
 
 /// Convert our `ChatMessageContent` (text or multimodal parts) into
 /// Responses-API `ContentItem`s. `is_output = true` for assistant
@@ -328,6 +348,32 @@ mod tests {
         assert_eq!(fmt.format_type, "json_schema");
         assert!(fmt.strict);
         assert_eq!(fmt.schema, schema);
+    }
+
+    #[test]
+    fn empty_instructions_falls_back_to_default() {
+        // ChatGPT backend rejects empty `instructions` as
+        // `400 Instructions are required`. Verify the translator
+        // supplies a non-empty default when the caller had no
+        // system / developer message.
+        let req = base_request(vec![msg("user", "hi")]);
+        let out = plain(req);
+        assert_eq!(out.instructions, DEFAULT_INSTRUCTIONS);
+        assert!(!out.instructions.is_empty());
+    }
+
+    #[test]
+    fn explicit_system_overrides_default_instructions() {
+        // Defensive: when the caller does provide a system message,
+        // it must take precedence over the fallback — otherwise we'd
+        // be silently overriding user intent.
+        let req = base_request(vec![
+            msg("system", "Always reply in haiku."),
+            msg("user", "weather?"),
+        ]);
+        let out = plain(req);
+        assert_eq!(out.instructions, "Always reply in haiku.");
+        assert_ne!(out.instructions, DEFAULT_INSTRUCTIONS);
     }
 
     #[test]
