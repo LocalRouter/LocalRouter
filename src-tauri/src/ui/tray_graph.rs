@@ -46,11 +46,19 @@ pub struct GraphConfig {
 
 impl GraphConfig {
     /// Create config for macOS (non-template mode with visible colors)
-    /// Uses transparent background with white foreground
-    pub fn macos() -> Self {
+    /// Uses transparent background; foreground follows the menu bar theme
+    /// (white when the menu bar is dark, black when it's light) so the icon
+    /// is always visible. Template mode is disabled because the colored
+    /// status overlays would otherwise be flattened to monochrome.
+    pub fn macos(dark_mode: bool) -> Self {
+        let foreground = if dark_mode {
+            Rgba([255, 255, 255, 255]) // White
+        } else {
+            Rgba([0, 0, 0, 255]) // Black
+        };
         Self {
-            foreground: Rgba([255, 255, 255, 255]), // White
-            background: Rgba([0, 0, 0, 0]),         // Transparent
+            foreground,
+            background: Rgba([0, 0, 0, 0]), // Transparent
             template_mode: false,
         }
     }
@@ -658,11 +666,13 @@ pub fn generate_graph(
     encode_png(&img)
 }
 
-/// Decode a static icon PNG and convert it to white graphic on transparent background.
+/// Decode a static icon PNG and recolor it for the current theme.
 ///
-/// Converts all non-transparent pixels to white, preserving their alpha channel.
-/// The background (fully transparent pixels) remains transparent.
-fn decode_static_icon_white_on_transparent(static_icon_bytes: &[u8]) -> Option<RgbaImage> {
+/// The graphic (dark pixels in the source) is recolored to white when
+/// `dark_mode` is true and to black when it's false, so the icon stays
+/// visible against the macOS menu bar in both appearances. Source
+/// background pixels become fully transparent.
+fn decode_static_icon_for_theme(static_icon_bytes: &[u8], dark_mode: bool) -> Option<RgbaImage> {
     use image::ImageReader;
     use std::io::Cursor;
 
@@ -672,23 +682,19 @@ fn decode_static_icon_white_on_transparent(static_icon_bytes: &[u8]) -> Option<R
     let decoded = reader.decode().ok()?;
     let mut img = decoded.to_rgba8();
 
-    // Convert to white graphic on transparent background:
-    // - Pixels with alpha > 0: set RGB to white, keep alpha
-    // - Fully transparent pixels: stay transparent
+    let fg: u8 = if dark_mode { 255 } else { 0 };
+
     for pixel in img.pixels_mut() {
         if pixel[3] > 0 {
-            // Use the original alpha as a luminance-based mask:
-            // Dark pixels (low RGB) in the source are the graphic → make them white + opaque
-            // Light pixels (high RGB) are the background → make them transparent
             let luminance = (pixel[0] as u16 + pixel[1] as u16 + pixel[2] as u16) / 3;
             if luminance < 128 {
-                // Dark pixel (part of the graphic) → white, fully opaque
-                pixel[0] = 255;
-                pixel[1] = 255;
-                pixel[2] = 255;
+                // Dark source pixel = part of the graphic → theme foreground
+                pixel[0] = fg;
+                pixel[1] = fg;
+                pixel[2] = fg;
                 pixel[3] = 255;
             } else {
-                // Light pixel (background) → transparent
+                // Light source pixel = background → transparent
                 pixel[0] = 0;
                 pixel[1] = 0;
                 pixel[2] = 0;
@@ -700,12 +706,15 @@ fn decode_static_icon_white_on_transparent(static_icon_bytes: &[u8]) -> Option<R
     Some(img)
 }
 
-/// Generate the static tray icon as white graphic on transparent background.
+/// Generate the static tray icon recolored for the current theme.
+///
+/// White graphic on transparent background when `dark_mode` is true,
+/// black graphic when it's false.
 ///
 /// # Returns
 /// PNG-encoded image as bytes, or None if generation fails
-pub fn generate_static_icon(static_icon_bytes: &[u8]) -> Option<Vec<u8>> {
-    let img = decode_static_icon_white_on_transparent(static_icon_bytes)?;
+pub fn generate_static_icon(static_icon_bytes: &[u8], dark_mode: bool) -> Option<Vec<u8>> {
+    let img = decode_static_icon_for_theme(static_icon_bytes, dark_mode)?;
     encode_png(&img)
 }
 
@@ -727,7 +736,7 @@ pub fn generate_static_icon_with_overlay(
     overlay: TrayOverlay,
     dark_mode: bool,
 ) -> Option<Vec<u8>> {
-    let mut img = decode_static_icon_white_on_transparent(static_icon_bytes)?;
+    let mut img = decode_static_icon_for_theme(static_icon_bytes, dark_mode)?;
 
     // Clear the top-left area where the overlay will be drawn.
     // Uses the same cutout geometry as the graph mode: a circle centered
@@ -757,7 +766,12 @@ pub fn generate_static_icon_with_overlay(
             draw_exclamation_mark(&mut img, *color);
         }
         TrayOverlay::UpdateAvailable => {
-            draw_down_arrow(&mut img, Rgba([255, 255, 255, 255]));
+            let fg = if dark_mode {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([0, 0, 0, 255])
+            };
+            draw_down_arrow(&mut img, fg);
         }
         TrayOverlay::FirewallPending => {
             draw_question_mark(&mut img, StatusDotColors::red(dark_mode));
@@ -788,13 +802,13 @@ fn encode_png(img: &RgbaImage) -> Option<Vec<u8>> {
 
 /// Get platform-specific graph config
 #[cfg(target_os = "macos")]
-pub fn platform_graph_config() -> GraphConfig {
-    GraphConfig::macos()
+pub fn platform_graph_config(dark_mode: bool) -> GraphConfig {
+    GraphConfig::macos(dark_mode)
 }
 
 /// Get platform-specific graph config
 #[cfg(not(target_os = "macos"))]
-pub fn platform_graph_config() -> GraphConfig {
+pub fn platform_graph_config(_dark_mode: bool) -> GraphConfig {
     GraphConfig::windows_linux()
 }
 
@@ -896,7 +910,7 @@ mod tests {
 
     #[test]
     fn test_platform_configs() {
-        let _config = platform_graph_config();
+        let _config = platform_graph_config(true);
         // Just ensure it doesn't panic
     }
 
@@ -1081,7 +1095,7 @@ mod tests {
         println!("Wrote Windows/Linux graph (warning) to /tmp/test_tray_graph.png");
 
         // Generate macOS version with Warning overlay (dark mode)
-        let config_mac = GraphConfig::macos();
+        let config_mac = GraphConfig::macos(true);
         let png_mac = generate_graph(
             &data,
             &config_mac,
@@ -1150,7 +1164,7 @@ mod tests {
         let static_icon: &[u8] = include_bytes!("../../icons/32x32.png");
 
         // Plain static icon (no overlay)
-        let png = generate_static_icon(static_icon).unwrap();
+        let png = generate_static_icon(static_icon, true).unwrap();
         let mut f = File::create("/tmp/test_static_icon_plain.png").unwrap();
         f.write_all(&png).unwrap();
 

@@ -563,7 +563,7 @@ impl TrayGraphManager {
 
             // Both paths produce white-on-transparent icon; overlay adds colored indicator
             let icon_bytes = if overlay == TrayOverlay::None {
-                crate::ui::tray_graph::generate_static_icon(STATIC_ICON)
+                crate::ui::tray_graph::generate_static_icon(STATIC_ICON, dark_mode)
                     .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon"))?
             } else {
                 crate::ui::tray_graph::generate_static_icon_with_overlay(
@@ -602,7 +602,7 @@ impl TrayGraphManager {
         }
 
         // Generate graph PNG with overlay
-        let graph_config = platform_graph_config();
+        let graph_config = platform_graph_config(dark_mode);
         let png_bytes =
             crate::ui::tray_graph::generate_graph(&data_points, &graph_config, overlay, dark_mode)
                 .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
