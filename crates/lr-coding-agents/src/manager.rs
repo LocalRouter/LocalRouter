@@ -44,7 +44,12 @@ pub struct CodingAgentManager {
     /// — overriding whatever the default approval flow (popup / noop)
     /// would otherwise install. Direktor uses this to route approval
     /// requests onto its EventBus instead of LocalRouter's popup UI.
-    approval_service_factory: Option<ApprovalServiceFactory>,
+    ///
+    /// Held behind a `RwLock` so callers that already hold an
+    /// `Arc<CodingAgentManager>` can install / replace it after
+    /// construction (the Direktor adapter constructs the manager and
+    /// the factory in different orders depending on the lifecycle).
+    approval_service_factory: std::sync::RwLock<Option<ApprovalServiceFactory>>,
 }
 
 impl CodingAgentManager {
@@ -56,11 +61,12 @@ impl CodingAgentManager {
             config,
             max_concurrent_sessions: AtomicUsize::new(max),
             change_tx,
-            approval_service_factory: None,
+            approval_service_factory: std::sync::RwLock::new(None),
         }
     }
 
-    /// Install a per-session [`ExecutorApprovalService`] factory.
+    /// Install a per-session [`ExecutorApprovalService`] factory at
+    /// construction time.
     ///
     /// When set, the factory is invoked once per spawned session
     /// (initial start *and* every resume / follow-up) and the returned
@@ -69,21 +75,35 @@ impl CodingAgentManager {
     /// `CodingAgentApprovalMode` config would otherwise pick.
     ///
     /// Builder-style; returns `Self` so it composes with
-    /// [`CodingAgentManager::new`].
-    pub fn with_approval_service_factory(mut self, factory: ApprovalServiceFactory) -> Self {
-        self.approval_service_factory = Some(factory);
+    /// [`CodingAgentManager::new`]. For runtime install on an
+    /// already-constructed manager (held behind an `Arc`) use
+    /// [`Self::set_approval_service_factory`] which only requires
+    /// `&self`.
+    pub fn with_approval_service_factory(self, factory: ApprovalServiceFactory) -> Self {
+        *self
+            .approval_service_factory
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(factory);
         self
     }
 
     /// Replace the approval-service factory after construction. `None`
-    /// reverts to the default mode-driven approval flow.
-    pub fn set_approval_service_factory(&mut self, factory: Option<ApprovalServiceFactory>) {
-        self.approval_service_factory = factory;
+    /// reverts to the default mode-driven approval flow. Takes `&self`
+    /// (interior mutability via `RwLock`) so callers holding an `Arc`
+    /// can swap factories at runtime.
+    pub fn set_approval_service_factory(&self, factory: Option<ApprovalServiceFactory>) {
+        *self
+            .approval_service_factory
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = factory;
     }
 
     /// Whether a custom approval-service factory has been installed.
     pub fn has_custom_approval_service(&self) -> bool {
-        self.approval_service_factory.is_some()
+        self.approval_service_factory
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
     }
 
     /// Subscribe to session change notifications
@@ -181,6 +201,8 @@ impl CodingAgentManager {
             self.config.approval_mode,
             None, // no session_id for initial spawn
             self.approval_service_factory
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .map(|factory| factory(&session_id)),
         )
@@ -418,6 +440,8 @@ impl CodingAgentManager {
             self.config.approval_mode,
             agent_session_id,
             self.approval_service_factory
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .map(|factory| factory(&session_id.to_string())),
         )
