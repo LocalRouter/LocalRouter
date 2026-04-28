@@ -5,6 +5,7 @@
 
 use crate::types::*;
 use dashmap::DashMap;
+use executors::approvals::ExecutorApprovalService;
 use executors::env::{ExecutionEnv, RepoContext};
 use executors::executors::{CodingAgent, SpawnedChild, StandardCodingAgentExecutor};
 use lr_config::{
@@ -18,6 +19,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info, warn};
 
+/// Per-session approval-service factory. Returning a fresh service per
+/// spawn lets callers scope approval-pending state to a specific session
+/// — Direktor uses this to publish `agent.approval_required` events
+/// keyed by Direktor's own session id while the upstream
+/// `executors::ExecutorApprovalService` future is held.
+pub type ApprovalServiceFactory =
+    Arc<dyn Fn(&SessionId) -> Arc<dyn ExecutorApprovalService> + Send + Sync>;
+
 /// Manages all coding agent sessions
 pub struct CodingAgentManager {
     /// All sessions, keyed by session ID
@@ -29,6 +38,13 @@ pub struct CodingAgentManager {
     max_concurrent_sessions: AtomicUsize,
     /// Broadcast channel for session change notifications
     change_tx: broadcast::Sender<()>,
+    /// Optional factory for a custom [`ExecutorApprovalService`]. When
+    /// set, the manager calls it for every spawned session and installs
+    /// the returned service via [`StandardCodingAgentExecutor::use_approvals`]
+    /// — overriding whatever the default approval flow (popup / noop)
+    /// would otherwise install. Direktor uses this to route approval
+    /// requests onto its EventBus instead of LocalRouter's popup UI.
+    approval_service_factory: Option<ApprovalServiceFactory>,
 }
 
 impl CodingAgentManager {
@@ -40,7 +56,34 @@ impl CodingAgentManager {
             config,
             max_concurrent_sessions: AtomicUsize::new(max),
             change_tx,
+            approval_service_factory: None,
         }
+    }
+
+    /// Install a per-session [`ExecutorApprovalService`] factory.
+    ///
+    /// When set, the factory is invoked once per spawned session
+    /// (initial start *and* every resume / follow-up) and the returned
+    /// service is attached via the executor's `use_approvals` hook —
+    /// taking precedence over the popup / noop default the
+    /// `CodingAgentApprovalMode` config would otherwise pick.
+    ///
+    /// Builder-style; returns `Self` so it composes with
+    /// [`CodingAgentManager::new`].
+    pub fn with_approval_service_factory(mut self, factory: ApprovalServiceFactory) -> Self {
+        self.approval_service_factory = Some(factory);
+        self
+    }
+
+    /// Replace the approval-service factory after construction. `None`
+    /// reverts to the default mode-driven approval flow.
+    pub fn set_approval_service_factory(&mut self, factory: Option<ApprovalServiceFactory>) {
+        self.approval_service_factory = factory;
+    }
+
+    /// Whether a custom approval-service factory has been installed.
+    pub fn has_custom_approval_service(&self) -> bool {
+        self.approval_service_factory.is_some()
     }
 
     /// Subscribe to session change notifications
@@ -137,6 +180,9 @@ impl CodingAgentManager {
             &config,
             self.config.approval_mode,
             None, // no session_id for initial spawn
+            self.approval_service_factory
+                .as_ref()
+                .map(|factory| factory(&session_id)),
         )
         .await?;
 
@@ -371,6 +417,9 @@ impl CodingAgentManager {
             config,
             self.config.approval_mode,
             agent_session_id,
+            self.approval_service_factory
+                .as_ref()
+                .map(|factory| factory(&session_id.to_string())),
         )
         .await?;
 
@@ -641,6 +690,7 @@ async fn spawn_via_executor(
     config: &SessionConfig,
     approval_mode: CodingAgentApprovalMode,
     resume_session_id: Option<&str>,
+    approval_override: Option<Arc<dyn ExecutorApprovalService>>,
 ) -> Result<SpawnedChild, CodingAgentError> {
     let mut env = ExecutionEnv::new(
         RepoContext::new(work_dir.to_path_buf(), Vec::new()),
@@ -658,7 +708,14 @@ async fn spawn_via_executor(
     env.insert("CLAUDE_CODE_ENTRYPOINT", "");
     env.insert("CLAUDE_CODE_SESSION_ACCESS_TOKEN", "");
 
-    let executor = build_executor(agent_type, config, approval_mode)?;
+    let mut executor = build_executor(agent_type, config, approval_mode)?;
+    if let Some(svc) = approval_override {
+        // Plug an externally supplied approval service into whichever
+        // executor variant `build_executor` produced. The default impl
+        // on `StandardCodingAgentExecutor` is a no-op, so calling this
+        // for agents that don't implement approvals is harmless.
+        executor.use_approvals(svc);
+    }
 
     let spawned = if let Some(sid) = resume_session_id {
         executor
@@ -932,7 +989,12 @@ impl CodingAgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use executors::approvals::{ExecutorApprovalError, ExecutorApprovalService};
     use lr_config::CodingAgentsConfig;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use tokio_util::sync::CancellationToken;
+    use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
 
     fn test_config() -> CodingAgentsConfig {
         CodingAgentsConfig {
@@ -954,6 +1016,75 @@ mod tests {
         let config = test_config();
         let manager = CodingAgentManager::new(config.clone());
         assert_eq!(manager.config().max_concurrent_sessions, 5);
+    }
+
+    /// Counts factory invocations + records the session ids it received,
+    /// so the test can assert the manager actually delegates per spawn.
+    struct CountingApprovals {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ExecutorApprovalService for CountingApprovals {
+        async fn create_tool_approval(
+            &self,
+            _tool_name: &str,
+        ) -> Result<String, ExecutorApprovalError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(String::new())
+        }
+        async fn create_question_approval(
+            &self,
+            _tool_name: &str,
+            _question_count: usize,
+        ) -> Result<String, ExecutorApprovalError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(String::new())
+        }
+        async fn wait_tool_approval(
+            &self,
+            _approval_id: &str,
+            _cancel: CancellationToken,
+        ) -> Result<ApprovalStatus, ExecutorApprovalError> {
+            Ok(ApprovalStatus::Approved)
+        }
+        async fn wait_question_answer(
+            &self,
+            _approval_id: &str,
+            _cancel: CancellationToken,
+        ) -> Result<QuestionStatus, ExecutorApprovalError> {
+            Ok(QuestionStatus::Answered {
+                answers: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn approval_service_factory_round_trip() {
+        let manager = CodingAgentManager::new(test_config());
+        assert!(!manager.has_custom_approval_service());
+
+        let factory: ApprovalServiceFactory = Arc::new(|_session_id: &SessionId| {
+            Arc::new(CountingApprovals {
+                calls: AtomicUsize::new(0),
+            }) as Arc<dyn ExecutorApprovalService>
+        });
+        let manager = manager.with_approval_service_factory(factory);
+        assert!(manager.has_custom_approval_service());
+    }
+
+    #[test]
+    fn set_approval_service_factory_replaces_and_clears() {
+        let mut manager = CodingAgentManager::new(test_config());
+        let factory: ApprovalServiceFactory = Arc::new(|_| {
+            Arc::new(CountingApprovals {
+                calls: AtomicUsize::new(0),
+            }) as Arc<dyn ExecutorApprovalService>
+        });
+        manager.set_approval_service_factory(Some(factory));
+        assert!(manager.has_custom_approval_service());
+        manager.set_approval_service_factory(None);
+        assert!(!manager.has_custom_approval_service());
     }
 
     #[test]
