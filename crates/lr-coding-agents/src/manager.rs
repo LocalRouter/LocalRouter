@@ -192,7 +192,17 @@ impl CodingAgentManager {
             self.config.output_buffer_size,
         );
 
-        // Spawn via executors crate (robust process management)
+        // Spawn via executors crate (robust process management).
+        // Materialise the approval service before the await so the
+        // RwLockReadGuard isn't held across the .await boundary
+        // (it's !Send).
+        let approval_override = {
+            let guard = self
+                .approval_service_factory
+                .read()
+                .unwrap_or_else(|p| p.into_inner());
+            guard.as_ref().map(|factory| factory(&session_id))
+        };
         let spawned = spawn_via_executor(
             agent_type,
             prompt,
@@ -200,11 +210,7 @@ impl CodingAgentManager {
             &config,
             self.config.approval_mode,
             None, // no session_id for initial spawn
-            self.approval_service_factory
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .map(|factory| factory(&session_id)),
+            approval_override,
         )
         .await?;
 
@@ -439,11 +445,15 @@ impl CodingAgentManager {
             config,
             self.config.approval_mode,
             agent_session_id,
-            self.approval_service_factory
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .map(|factory| factory(&session_id.to_string())),
+            {
+                let guard = self
+                    .approval_service_factory
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner());
+                guard
+                    .as_ref()
+                    .map(|factory| factory(&session_id.to_string()))
+            },
         )
         .await?;
 
