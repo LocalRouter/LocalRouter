@@ -769,6 +769,33 @@ async fn spawn_via_executor(
 ///
 /// Executor structs are constructed via JSON deserialization since their
 /// fields are partially private (e.g., `approvals_service`).
+///
+/// `Auto` mode wires each agent's native most-AI-permissive flag rather
+/// than a flat skip-all. The choice per agent follows each CLI's own
+/// notion of "auto":
+///
+/// - **Claude Code**: `--permission-mode=auto` (the AI-classifier mode
+///   added in late 2025 — auto-approves common operations and bubbles
+///   up risky ones via the existing `--permission-prompt-tool=stdio`
+///   bridge). Achieved by leaving `approvals: true` (which makes the
+///   executors crate add `--permission-prompt-tool=stdio
+///   --permission-mode=bypassPermissions`) and then appending
+///   `--permission-mode=auto` via `cmd.additional_params` —
+///   argparse "last flag wins" overrides the bypass with auto, while
+///   the prompt-tool stays wired so bubble-ups reach the host.
+/// - **Codex**: `--full-auto` semantics —
+///   `ask_for_approval=OnRequest` + `sandbox=workspace_write`. Lets
+///   Codex run freely inside the workspace and bubble up sandbox
+///   escapes.
+/// - **Gemini CLI**: `--yolo` (set via `yolo: true`).
+/// - **Opencode**: `auto_approve: true` (executors flag).
+/// - **Cursor**: `force: true` ("Force allow commands unless
+///   explicitly denied").
+/// - **Amp**: `dangerously_allow_all: true`.
+/// - **Copilot**: `allow_all_tools: true`.
+/// - **QwenCode**: `yolo: true`.
+/// - **Droid**: `autonomy: "high"`.
+/// - **Aider**: appends `--yes` to the Amp-override `additional_params`.
 fn build_executor(
     agent_type: CodingAgentType,
     config: &SessionConfig,
@@ -779,13 +806,25 @@ fn build_executor(
     match agent_type {
         CodingAgentType::ClaudeCode => {
             let is_plan = matches!(config.permission_mode, CodingPermissionMode::Plan);
-            let is_supervised = matches!(config.permission_mode, CodingPermissionMode::Supervised);
+            let is_supervised =
+                matches!(config.permission_mode, CodingPermissionMode::Supervised);
 
+            // Approvals must stay wired in `auto` so bubble-up
+            // requests reach the host's `ExecutorApprovalService`.
+            // The `--permission-mode=auto` override is appended via
+            // additional_params so argparse picks it up after the
+            // executors-crate-supplied bypass/permissions flags.
+            let approvals_on = is_auto || (is_supervised && !is_auto);
             let mut json = serde_json::json!({
                 "plan": is_plan,
-                "approvals": is_supervised && !is_auto,
-                "dangerously_skip_permissions": is_auto,
+                "approvals": approvals_on,
+                "dangerously_skip_permissions": false,
             });
+            if is_auto {
+                json["cmd"] = serde_json::json!({
+                    "additional_params": ["--permission-mode=auto"],
+                });
+            }
 
             if let Some(ref model) = config.model {
                 json["model"] = serde_json::Value::String(model.clone());
@@ -795,38 +834,77 @@ fn build_executor(
             Ok(CodingAgent::ClaudeCode(executor))
         }
         CodingAgentType::GeminiCli => {
-            let json = build_model_json(config);
+            let mut json = build_model_json(config);
+            if is_auto {
+                json["yolo"] = serde_json::Value::Bool(true);
+            }
             let executor = deser_executor(json, "Gemini")?;
             Ok(CodingAgent::Gemini(executor))
         }
         CodingAgentType::Codex => {
-            let json = build_model_json(config);
+            let mut json = build_model_json(config);
+            if is_auto {
+                // `--full-auto` semantics: workspace-write sandbox,
+                // ask-for-approval on-request (so out-of-sandbox
+                // operations still bubble up).
+                json["sandbox"] = serde_json::Value::String("workspace_write".into());
+                json["ask_for_approval"] = serde_json::Value::String("on_request".into());
+            }
             let executor = deser_executor(json, "Codex")?;
             Ok(CodingAgent::Codex(executor))
         }
         CodingAgentType::Amp => {
-            let executor = deser_executor(serde_json::json!({}), "Amp")?;
+            let json = if is_auto {
+                serde_json::json!({ "dangerously_allow_all": true })
+            } else {
+                serde_json::json!({})
+            };
+            let executor = deser_executor(json, "Amp")?;
             Ok(CodingAgent::Amp(executor))
         }
         CodingAgentType::Cursor => {
-            let executor = deser_executor(serde_json::json!({}), "Cursor")?;
+            let json = if is_auto {
+                serde_json::json!({ "force": true })
+            } else {
+                serde_json::json!({})
+            };
+            let executor = deser_executor(json, "Cursor")?;
             Ok(CodingAgent::CursorAgent(executor))
         }
         CodingAgentType::Opencode => {
-            let json = build_model_json(config);
+            let mut json = build_model_json(config);
+            // Opencode's `auto_approve` defaults to true upstream,
+            // but spell it out for both branches so behaviour is
+            // explicit and visible in logs.
+            json["auto_approve"] = serde_json::Value::Bool(is_auto);
             let executor = deser_executor(json, "Opencode")?;
             Ok(CodingAgent::Opencode(executor))
         }
         CodingAgentType::QwenCode => {
-            let executor = deser_executor(serde_json::json!({}), "QwenCode")?;
+            let json = if is_auto {
+                serde_json::json!({ "yolo": true })
+            } else {
+                serde_json::json!({})
+            };
+            let executor = deser_executor(json, "QwenCode")?;
             Ok(CodingAgent::QwenCode(executor))
         }
         CodingAgentType::Copilot => {
-            let executor = deser_executor(serde_json::json!({}), "Copilot")?;
+            let json = if is_auto {
+                serde_json::json!({ "allow_all_tools": true })
+            } else {
+                serde_json::json!({})
+            };
+            let executor = deser_executor(json, "Copilot")?;
             Ok(CodingAgent::Copilot(executor))
         }
         CodingAgentType::Droid => {
-            let executor = deser_executor(serde_json::json!({}), "Droid")?;
+            let json = if is_auto {
+                serde_json::json!({ "autonomy": "high" })
+            } else {
+                serde_json::json!({})
+            };
+            let executor = deser_executor(json, "Droid")?;
             Ok(CodingAgent::Droid(executor))
         }
         CodingAgentType::Aider => {
@@ -834,9 +912,14 @@ fn build_executor(
             // Amp is the simplest executor (no control protocol, just stdin/stdout pipe).
             // ClaudeCode would add -p, --output-format=stream-json etc. which Aider doesn't support.
             warn!("Aider not supported by executors crate, using Amp executor with base command override");
+            let mut additional: Vec<serde_json::Value> =
+                vec![serde_json::Value::String("--no-auto-commits".into())];
+            if is_auto {
+                additional.push(serde_json::Value::String("--yes".into()));
+            }
             let mut json = serde_json::json!({
                 "base_command_override": "aider",
-                "additional_params": ["--no-auto-commits"],
+                "additional_params": additional,
             });
             if let Some(ref model) = config.model {
                 json["model"] = serde_json::Value::String(model.clone());
