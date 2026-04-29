@@ -592,10 +592,13 @@ impl TrayGraphManager {
                     .map_err(|e| anyhow::anyhow!("Failed to create image: {}", e))?;
                 tray.set_icon(Some(icon))
                     .map_err(|e| anyhow::anyhow!("Failed to set tray icon: {}", e))?;
-                tray.set_icon_as_template(false)
-                    .map_err(|e| anyhow::anyhow!("Failed to disable template mode: {}", e))?;
+                // macOS: enable template mode so the menu bar recolors the icon
+                // for the current appearance (light/dark/translucent/hover).
+                // Other platforms: keep colors as-is.
+                tray.set_icon_as_template(cfg!(target_os = "macos"))
+                    .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
                 *last_png_hash.write() = current_hash;
-                debug!("Tray icon updated: static mode (white on transparent)");
+                debug!("Tray icon updated: static mode");
             }
 
             return Ok(());
@@ -630,10 +633,13 @@ impl TrayGraphManager {
             tray.set_icon(Some(icon))
                 .map_err(|e| anyhow::anyhow!("Failed to set tray icon: {}", e))?;
 
-            // Disable template mode on all platforms to show colored health dot
-            // Template mode only renders white/black and ignores colors
-            tray.set_icon_as_template(false)
-                .map_err(|e| anyhow::anyhow!("Failed to disable template mode: {}", e))?;
+            // macOS: enable template mode so the menu bar recolors the icon
+            // for the current appearance. Overlay shapes (exclamation /
+            // question / down-arrow) carry the meaning since template mode
+            // flattens RGB to the menu bar tint.
+            // Other platforms: keep colors as-is.
+            tray.set_icon_as_template(cfg!(target_os = "macos"))
+                .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
 
             // Store the hash for next comparison
             *last_png_hash.write() = current_hash;
@@ -678,27 +684,26 @@ impl lr_types::TokenRecorder for TrayGraphManager {
 
 /// Detect if the system is in dark mode
 ///
-/// Uses the main window's theme if available, otherwise defaults based on platform.
-/// On macOS, defaults to true (dark mode) since the menu bar needs bright colors for visibility.
+/// On macOS the tray icon is rendered as a template image, so the menu bar
+/// handles inversion automatically and dark-mode detection doesn't apply —
+/// returning `false` produces a canonical black-on-transparent template.
+///
+/// On Windows/Linux this still uses the main window's theme (or defaults to
+/// light) to pick foreground colors.
 pub fn detect_dark_mode(app_handle: &AppHandle) -> bool {
-    // Try to get theme from the main window if it exists
-    if let Some(window) = app_handle.get_webview_window("main") {
-        if let Ok(theme) = window.theme() {
-            return theme == tauri::Theme::Dark;
-        }
-    }
-
-    // Platform-specific fallback for when no window exists
     #[cfg(target_os = "macos")]
     {
-        // On macOS, default to dark mode for better tray icon visibility
-        // The menu bar typically uses template icons or needs bright colors in dark mode
-        true
+        let _ = app_handle;
+        false
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        // On Windows/Linux, default to light mode
+        if let Some(window) = app_handle.get_webview_window("main") {
+            if let Ok(theme) = window.theme() {
+                return theme == tauri::Theme::Dark;
+            }
+        }
         false
     }
 }

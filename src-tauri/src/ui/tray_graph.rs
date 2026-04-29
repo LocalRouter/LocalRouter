@@ -45,21 +45,19 @@ pub struct GraphConfig {
 }
 
 impl GraphConfig {
-    /// Create config for macOS (non-template mode with visible colors)
-    /// Uses transparent background; foreground follows the menu bar theme
-    /// (white when the menu bar is dark, black when it's light) so the icon
-    /// is always visible. Template mode is disabled because the colored
-    /// status overlays would otherwise be flattened to monochrome.
-    pub fn macos(dark_mode: bool) -> Self {
-        let foreground = if dark_mode {
-            Rgba([255, 255, 255, 255]) // White
-        } else {
-            Rgba([0, 0, 0, 255]) // Black
-        };
+    /// Create config for macOS — template image (black on transparent).
+    ///
+    /// macOS recolors template images automatically for the current menu
+    /// bar appearance (light/dark/translucent/hover). RGB values are
+    /// ignored by the renderer; only the alpha channel matters. Colored
+    /// status overlays therefore get flattened to the menu-bar tint —
+    /// the overlay shape (exclamation / question / down-arrow) is what
+    /// distinguishes them.
+    pub fn macos(_dark_mode: bool) -> Self {
         Self {
-            foreground,
-            background: Rgba([0, 0, 0, 0]), // Transparent
-            template_mode: false,
+            foreground: Rgba([0, 0, 0, 255]), // Black; macOS recolors at draw time
+            background: Rgba([0, 0, 0, 0]),   // Transparent
+            template_mode: true,
         }
     }
 
