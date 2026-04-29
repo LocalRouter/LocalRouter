@@ -236,7 +236,10 @@ mod tests {
 
         let service_clone = service.clone();
         let handle = tokio::spawn(async move {
-            let id = service_clone.create_tool_approval("Edit", None).await.unwrap();
+            let id = service_clone
+                .create_tool_approval("Edit", None)
+                .await
+                .unwrap();
             let cancel = CancellationToken::new();
             service_clone.wait_tool_approval(&id, cancel).await
         });
@@ -265,7 +268,10 @@ mod tests {
         let service_clone = service.clone();
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
-            let id = service_clone.create_tool_approval("Edit", None).await.unwrap();
+            let id = service_clone
+                .create_tool_approval("Edit", None)
+                .await
+                .unwrap();
             service_clone.wait_tool_approval(&id, cancel_clone).await
         });
 

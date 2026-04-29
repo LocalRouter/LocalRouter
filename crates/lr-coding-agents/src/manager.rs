@@ -806,15 +806,14 @@ fn build_executor(
     match agent_type {
         CodingAgentType::ClaudeCode => {
             let is_plan = matches!(config.permission_mode, CodingPermissionMode::Plan);
-            let is_supervised =
-                matches!(config.permission_mode, CodingPermissionMode::Supervised);
+            let is_supervised = matches!(config.permission_mode, CodingPermissionMode::Supervised);
 
             // Approvals must stay wired in `auto` so bubble-up
             // requests reach the host's `ExecutorApprovalService`.
             // The `--permission-mode=auto` override is appended via
             // additional_params so argparse picks it up after the
             // executors-crate-supplied bypass/permissions flags.
-            let approvals_on = is_auto || (is_supervised && !is_auto);
+            let approvals_on = is_auto || is_supervised;
             let mut json = serde_json::json!({
                 "plan": is_plan,
                 "approvals": approvals_on,
@@ -1193,7 +1192,7 @@ mod tests {
 
     #[test]
     fn set_approval_service_factory_replaces_and_clears() {
-        let mut manager = CodingAgentManager::new(test_config());
+        let manager = CodingAgentManager::new(test_config());
         let factory: ApprovalServiceFactory = Arc::new(|_| {
             Arc::new(CountingApprovals {
                 calls: AtomicUsize::new(0),
