@@ -707,7 +707,9 @@ fn decode_static_icon_for_theme(static_icon_bytes: &[u8], dark_mode: bool) -> Op
 /// Generate the static tray icon recolored for the current theme.
 ///
 /// White graphic on transparent background when `dark_mode` is true,
-/// black graphic when it's false.
+/// black graphic when it's false. On macOS the tray sets template mode
+/// at install time, so RGB is ignored and the menu bar recolors per
+/// appearance — the `dark_mode` choice only matters on Windows/Linux.
 ///
 /// # Returns
 /// PNG-encoded image as bytes, or None if generation fails
@@ -718,7 +720,7 @@ pub fn generate_static_icon(static_icon_bytes: &[u8], dark_mode: bool) -> Option
 
 /// Generate a static icon with overlay drawn on top
 ///
-/// Decodes the static icon PNG, converts to white-on-transparent,
+/// Decodes the static icon PNG and recolors it for the current theme,
 /// draws the overlay icon in the top-left corner, and re-encodes.
 /// This avoids rendering the graph frame border in static mode.
 ///

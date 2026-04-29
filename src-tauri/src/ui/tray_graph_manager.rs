@@ -557,11 +557,14 @@ impl TrayGraphManager {
             }
         };
 
-        // Static mode: white graphic on transparent background (never the graph frame)
+        // Static mode: theme-recolored graphic on transparent background
+        // (never the graph frame). On macOS template mode handles
+        // appearance-aware recoloring; on Windows/Linux the bytes are
+        // rendered as-is.
         if !tray_graph_enabled {
             const STATIC_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
 
-            // Both paths produce white-on-transparent icon; overlay adds colored indicator
+            // Both paths produce a theme-recolored icon; overlay adds an indicator
             let icon_bytes = if overlay == TrayOverlay::None {
                 crate::ui::tray_graph::generate_static_icon(STATIC_ICON, dark_mode)
                     .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon"))?
