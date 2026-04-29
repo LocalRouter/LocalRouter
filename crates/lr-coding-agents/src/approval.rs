@@ -82,7 +82,14 @@ impl Default for AskPopupApprovalService {
 
 #[async_trait]
 impl ExecutorApprovalService for AskPopupApprovalService {
-    async fn create_tool_approval(&self, tool_name: &str) -> Result<String, ExecutorApprovalError> {
+    async fn create_tool_approval(
+        &self,
+        tool_name: &str,
+        _tool_input: Option<&serde_json::Value>,
+    ) -> Result<String, ExecutorApprovalError> {
+        // The popup-based service ignores tool_input today — its UI
+        // surfaces only the tool name. Hosts that want richer prompts
+        // (e.g. Direktor's bus-backed bridge) can use it.
         let approval_id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.pending_tool_senders.insert(approval_id.clone(), tx);
@@ -229,7 +236,7 @@ mod tests {
 
         let service_clone = service.clone();
         let handle = tokio::spawn(async move {
-            let id = service_clone.create_tool_approval("Edit").await.unwrap();
+            let id = service_clone.create_tool_approval("Edit", None).await.unwrap();
             let cancel = CancellationToken::new();
             service_clone.wait_tool_approval(&id, cancel).await
         });
@@ -258,7 +265,7 @@ mod tests {
         let service_clone = service.clone();
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
-            let id = service_clone.create_tool_approval("Edit").await.unwrap();
+            let id = service_clone.create_tool_approval("Edit", None).await.unwrap();
             service_clone.wait_tool_approval(&id, cancel_clone).await
         });
 

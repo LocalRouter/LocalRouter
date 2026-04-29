@@ -1146,6 +1146,7 @@ mod tests {
         async fn create_tool_approval(
             &self,
             _tool_name: &str,
+            _tool_input: Option<&serde_json::Value>,
         ) -> Result<String, ExecutorApprovalError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(String::new())

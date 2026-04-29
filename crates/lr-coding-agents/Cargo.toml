@@ -23,8 +23,12 @@ thiserror = { workspace = true }
 which = { workspace = true }
 
 command-group = { version = "5.0", features = ["with-tokio"] }
-executors = { git = "https://github.com/BloopAI/vibe-kanban.git", package = "executors" }
-workspace_utils = { git = "https://github.com/BloopAI/vibe-kanban.git", package = "utils" }
+# Pinned to matusfaro/vibe-kanban — fork tracking BloopAI's HEAD plus
+# an extension to ExecutorApprovalService::create_tool_approval that
+# threads tool_input through to the host. Bumped in lockstep with
+# anything in localrouterai that touches approvals.
+executors = { git = "https://github.com/matusfaro/vibe-kanban.git", rev = "c14b647621230ee01fbaf5422150b036b41a9ad8", package = "executors" }
+workspace_utils = { git = "https://github.com/matusfaro/vibe-kanban.git", rev = "c14b647621230ee01fbaf5422150b036b41a9ad8", package = "utils" }
 
 [lints]
 workspace = true
