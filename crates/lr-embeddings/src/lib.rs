@@ -5,6 +5,7 @@
 
 pub mod downloader;
 pub mod model;
+pub mod progress;
 
 use model::SentenceEmbedder;
 use parking_lot::Mutex;
@@ -13,6 +14,7 @@ use std::sync::Arc;
 use tracing::info;
 
 pub use model::EMBEDDING_DIM;
+pub use progress::DownloadProgress;
 
 /// Embedding service managing the sentence embedding model lifecycle.
 ///
@@ -44,8 +46,16 @@ impl EmbeddingService {
     }
 
     /// Download the model from HuggingFace.
-    pub async fn download(&self, app_handle: Option<tauri::AppHandle>) -> Result<(), String> {
-        downloader::download_model(&self.model_dir, app_handle).await
+    ///
+    /// `progress` is an optional callback fired at file-boundary
+    /// events (start + after each of the two model files). UI hosts
+    /// implement [`DownloadProgress`] over their event surface;
+    /// headless callers pass `None`.
+    pub async fn download(
+        &self,
+        progress: Option<&dyn DownloadProgress>,
+    ) -> Result<(), String> {
+        downloader::download_model(&self.model_dir, progress).await
     }
 
     /// Load the model into memory. No-op if already loaded.

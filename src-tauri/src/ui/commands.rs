@@ -35,6 +35,32 @@ use tauri::{AppHandle, Emitter, Manager, State};
 // Re-export submodules for backward compatibility with main.rs
 pub use crate::ui::commands_clients::*;
 pub use crate::ui::commands_mcp::*;
+
+/// Adapter from `lr_embeddings::DownloadProgress` (framework-agnostic
+/// trait) to the desktop app's tauri event surface. Wraps an
+/// `AppHandle` and emits the same `embedding-download-progress`
+/// (with `{ progress: f64, current_file: string }`) and
+/// `embedding-download-complete` events the frontend already listens
+/// for, so removing the tauri dep from `lr-embeddings` doesn't move
+/// any UI work.
+struct TauriEmbeddingProgress(AppHandle);
+
+impl lr_embeddings::DownloadProgress for TauriEmbeddingProgress {
+    fn on_progress(&self, current_file: &str, completed: u32, total: u32) {
+        let progress = if total == 0 {
+            0.0
+        } else {
+            completed as f64 / total as f64
+        };
+        let _ = self.0.emit(
+            "embedding-download-progress",
+            serde_json::json!({ "progress": progress, "current_file": current_file }),
+        );
+    }
+    fn on_complete(&self) {
+        let _ = self.0.emit("embedding-download-complete", ());
+    }
+}
 pub use crate::ui::commands_providers::*;
 
 /// Get current configuration
@@ -4394,7 +4420,8 @@ pub async fn install_embedding_model(
         }
     };
 
-    svc.download(Some(app)).await?;
+    let reporter = TauriEmbeddingProgress(app);
+    svc.download(Some(&reporter)).await?;
     svc.ensure_loaded()
         .map_err(|e| format!("Model downloaded but failed to load: {}", e))?;
 

@@ -1,10 +1,10 @@
 //! Model downloader from HuggingFace for all-MiniLM-L6-v2
 
+use crate::progress::DownloadProgress;
 use hf_hub::api::tokio::Api;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
@@ -22,8 +22,17 @@ pub const REPO_ID: &str = "sentence-transformers/all-MiniLM-L6-v2";
 /// Files needed for the embedding model
 const MODEL_FILES: &[&str] = &["model.safetensors", "tokenizer.json"];
 
-/// Download embedding model from HuggingFace
-pub async fn download_model(model_dir: &Path, app_handle: Option<AppHandle>) -> Result<(), String> {
+/// Download embedding model from HuggingFace.
+///
+/// `progress` is invoked at file-boundary events: once before the
+/// first file with `(0, total)`, again after each file copy with
+/// `(completed, total)`, and finally `on_complete` after all files
+/// are present. Pass `None` for silent download (headless / non-UI
+/// consumers).
+pub async fn download_model(
+    model_dir: &Path,
+    progress: Option<&dyn DownloadProgress>,
+) -> Result<(), String> {
     let lock_result = DOWNLOAD_LOCK.try_lock();
     if lock_result.is_err() {
         return Err("Another embedding download is already in progress".to_string());
@@ -38,11 +47,9 @@ pub async fn download_model(model_dir: &Path, app_handle: Option<AppHandle>) -> 
         .await
         .map_err(|e| format!("Failed to create model directory: {}", e))?;
 
-    if let Some(ref handle) = app_handle {
-        let _ = handle.emit(
-            "embedding-download-progress",
-            serde_json::json!({ "progress": 0.0, "current_file": "model.safetensors" }),
-        );
+    let total = MODEL_FILES.len() as u32;
+    if let Some(p) = progress {
+        p.on_progress("model.safetensors", 0, total);
     }
 
     let api = Api::new().map_err(|e| format!("Failed to initialize HuggingFace API: {}", e))?;
@@ -56,17 +63,13 @@ pub async fn download_model(model_dir: &Path, app_handle: Option<AppHandle>) -> 
             .await
             .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
 
-        let progress = (idx + 1) as f32 / MODEL_FILES.len() as f32;
-        if let Some(ref handle) = app_handle {
-            let _ = handle.emit(
-                "embedding-download-progress",
-                serde_json::json!({ "progress": progress, "current_file": file }),
-            );
+        if let Some(p) = progress {
+            p.on_progress(file, (idx + 1) as u32, total);
         }
     }
 
-    if let Some(ref handle) = app_handle {
-        let _ = handle.emit("embedding-download-complete", ());
+    if let Some(p) = progress {
+        p.on_complete();
     }
 
     info!("Embedding model downloaded successfully");
@@ -118,4 +121,50 @@ async fn download_with_retry(
         MAX_RETRIES,
         last_error.unwrap_or_else(|| "Unknown".to_string())
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Default)]
+    struct RecordingReporter {
+        events: StdMutex<Vec<(String, u32, u32)>>,
+        completed: StdMutex<bool>,
+    }
+
+    impl DownloadProgress for RecordingReporter {
+        fn on_progress(&self, current_file: &str, completed_files: u32, total_files: u32) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((current_file.to_string(), completed_files, total_files));
+        }
+        fn on_complete(&self) {
+            *self.completed.lock().unwrap() = true;
+        }
+    }
+
+    /// Trait shape lock — calling the methods on a `&dyn DownloadProgress`
+    /// must dispatch to the impl, and `Send + Sync` must hold (otherwise
+    /// `download_model`'s future stops being `Send`).
+    #[test]
+    fn reporter_records_calls() {
+        fn assert_send_sync<T: Send + Sync>(_: &T) {}
+        let r = RecordingReporter::default();
+        assert_send_sync(&r);
+
+        let p: &dyn DownloadProgress = &r;
+        p.on_progress("model.safetensors", 0, 2);
+        p.on_progress("model.safetensors", 1, 2);
+        p.on_progress("tokenizer.json", 2, 2);
+        p.on_complete();
+
+        let events = r.events.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0], ("model.safetensors".to_string(), 0, 2));
+        assert_eq!(events[2], ("tokenizer.json".to_string(), 2, 2));
+        assert!(*r.completed.lock().unwrap());
+    }
 }
