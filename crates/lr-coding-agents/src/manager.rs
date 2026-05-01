@@ -801,7 +801,26 @@ fn build_executor(
     config: &SessionConfig,
     approval_mode: CodingAgentApprovalMode,
 ) -> Result<CodingAgent, CodingAgentError> {
-    let is_auto = matches!(approval_mode, CodingAgentApprovalMode::Allow);
+    // `is_auto` must reflect the **session's** declared `permission_mode`,
+    // not the server-wide `approval_mode`. The doc comment block above
+    // (Claude Code, Gemini CLI, …) describes per-session intent —
+    // "session wants its agent free-running" — but the historical check
+    // looked at the global `approval_mode` (which defaults to Ask/Elicit
+    // and is rarely set to `Allow`). Result: callers like Direktor that
+    // pass `config.permission_mode = Auto` saw the auto wiring silently
+    // skipped (no `--permission-mode=auto` for Claude Code, no `--yolo`
+    // for Gemini, …) and then `say()`'s runtime mode-flip got rejected
+    // by Claude Code with `"Cannot set permission mode to
+    // bypassPermissions because the session was not launched with
+    // --dangerously-skip-permissions"`. The session ended up running in
+    // whatever Claude Code's local default happened to be.
+    //
+    // The previous parameter is intentionally still accepted (some
+    // callers may want a global-policy gate later); for now, prefer the
+    // session value, which matches every other branch in this function
+    // (`is_plan`, `is_supervised`, …).
+    let _ = approval_mode;
+    let is_auto = matches!(config.permission_mode, CodingPermissionMode::Auto);
 
     match agent_type {
         CodingAgentType::ClaudeCode => {
