@@ -121,9 +121,16 @@ pub async fn list_clients(
 }
 
 /// Create a new client
+///
+/// Optionally accepts `client_mode` and `template_id` so the wizard can
+/// finish a client in a single round-trip. Previously the wizard chained
+/// `create_client` → `set_client_mode` → `set_client_template`, and any
+/// failure on the latter two left a half-configured client behind.
 #[tauri::command]
 pub async fn create_client(
     name: String,
+    client_mode: Option<lr_config::ClientMode>,
+    template_id: Option<String>,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
@@ -131,11 +138,40 @@ pub async fn create_client(
     tracing::info!("Creating new client with name: {}", name);
 
     // Create client with auto-created strategy
-    let (client, _strategy) = config_manager
+    let (mut client, _strategy) = config_manager
         .create_client_with_strategy(name.clone())
         .map_err(|e| e.to_string())?;
 
     tracing::info!("Client created: {} ({})", client.name, client.id);
+
+    // Apply optional mode/template in the same Tauri command so the
+    // client never leaves this command in a half-configured state.
+    if client_mode.is_some() || template_id.is_some() {
+        let cid = client.id.clone();
+        let mode = client_mode.clone();
+        let tid = template_id.clone();
+        config_manager
+            .update(|cfg| {
+                if let Some(c) = cfg.clients.iter_mut().find(|c| c.id == cid) {
+                    if let Some(m) = mode {
+                        c.client_mode = m;
+                    }
+                    if let Some(t) = tid {
+                        c.template_id = Some(t);
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        // Refresh local copy so the response reflects the applied values.
+        if let Some(updated) = config_manager
+            .get()
+            .clients
+            .into_iter()
+            .find(|c| c.id == client.id)
+        {
+            client = updated;
+        }
+    }
 
     // Store client secret in keychain and add to client manager
     let secret = client_manager

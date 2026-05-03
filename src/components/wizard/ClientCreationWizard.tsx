@@ -24,7 +24,7 @@ import { StepWelcome } from "./steps/StepWelcome"
 import { StepTemplate } from "./steps/StepTemplate"
 import { StepNameAndMode } from "./steps/StepNameAndMode"
 import { CLIENT_TEMPLATES, type ClientTemplate } from "@/components/client/ClientTemplates"
-import type { ClientMode, SetClientModeParams, SetClientTemplateParams } from "@/types/tauri-commands"
+import type { ClientMode, CreateClientParams } from "@/types/tauri-commands"
 
 // Logical step identifiers
 type StepId = "welcome" | "template" | "name_mode"
@@ -174,28 +174,19 @@ export function ClientCreationWizard({
     try {
       setCreating(true)
 
-      // Step 1: Create the client
+      const isCustomTemplate = state.selectedTemplate?.id === "custom"
+      const templateId = state.selectedTemplate && !isCustomTemplate
+        ? state.selectedTemplate.id
+        : null
+
+      // Single backend call so a client is never persisted in a
+      // half-configured state (mode/template applied atomically).
       const [, clientInfo] = await invoke<[string, ClientInfo]>("create_client", {
         name: state.clientName.trim(),
-      })
+        clientMode: state.clientMode !== "both" ? state.clientMode : null,
+        templateId,
+      } satisfies CreateClientParams)
 
-      // Step 2: Set client mode
-      if (state.clientMode !== "both") {
-        await invoke("set_client_mode", {
-          clientId: clientInfo.client_id,
-          mode: state.clientMode,
-        } satisfies SetClientModeParams)
-      }
-
-      // Step 3: Set template
-      if (state.selectedTemplate && state.selectedTemplate.id !== "custom") {
-        await invoke("set_client_template", {
-          clientId: clientInfo.client_id,
-          templateId: state.selectedTemplate.id,
-        } satisfies SetClientTemplateParams)
-      }
-
-      // Complete the wizard
       onComplete(clientInfo.id)
       handleClose()
     } catch (error) {

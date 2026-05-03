@@ -1600,6 +1600,10 @@ export interface PendingInstallInfo {
 /** Params for create_client */
 export interface CreateClientParams {
   name: string
+  /** Client mode (llm_only, mcp_only, both, mcp_via_llm). Null = backend default ("both"). */
+  clientMode?: ClientMode | null
+  /** Template ID (e.g. "claude-code"). Null = no template. */
+  templateId?: string | null
 }
 
 /** Params for delete_client */
