@@ -616,11 +616,14 @@ export function UnifiedModelsTab({
                 size="sm"
                 onClick={async () => {
                   try {
-                    await invoke("recover_client_strategy", {
+                    const recovered = await invoke<StrategyConfig>("recover_client_strategy", {
                       clientId: client.client_id,
                     })
-                    const reqId = ++loadReqIdRef.current
-                    loadData(reqId)
+                    // Use the returned strategy directly so the UI updates
+                    // regardless of any race against the follow-up
+                    // strategies-changed listener or a stale prop strategy_id.
+                    ++loadReqIdRef.current
+                    setStrategy(ensureAutoConfig(recovered))
                     toast.success("Strategy recovered")
                   } catch (e) {
                     toast.error(`Recovery failed: ${e}`)
