@@ -107,6 +107,24 @@ interface DetailedModelInfo {
 
 const ensureAutoConfig = (s: StrategyConfig): StrategyConfig => {
   let result = s
+
+  // Backend uses #[serde(skip_serializing_if = "HashMap::is_empty")] on
+  // model_permissions.providers and .models, so freshly created strategies
+  // arrive without those fields. Normalize them to empty objects so every
+  // caller can read them without optional-chaining everywhere.
+  if (!result.model_permissions
+      || !result.model_permissions.providers
+      || !result.model_permissions.models) {
+    result = {
+      ...result,
+      model_permissions: {
+        global: result.model_permissions?.global ?? ('allow' as PermissionState),
+        providers: result.model_permissions?.providers ?? {},
+        models: result.model_permissions?.models ?? {},
+      },
+    }
+  }
+
   if (!result.auto_config) {
     result = {
       ...result,
