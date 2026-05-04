@@ -282,30 +282,47 @@ impl SafetyCheckResult {
                 .all(|a| matches!(a.action, CategoryAction::Block | CategoryAction::Allow))
     }
 
-    /// Re-filter actions using per-client category overrides.
+    /// Re-filter actions using merged category overrides.
     ///
-    /// Each entry in `client_overrides` maps a category name (e.g. "violent_crimes") to an action.
-    /// Categories overridden to `Allow` are removed from `actions_required`.
-    /// Other overrides (`Block`, `Ask`, `Notify`) replace the engine's default action.
-    /// Categories not in the override list keep their original action from the engine.
+    /// Each entry in `overrides` maps a category name (e.g. "violent_crimes") to an action.
+    /// A special entry with category `"__global"` is the fallback default applied to any
+    /// flagged category not listed by name (this matches the "All Categories" UI control).
+    ///
+    /// Resolution per flagged category:
+    ///   1. If a specific entry for that category exists in `overrides`, use its action.
+    ///   2. Else if the `__global` fallback entry exists, use its action.
+    ///   3. Else keep the engine's default action.
+    ///
+    /// Action semantics:
+    ///   - `Allow`  → remove from `actions_required` (silently allow).
+    ///   - `Block`/`Ask`/`Notify` → replace the engine's default action.
     pub fn apply_client_category_overrides(
         mut self,
-        client_overrides: &[(String, CategoryAction)],
+        overrides: &[(String, CategoryAction)],
     ) -> Self {
-        if client_overrides.is_empty() {
+        if overrides.is_empty() {
             return self;
         }
+
+        // Pull out the optional __global fallback once so we don't re-scan per category.
+        let global_default: Option<&CategoryAction> = overrides
+            .iter()
+            .find(|(cat, _)| cat == GLOBAL_DEFAULT_CATEGORY)
+            .map(|(_, action)| action);
 
         self.actions_required.retain_mut(|action| {
             // Compare using serde serialization format (snake_case, e.g. "violent_crimes")
             // to match config values. Display format ("Violent Crimes") differs from serde.
             let category_name = category_to_serde_name(&action.category);
-            if let Some((_, override_action)) = client_overrides
+            let resolved: Option<&CategoryAction> = overrides
                 .iter()
                 .find(|(cat, _)| *cat == category_name)
-            {
+                .map(|(_, a)| a)
+                .or(global_default);
+
+            if let Some(override_action) = resolved {
                 if matches!(override_action, CategoryAction::Allow) {
-                    return false; // Remove: client allows this category
+                    return false; // Remove: this category is allowed
                 }
                 action.action = override_action.clone();
             }
@@ -320,6 +337,10 @@ impl SafetyCheckResult {
         self
     }
 }
+
+/// Pseudo category-id used by the UI to represent "All Categories" — applies as a
+/// default action for any flagged category that has no specific override entry.
+pub const GLOBAL_DEFAULT_CATEGORY: &str = "__global";
 
 /// The SafetyModel trait - implemented by each model (Llama Guard, ShieldGemma, etc.)
 #[async_trait::async_trait]
@@ -364,28 +385,30 @@ mod tests {
         assert_eq!(category_to_serde_name(&SafetyCategory::Hate), "hate");
     }
 
-    #[test]
-    fn test_apply_client_category_overrides_matches_serde_names() {
-        let result = SafetyCheckResult {
+    fn make_result(actions: Vec<(SafetyCategory, CategoryAction)>) -> SafetyCheckResult {
+        SafetyCheckResult {
             verdicts: vec![],
             is_safe: false,
-            actions_required: vec![
-                CategoryActionRequired {
-                    category: SafetyCategory::Jailbreak,
-                    action: CategoryAction::Ask,
+            actions_required: actions
+                .into_iter()
+                .map(|(category, action)| CategoryActionRequired {
+                    category,
+                    action,
                     model_id: "test".to_string(),
                     confidence: Some(0.9),
-                },
-                CategoryActionRequired {
-                    category: SafetyCategory::ViolentCrimes,
-                    action: CategoryAction::Ask,
-                    model_id: "test".to_string(),
-                    confidence: Some(0.8),
-                },
-            ],
+                })
+                .collect(),
             total_duration_ms: 0,
             errors: vec![],
-        };
+        }
+    }
+
+    #[test]
+    fn test_apply_client_category_overrides_matches_serde_names() {
+        let result = make_result(vec![
+            (SafetyCategory::Jailbreak, CategoryAction::Ask),
+            (SafetyCategory::ViolentCrimes, CategoryAction::Ask),
+        ]);
 
         // Override using serde names (as config stores them)
         let overrides = vec![("jailbreak".to_string(), CategoryAction::Allow)];
@@ -397,5 +420,78 @@ mod tests {
             result.actions_required[0].category,
             SafetyCategory::ViolentCrimes
         );
+    }
+
+    #[test]
+    fn test_global_default_allow_removes_unspecified_categories() {
+        // Regression test for client-override bug: when "All Categories" (`__global`)
+        // is set to Allow on a per-client basis, every flagged category should be
+        // silently allowed unless a specific override says otherwise.
+        let result = make_result(vec![
+            (SafetyCategory::Jailbreak, CategoryAction::Ask),
+            (SafetyCategory::ViolentCrimes, CategoryAction::Ask),
+        ]);
+
+        let overrides = vec![(GLOBAL_DEFAULT_CATEGORY.to_string(), CategoryAction::Allow)];
+        let result = result.apply_client_category_overrides(&overrides);
+
+        assert!(result.actions_required.is_empty());
+        assert!(result.is_safe);
+    }
+
+    #[test]
+    fn test_global_default_block_replaces_engine_default() {
+        // When `__global` is set to Block, every flagged category should switch from
+        // the engine's default (Ask) to Block — silent denial without a popup.
+        let result = make_result(vec![
+            (SafetyCategory::Jailbreak, CategoryAction::Ask),
+            (SafetyCategory::Hate, CategoryAction::Ask),
+        ]);
+
+        let overrides = vec![(GLOBAL_DEFAULT_CATEGORY.to_string(), CategoryAction::Block)];
+        let result = result.apply_client_category_overrides(&overrides);
+
+        assert_eq!(result.actions_required.len(), 2);
+        assert!(result
+            .actions_required
+            .iter()
+            .all(|a| matches!(a.action, CategoryAction::Block)));
+        assert!(result.all_blocked());
+    }
+
+    #[test]
+    fn test_specific_override_wins_over_global_default() {
+        // Specific category entries take precedence over the `__global` fallback.
+        let result = make_result(vec![
+            (SafetyCategory::Jailbreak, CategoryAction::Ask),
+            (SafetyCategory::ViolentCrimes, CategoryAction::Ask),
+        ]);
+
+        let overrides = vec![
+            (GLOBAL_DEFAULT_CATEGORY.to_string(), CategoryAction::Allow),
+            ("violent_crimes".to_string(), CategoryAction::Block),
+        ];
+        let result = result.apply_client_category_overrides(&overrides);
+
+        // Jailbreak removed (global Allow), ViolentCrimes kept as Block
+        assert_eq!(result.actions_required.len(), 1);
+        assert_eq!(
+            result.actions_required[0].category,
+            SafetyCategory::ViolentCrimes
+        );
+        assert_eq!(result.actions_required[0].action, CategoryAction::Block);
+    }
+
+    #[test]
+    fn test_unmatched_category_keeps_engine_default_when_no_global() {
+        // Without `__global`, categories not in the override list keep their
+        // engine-assigned action.
+        let result = make_result(vec![(SafetyCategory::Hate, CategoryAction::Ask)]);
+
+        let overrides = vec![("jailbreak".to_string(), CategoryAction::Allow)];
+        let result = result.apply_client_category_overrides(&overrides);
+
+        assert_eq!(result.actions_required.len(), 1);
+        assert_eq!(result.actions_required[0].action, CategoryAction::Ask);
     }
 }

@@ -727,6 +727,34 @@ pub(crate) async fn check_model_firewall_permission(
     }
 }
 
+/// Merge per-client guardrail `category_actions` overrides on top of the global list.
+///
+/// The frontend stores per-client `category_actions` as a sparse override list —
+/// only categories explicitly customized for the client appear there. Categories not
+/// listed in the per-client list must inherit from the global config. Both lists may
+/// also contain a special `__global` ("All Categories") fallback entry; the per-client
+/// `__global` (if present) overrides the global `__global`.
+///
+/// Merge rule: per-client wins per-category; otherwise fall back to the global entry.
+/// When the per-client list is `None`, the global list is returned unchanged.
+pub(crate) fn merge_guardrail_category_actions(
+    client_overrides: Option<&[lr_config::CategoryActionEntry]>,
+    global_actions: &[lr_config::CategoryActionEntry],
+) -> Vec<lr_config::CategoryActionEntry> {
+    match client_overrides {
+        None => global_actions.to_vec(),
+        Some(client_entries) => {
+            let mut merged: Vec<lr_config::CategoryActionEntry> = global_actions
+                .iter()
+                .filter(|g| !client_entries.iter().any(|c| c.category == g.category))
+                .cloned()
+                .collect();
+            merged.extend(client_entries.iter().cloned());
+            merged
+        }
+    }
+}
+
 /// Run guardrails scan on request content using safety engine
 ///
 /// Returns Some(SafetyCheckResult) if violations were found that need action,
@@ -745,19 +773,21 @@ pub(crate) async fn run_prompt_compression(
     };
 
     let config = state.config_manager.get();
-    if !config.prompt_compression.enabled {
-        return Ok(None);
-    }
 
-    // Check per-client enabled override (None=inherit global, Some(false)=off)
-    if let Some(client_ctx) = client_context {
-        if let Some(client) = state.client_manager.get_client(&client_ctx.client_id) {
-            if let Some(false) = client.prompt_compression.enabled {
-                return Ok(None); // Client explicitly disabled compression
-            }
-        } else {
-            return Ok(None); // Unknown client
+    // Resolve effective enabled: per-client override wins (Some(true)/Some(false)), else global.
+    let effective_enabled = if let Some(client_ctx) = client_context {
+        match state.client_manager.get_client(&client_ctx.client_id) {
+            Some(client) => client
+                .prompt_compression
+                .enabled
+                .unwrap_or(config.prompt_compression.enabled),
+            None => return Ok(None), // Unknown client
         }
+    } else {
+        config.prompt_compression.enabled
+    };
+    if !effective_enabled {
+        return Ok(None);
     }
 
     // Use global settings for all compression parameters
@@ -864,12 +894,11 @@ pub(crate) async fn run_guardrails_scan(
         return Ok(None);
     }
 
-    // Resolve effective category actions: per-client override > global default
-    let effective_category_actions = client
-        .guardrails
-        .category_actions
-        .as_deref()
-        .unwrap_or(&config.guardrails.category_actions);
+    // Resolve effective category actions: per-client override merged over global default.
+    let effective_category_actions = merge_guardrail_category_actions(
+        client.guardrails.category_actions.as_deref(),
+        &config.guardrails.category_actions,
+    );
 
     if effective_category_actions.is_empty() {
         return Ok(None);
@@ -2022,5 +2051,45 @@ mod tests {
         assert!(caps.allow_compression);
         assert!(caps.allow_routellm);
         assert!(caps.parallel_guardrails);
+    }
+
+    fn entry(category: &str, action: &str) -> lr_config::CategoryActionEntry {
+        lr_config::CategoryActionEntry {
+            category: category.to_string(),
+            action: action.to_string(),
+        }
+    }
+
+    #[test]
+    fn merge_category_actions_returns_global_when_no_client_override() {
+        let global = vec![entry("jailbreak", "ask"), entry("hate", "block")];
+        let merged = merge_guardrail_category_actions(None, &global);
+        assert_eq!(merged, global);
+    }
+
+    #[test]
+    fn merge_category_actions_preserves_global_for_unspecified_client_categories() {
+        // Sparse per-client override: only one category overridden, the rest must
+        // continue to inherit from the global list (regression test for the bug
+        // where a per-client list silently dropped global entries).
+        let global = vec![entry("jailbreak", "ask"), entry("hate", "block")];
+        let client = vec![entry("jailbreak", "allow")];
+        let merged = merge_guardrail_category_actions(Some(&client), &global);
+
+        assert!(merged.contains(&entry("hate", "block")));
+        assert!(merged.contains(&entry("jailbreak", "allow")));
+        assert!(!merged.contains(&entry("jailbreak", "ask")));
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merge_category_actions_per_client_global_overrides_global_global() {
+        // Per-client `__global` ("All Categories") must beat the global `__global`.
+        // This is the user-reported scenario: global=Ask, per-client=Off (Allow).
+        let global = vec![entry("__global", "ask")];
+        let client = vec![entry("__global", "allow")];
+        let merged = merge_guardrail_category_actions(Some(&client), &global);
+
+        assert_eq!(merged, vec![entry("__global", "allow")]);
     }
 }
