@@ -51,10 +51,7 @@ impl EmbeddingService {
     /// events (start + after each of the two model files). UI hosts
     /// implement [`DownloadProgress`] over their event surface;
     /// headless callers pass `None`.
-    pub async fn download(
-        &self,
-        progress: Option<&dyn DownloadProgress>,
-    ) -> Result<(), String> {
+    pub async fn download(&self, progress: Option<&dyn DownloadProgress>) -> Result<(), String> {
         downloader::download_model(&self.model_dir, progress).await
     }
 

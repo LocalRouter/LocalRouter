@@ -136,10 +136,11 @@ mod tests {
 
     impl DownloadProgress for RecordingReporter {
         fn on_progress(&self, current_file: &str, completed_files: u32, total_files: u32) {
-            self.events
-                .lock()
-                .unwrap()
-                .push((current_file.to_string(), completed_files, total_files));
+            self.events.lock().unwrap().push((
+                current_file.to_string(),
+                completed_files,
+                total_files,
+            ));
         }
         fn on_complete(&self) {
             *self.completed.lock().unwrap() = true;

@@ -74,3 +74,4 @@ crates/lr-catalog/catalog/.last_fetch
 .aider*
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scheduled_tasks.lock
