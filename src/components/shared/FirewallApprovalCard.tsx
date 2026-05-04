@@ -417,7 +417,7 @@ export function FirewallApprovalCard({
                 <div className="space-y-0.5 mt-0.5">
                   {guardrailActions.map((act, i) => (
                     <div key={i} className="flex items-center gap-1.5 text-[10px]">
-                      <span className={`px-1 py-0.5 rounded font-bold ${act.action === "allow" ? "bg-emerald-500/20 text-emerald-600" : act.action === "ask" ? "bg-blue-500/20 text-blue-600" : "bg-amber-500/20 text-amber-600"}`}>
+                      <span className={`px-1 py-0.5 rounded font-bold ${act.action === "allow" ? "bg-emerald-500/20 text-emerald-600" : act.action === "block" ? "bg-red-600/20 text-red-600" : act.action === "ask" ? "bg-amber-500/20 text-amber-600" : "bg-blue-500/20 text-blue-600"}`}>
                         {categoryActionLabel(act.action).toUpperCase()}
                       </span>
                       <span className="font-medium">{formatCategory(act.category)}</span>

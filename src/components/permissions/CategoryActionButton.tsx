@@ -19,13 +19,13 @@ const stateConfig: Record<CategoryActionState, { label: string; activeClass: str
     activeClass: "bg-red-600 text-white",
     rollupClass: "bg-red-600/30 text-red-600"
   },
-  notify: {
+  ask: {
     label: "Ask",
     activeClass: "bg-amber-500 text-white",
     rollupClass: "bg-amber-500/30 text-amber-600"
   },
-  ask: {
-    label: "Warn",
+  notify: {
+    label: "Notify",
     activeClass: "bg-blue-500 text-white",
     rollupClass: "bg-blue-500/30 text-blue-600"
   },
@@ -56,7 +56,7 @@ export function CategoryActionButton({
         disabled && "opacity-50 pointer-events-none"
       )}
     >
-      {(["block", "notify", "ask", "allow"] as CategoryActionState[]).map((state) => {
+      {(["block", "ask", "notify", "allow"] as CategoryActionState[]).map((state) => {
         const config = stateConfig[state]
         const isActive = value === state
         const isChildRollup = childRollupStates?.has(state) && !isActive
