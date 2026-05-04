@@ -27,8 +27,8 @@ command-group = { version = "5.0", features = ["with-tokio"] }
 # an extension to ExecutorApprovalService::create_tool_approval that
 # threads tool_input through to the host. Bumped in lockstep with
 # anything in localrouterai that touches approvals.
-executors = { git = "https://github.com/matusfaro/vibe-kanban.git", rev = "c14b647621230ee01fbaf5422150b036b41a9ad8", package = "executors" }
-workspace_utils = { git = "https://github.com/matusfaro/vibe-kanban.git", rev = "c14b647621230ee01fbaf5422150b036b41a9ad8", package = "utils" }
+executors = { git = "https://github.com/matusfaro/vibe-kanban.git", rev = "b56f317591a3a2b19721a80fd65404d02cb5ab99", package = "executors" }
+workspace_utils = { git = "https://github.com/matusfaro/vibe-kanban.git", rev = "b56f317591a3a2b19721a80fd65404d02cb5ab99", package = "utils" }
 
 [lints]
 workspace = true
