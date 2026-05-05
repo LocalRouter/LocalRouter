@@ -25,15 +25,40 @@ const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
 pub struct MistralProvider {
     client: Client,
     api_key: String,
+    /// Optional override for the API base URL — used to point at the Codestral
+    /// endpoint (`https://codestral.mistral.ai/v1`) or any compatible deployment.
+    base_url: Option<String>,
 }
 
 #[allow(dead_code)]
 impl MistralProvider {
-    /// Create a new Mistral provider with an API key
+    /// Create a new Mistral provider with an API key targeting the default endpoint.
     pub fn new(api_key: String) -> AppResult<Self> {
-        let client = crate::http_client::extended_client()?;
+        Self::with_base_url(api_key, None)
+    }
 
-        Ok(Self { client, api_key })
+    /// Create a new Mistral provider with an API key and an optional custom base URL.
+    /// Empty strings are treated as `None`; trailing slashes are stripped.
+    pub fn with_base_url(api_key: String, base_url: Option<String>) -> AppResult<Self> {
+        let client = crate::http_client::extended_client()?;
+        let base_url = base_url.and_then(|u| {
+            let trimmed = u.trim().trim_end_matches('/').to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        Ok(Self {
+            client,
+            api_key,
+            base_url,
+        })
+    }
+
+    /// Resolve the effective base URL, falling back to the default Mistral endpoint.
+    fn effective_base_url(&self) -> &str {
+        self.base_url.as_deref().unwrap_or(MISTRAL_API_BASE)
     }
 
     /// Create a new Mistral provider from stored API key
@@ -194,7 +219,10 @@ impl ModelProvider for MistralProvider {
         // A bad API key returns 401, correctly treated as unhealthy.
         let result = self
             .client
-            .get(format!("{}/models/mistral-small-latest", MISTRAL_API_BASE))
+            .get(format!(
+                "{}/models/mistral-small-latest",
+                self.effective_base_url()
+            ))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await;
@@ -244,7 +272,7 @@ impl ModelProvider for MistralProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let url = format!("{}/models", MISTRAL_API_BASE);
+        let url = format!("{}/models", self.effective_base_url());
 
         let response = self
             .client
@@ -371,7 +399,7 @@ impl ModelProvider for MistralProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", MISTRAL_API_BASE);
+        let url = format!("{}/chat/completions", self.effective_base_url());
 
         let response = self
             .client
@@ -426,7 +454,7 @@ impl ModelProvider for MistralProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", MISTRAL_API_BASE);
+        let url = format!("{}/chat/completions", self.effective_base_url());
 
         let response = self
             .client
@@ -556,5 +584,44 @@ mod tests {
         let provider = MistralProvider::new("test_key".to_string()).unwrap();
         let pricing = provider.get_pricing("mistral-large-latest").await.unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
+    }
+
+    #[test]
+    fn test_default_base_url() {
+        let provider = MistralProvider::new("k".to_string()).unwrap();
+        assert_eq!(provider.effective_base_url(), MISTRAL_API_BASE);
+    }
+
+    #[test]
+    fn test_custom_base_url_codestral() {
+        let provider = MistralProvider::with_base_url(
+            "k".to_string(),
+            Some("https://codestral.mistral.ai/v1".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            provider.effective_base_url(),
+            "https://codestral.mistral.ai/v1"
+        );
+    }
+
+    #[test]
+    fn test_custom_base_url_strips_trailing_slash() {
+        let provider = MistralProvider::with_base_url(
+            "k".to_string(),
+            Some("https://codestral.mistral.ai/v1/".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            provider.effective_base_url(),
+            "https://codestral.mistral.ai/v1"
+        );
+    }
+
+    #[test]
+    fn test_empty_base_url_treated_as_none() {
+        let provider =
+            MistralProvider::with_base_url("k".to_string(), Some("   ".to_string())).unwrap();
+        assert_eq!(provider.effective_base_url(), MISTRAL_API_BASE);
     }
 }

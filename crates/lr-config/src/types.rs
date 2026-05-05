@@ -3464,6 +3464,9 @@ pub enum ProviderType {
     /// Zhipu AI (GLM models)
     #[serde(rename = "zhipu")]
     Zhipu,
+    /// DigitalOcean Gradient inference (OpenAI-compatible, https://inference.do-ai.run/v1)
+    #[serde(rename = "digitalocean")]
+    DigitalOcean,
     /// ChatGPT Plus / Pro subscription (codex_cli OAuth → chatgpt.com/backend-api/codex)
     ///
     /// Distinct from `OpenAI` because it routes to a different
@@ -4572,6 +4575,7 @@ sampling_permission: "off"
             (ProviderType::KlusterAI, "kluster_ai"),
             (ProviderType::HuggingFace, "huggingface"),
             (ProviderType::Zhipu, "zhipu"),
+            (ProviderType::DigitalOcean, "digitalocean"),
         ];
         for (variant, expected_str) in &variants {
             // Serialize to JSON string
@@ -4599,6 +4603,7 @@ sampling_permission: "off"
             ProviderType::KlusterAI,
             ProviderType::HuggingFace,
             ProviderType::Zhipu,
+            ProviderType::DigitalOcean,
         ];
         for variant in &variants {
             let yaml = serde_yaml::to_string(variant).unwrap();

@@ -792,12 +792,17 @@ impl ProviderFactory for MistralProviderFactory {
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
-        vec![SetupParameter::required(
-            "api_key",
-            ParameterType::ApiKey,
-            "Mistral API key",
-            true,
-        )]
+        vec![
+            SetupParameter::required("api_key", ParameterType::ApiKey, "Mistral API key", true),
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "Optional API base URL — defaults to https://api.mistral.ai/v1. \
+                 Set to https://codestral.mistral.ai/v1 to use the Codestral endpoint.",
+                None::<String>,
+                false,
+            ),
+        ]
     }
 
     fn create(
@@ -812,12 +817,25 @@ impl ProviderFactory for MistralProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(MistralProvider::new(api_key)?))
+        let base_url = config.get("base_url").cloned();
+
+        Ok(Arc::new(MistralProvider::with_base_url(api_key, base_url)?))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
         if !config.contains_key("api_key") {
             return Err(AppError::Config("api_key is required".to_string()));
+        }
+        if let Some(url) = config.get("base_url") {
+            let trimmed = url.trim();
+            if !trimmed.is_empty()
+                && !trimmed.starts_with("http://")
+                && !trimmed.starts_with("https://")
+            {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -2256,6 +2274,81 @@ impl ProviderFactory for ZhipuProviderFactory {
 
     fn catalog_provider_id(&self) -> Option<&str> {
         None
+    }
+}
+
+/// Factory for DigitalOcean Gradient (OpenAI-compatible inference at inference.do-ai.run)
+pub struct DigitalOceanProviderFactory;
+
+impl ProviderFactory for DigitalOceanProviderFactory {
+    fn provider_type(&self) -> &str {
+        "digitalocean"
+    }
+
+    fn display_name(&self) -> &str {
+        "DigitalOcean Gradient"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
+    }
+
+    fn description(&self) -> &str {
+        "DigitalOcean Gradient AI inference (OpenAI-compatible)"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("DigitalOcean Gradient offers a free starter tier; rate limits are documented per-model. Requires a Gradient Model Access Key (distinct from a DO Personal Access Token).")
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Gradient Model Access Key (not a DO Personal Access Token)",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            instance_name,
+            "https://inference.do-ai.run/v1".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some("digitalocean")
     }
 }
 

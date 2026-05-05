@@ -8,6 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "debugging": "RUST_LOG=lr_providers=debug,info npm run tauri dev",
+    "dist": "npm run tauri build",
     "test:e2e": "playwright test --config=tests/e2e/playwright.config.ts",
     "test:e2e:headed": "playwright test --config=tests/e2e/playwright.config.ts --headed",
     "test:e2e:debug": "playwright test --config=tests/e2e/playwright.config.ts --debug"
@@ -38,7 +40,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tanstack/react-table": "^8.21.3",
     "@tauri-apps/api": "^2.9.1",
-    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.4",
     "@tauri-apps/plugin-updater": "^2.9.0",

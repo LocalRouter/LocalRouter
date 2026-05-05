@@ -457,6 +457,7 @@ fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
         "kluster_ai" => lr_config::ProviderType::KlusterAI,
         "huggingface" => lr_config::ProviderType::HuggingFace,
         "zhipu" => lr_config::ProviderType::Zhipu,
+        "digitalocean" => lr_config::ProviderType::DigitalOcean,
         "openai-chatgpt-plus" => lr_config::ProviderType::ChatGPTPlus,
         "openai_compatible" => lr_config::ProviderType::Custom,
         _ => lr_config::ProviderType::Custom,

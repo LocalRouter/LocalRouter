@@ -52,17 +52,38 @@ impl OpenAICompatibleProvider {
 #[derive(Debug, Deserialize)]
 struct OpenAIModel {
     id: String,
+    // The fields below are not used by LocalRouter, but the OpenAI spec includes them.
+    // GitHub Models, Cloudflare Workers AI, and DigitalOcean Gradient omit some/all of
+    // them, so they must be optional with serde defaults to avoid parse failures.
     #[allow(dead_code)]
-    object: String,
+    #[serde(default)]
+    object: Option<String>,
     #[allow(dead_code)]
-    created: i64,
+    #[serde(default)]
+    created: Option<i64>,
     #[allow(dead_code)]
-    owned_by: String,
+    #[serde(default)]
+    owned_by: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAIModelsResponse {
     data: Vec<OpenAIModel>,
+}
+
+/// Cloudflare Workers AI returns `{"result": [...], "success": true, ...}` instead
+/// of the OpenAI `{"data": [...]}` envelope.
+#[derive(Debug, Deserialize)]
+struct CloudflareModelsResponse {
+    result: Vec<OpenAIModel>,
+}
+
+/// Try the three known model-list response shapes, in order.
+fn parse_models_response(body: &str) -> Result<Vec<OpenAIModel>, serde_json::Error> {
+    serde_json::from_str::<OpenAIModelsResponse>(body)
+        .map(|r| r.data)
+        .or_else(|_| serde_json::from_str::<Vec<OpenAIModel>>(body))
+        .or_else(|_| serde_json::from_str::<CloudflareModelsResponse>(body).map(|r| r.result))
 }
 
 #[derive(Debug, Serialize)]
@@ -274,15 +295,16 @@ impl ModelProvider for OpenAICompatibleProvider {
             )));
         }
 
-        // Parse response - try standard OpenAI format {"data": [...]}, then bare array [...]
+        // Parse response — try shapes in order:
+        //   1. Standard OpenAI envelope: {"data": [...]}
+        //   2. Bare array: [...]                    (e.g. GitHub Models)
+        //   3. Cloudflare envelope: {"result": [...]}   (Cloudflare Workers AI)
         let body = response
             .text()
             .await
             .map_err(|e| AppError::Provider(format!("Failed to read models response: {}", e)))?;
 
-        let model_list: Vec<OpenAIModel> = serde_json::from_str::<OpenAIModelsResponse>(&body)
-            .map(|r| r.data)
-            .or_else(|_| serde_json::from_str::<Vec<OpenAIModel>>(&body))
+        let model_list: Vec<OpenAIModel> = parse_models_response(&body)
             .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
 
         let models = model_list
@@ -705,5 +727,52 @@ mod tests {
         let pricing = provider.get_pricing("any-model").await.unwrap();
         assert_eq!(pricing.input_cost_per_1k, 0.0);
         assert_eq!(pricing.output_cost_per_1k, 0.0);
+    }
+
+    #[test]
+    fn test_parse_models_openai_envelope() {
+        let body = r#"{"object":"list","data":[
+            {"id":"gpt-4o","object":"model","created":1234,"owned_by":"openai"},
+            {"id":"gpt-4o-mini","object":"model","created":1235,"owned_by":"openai"}
+        ]}"#;
+        let models = parse_models_response(body).unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-4o");
+        assert_eq!(models[1].id, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn test_parse_models_bare_array_with_optional_fields() {
+        // GitHub Models returns a bare array and may omit object/created/owned_by.
+        let body = r#"[
+            {"id":"openai/gpt-4o"},
+            {"id":"meta/llama-3.1-70b-instruct"}
+        ]"#;
+        let models = parse_models_response(body).unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "openai/gpt-4o");
+        assert!(models[0].object.is_none());
+        assert!(models[0].created.is_none());
+        assert!(models[0].owned_by.is_none());
+    }
+
+    #[test]
+    fn test_parse_models_cloudflare_envelope() {
+        // Cloudflare Workers AI: {"result": [...], "success": true, ...}.
+        let body = r#"{
+            "result":[{"id":"@cf/meta/llama-3.1-8b-instruct"}],
+            "success":true,
+            "errors":[],
+            "messages":[]
+        }"#;
+        let models = parse_models_response(body).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "@cf/meta/llama-3.1-8b-instruct");
+    }
+
+    #[test]
+    fn test_parse_models_invalid_json_fails() {
+        let body = "not json";
+        assert!(parse_models_response(body).is_err());
     }
 }

@@ -384,6 +384,35 @@ impl StdioTransport {
     }
 }
 
+impl Drop for StdioTransport {
+    fn drop(&mut self) {
+        // The child is spawned with `kill_on_drop(true)`, so the underlying
+        // process is killed when the last `Child` clone is dropped. However,
+        // the background reader task captures its own clones of the shared
+        // `Arc<RwLock<...>>` state, so if any of those keep the inherent
+        // `Child` alive past this Drop the process would linger. We
+        // defensively `start_kill()` here too.
+        //
+        // We also abort the reader task explicitly: it would otherwise exit
+        // on its own once stdout EOFs, but aborting guarantees no lingering
+        // task survives the transport.
+        //
+        // `try_write` (not `write`) — if some other thread happens to hold
+        // the lock at drop time we'd rather skip cleanup than deadlock the
+        // dropping thread. The process kill via `kill_on_drop` still applies.
+        if let Some(mut guard) = self.reader_task.try_write() {
+            if let Some(task) = guard.take() {
+                task.abort();
+            }
+        }
+        if let Some(mut guard) = self.child.try_write() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Transport for StdioTransport {
     async fn send_request(&self, mut request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
