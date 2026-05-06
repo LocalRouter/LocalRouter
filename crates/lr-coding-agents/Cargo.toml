@@ -21,6 +21,8 @@ dashmap = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 which = { workspace = true }
+dirs = { workspace = true }
+sysinfo = "0.32"
 
 command-group = { version = "5.0", features = ["with-tokio"] }
 # Pinned to matusfaro/vibe-kanban — fork tracking BloopAI's HEAD plus

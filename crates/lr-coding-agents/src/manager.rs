@@ -690,6 +690,192 @@ impl CodingAgentManager {
         Ok(())
     }
 
+    /// Enumerate sessions visible on disk, augmented with cheap
+    /// live-process detection. See [`crate::discovery`] for per-agent
+    /// feasibility (Claude Code + ACP-harness agents return real
+    /// entries; everything else returns empty).
+    ///
+    /// Best-effort throughout — IO errors per file are logged and
+    /// skipped, missing roots yield empty, and a failure to snapshot
+    /// running processes degrades each entry's `liveness` to
+    /// [`crate::discovery::Liveness::Unknown`].
+    pub async fn discover_disk_sessions(
+        &self,
+        filter: crate::discovery::DiscoverFilter,
+    ) -> Result<Vec<crate::discovery::DiscoveredSession>, CodingAgentError> {
+        let agents: Vec<CodingAgentType> = filter
+            .agents
+            .clone()
+            .unwrap_or_else(|| CodingAgentType::all().to_vec());
+
+        // Per-agent disk scan. Spawned to a blocking pool so std::fs
+        // calls don't pin the async runtime — fast in practice but
+        // proper hygiene.
+        let cwd = filter.working_directory.clone();
+        let session_id = filter.session_id.clone();
+        let mut all = tokio::task::spawn_blocking(move || {
+            let mut combined = Vec::new();
+            for agent in agents {
+                let d = crate::discovery::discoverer_for(agent);
+                combined.extend(d.discover(cwd.as_deref(), session_id.as_deref()));
+            }
+            combined
+        })
+        .await
+        .map_err(|e| CodingAgentError::IoError(format!("discovery join: {e}")))?;
+
+        // Sort newest-first; truncate to limit.
+        all.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+        let limit = if filter.limit == 0 {
+            crate::discovery::DEFAULT_LIMIT
+        } else {
+            filter.limit
+        };
+        all.truncate(limit);
+
+        // Live-process scan — single sweep across the whole result set.
+        // Each session contributes two needles: the raw session id
+        // (matches Claude Code's `--resume <id>` argv token) and
+        // `<id>.jsonl` (matches the ACP harness's session-file path on
+        // argv). We can't tell from outside which form is on the target
+        // process; LivePid from either promotes the entry.
+        let needles_owned: Vec<String> = all
+            .iter()
+            .flat_map(|s| {
+                vec![
+                    s.agent_session_id.clone(),
+                    format!("{}.jsonl", s.agent_session_id),
+                ]
+            })
+            .collect();
+        let needle_count = needles_owned.len();
+        let liveness_pairs = tokio::task::spawn_blocking(move || {
+            let refs: Vec<&str> = needles_owned.iter().map(|s| s.as_str()).collect();
+            crate::discovery::detect_live_pids(&refs)
+        })
+        .await
+        .unwrap_or_else(|_| {
+            // sysinfo failed → every entry stays Unknown.
+            vec![crate::discovery::Liveness::Unknown; needle_count]
+        });
+
+        // Each session contributes two needles in the order
+        // [agent_session_id, "<id>.jsonl"]. Promote LivePid from either.
+        for (idx, sess) in all.iter_mut().enumerate() {
+            let a = liveness_pairs.get(idx * 2).cloned().unwrap_or(crate::discovery::Liveness::Unknown);
+            let b = liveness_pairs.get(idx * 2 + 1).cloned().unwrap_or(crate::discovery::Liveness::Unknown);
+            sess.liveness = match (a, b) {
+                (crate::discovery::Liveness::LivePid { pid }, _)
+                | (_, crate::discovery::Liveness::LivePid { pid }) => {
+                    crate::discovery::Liveness::LivePid { pid }
+                }
+                (crate::discovery::Liveness::NotFound, _)
+                | (_, crate::discovery::Liveness::NotFound) => {
+                    crate::discovery::Liveness::NotFound
+                }
+                _ => crate::discovery::Liveness::Unknown,
+            };
+        }
+
+        Ok(all)
+    }
+
+    /// Spawn a new tracked process for a session this manager didn't
+    /// originally create, resuming via the agent's native `--resume`
+    /// (or equivalent). The session enters the manager's map so
+    /// subsequent `say` / `status` / `end_session` calls all work.
+    ///
+    /// Returns the **manager's** session id — distinct from
+    /// `agent_session_id`, which is the agent's own internal id stashed
+    /// on the new entry.
+    pub async fn start_session_with_resume(
+        &self,
+        agent_type: CodingAgentType,
+        client_id: &str,
+        prompt: &str,
+        working_directory: PathBuf,
+        model: Option<String>,
+        permission_mode: Option<CodingPermissionMode>,
+        agent_session_id: String,
+    ) -> Result<StartResponse, CodingAgentError> {
+        let max = self.max_concurrent_sessions.load(Ordering::Relaxed);
+        if max > 0 && self.sessions.len() >= max {
+            return Err(CodingAgentError::TooManySessions { max });
+        }
+
+        let perm_mode = permission_mode.unwrap_or_default();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let config = SessionConfig {
+            model,
+            permission_mode: perm_mode,
+            env: Default::default(),
+        };
+
+        let mut session = CodingSession::new(
+            session_id.clone(),
+            agent_type,
+            client_id.to_string(),
+            working_directory.clone(),
+            config.clone(),
+            prompt.to_string(),
+            self.config.output_buffer_size,
+        );
+        // Pre-record the agent's own id so the resume path threads
+        // `--resume <agent_session_id>` immediately.
+        session.agent_session_id = Some(agent_session_id.clone());
+
+        let approval_override = {
+            let guard = self
+                .approval_service_factory
+                .read()
+                .unwrap_or_else(|p| p.into_inner());
+            guard.as_ref().map(|factory| factory(&session_id))
+        };
+        let spawned = spawn_via_executor(
+            agent_type,
+            prompt,
+            &working_directory,
+            &config,
+            self.config.approval_mode,
+            Some(&agent_session_id),
+            approval_override,
+        )
+        .await?;
+
+        let cancel = spawned
+            .cancel
+            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+
+        session.process = Some(AgentProcess {
+            child: spawned.child,
+            stdin: None,
+            cancel,
+            reader_cancel: tokio_util::sync::CancellationToken::new(),
+        });
+
+        let session_arc = Arc::new(Mutex::new(session));
+        self.sessions.insert(
+            session_id.clone(),
+            (client_id.to_string(), session_arc.clone()),
+        );
+
+        spawn_output_reader(session_arc, self.change_tx.clone());
+
+        info!(
+            agent = %agent_type,
+            session_id = %session_id,
+            agent_session_id = %agent_session_id,
+            "Attached to existing coding-agent session"
+        );
+
+        self.notify_changed();
+
+        Ok(StartResponse {
+            session_id,
+            status: SessionStatus::Active,
+        })
+    }
+
     /// Get a session, validating client ownership.
     fn get_session(
         &self,
