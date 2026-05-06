@@ -2290,7 +2290,10 @@ impl ProviderFactory for DigitalOceanProviderFactory {
     }
 
     fn category(&self) -> ProviderCategory {
-        ProviderCategory::FirstParty
+        // Hosting platform serving models from many creators (Llama, Mistral,
+        // Anthropic, etc. via DigitalOcean's Gradient catalog), not a model
+        // creator — same bucket as DeepInfra, TogetherAI, CloudflareAI.
+        ProviderCategory::ThirdParty
     }
 
     fn description(&self) -> &str {
