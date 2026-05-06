@@ -400,7 +400,23 @@ jobs:
     needs: [version-bump, create-release]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
     steps:
+      - name: Trigger Docker image build
+        # Releases created via softprops/action-gh-release use GITHUB_TOKEN,
+        # so the resulting `release: published` event does NOT fan out to
+        # other workflows (GitHub's anti-recursion rule). workflow_dispatch
+        # is the documented exception, so kick docker.yml manually here.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run docker.yml \
+            --repo ${{ github.repository }} \
+            -f version=${{ needs.version-bump.outputs.version }}
+          echo "Triggered docker.yml for v${{ needs.version-bump.outputs.version }}"
+
       - name: Summary
         run: |
           echo "✅ Release v${{ needs.version-bump.outputs.version }} completed successfully!"

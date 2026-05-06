@@ -2,11 +2,15 @@ name: Docker
 
 # Build and push the LocalRouter AppImage container to GHCR.
 #
-# Triggered automatically when a GitHub release is published — by that
-# point release.yml has already uploaded the AppImage asset, so the
-# Dockerfile's APPIMAGE_URL build-arg can resolve. Manual workflow_dispatch
-# is kept for re-running against a previously released version (e.g. to
-# rebuild with an updated entrypoint script).
+# release.yml's post-release job dispatches this workflow after each
+# successful release (see the "Trigger Docker image build" step there).
+# Releases created via GITHUB_TOKEN do not fan out their `release: published`
+# event to other workflows, so the explicit dispatch is required.
+#
+# The `release: published` trigger is kept for the case of a release being
+# published manually through the GH UI (which uses the user's identity, so
+# the event does fan out). Manual workflow_dispatch covers re-runs against
+# previously released versions.
 
 on:
   release:
