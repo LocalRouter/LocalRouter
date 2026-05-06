@@ -52,6 +52,7 @@ const ICON_MAP: Record<string, string> = {
   huggingface: 'huggingface.svg',
   'hugging-face': 'huggingface.svg',
   zhipu: 'zhipu.svg',
+  digitalocean: 'digitalocean.svg',
 
   // OAuth/Subscription Providers
   'github-copilot': 'github.png',
