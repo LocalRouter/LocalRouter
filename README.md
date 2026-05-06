@@ -74,6 +74,26 @@ See [CLAUDE.md](CLAUDE.md) for detailed architecture documentation.
 
 ---
 
+## Docker
+
+A Linux container image is published to GHCR with each release:
+
+```bash
+xhost +SI:localuser:$(whoami)
+docker run --rm -it \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -v "$(pwd)/localrouter-home:/home/app" \
+  -p 3625:3625 \
+  -e DISPLAY="$DISPLAY" \
+  --device /dev/dri \
+  ghcr.io/localrouter/localrouter:latest
+```
+
+X11 forwarding is required, so this works on Linux hosts only. See
+[docs/DOCKER.md](docs/DOCKER.md) for full instructions and limitations.
+
+---
+
 ## License
 
 [GNU Affero General Public License v3.0](LICENSE)

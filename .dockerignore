@@ -1,0 +1,10 @@
+# The build context is intentionally tiny — the AppImage is fetched inside
+# the Dockerfile, not copied from the host. The only files that actually
+# need to be in context are the Dockerfile itself and docker-entrypoint.sh.
+# Exclude everything else aggressively.
+
+*
+
+!Dockerfile
+!docker-entrypoint.sh
+!.dockerignore

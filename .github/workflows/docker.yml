@@ -1,0 +1,101 @@
+name: Docker
+
+# Build and push the LocalRouter AppImage container to GHCR.
+#
+# Triggered automatically when a GitHub release is published — by that
+# point release.yml has already uploaded the AppImage asset, so the
+# Dockerfile's APPIMAGE_URL build-arg can resolve. Manual workflow_dispatch
+# is kept for re-running against a previously released version (e.g. to
+# rebuild with an updated entrypoint script).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to package (e.g. 0.1.0, no leading v)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/localrouter/localrouter
+
+jobs:
+  build-and-push:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            IS_PRERELEASE="false"
+          else
+            # Strip the leading 'v' from the release tag (e.g. v0.1.0 -> 0.1.0)
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+            IS_PRERELEASE="${{ github.event.release.prerelease }}"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "Error: could not resolve version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "appimage_url=https://github.com/${{ github.repository }}/releases/download/v${VERSION}/LocalRouter_${VERSION}_amd64.AppImage" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION (prerelease=$IS_PRERELEASE)"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          TAGS="${IMAGE_NAME}:${VERSION}"
+          TAGS="${TAGS},${IMAGE_NAME}:v${VERSION}"
+          # Only mark as :latest for stable (non-prerelease) builds.
+          if [ "${{ steps.ver.outputs.is_prerelease }}" != "true" ]; then
+            TAGS="${TAGS},${IMAGE_NAME}:latest"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "Tags: $TAGS"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            APPIMAGE_URL=${{ steps.ver.outputs.appimage_url }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+            org.opencontainers.image.description=LocalRouter — local OpenAI-compatible API gateway with multi-provider routing and MCP integration
+
+      - name: Summary
+        run: |
+          echo "✅ Pushed ${IMAGE_NAME}:${{ steps.ver.outputs.version }}"
+          echo "Tags: ${{ steps.tags.outputs.tags }}"
+          echo "AppImage source: ${{ steps.ver.outputs.appimage_url }}"
