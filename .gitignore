@@ -1,6 +1,9 @@
 # Rust
 target/
-Cargo.lock
+# Cargo.lock is committed: this is an application (binary), so a pinned,
+# reproducible dependency set is required. Leaving it un-pinned let CI
+# re-resolve transitive deps (e.g. hashbrown) into a combination that broke
+# the release build (allocative/starlark_map). Keep it tracked.
 **/*.rs.bk
 *.pdb
 
