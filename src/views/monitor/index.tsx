@@ -10,16 +10,58 @@ import { EventFilters } from './event-filters'
 import { TryItOutPanel } from './try-it-out-panel'
 import type { MonitorEventFilter, InterceptRule } from '@/types/tauri-commands'
 
+// Persists the deliberate filter dimensions across app restarts. We do NOT
+// persist `session_id`/`client_id` — those are transient drill-downs (set by
+// clicking into a session/client) and a stale value would silently hide all
+// events after a restart, since the in-memory event store starts empty.
+const FILTER_STORAGE_KEY = 'monitor.filter'
+
+const EMPTY_FILTER: MonitorEventFilter = {
+  event_types: null,
+  session_id: null,
+  client_id: null,
+  status: null,
+  search: null,
+}
+
+function loadPersistedFilter(): MonitorEventFilter {
+  try {
+    const raw = localStorage.getItem(FILTER_STORAGE_KEY)
+    if (!raw) return EMPTY_FILTER
+    const saved = JSON.parse(raw) as Partial<MonitorEventFilter>
+    return {
+      ...EMPTY_FILTER,
+      event_types: saved.event_types ?? null,
+      status: saved.status ?? null,
+      search: saved.search ?? null,
+    }
+  } catch (error) {
+    console.error('Failed to load persisted monitor filter:', error)
+    return EMPTY_FILTER
+  }
+}
+
 export function MonitorView() {
-  const [filter, setFilter] = useState<MonitorEventFilter>({
-    event_types: null,
-    session_id: null,
-    client_id: null,
-    status: null,
-    search: null,
-  })
+  const [filter, setFilter] = useState<MonitorEventFilter>(loadPersistedFilter)
   const [tryItOutOpen, setTryItOutOpen] = useState(false)
   const [interceptRule, setInterceptRule] = useState<InterceptRule | null>(null)
+
+  // Persist the deliberate filter dimensions whenever they change so the tab
+  // restores the user's last filter on the next launch.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        FILTER_STORAGE_KEY,
+        JSON.stringify({
+          event_types: filter.event_types,
+          status: filter.status,
+          search: filter.search,
+        }),
+      )
+    } catch (error) {
+      console.error('Failed to persist monitor filter:', error)
+    }
+  }, [filter.event_types, filter.status, filter.search])
 
   // Sync intercept rule to backend
   useEffect(() => {

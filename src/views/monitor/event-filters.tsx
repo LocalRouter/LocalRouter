@@ -36,6 +36,15 @@ const TYPE_GROUPS: { key: string; label: string; types: MonitorEventType[] }[] =
 
 const ALL_TYPE_GROUP_KEYS = TYPE_GROUPS.map(g => g.key)
 
+// Reverse the group→event_types mapping so a persisted/external filter restores
+// the correct group selection. `null` means "all events" (no filter); a group
+// counts as selected when every one of its event types is present.
+function groupsFromEventTypes(eventTypes: MonitorEventType[] | null): string[] {
+  if (eventTypes == null) return ALL_TYPE_GROUP_KEYS
+  const present = new Set(eventTypes)
+  return TYPE_GROUPS.filter(g => g.types.every(t => present.has(t))).map(g => g.key)
+}
+
 const ALL_INTERCEPT_CATEGORIES: { label: string; value: InterceptCategory }[] = [
   { label: 'LLM', value: 'llm' },
   { label: 'MCP Tools', value: 'mcp' },
@@ -51,8 +60,9 @@ const ALL_INTERCEPT_CATEGORIES: { label: string; value: InterceptCategory }[] = 
 const ALL_CATEGORY_VALUES = ALL_INTERCEPT_CATEGORIES.map(c => c.value)
 
 export function EventFilters({ filter, onFilterChange, onClear, interceptRule, onInterceptRuleChange }: EventFiltersProps) {
-  // Type filter state
-  const [selectedGroups, setSelectedGroups] = useState<string[]>(ALL_TYPE_GROUP_KEYS)
+  // Type filter state — seeded from the incoming filter so a persisted/restored
+  // selection survives mount instead of being reset to "all events".
+  const [selectedGroups, setSelectedGroups] = useState<string[]>(() => groupsFromEventTypes(filter.event_types))
   const [typeFilterOpen, setTypeFilterOpen] = useState(false)
 
   // Intercept state
