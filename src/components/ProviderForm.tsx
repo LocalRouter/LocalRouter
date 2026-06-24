@@ -7,6 +7,7 @@ import Input from './ui/Input'
 import { EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline'
 import type { OAuthCredentialView } from '@/types/tauri-commands'
 import { errorMessage } from '@/utils/errors'
+import { OAUTH_PROVIDER_MAP } from '@/components/OAuthSettingsControls'
 
 export interface SetupParameter {
   key: string
@@ -51,12 +52,6 @@ interface ProviderFormProps {
  * Unified provider form component for creating and editing provider instances.
  * Dynamically renders form fields based on the provider type's setup parameters.
  */
-// Map provider types to OAuth provider IDs
-const OAUTH_PROVIDER_MAP: Record<string, string> = {
-  'github-copilot': 'github-copilot',
-  'openai-chatgpt-plus': 'openai-codex',
-}
-
 /**
  * Inline controls shown for an already-authenticated OAuth provider.
  * Lets the user peek at / copy the stored access token and trigger a

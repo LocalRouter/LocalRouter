@@ -45,6 +45,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import ProviderForm, { ProviderType } from "@/components/ProviderForm"
+import { OAuthSettingsControls, OAUTH_PROVIDER_MAP } from "@/components/OAuthSettingsControls"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import ProviderIcon from "@/components/ProviderIcon"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
@@ -947,6 +948,22 @@ export function ProvidersPanel({
                                       </div>
                                     )
                                   })}
+
+                                {/* OAuth re-authentication for subscription
+                                    providers (e.g. ChatGPT Plus). The OAuth
+                                    setup param is rendered here instead of the
+                                    plain field loop so an expired/revoked token
+                                    can be refreshed without re-creating the
+                                    provider. */}
+                                {selectedTypeForEdit.setup_parameters.some(
+                                  (param) => param.param_type === "oauth"
+                                ) &&
+                                  OAUTH_PROVIDER_MAP[selectedTypeForEdit.provider_type] && (
+                                    <OAuthSettingsControls
+                                      oauthProviderId={OAUTH_PROVIDER_MAP[selectedTypeForEdit.provider_type]}
+                                      displayName={selectedTypeForEdit.display_name}
+                                    />
+                                  )}
                               </>
                             )}
                           </CardContent>
