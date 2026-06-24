@@ -3,6 +3,7 @@
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use super::{start_server, state::AppState, ServerConfig};
@@ -36,6 +37,9 @@ pub struct ServerManager {
     server_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     status: Arc<RwLock<ServerStatus>>,
     actual_port: Arc<RwLock<Option<u16>>>,
+    /// Cancels the running server: stops accepting connections and kills any
+    /// in-flight requests/streams via the kill-switch middleware.
+    shutdown_token: Arc<RwLock<Option<CancellationToken>>>,
 }
 
 impl ServerManager {
@@ -45,6 +49,7 @@ impl ServerManager {
             server_handle: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(ServerStatus::Stopped)),
             actual_port: Arc::new(RwLock::new(None)),
+            shutdown_token: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -78,7 +83,7 @@ impl ServerManager {
 
         // Start the new server
         let host = config.host.clone();
-        let (state, handle, actual_port) = start_server(
+        let (state, handle, actual_port, shutdown_token) = start_server(
             config,
             deps.router,
             deps.mcp_server_manager,
@@ -96,6 +101,7 @@ impl ServerManager {
         *self.app_state.write() = Some(state);
         *self.server_handle.write() = Some(handle);
         *self.actual_port.write() = Some(actual_port);
+        *self.shutdown_token.write() = Some(shutdown_token);
         *self.status.write() = ServerStatus::Running;
 
         info!("Listening on {}:{}", host, actual_port);
@@ -111,7 +117,15 @@ impl ServerManager {
 
         info!("Stopping server...");
 
-        // Abort the server task
+        // Cancel first: this kills in-flight requests/streams (via the
+        // kill-switch middleware) and triggers graceful shutdown of the accept
+        // loop. Without this, aborting the handle below would leave detached
+        // per-connection tasks (and their in-flight requests) running.
+        if let Some(token) = self.shutdown_token.write().take() {
+            token.cancel();
+        }
+
+        // Abort the server task as a backstop (in case it's wedged).
         if let Some(handle) = self.server_handle.write().take() {
             handle.abort();
         }

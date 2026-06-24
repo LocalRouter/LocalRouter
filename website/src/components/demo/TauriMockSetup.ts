@@ -132,6 +132,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Server restarted (demo)')
     return null
   },
+  'stop_server': () => {
+    mockData.healthCache.server_running = false
+    toast.success('Server stopped (demo)')
+    return null
+  },
+  'start_server': () => {
+    mockData.healthCache.server_running = true
+    toast.success('Server started (demo)')
+    return null
+  },
   'get_network_interfaces': () => mockData.networkInterfaces,
 
   // ============================================================================

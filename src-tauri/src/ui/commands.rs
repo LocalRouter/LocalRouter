@@ -309,6 +309,9 @@ pub async fn get_server_status(
 }
 
 /// Stop the web server
+///
+/// Stops serving both the LLM and MCP endpoints and kills all in-flight
+/// requests (including streaming completions) via the server's kill-switch.
 #[tauri::command]
 pub async fn stop_server(
     server_manager: State<'_, Arc<lr_server::ServerManager>>,
@@ -316,10 +319,34 @@ pub async fn stop_server(
 ) -> Result<(), String> {
     tracing::info!("Stop server command received");
 
+    // Capture the health cache before stopping (stop() clears AppState), so we
+    // can mark the server stopped — otherwise the cached `server_running` stays
+    // true and the UI/tray show a stale "Running" state.
+    let health_cache = server_manager.get_state().map(|s| s.health_cache.clone());
+
     server_manager.stop().await;
+
+    if let Some(health_cache) = health_cache {
+        health_cache.update_server_status(false, None, None);
+    }
 
     // Emit event to update tray icon
     let _ = app.emit("server-status-changed", "stopped");
+
+    Ok(())
+}
+
+/// Start the web server (LLM + MCP)
+///
+/// Starts the server from a stopped state. Reuses the restart orchestration in
+/// `main.rs` (which builds the full set of dependencies); its internal stop is a
+/// no-op when the server is already stopped.
+#[tauri::command]
+pub async fn start_server(app: tauri::AppHandle) -> Result<(), String> {
+    tracing::info!("Start server command received");
+
+    app.emit("server-restart-requested", ())
+        .map_err(|e| format!("Failed to emit start event: {}", e))?;
 
     Ok(())
 }

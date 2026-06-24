@@ -562,6 +562,14 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
     // Add separator before quit
     menu_builder = menu_builder.separator();
 
+    // Global start/stop toggle (LLM + MCP), directly above Quit.
+    let toggle_label = if is_server_running {
+        format!("{ICON_PAD}⏹{ICON_PAD} Stop Server")
+    } else {
+        format!("{ICON_PAD}▶{ICON_PAD} Start Server")
+    };
+    menu_builder = menu_builder.text("toggle_server", toggle_label);
+
     // Add quit option
     menu_builder = menu_builder.text("quit", format!("{ICON_PAD}⏻{ICON_PAD} Quit LocalRouter"));
 

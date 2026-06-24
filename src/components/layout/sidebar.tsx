@@ -12,6 +12,8 @@ import {
   ChevronRight,
   Zap,
   Activity,
+  Play,
+  Square,
 } from "lucide-react"
 import { FEATURES, type FeatureKey } from "@/constants/features"
 import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
@@ -135,6 +137,7 @@ const bottomNavItems: NavItem[] = [
 export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups }: SidebarProps) {
   const [healthState, setHealthState] = React.useState<HealthCacheState | null>(null)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
+  const [serverToggling, setServerToggling] = React.useState(false)
   const [expanded, setExpanded] = React.useState(true) // default expanded, will load from config
   const [collapsibleOpen, setCollapsibleOpen] = React.useState<Record<string, boolean>>({})
 
@@ -225,6 +228,21 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
       console.error('Failed to refresh health:', error)
     } finally {
       setTimeout(() => setIsRefreshing(false), 1000)
+    }
+  }
+
+  // Toggle the global server (LLM + MCP). Stopping kills in-flight requests.
+  // State updates arrive via the 'server-status-changed' listener above.
+  const handleToggleServer = async () => {
+    if (serverToggling) return
+    setServerToggling(true)
+    const running = healthState?.server_running === true
+    try {
+      await invoke(running ? 'stop_server' : 'start_server')
+    } catch (error) {
+      console.error('Failed to toggle server:', error)
+    } finally {
+      setServerToggling(false)
     }
   }
 
@@ -724,8 +742,11 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
           {bottomNavItems.map(renderNavItem)}
         </nav>
 
-        {/* Status indicator */}
-        <div className="flex items-center border-t p-2">
+        {/* Status indicator + global server start/stop toggle */}
+        <div className={cn(
+          "flex border-t p-2 gap-1",
+          expanded ? "items-center" : "flex-col items-center"
+        )}>
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -809,6 +830,37 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
                   Click to refresh
                 </div>
               </div>
+            </TooltipContent>
+          </Tooltip>
+
+          {/* Push the toggle to the far right when expanded */}
+          {expanded && <div className="flex-1" />}
+
+          {/* Global start/stop toggle (LLM + MCP) */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleToggleServer}
+                disabled={serverToggling}
+                className={cn(
+                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:opacity-50",
+                  healthState?.server_running
+                    ? "text-red-500 hover:bg-red-500/10"
+                    : "text-green-600 hover:bg-green-500/10"
+                )}
+                aria-label={healthState?.server_running ? 'Stop server' : 'Start server'}
+              >
+                {healthState?.server_running ? (
+                  <Square className="h-3.5 w-3.5 fill-current" />
+                ) : (
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>
+              {healthState?.server_running
+                ? 'Stop server (LLM + MCP) — cancels in-flight requests'
+                : 'Start server (LLM + MCP)'}
             </TooltipContent>
           </Tooltip>
         </div>

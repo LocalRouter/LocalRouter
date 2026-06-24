@@ -52,7 +52,7 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
         enable_cors: true,
     };
 
-    let (_, handle, actual_port) = server::start_server(
+    let (_, handle, actual_port, _shutdown) = server::start_server(
         server_config,
         router,
         mcp_server_manager,

@@ -114,7 +114,7 @@ async fn start_test_server() -> (String, String) {
         enable_cors: true,
     };
 
-    let (state, _handle, actual_port) = server::start_server(
+    let (state, _handle, actual_port, _shutdown) = server::start_server(
         server_config,
         router,
         mcp_server_manager,

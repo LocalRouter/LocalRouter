@@ -152,6 +152,35 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                         error!("Failed to emit update-and-restart event: {}", e);
                     }
                 }
+                "toggle_server" => {
+                    info!("Toggle server requested from tray");
+                    let app_clone = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let running = app_clone
+                            .try_state::<Arc<lr_server::ServerManager>>()
+                            .map(|sm| matches!(sm.get_status(), lr_server::ServerStatus::Running))
+                            .unwrap_or(false);
+
+                        if running {
+                            // Stop: kills in-flight requests via the kill-switch.
+                            if let Some(sm) = app_clone.try_state::<Arc<lr_server::ServerManager>>()
+                            {
+                                // Mark the health cache stopped before clearing
+                                // state, so the UI/tray don't show stale state.
+                                let health_cache = sm.get_state().map(|s| s.health_cache.clone());
+                                sm.stop().await;
+                                if let Some(health_cache) = health_cache {
+                                    health_cache.update_server_status(false, None, None);
+                                }
+                            }
+                            let _ = app_clone.emit("server-status-changed", "stopped");
+                        } else {
+                            // Start: main.rs owns the dependencies needed to build
+                            // the server, so trigger it via the restart event.
+                            let _ = app_clone.emit("server-restart-requested", ());
+                        }
+                    });
+                }
                 "quit" => {
                     info!("Quit requested from tray");
                     app.exit(0);

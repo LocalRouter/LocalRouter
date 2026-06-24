@@ -16,6 +16,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
+    body::Body,
     extract::{ConnectInfo, Request},
     http::{header, Method, StatusCode},
     middleware::Next,
@@ -23,7 +24,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use futures::StreamExt;
+use http_body::Body as HttpBody;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{error, info};
@@ -82,8 +86,18 @@ pub async fn start_server(
     token_store: Arc<lr_clients::TokenStore>,
     metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
     health_cache: Option<Arc<lr_providers::health_cache::HealthCacheManager>>,
-) -> anyhow::Result<(AppState, tokio::task::JoinHandle<()>, u16)> {
+) -> anyhow::Result<(
+    AppState,
+    tokio::task::JoinHandle<()>,
+    u16,
+    CancellationToken,
+)> {
     info!("Starting web server on {}:{}", config.host, config.port);
+
+    // Shutdown signal: cancelling this stops the accept loop (graceful
+    // shutdown) AND kills any in-flight request/stream via the kill-switch
+    // middleware below.
+    let shutdown = CancellationToken::new();
 
     // Create shared state
     let state = AppState::new(
@@ -99,7 +113,7 @@ pub async fn start_server(
     .with_mcp(mcp_server_manager);
 
     // Build the router with auth layer applied
-    let app = build_app(state.clone(), config.enable_cors);
+    let app = build_app(state.clone(), config.enable_cors, shutdown.clone());
 
     // Try to bind to the configured port, incrementing if necessary
     let host_ip = config.host.parse::<std::net::IpAddr>()?;
@@ -165,23 +179,31 @@ pub async fn start_server(
         }
     });
 
-    // Start server (this runs forever)
+    // Start server. Graceful shutdown stops accepting new connections when the
+    // token is cancelled; the kill-switch middleware terminates in-flight
+    // requests/streams so Stop is immediate rather than draining.
+    let shutdown_for_serve = shutdown.clone();
     let handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
+        .with_graceful_shutdown(async move { shutdown_for_serve.cancelled().await })
         .await
         {
             error!("Server error: {}", e);
         }
     });
 
-    Ok((state_clone, handle, port))
+    Ok((state_clone, handle, port, shutdown))
 }
 
-/// Build the Axum app with all routes and middleware
-fn build_app(state: AppState, enable_cors: bool) -> Router {
+/// Build the Axum app with all routes and middleware.
+///
+/// `shutdown` drives the kill-switch middleware: when cancelled (server Stop),
+/// in-flight requests are aborted and streaming response bodies stop emitting,
+/// instead of being allowed to run to completion.
+fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) -> Router {
     // Build MCP routes with client auth middleware
     // MCP routes: unified gateway at root (/) and /mcp
     // GET returns SSE if Accept: text/event-stream, otherwise API info
@@ -324,7 +346,56 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         router = router.layer(cors);
     }
 
+    // Kill-switch (outermost layer): when `shutdown` is cancelled (server Stop),
+    // abort in-flight requests so they don't run to completion. Added last so it
+    // wraps every other layer/route.
+    router = router.layer(axum::middleware::from_fn_with_state(shutdown, kill_switch));
+
     router
+}
+
+/// Kill-switch middleware: terminates an in-flight request the moment the
+/// server's `shutdown` token is cancelled (server Stop), instead of letting it
+/// run to completion / drain.
+///
+/// - Pre-response: races the handler against cancellation, returning 503 and
+///   dropping the handler future if Stop wins.
+/// - Streaming responses (unknown-length bodies, e.g. SSE / streamed
+///   completions): wraps the body so it stops emitting on cancel. Buffered
+///   responses (known exact length) pass through untouched, preserving their
+///   Content-Length.
+async fn kill_switch(
+    axum::extract::State(shutdown): axum::extract::State<CancellationToken>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let response = tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => {
+            return (StatusCode::SERVICE_UNAVAILABLE, "Server stopping").into_response();
+        }
+        resp = next.run(req) => resp,
+    };
+
+    let (parts, body) = response.into_parts();
+    if body.size_hint().exact().is_some() {
+        return Response::from_parts(parts, body);
+    }
+
+    let mut data = body.into_data_stream();
+    let guarded = async_stream::stream! {
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break,
+                chunk = data.next() => match chunk {
+                    Some(item) => yield item,
+                    None => break,
+                }
+            }
+        }
+    };
+    Response::from_parts(parts, Body::from_stream(guarded))
 }
 
 /// Health check endpoint
@@ -496,5 +567,100 @@ mod tests {
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
         assert!(config.enable_cors);
+    }
+}
+
+#[cfg(test)]
+mod kill_switch_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt; // for `oneshot`
+
+    fn test_app(token: CancellationToken) -> Router {
+        Router::new()
+            .route("/buffered", get(|| async { "ok" }))
+            .route(
+                "/stream",
+                get(|| async {
+                    // Endless stream — only ends if the kill-switch terminates it.
+                    let s = async_stream::stream! {
+                        loop {
+                            yield Ok::<_, std::io::Error>(
+                                axum::body::Bytes::from_static(b"chunk\n"),
+                            );
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    };
+                    Body::from_stream(s)
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(token, kill_switch))
+    }
+
+    #[tokio::test]
+    async fn passes_through_when_not_cancelled() {
+        let app = test_app(CancellationToken::new());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/buffered")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn returns_503_when_already_cancelled() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let app = test_app(token);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/buffered")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn streaming_body_terminates_on_cancel() {
+        let token = CancellationToken::new();
+        let app = test_app(token.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Cancel shortly after the stream starts; the guarded body must then end
+        // (otherwise `to_bytes` would hang on the endless stream).
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            token.cancel();
+        });
+
+        let collected = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            axum::body::to_bytes(resp.into_body(), usize::MAX),
+        )
+        .await;
+        assert!(
+            collected.is_ok(),
+            "streaming body did not terminate after the kill-switch fired"
+        );
     }
 }

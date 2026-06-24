@@ -91,6 +91,7 @@ tokio-util = "0.7"
 axum = { version = "0.8", features = ["macros", "ws", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+http-body = "1"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }

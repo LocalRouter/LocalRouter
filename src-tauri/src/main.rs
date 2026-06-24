@@ -2221,6 +2221,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 if let Err(e) = ui::tray::update_tray_icon(&app_handle, status) {
                     error!("Failed to update tray icon: {}", e);
                 }
+                // Rebuild the menu so the Start/Stop toggle label reflects the
+                // new running state.
+                if let Err(e) = ui::tray::rebuild_tray_menu(&app_handle) {
+                    error!("Failed to rebuild tray menu after status change: {}", e);
+                }
             });
 
             // Listen for LLM request events to show "active" icon (when graph is disabled)
@@ -2391,6 +2396,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Server control commands
             ui::commands::get_server_status,
             ui::commands::stop_server,
+            ui::commands::start_server,
             // OAuth commands
             ui::commands::list_oauth_providers,
             ui::commands::start_oauth_flow,
