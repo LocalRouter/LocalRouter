@@ -297,6 +297,45 @@ impl TrayGraphManager {
     /// Visual updates happen every 1 second for responsiveness, but bucket shifting
     /// only occurs at the configured refresh rate (1s/10s/60s).
     ///
+    /// Apply a freshly-rendered icon to the tray on the main thread.
+    ///
+    /// Tray / menu-bar mutation is AppKit UI work that must run on the main
+    /// thread. This manager renders and updates from a background task, and
+    /// doing the `set_icon` off-thread made the icon flash "undrawn" while
+    /// redrawing the next bucket. Dispatching to the main thread fixes that,
+    /// and bundling `set_icon` + `set_icon_as_template` into a single closure
+    /// makes the two-step update atomic so the menu bar never repaints with a
+    /// half-applied icon in between.
+    fn apply_tray_icon(app_handle: &AppHandle, icon_bytes: Vec<u8>) -> anyhow::Result<()> {
+        let app = app_handle.clone();
+        app_handle
+            .run_on_main_thread(move || {
+                let Some(tray) = app.tray_by_id("main") else {
+                    return;
+                };
+                let icon = match tauri::image::Image::from_bytes(&icon_bytes) {
+                    Ok(icon) => icon,
+                    Err(e) => {
+                        error!("Failed to create tray image: {}", e);
+                        return;
+                    }
+                };
+                if let Err(e) = tray.set_icon(Some(icon)) {
+                    error!("Failed to set tray icon: {}", e);
+                    return;
+                }
+                // Each new NSImage defaults to non-template, so the template
+                // flag must be re-applied after every icon swap. On macOS this
+                // lets the menu bar recolor for the current appearance.
+                if let Err(e) = tray.set_icon_as_template(cfg!(target_os = "macos")) {
+                    error!("Failed to set tray template mode: {}", e);
+                }
+            })
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to dispatch tray icon update to main thread: {}", e)
+            })
+    }
+
     /// Skips the update if the generated PNG is identical to the previous one.
     async fn update_tray_graph_impl(
         app_handle: &AppHandle,
@@ -590,19 +629,9 @@ impl TrayGraphManager {
                 }
             }
 
-            if let Some(tray) = app_handle.tray_by_id("main") {
-                let icon = tauri::image::Image::from_bytes(&icon_bytes)
-                    .map_err(|e| anyhow::anyhow!("Failed to create image: {}", e))?;
-                tray.set_icon(Some(icon))
-                    .map_err(|e| anyhow::anyhow!("Failed to set tray icon: {}", e))?;
-                // macOS: enable template mode so the menu bar recolors the icon
-                // for the current appearance (light/dark/translucent/hover).
-                // Other platforms: keep colors as-is.
-                tray.set_icon_as_template(cfg!(target_os = "macos"))
-                    .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
-                *last_png_hash.write() = current_hash;
-                debug!("Tray icon updated: static mode");
-            }
+            Self::apply_tray_icon(app_handle, icon_bytes)?;
+            *last_png_hash.write() = current_hash;
+            debug!("Tray icon updated: static mode");
 
             return Ok(());
         }
@@ -628,32 +657,16 @@ impl TrayGraphManager {
             }
         }
 
-        // Update tray icon
-        if let Some(tray) = app_handle.tray_by_id("main") {
-            let icon = tauri::image::Image::from_bytes(&png_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to create image from PNG: {}", e))?;
+        // Update tray icon (atomically, on the main thread — see apply_tray_icon)
+        Self::apply_tray_icon(app_handle, png_bytes)?;
 
-            tray.set_icon(Some(icon))
-                .map_err(|e| anyhow::anyhow!("Failed to set tray icon: {}", e))?;
+        // Store the hash for next comparison
+        *last_png_hash.write() = current_hash;
 
-            // macOS: enable template mode so the menu bar recolors the icon
-            // for the current appearance. Overlay shapes (exclamation /
-            // question / down-arrow) carry the meaning since template mode
-            // flattens RGB to the menu bar tint.
-            // Other platforms: keep colors as-is.
-            tray.set_icon_as_template(cfg!(target_os = "macos"))
-                .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
-
-            // Store the hash for next comparison
-            *last_png_hash.write() = current_hash;
-
-            debug!(
-                "Tray icon updated with graph ({} buckets)",
-                data_points.len()
-            );
-        } else {
-            return Err(anyhow::anyhow!("Tray icon 'main' not found"));
-        }
+        debug!(
+            "Tray icon updated with graph ({} buckets)",
+            data_points.len()
+        );
 
         Ok(())
     }
