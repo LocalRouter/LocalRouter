@@ -1,7 +1,7 @@
 {
   "name": "localrouter",
   "private": true,
-  "version": "0.0.122",
+  "version": "0.0.123",
   "type": "module",
   "scripts": {
     "dev": "vite",
