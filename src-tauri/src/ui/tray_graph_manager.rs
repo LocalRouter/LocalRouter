@@ -91,6 +91,45 @@ pub struct TrayGraphManager {
 
     /// Debug override for the tray overlay (bypasses determine_overlay)
     debug_overlay_override: Arc<RwLock<Option<TrayOverlay>>>,
+
+    /// Last rendered mode `(tray_graph_enabled, refresh_rate_secs)`.
+    /// Bucket contents are only meaningful at the time scale they were
+    /// recorded at, so any mode change must reset bucket state — otherwise
+    /// switching Fast/Medium/Slow reinterprets old bars at the new scale.
+    last_mode: Arc<RwLock<Option<(bool, u64)>>>,
+}
+
+/// Compute how many bucket shifts are due since `last_shift`, and the new
+/// `last_shift` timestamp to store if those shifts are applied.
+///
+/// Advances the timestamp by exact interval multiples (rather than snapping
+/// to `now`) so the fractional remainder of each update isn't lost — with
+/// snapping, a 1s interval polled every ~1.4s would drift ~40% slow and
+/// shift erratically. When the graph is fully wiped (shifts >= num_buckets)
+/// the remainder no longer matters, so the timestamp snaps to `now`.
+fn compute_bucket_shifts(
+    last_shift: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    interval_ms: i64,
+    num_buckets: usize,
+) -> (usize, DateTime<Utc>) {
+    match last_shift {
+        None => (0, now),
+        Some(ts) => {
+            let elapsed_ms = now.signed_duration_since(ts).num_milliseconds();
+            let shifts = (elapsed_ms / interval_ms).max(0) as usize;
+            if shifts == 0 {
+                (0, ts)
+            } else if shifts >= num_buckets {
+                (shifts, now)
+            } else {
+                (
+                    shifts,
+                    ts + Duration::milliseconds(shifts as i64 * interval_ms),
+                )
+            }
+        }
+    }
 }
 
 impl TrayGraphManager {
@@ -111,6 +150,7 @@ impl TrayGraphManager {
         let accumulated_tokens = Arc::new(RwLock::new(0u64));
         let last_png_hash = Arc::new(RwLock::new(0u64));
         let debug_overlay_override = Arc::new(RwLock::new(None::<TrayOverlay>));
+        let last_mode = Arc::new(RwLock::new(None::<(bool, u64)>));
 
         // Clone for background task
         let app_handle_clone = app_handle.clone();
@@ -121,6 +161,7 @@ impl TrayGraphManager {
         let accumulated_tokens_clone = accumulated_tokens.clone();
         let last_png_hash_clone = last_png_hash.clone();
         let debug_overlay_clone = debug_overlay_override.clone();
+        let last_mode_clone = last_mode.clone();
 
         // Spawn background task with idle-aware timer for smooth graph shifting
         tauri::async_runtime::spawn(async move {
@@ -199,15 +240,14 @@ impl TrayGraphManager {
                     }
 
                     // Perform update
-                    let is_first_update = last_update_clone.read().is_none();
                     if let Err(e) = Self::update_tray_graph_impl(
                         &app_handle_clone,
-                        is_first_update,
                         &buckets_clone,
                         &accumulated_tokens_clone,
                         &last_png_hash_clone,
                         &last_bucket_shift_clone,
                         &debug_overlay_clone,
+                        &last_mode_clone,
                     )
                     .await
                     {
@@ -233,6 +273,7 @@ impl TrayGraphManager {
             accumulated_tokens,
             last_png_hash,
             debug_overlay_override,
+            last_mode,
         };
 
         // Subscribe to health status changes to refresh the tray icon
@@ -339,12 +380,12 @@ impl TrayGraphManager {
     /// Skips the update if the generated PNG is identical to the previous one.
     async fn update_tray_graph_impl(
         app_handle: &AppHandle,
-        is_first_update: bool,
         buckets: &Arc<RwLock<Vec<u64>>>,
         accumulated_tokens: &Arc<RwLock<u64>>,
         last_png_hash: &Arc<RwLock<u64>>,
         last_bucket_shift: &Arc<RwLock<Option<DateTime<Utc>>>>,
         debug_overlay_override: &Arc<RwLock<Option<TrayOverlay>>>,
+        last_mode: &Arc<RwLock<Option<(bool, u64)>>>,
     ) -> Result<(), anyhow::Error> {
         // Get config and metrics collector from state
         let config_manager = app_handle
@@ -363,25 +404,44 @@ impl TrayGraphManager {
         const NUM_BUCKETS: i64 = 26;
         let now = Utc::now();
 
+        // Detect mode changes (graph toggled or refresh rate switched).
+        // Any change requires re-initializing bucket state, since buckets
+        // recorded at one time scale are meaningless at another.
+        let mode_changed = {
+            let mut last = last_mode.write();
+            let changed = *last != Some((tray_graph_enabled, refresh_rate_secs));
+            *last = Some((tray_graph_enabled, refresh_rate_secs));
+            changed
+        };
+
         // Static mode: skip data collection, render empty graph (border + overlay only)
         let data_points = if !tray_graph_enabled {
-            // Drain accumulated tokens so they don't pile up
+            // Drain accumulated tokens so they don't pile up, and clear the
+            // buckets so the background loop's "graph empty" idle check can
+            // stop the update timer (stale bars would otherwise keep it
+            // spinning forever).
             *accumulated_tokens.write() = 0;
+            buckets.write().fill(0);
             vec![]
         } else {
+            // (Re)initialize bucket state on the first update after startup
+            // and whenever the mode changes.
+            let needs_init = mode_changed || last_bucket_shift.read().is_none();
+
             // Calculate how many bucket shifts are due since the last shift.
             // During normal operation this is 1; after an idle gap it can be
             // many, which lets the graph catch up instantly instead of
             // draining one bar at a time.
-            let shifts_needed: usize = {
-                let last_shift = last_bucket_shift.read();
-                match *last_shift {
-                    None => 1, // First update always shifts
-                    Some(last_ts) => {
-                        let elapsed_secs = now.signed_duration_since(last_ts).num_seconds();
-                        (elapsed_secs / refresh_rate_secs as i64).max(0) as usize
-                    }
-                }
+            let interval_ms = refresh_rate_secs.max(1) as i64 * 1000;
+            let (shifts_needed, next_shift_ts) = if needs_init {
+                (0, now)
+            } else {
+                compute_bucket_shifts(
+                    *last_bucket_shift.read(),
+                    now,
+                    interval_ms,
+                    NUM_BUCKETS as usize,
+                )
             };
 
             match refresh_rate_secs {
@@ -391,9 +451,12 @@ impl TrayGraphManager {
                 1 => {
                     let mut bucket_state = buckets.write();
 
-                    if is_first_update {
-                        // Start with empty buckets (no historical data)
+                    if needs_init {
+                        // Start with empty buckets (no historical data) and
+                        // discard any backlog accumulated under the previous
+                        // mode — it would otherwise render as one giant spike.
                         bucket_state.fill(0);
+                        *accumulated_tokens.write() = 0;
                         *last_bucket_shift.write() = Some(now);
                     } else if shifts_needed > 0 {
                         // Shift buckets left, accounting for any missed shifts
@@ -406,16 +469,13 @@ impl TrayGraphManager {
                                 bucket_state[i] = 0;
                             }
                         }
-                        *last_bucket_shift.write() = Some(now);
+                        *last_bucket_shift.write() = Some(next_shift_ts);
                     }
 
                     // Always add accumulated tokens to rightmost bucket (real-time data)
                     // This happens every visual update, not just on shifts
-                    let tokens = *accumulated_tokens.read();
+                    let tokens = std::mem::take(&mut *accumulated_tokens.write());
                     bucket_state[NUM_BUCKETS as usize - 1] += tokens;
-
-                    // Reset accumulator for next cycle
-                    *accumulated_tokens.write() = 0;
 
                     // Convert to DataPoints
                     bucket_state
@@ -435,7 +495,7 @@ impl TrayGraphManager {
                 10 => {
                     let mut bucket_state = buckets.write();
 
-                    if is_first_update {
+                    if needs_init {
                         // Initial load: Interpolate from minute-level metrics
                         let window_secs = NUM_BUCKETS * 10;
                         let start = now - Duration::seconds(window_secs + 120);
@@ -480,6 +540,10 @@ impl TrayGraphManager {
                                 bucket_state[bucket_index] += tokens_per_bucket;
                             }
                         }
+                        // The interpolated metrics already include recently
+                        // recorded tokens, so drop the accumulator to avoid
+                        // double-counting them in the rightmost bucket.
+                        *accumulated_tokens.write() = 0;
                         *last_bucket_shift.write() = Some(now);
                     } else if shifts_needed > 0 {
                         // Shift buckets, accounting for any missed shifts
@@ -492,16 +556,13 @@ impl TrayGraphManager {
                                 bucket_state[i] = 0;
                             }
                         }
-                        *last_bucket_shift.write() = Some(now);
+                        *last_bucket_shift.write() = Some(next_shift_ts);
                     }
 
                     // Always add accumulated tokens to rightmost bucket (real-time data)
                     // This happens every visual update (1s), so new requests appear immediately
-                    let tokens = *accumulated_tokens.read();
+                    let tokens = std::mem::take(&mut *accumulated_tokens.write());
                     bucket_state[NUM_BUCKETS as usize - 1] += tokens;
-
-                    // Reset accumulator for next cycle
-                    *accumulated_tokens.write() = 0;
 
                     // Convert to DataPoints
                     bucket_state
@@ -517,6 +578,14 @@ impl TrayGraphManager {
                 // Slow mode: 1 minute per bar, 26 minute total (1560 seconds)
                 // Direct mapping: one minute of metrics → one bar (no bucket management)
                 _ => {
+                    // Slow mode reads the metrics store directly, which
+                    // already contains every recorded token — drain the
+                    // real-time accumulator so it can't pile up for the
+                    // whole time Slow mode is active and then dump a giant
+                    // spike into the graph on a later switch to Fast/Medium.
+                    *accumulated_tokens.write() = 0;
+                    *last_bucket_shift.write() = Some(now);
+
                     let window_secs = NUM_BUCKETS * 60; // 1560 seconds = 26 minutes
                     let start = now - Duration::seconds(window_secs + 120);
                     let metrics = metrics_collector.get_global_range(start, now);
@@ -726,8 +795,71 @@ pub fn detect_dark_mode(app_handle: &AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::compute_bucket_shifts;
     use chrono::{DateTime, Duration, Timelike, Utc};
     use lr_monitoring::metrics::MetricDataPoint;
+
+    #[test]
+    fn test_compute_shifts_none_last_shift() {
+        let now = Utc::now();
+        let (shifts, ts) = compute_bucket_shifts(None, now, 1000, 26);
+        assert_eq!(shifts, 0);
+        assert_eq!(ts, now);
+    }
+
+    #[test]
+    fn test_compute_shifts_before_interval_elapsed() {
+        let now = Utc::now();
+        let last = now - Duration::milliseconds(900);
+        let (shifts, ts) = compute_bucket_shifts(Some(last), now, 1000, 26);
+        assert_eq!(shifts, 0, "0.9s elapsed on 1s interval: no shift");
+        assert_eq!(ts, last, "timestamp must not advance without a shift");
+    }
+
+    #[test]
+    fn test_compute_shifts_preserves_remainder() {
+        // Updates arriving every 1.4s on a 1s interval must not lose the
+        // 0.4s remainder — over 5 updates (7s) exactly 7 shifts are due.
+        let start = Utc::now();
+        let mut last_shift = Some(start);
+        let mut total_shifts = 0usize;
+
+        for i in 1..=5 {
+            let now = start + Duration::milliseconds(1400 * i);
+            let (shifts, ts) = compute_bucket_shifts(last_shift, now, 1000, 26);
+            if shifts > 0 {
+                last_shift = Some(ts);
+            }
+            total_shifts += shifts;
+        }
+
+        assert_eq!(
+            total_shifts, 7,
+            "7 seconds elapsed on a 1s interval must produce exactly 7 shifts"
+        );
+    }
+
+    #[test]
+    fn test_compute_shifts_catch_up_after_idle() {
+        let now = Utc::now();
+        let last = now - Duration::seconds(120);
+        let (shifts, ts) = compute_bucket_shifts(Some(last), now, 1000, 26);
+        assert!(shifts >= 26, "long idle gap should wipe all buckets");
+        assert_eq!(ts, now, "full wipe snaps the timestamp to now");
+    }
+
+    #[test]
+    fn test_compute_shifts_medium_interval() {
+        let now = Utc::now();
+        let last = now - Duration::seconds(25);
+        let (shifts, ts) = compute_bucket_shifts(Some(last), now, 10_000, 26);
+        assert_eq!(shifts, 2, "25s elapsed on 10s interval: 2 shifts");
+        assert_eq!(
+            ts,
+            last + Duration::seconds(20),
+            "timestamp advances by exact interval multiples"
+        );
+    }
 
     /// Helper to create test metrics
     fn create_metric(timestamp: DateTime<Utc>, tokens: u64) -> MetricDataPoint {
