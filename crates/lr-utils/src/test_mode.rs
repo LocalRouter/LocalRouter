@@ -33,10 +33,12 @@ pub fn test_mode_suffix() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
     use std::env;
 
     #[test]
     fn test_is_test_mode_false() {
+        let _lock = env_lock();
         env::remove_var("LOCALROUTER_ENV");
         assert!(!is_test_mode());
 
@@ -47,6 +49,7 @@ mod tests {
 
     #[test]
     fn test_is_test_mode_true() {
+        let _lock = env_lock();
         env::set_var("LOCALROUTER_ENV", "test");
         assert!(is_test_mode());
 

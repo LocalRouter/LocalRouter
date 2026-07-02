@@ -88,16 +88,12 @@ pub fn ensure_dir_exists(path: &PathBuf) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
     use std::env;
-    use std::sync::Mutex;
-
-    /// Mutex to serialize tests that read/write the LOCALROUTER_ENV env var.
-    /// Env vars are process-global, so parallel tests that mutate them race.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_config_dir() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = env_lock();
         env::remove_var("LOCALROUTER_ENV");
 
         let dir = config_dir().unwrap();
@@ -112,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_config_dir_with_env_override() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = env_lock();
         env::set_var("LOCALROUTER_ENV", "test");
 
         let dir = config_dir().unwrap();
@@ -127,7 +123,7 @@ mod tests {
 
     #[test]
     fn test_config_dir_env_override_custom_suffix() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = env_lock();
         env::set_var("LOCALROUTER_ENV", "e2e-testing");
 
         let dir = config_dir().unwrap();
@@ -142,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_config_file() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = env_lock();
         env::remove_var("LOCALROUTER_ENV");
         let file = config_file().unwrap();
         assert!(file.to_string_lossy().ends_with("settings.yaml"));
@@ -150,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_api_keys_file() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = env_lock();
         env::remove_var("LOCALROUTER_ENV");
         let file = api_keys_file().unwrap();
         assert!(file.to_string_lossy().ends_with("api_keys.json"));
@@ -158,7 +154,7 @@ mod tests {
 
     #[test]
     fn test_logs_dir() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = env_lock();
         env::remove_var("LOCALROUTER_ENV");
         let dir = logs_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
@@ -174,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_cache_dir() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = env_lock();
         env::remove_var("LOCALROUTER_ENV");
         let dir = cache_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
