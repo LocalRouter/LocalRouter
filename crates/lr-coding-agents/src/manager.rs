@@ -725,7 +725,7 @@ impl CodingAgentManager {
         .map_err(|e| CodingAgentError::IoError(format!("discovery join: {e}")))?;
 
         // Sort newest-first; truncate to limit.
-        all.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+        all.sort_by_key(|s| std::cmp::Reverse(s.last_active_at));
         let limit = if filter.limit == 0 {
             crate::discovery::DEFAULT_LIMIT
         } else {
@@ -762,17 +762,21 @@ impl CodingAgentManager {
         // Each session contributes two needles in the order
         // [agent_session_id, "<id>.jsonl"]. Promote LivePid from either.
         for (idx, sess) in all.iter_mut().enumerate() {
-            let a = liveness_pairs.get(idx * 2).cloned().unwrap_or(crate::discovery::Liveness::Unknown);
-            let b = liveness_pairs.get(idx * 2 + 1).cloned().unwrap_or(crate::discovery::Liveness::Unknown);
+            let a = liveness_pairs
+                .get(idx * 2)
+                .cloned()
+                .unwrap_or(crate::discovery::Liveness::Unknown);
+            let b = liveness_pairs
+                .get(idx * 2 + 1)
+                .cloned()
+                .unwrap_or(crate::discovery::Liveness::Unknown);
             sess.liveness = match (a, b) {
                 (crate::discovery::Liveness::LivePid { pid }, _)
                 | (_, crate::discovery::Liveness::LivePid { pid }) => {
                     crate::discovery::Liveness::LivePid { pid }
                 }
                 (crate::discovery::Liveness::NotFound, _)
-                | (_, crate::discovery::Liveness::NotFound) => {
-                    crate::discovery::Liveness::NotFound
-                }
+                | (_, crate::discovery::Liveness::NotFound) => crate::discovery::Liveness::NotFound,
                 _ => crate::discovery::Liveness::Unknown,
             };
         }

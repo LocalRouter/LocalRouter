@@ -473,9 +473,8 @@ pub(crate) fn detect_live_pids(needles: &[&str]) -> Vec<Liveness> {
 
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 
-    let mut sys = System::new_with_specifics(
-        RefreshKind::new().with_processes(ProcessRefreshKind::new()),
-    );
+    let mut sys =
+        System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
     sys.refresh_processes(ProcessesToUpdate::All, true);
 
     let mut out: Vec<Liveness> = vec![Liveness::NotFound; needles.len()];
@@ -489,9 +488,7 @@ pub(crate) fn detect_live_pids(needles: &[&str]) -> Vec<Liveness> {
                 .iter()
                 .any(|arg| arg.to_string_lossy().contains(needle))
             {
-                out[i] = Liveness::LivePid {
-                    pid: pid.as_u32(),
-                };
+                out[i] = Liveness::LivePid { pid: pid.as_u32() };
             }
         }
     }
