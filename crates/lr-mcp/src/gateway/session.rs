@@ -126,10 +126,20 @@ pub struct GatewaySession {
     pub monitor_session_id: Option<String>,
 
     /// Per-session MCP server transports (owned by this session).
-    /// Created during `handle_initialize`, closed when the session ends.
+    /// Created during `handle_initialize` (or lazily on first use for
+    /// stateless clients), closed when the session ends.
     /// Wrapped in `Arc` so it can be extracted with a brief read lock and used
     /// without holding the session lock during requests.
     pub transports: Option<Arc<SessionTransportSet>>,
+
+    /// Protocol revision the downstream client speaks.
+    /// Legacy (2025-11-25) by default; upgraded when a request declares
+    /// `io.modelcontextprotocol/protocolVersion: 2026-07-28` in `_meta`.
+    pub protocol_revision: crate::protocol::ProtocolRevision,
+
+    /// Per-request log level from `_meta` (2026-07-28 replaces
+    /// `logging/setLevel`); last seen value.
+    pub log_level: Option<String>,
 }
 
 impl GatewaySession {
@@ -186,6 +196,8 @@ impl GatewaySession {
             pending_requests: HashMap::new(),
             monitor_session_id: None,
             transports: None,
+            protocol_revision: crate::protocol::ProtocolRevision::default(),
+            log_level: None,
         }
     }
 

@@ -23,6 +23,11 @@ use super::session::GatewaySession;
 use super::types::*;
 use super::virtual_server::VirtualMcpServer;
 
+/// Freshness hint (SEP-2549 `ttlMs`) attached to list/read results for
+/// 2026-07-28 peers. Invalidation is still signaled via listChanged
+/// notifications; this only bounds client-side polling.
+const LIST_RESULT_TTL_MS: u64 = 60_000;
+
 /// MCP Gateway - Unified endpoint for multiple MCP servers
 #[allow(clippy::type_complexity)]
 pub struct McpGateway {
@@ -571,6 +576,21 @@ impl McpGateway {
         let is_broadcast = should_broadcast(&method);
         let session_key = session_id.unwrap_or(client_id);
 
+        // Stateless (2026-07-28) support: clients declare protocol version,
+        // identity and capabilities in `_meta` on every request. A declared
+        // version we don't support is rejected up front; requests without the
+        // declaration are legacy (2025-11-25 and earlier) and flow unchanged.
+        let client_meta = crate::protocol::RequestClientMeta::from_params(request.params.as_ref());
+        if let Some(version) = client_meta.protocol_version.as_deref() {
+            if !crate::protocol::SUPPORTED_PROTOCOL_VERSIONS.contains(&version) {
+                return Ok(JsonRpcResponse::error(
+                    request.id.clone().unwrap_or(Value::Null),
+                    JsonRpcError::unsupported_protocol_version(version),
+                ));
+            }
+        }
+        let declared_revision = client_meta.revision();
+
         tracing::debug!(
             "Gateway handle_request: client_id={}, session_key={}, method={}, is_broadcast={}, servers={}",
             &client_id[..8.min(client_id.len())],
@@ -662,6 +682,12 @@ impl McpGateway {
             if monitor_session_id.is_some() {
                 session_write.monitor_session_id = monitor_session_id;
             }
+            if let Some(revision) = declared_revision {
+                session_write.protocol_revision = revision;
+            }
+            if client_meta.log_level.is_some() {
+                session_write.log_level = client_meta.log_level.clone();
+            }
         }
 
         // Handle client notifications (fire-and-forget, no meaningful response)
@@ -725,12 +751,49 @@ impl McpGateway {
             });
         }
 
+        // Stateless (2026-07-28) clients never send `initialize`; materialize
+        // backend transports lazily on the first request that needs them.
+        // `server/discover` is exempt so a capability probe stays cheap.
+        if method != "initialize" && method != "server/discover" {
+            let needs_backends = session.read().await.transports.is_none();
+            if needs_backends {
+                self.initialize_session_backends(&session, &client_meta)
+                    .await?;
+            }
+        }
+
         // Route based on method
-        let result = if is_broadcast {
-            self.handle_broadcast_request(session, request).await
+        let mut result = if is_broadcast {
+            self.handle_broadcast_request(session.clone(), request)
+                .await
         } else {
-            self.handle_direct_request(session, request).await
+            self.handle_direct_request(session.clone(), request).await
         };
+
+        // Tag responses for stateless peers: every result carries
+        // `resultType`, and list/read results carry cache metadata.
+        // Per-client filtering means responses are never shared-cacheable.
+        if session.read().await.protocol_revision.is_stateless() {
+            if let Ok(response) = &mut result {
+                if let Some(result_value) = &mut response.result {
+                    crate::protocol::tag_result_complete(result_value);
+                    if matches!(
+                        method.as_str(),
+                        "tools/list"
+                            | "prompts/list"
+                            | "resources/list"
+                            | "resources/templates/list"
+                            | "resources/read"
+                    ) {
+                        crate::protocol::tag_cacheable(
+                            result_value,
+                            LIST_RESULT_TTL_MS,
+                            crate::protocol::CACHE_SCOPE_PRIVATE,
+                        );
+                    }
+                }
+            }
+        }
 
         match &result {
             Ok(response) => {
@@ -752,6 +815,92 @@ impl McpGateway {
         }
 
         result
+    }
+
+    /// Materialize backend transports for a session that has none, by
+    /// running the initialize flow with a synthetic request.
+    ///
+    /// Stateless (2026-07-28) clients removed the `initialize` handshake, so
+    /// the first real request triggers this. The synthetic initialize speaks
+    /// the legacy revision to backends (upstream stateless support is
+    /// negotiated separately per backend).
+    async fn initialize_session_backends(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        client_meta: &crate::protocol::RequestClientMeta,
+    ) -> AppResult<()> {
+        let params = json!({
+            "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
+            "capabilities": client_meta
+                .client_capabilities
+                .clone()
+                .unwrap_or_else(|| json!({})),
+            "clientInfo": client_meta.client_info.clone().unwrap_or_else(|| json!({
+                "name": "LocalRouter MCP Gateway",
+                "version": env!("CARGO_PKG_VERSION"),
+            })),
+        });
+        let synthetic = JsonRpcRequest::new(
+            Some(json!("_lazy_init")),
+            "initialize".to_string(),
+            Some(params),
+        );
+
+        tracing::info!(
+            "Lazily initializing backend transports for session {} (stateless client)",
+            session.read().await.session_key
+        );
+
+        let response = self.handle_initialize(session.clone(), synthetic).await?;
+        if let Some(error) = response.error {
+            return Err(AppError::Mcp(format!(
+                "Lazy backend initialization failed: {} (code {})",
+                error.message, error.code
+            )));
+        }
+        Ok(())
+    }
+
+    /// Handle `server/discover` (2026-07-28): advertise supported protocol
+    /// versions, server identity, and capabilities without requiring any
+    /// backend to be started.
+    async fn handle_server_discover(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        // Use merged capabilities when backends are already running;
+        // otherwise advertise the gateway's full capability surface (a
+        // superset — list endpoints simply return fewer items when a
+        // capability has no providing backend).
+        let merged = session.read().await.merged_capabilities.clone();
+        let capabilities = match merged {
+            Some(m) => serde_json::to_value(&m.capabilities)
+                .unwrap_or_else(|_| json!({ "tools": { "listChanged": true } })),
+            None => json!({
+                "tools": { "listChanged": true },
+                "resources": { "listChanged": true, "subscribe": true },
+                "prompts": { "listChanged": true },
+                "completions": {}
+            }),
+        };
+
+        let result = crate::protocol::ServerDiscoverResult {
+            protocol_versions: crate::protocol::SUPPORTED_PROTOCOL_VERSIONS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            server_info: json!({
+                "name": "LocalRouter MCP Gateway",
+                "version": env!("CARGO_PKG_VERSION"),
+            }),
+            capabilities,
+        };
+
+        Ok(JsonRpcResponse::success(
+            request.id.unwrap_or(Value::Null),
+            serde_json::to_value(&result)?,
+        ))
     }
 
     /// Get or create a session
@@ -1459,6 +1608,8 @@ impl McpGateway {
             "tools/call" => self.handle_tools_call(session, request).await,
             "resources/read" => self.handle_resources_read(session, request).await,
             "prompts/get" => self.handle_prompts_get(session, request).await,
+
+            "server/discover" => self.handle_server_discover(session, request).await,
 
             "completion/complete" => self.handle_completion_complete(session, request).await,
 

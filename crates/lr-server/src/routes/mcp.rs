@@ -466,7 +466,7 @@ pub async fn mcp_gateway_handler(
     }
 
     // Parse as a JSON-RPC request
-    let request: JsonRpcRequest = match serde_json::from_value(body) {
+    let mut request: JsonRpcRequest = match serde_json::from_value(body) {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("Failed to parse JSON-RPC request: {}", e);
@@ -474,6 +474,91 @@ pub async fn mcp_gateway_handler(
                 .into_response();
         }
     };
+
+    // ---- MCP 2026-07-28 transport handling (SEP-2243 / SEP-2575) ----
+    // Peers may declare their protocol revision via the MCP-Protocol-Version
+    // header. Versions newer than the latest we support are rejected; the
+    // stateless revision additionally sends Mcp-Method / Mcp-Name routing
+    // headers that must agree with the JSON-RPC body.
+    let header_version = headers
+        .get("mcp-protocol-version")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    if let Some(version) = header_version.as_deref() {
+        // ISO-date version strings compare chronologically as strings.
+        if version > lr_mcp::protocol::MCP_PROTOCOL_VERSION_STATELESS {
+            let error_response = JsonRpcResponse::error(
+                request.id.clone().unwrap_or(serde_json::Value::Null),
+                lr_mcp::protocol::JsonRpcError::unsupported_protocol_version(version),
+            );
+            return (axum::http::StatusCode::BAD_REQUEST, Json(error_response)).into_response();
+        }
+    }
+
+    let stateless_transport = header_version
+        .as_deref()
+        .map(lr_mcp::protocol::ProtocolRevision::from_peer_version)
+        .is_some_and(|r| r.is_stateless());
+
+    if stateless_transport {
+        // Mcp-Method must agree with the JSON-RPC body when present
+        // (SEP-2243; absence is tolerated during the RC transition window).
+        if let Some(header_method) = headers.get("mcp-method").and_then(|v| v.to_str().ok()) {
+            if header_method != request.method {
+                let error_response = JsonRpcResponse::error(
+                    request.id.clone().unwrap_or(serde_json::Value::Null),
+                    lr_mcp::protocol::JsonRpcError::header_mismatch(format!(
+                        "Mcp-Method header '{}' does not match body method '{}'",
+                        header_method, request.method
+                    )),
+                );
+                return (axum::http::StatusCode::BAD_REQUEST, Json(error_response)).into_response();
+            }
+        } else {
+            tracing::debug!(
+                "2026-07-28 client omitted Mcp-Method header (method={})",
+                request.method
+            );
+        }
+
+        // Mcp-Name carries the operation target (tool/prompt name or
+        // resource URI); when both header and body specify it they must agree.
+        if let Some(header_name) = headers.get("mcp-name").and_then(|v| v.to_str().ok()) {
+            let body_name = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("name").or_else(|| p.get("uri")))
+                .and_then(|v| v.as_str());
+            if let Some(body_name) = body_name {
+                if header_name != body_name {
+                    let error_response = JsonRpcResponse::error(
+                        request.id.clone().unwrap_or(serde_json::Value::Null),
+                        lr_mcp::protocol::JsonRpcError::header_mismatch(format!(
+                            "Mcp-Name header '{}' does not match body target '{}'",
+                            header_name, body_name
+                        )),
+                    );
+                    return (axum::http::StatusCode::BAD_REQUEST, Json(error_response))
+                        .into_response();
+                }
+            }
+        }
+
+        // Make the stateless declaration visible to the gateway even when the
+        // body omits `_meta` (the session revision has one source of truth).
+        let params = request.params.get_or_insert_with(|| serde_json::json!({}));
+        if let Some(obj) = params.as_object_mut() {
+            let meta = obj.entry("_meta").or_insert_with(|| serde_json::json!({}));
+            if let Some(meta_obj) = meta.as_object_mut() {
+                meta_obj
+                    .entry(lr_mcp::protocol::meta_keys::PROTOCOL_VERSION.to_string())
+                    .or_insert_with(|| {
+                        serde_json::json!(lr_mcp::protocol::MCP_PROTOCOL_VERSION_STATELESS)
+                    });
+            }
+        }
+    }
 
     // Record client activity for connection graph
     state.record_client_activity(&client_id);
@@ -1020,7 +1105,21 @@ pub async fn mcp_gateway_handler(
             )
             .await
         {
-            Ok(response) => send_response(&state.sse_connection_manager, &connection_key, response),
+            Ok(response) => {
+                let mut http_response =
+                    send_response(&state.sse_connection_manager, &connection_key, response);
+                // Echo the negotiated protocol version to stateless peers
+                if stateless_transport {
+                    if let Ok(value) = axum::http::HeaderValue::from_str(
+                        lr_mcp::protocol::MCP_PROTOCOL_VERSION_STATELESS,
+                    ) {
+                        http_response
+                            .headers_mut()
+                            .insert("mcp-protocol-version", value);
+                    }
+                }
+                http_response
+            }
             Err(err) => {
                 tracing::error!("Gateway error for client {}: {}", client_id, err);
                 ApiErrorResponse::internal_error(format!("Gateway error: {}", err)).into_response()

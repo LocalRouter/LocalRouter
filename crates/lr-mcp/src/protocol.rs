@@ -463,6 +463,31 @@ impl JsonRpcError {
     pub fn server_unavailable(message: impl Into<String>) -> Self {
         Self::new(SERVER_UNAVAILABLE, message.into(), None)
     }
+
+    /// Create an unsupported protocol version error (-32022, 2026-07-28)
+    pub fn unsupported_protocol_version(requested: impl Into<String>) -> Self {
+        Self::new(
+            UNSUPPORTED_PROTOCOL_VERSION,
+            format!("Unsupported protocol version: {}", requested.into()),
+            Some(serde_json::json!({ "supported": SUPPORTED_PROTOCOL_VERSIONS })),
+        )
+    }
+
+    /// Create a header mismatch error (-32020, 2026-07-28): the Mcp-Method /
+    /// Mcp-Name HTTP headers disagree with the JSON-RPC body.
+    pub fn header_mismatch(message: impl Into<String>) -> Self {
+        Self::new(HEADER_MISMATCH, message.into(), None)
+    }
+
+    /// Create a resource not found error using the revision-appropriate code
+    /// (-32002 legacy, -32602 for 2026-07-28 peers).
+    pub fn resource_not_found_for(revision: ProtocolRevision, uri: impl Into<String>) -> Self {
+        Self::new(
+            revision.resource_not_found_code(),
+            format!("Resource not found: {}", uri.into()),
+            None,
+        )
+    }
 }
 
 impl JsonRpcNotification {

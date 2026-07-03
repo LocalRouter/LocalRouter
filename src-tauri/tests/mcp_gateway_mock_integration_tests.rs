@@ -2309,3 +2309,168 @@ async fn test_tools_list_partial_failure() {
     // Response metadata might indicate partial failure
     // (depending on implementation)
 }
+
+// ============================================================================
+// MCP 2026-07-28 STATELESS LIFECYCLE TESTS
+// ============================================================================
+
+/// `_meta` object a 2026-07-28 stateless client sends on every request.
+fn stateless_meta() -> serde_json::Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "stateless-test", "version": "1.0"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    })
+}
+
+#[tokio::test]
+async fn test_stateless_request_without_initialize_lazily_initializes() {
+    let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
+
+    server1_mock
+        .mock_method(
+            "tools/list",
+            json!({
+                "tools": [{"name": "tool_a", "description": "A", "inputSchema": {"type": "object"}}]
+            }),
+        )
+        .await;
+    server2_mock
+        .mock_method("tools/list", json!({ "tools": [] }))
+        .await;
+
+    // No initialize handshake: first request is tools/list with 2026-07-28 _meta
+    let request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "tools/list".to_string(),
+        Some(json!({ "_meta": stateless_meta() })),
+    );
+    let allowed = vec!["server1".to_string(), "server2".to_string()];
+    let response = gateway
+        .handle_request("stateless-client", allowed, vec![], request)
+        .await
+        .unwrap();
+
+    assert!(
+        response.error.is_none(),
+        "stateless tools/list failed: {:?}",
+        response.error
+    );
+    let result = extract_result(&response);
+
+    // Backends were lazily initialized and tools merged
+    let tools = result["tools"].as_array().unwrap();
+    assert!(
+        tools.iter().any(|t| t["name"] == "test-server-1__tool_a"),
+        "expected namespaced tool from lazily-initialized backend, got: {}",
+        result["tools"]
+    );
+
+    // 2026-07-28 result envelope: resultType + cache metadata
+    assert_eq!(result["resultType"], "complete");
+    assert!(result["ttlMs"].is_number());
+    assert_eq!(result["cacheScope"], "private");
+}
+
+#[tokio::test]
+async fn test_server_discover_probe() {
+    let (gateway, _manager, _server1_mock, _server2_mock) = setup_gateway_with_two_servers().await;
+
+    // Probe with server/discover before anything else (no backend spin-up needed)
+    let request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "server/discover".to_string(),
+        Some(json!({ "_meta": stateless_meta() })),
+    );
+    let response = gateway
+        .handle_request(
+            "probe-client",
+            vec!["server1".to_string(), "server2".to_string()],
+            vec![],
+            request,
+        )
+        .await
+        .unwrap();
+
+    assert!(response.error.is_none(), "{:?}", response.error);
+    let result = extract_result(&response);
+
+    let versions: Vec<&str> = result["protocolVersions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(versions.contains(&"2026-07-28"));
+    assert!(versions.contains(&"2025-11-25"));
+    assert_eq!(result["serverInfo"]["name"], "LocalRouter MCP Gateway");
+    assert!(result["capabilities"]["tools"].is_object());
+    assert_eq!(result["resultType"], "complete");
+}
+
+#[tokio::test]
+async fn test_unsupported_protocol_version_rejected() {
+    let (gateway, _manager, _s1, _s2) = setup_gateway_with_two_servers().await;
+
+    let request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "tools/list".to_string(),
+        Some(json!({
+            "_meta": { "io.modelcontextprotocol/protocolVersion": "2099-01-01" }
+        })),
+    );
+    let response = gateway
+        .handle_request(
+            "future-client",
+            vec!["server1".to_string()],
+            vec![],
+            request,
+        )
+        .await
+        .unwrap();
+
+    let error = response.error.expect("unsupported version must error");
+    assert_eq!(error.code, -32022);
+    let supported = error.data.unwrap()["supported"].clone();
+    assert!(supported
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "2026-07-28"));
+}
+
+#[tokio::test]
+async fn test_legacy_clients_get_untagged_responses() {
+    let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
+
+    server1_mock
+        .mock_method(
+            "tools/list",
+            json!({
+                "tools": [{"name": "tool_a", "description": "A", "inputSchema": {"type": "object"}}]
+            }),
+        )
+        .await;
+    server2_mock
+        .mock_method("tools/list", json!({ "tools": [] }))
+        .await;
+
+    let allowed = vec!["server1".to_string(), "server2".to_string()];
+    init_session(&gateway, "legacy-client", allowed.clone()).await;
+
+    // Legacy request: no _meta declaration
+    let request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
+    let response = gateway
+        .handle_request("legacy-client", allowed, vec![], request)
+        .await
+        .unwrap();
+
+    assert!(response.error.is_none());
+    let result = extract_result(&response);
+
+    // Legacy responses must be byte-compatible with pre-2026 behavior:
+    // no resultType / cache fields injected.
+    assert!(result.get("resultType").is_none());
+    assert!(result.get("ttlMs").is_none());
+    assert!(result.get("cacheScope").is_none());
+}
