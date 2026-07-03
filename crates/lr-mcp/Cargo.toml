@@ -48,6 +48,7 @@ once_cell = { workspace = true }
 utoipa = { workspace = true }
 async-stream = { workspace = true }
 regex = "1"
+jsonschema = { workspace = true }
 
 [lints]
 workspace = true

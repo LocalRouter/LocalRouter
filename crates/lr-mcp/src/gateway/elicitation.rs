@@ -180,16 +180,71 @@ impl ElicitationManager {
         }
     }
 
+    /// Validate an elicitation response payload against the schema the
+    /// backend server requested.
+    ///
+    /// A null or empty schema imposes no constraints. A schema that fails to
+    /// compile is the server's fault, not the responding user's — log it and
+    /// accept the response rather than making every submission fail until
+    /// the request times out.
+    fn validate_response(schema: &Value, data: &Value) -> AppResult<()> {
+        if schema.is_null() || schema.as_object().is_some_and(|o| o.is_empty()) {
+            return Ok(());
+        }
+
+        let compiled = match jsonschema::JSONSchema::options()
+            .with_draft(jsonschema::Draft::Draft7)
+            .compile(schema)
+        {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "Elicitation schema failed to compile, accepting response unvalidated: {}",
+                    e
+                );
+                return Ok(());
+            }
+        };
+
+        if let Err(errors) = compiled.validate(data) {
+            let details: Vec<String> = errors.take(5).map(|e| e.to_string()).collect();
+            return Err(AppError::InvalidParams(format!(
+                "Elicitation response does not match the requested schema: {}",
+                details.join("; ")
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Submit a user response to a pending elicitation request
+    ///
+    /// The response data is validated against the schema of the pending
+    /// request; on validation failure the request stays pending so the
+    /// client can resubmit corrected data.
     pub fn submit_response(
         &self,
         request_id: &str,
         response: ElicitationResponse,
     ) -> AppResult<()> {
+        // Validate before consuming the session so a rejected submission can
+        // be retried. The guard is scoped to drop before the remove() below.
+        {
+            let session = self.pending.get(request_id).ok_or_else(|| {
+                warn!(
+                    "Attempted to submit response for unknown request {}",
+                    request_id
+                );
+                AppError::InvalidParams(format!(
+                    "Elicitation request {} not found or expired",
+                    request_id
+                ))
+            })?;
+            Self::validate_response(&session.schema, &response.data)?;
+        }
+
         match self.pending.remove(request_id) {
             Some((_, mut session)) => {
-                // TODO: Validate response against schema
-
                 debug!("Submitting response for elicitation request {}", request_id);
 
                 if let Some(sender) = session.response_sender.take() {
@@ -429,6 +484,84 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_submit_response_rejects_schema_mismatch_and_allows_retry() {
+        let manager = ElicitationManager::new(120);
+
+        let manager_clone = manager.clone();
+        let handle = tokio::spawn(async move {
+            let request = ElicitationRequest {
+                message: "Enter your age".to_string(),
+                schema: json!({"type": "integer"}),
+            };
+
+            manager_clone
+                .request_input("server-1".to_string(), request, None)
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let request_id = manager.list_pending()[0].clone();
+
+        // A string does not match {"type": "integer"} — must be rejected
+        // and the request must stay pending for a retry.
+        let err = manager
+            .submit_response(
+                &request_id,
+                ElicitationResponse {
+                    data: json!("not a number"),
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("does not match"));
+        assert_eq!(manager.pending_count(), 1);
+
+        // Corrected data goes through.
+        manager
+            .submit_response(&request_id, ElicitationResponse { data: json!(42) })
+            .unwrap();
+
+        let result = handle.await.unwrap().unwrap();
+        assert_eq!(result.data, json!(42));
+    }
+
+    #[tokio::test]
+    async fn test_submit_response_accepts_empty_and_invalid_schemas() {
+        for schema in [json!(null), json!({}), json!({"type": "not-a-real-type"})] {
+            let manager = ElicitationManager::new(120);
+
+            let manager_clone = manager.clone();
+            let schema_clone = schema.clone();
+            let handle = tokio::spawn(async move {
+                let request = ElicitationRequest {
+                    message: "Anything goes".to_string(),
+                    schema: schema_clone,
+                };
+
+                manager_clone
+                    .request_input("server-1".to_string(), request, None)
+                    .await
+            });
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let request_id = manager.list_pending()[0].clone();
+
+            // Null schema, empty schema, and a schema that fails to compile
+            // must all accept the response rather than blocking the user.
+            manager
+                .submit_response(
+                    &request_id,
+                    ElicitationResponse {
+                        data: json!({"free": "form"}),
+                    },
+                )
+                .unwrap_or_else(|e| panic!("schema {schema} should accept: {e}"));
+
+            let result = handle.await.unwrap().unwrap();
+            assert_eq!(result.data, json!({"free": "form"}));
+        }
     }
 
     #[tokio::test]
