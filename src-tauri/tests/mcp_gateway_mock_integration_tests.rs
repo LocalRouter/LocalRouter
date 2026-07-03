@@ -2583,3 +2583,65 @@ async fn test_backend_discover_probe_skips_initialize() {
         .count();
     assert!(legacy_inits > 0, "legacy backend never got initialize");
 }
+
+#[tokio::test]
+async fn test_stateless_peers_lose_removed_methods_legacy_keeps_them() {
+    let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
+    server1_mock.mock_method("ping", json!({})).await;
+    server2_mock.mock_method("ping", json!({})).await;
+
+    let allowed = vec!["server1".to_string(), "server2".to_string()];
+
+    // Legacy client: ping still broadcasts and succeeds
+    init_session(&gateway, "legacy-ping", allowed.clone()).await;
+    let request = JsonRpcRequest::new(Some(json!(1)), "ping".to_string(), Some(json!({})));
+    let response = gateway
+        .handle_request("legacy-ping", allowed.clone(), vec![], request)
+        .await
+        .unwrap();
+    assert!(response.error.is_none(), "{:?}", response.error);
+
+    // Stateless client: ping was removed in 2026-07-28
+    let request = JsonRpcRequest::new(
+        Some(json!(2)),
+        "ping".to_string(),
+        Some(json!({ "_meta": stateless_meta() })),
+    );
+    let response = gateway
+        .handle_request("stateless-ping", allowed, vec![], request)
+        .await
+        .unwrap();
+    let error = response.error.expect("ping must be gone for 2026-07-28");
+    assert_eq!(error.code, -32601);
+}
+
+#[tokio::test]
+async fn test_resource_not_found_code_depends_on_revision() {
+    let (gateway, _manager, _s1, _s2) = setup_gateway_with_two_servers().await;
+    let allowed = vec!["server1".to_string(), "server2".to_string()];
+
+    // Legacy client gets the MCP-custom -32002
+    init_session(&gateway, "legacy-res", allowed.clone()).await;
+    let request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "resources/read".to_string(),
+        Some(json!({ "name": "nope__missing" })),
+    );
+    let response = gateway
+        .handle_request("legacy-res", allowed.clone(), vec![], request)
+        .await
+        .unwrap();
+    assert_eq!(response.error.expect("missing resource").code, -32002);
+
+    // Stateless client gets JSON-RPC Invalid Params (-32602)
+    let request = JsonRpcRequest::new(
+        Some(json!(2)),
+        "resources/read".to_string(),
+        Some(json!({ "name": "nope__missing", "_meta": stateless_meta() })),
+    );
+    let response = gateway
+        .handle_request("stateless-res", allowed, vec![], request)
+        .await
+        .unwrap();
+    assert_eq!(response.error.expect("missing resource").code, -32602);
+}

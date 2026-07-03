@@ -239,6 +239,14 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        // Missing-resource error code differs per revision:
+        // -32002 (legacy) vs -32602 (2026-07-28, JSON-RPC Invalid Params)
+        let not_found_code = session
+            .read()
+            .await
+            .protocol_revision
+            .resource_not_found_code();
+
         // Extract resource URI or name from params
         let params = match request.params.as_ref() {
             Some(p) => p,
@@ -266,7 +274,11 @@ impl McpGateway {
                     drop(session_read);
                     return Ok(JsonRpcResponse::error(
                         request.id.unwrap_or(Value::Null),
-                        JsonRpcError::resource_not_found(format!("Resource not found: {}", name)),
+                        JsonRpcError::custom(
+                            not_found_code,
+                            format!("Resource not found: {}", name),
+                            None,
+                        ),
                     ));
                 }
             }
@@ -328,10 +340,14 @@ impl McpGateway {
                     None => {
                         return Ok(JsonRpcResponse::error(
                             request.id.unwrap_or(Value::Null),
-                            JsonRpcError::resource_not_found(format!(
-                                "Resource URI not found after fetching resources/list: {}",
-                                uri
-                            )),
+                            JsonRpcError::custom(
+                                not_found_code,
+                                format!(
+                                    "Resource URI not found after fetching resources/list: {}",
+                                    uri
+                                ),
+                                None,
+                            ),
                         ));
                     }
                 }
@@ -341,10 +357,11 @@ impl McpGateway {
                     None => {
                         return Ok(JsonRpcResponse::error(
                             request.id.unwrap_or(Value::Null),
-                            JsonRpcError::resource_not_found(format!(
-                                "Resource URI not found: {}",
-                                uri
-                            )),
+                            JsonRpcError::custom(
+                                not_found_code,
+                                format!("Resource URI not found: {}", uri),
+                                None,
+                            ),
                         ));
                     }
                 }

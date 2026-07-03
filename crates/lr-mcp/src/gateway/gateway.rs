@@ -1669,6 +1669,15 @@ impl McpGateway {
             }
             "prompts/list" => self.handle_prompts_list(session, request).await,
             "logging/setLevel" | "ping" => {
+                // Removed in 2026-07-28: stateless peers set the log level
+                // per request via _meta and have no ping. Legacy peers keep
+                // the old broadcast behavior.
+                if session.read().await.protocol_revision.is_stateless() {
+                    return Ok(JsonRpcResponse::error(
+                        request.id.unwrap_or(Value::Null),
+                        JsonRpcError::method_not_found(&request.method),
+                    ));
+                }
                 // These are broadcast but we don't merge results
                 self.broadcast_and_return_first(session, request).await
             }
