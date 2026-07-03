@@ -18,6 +18,16 @@ Follow-up from a whole-project review. A2A integration was explicitly excluded b
 4. **Wire real cost calculation** — `crates/lr-router/src/lib.rs` hardcodes
    `cost_usd: 0.0` (TODO). Compute from token usage × `lr-catalog` pricing.
    Also populate `catalog_info` in `crates/lr-server/src/types.rs` if in scope.
+
+   **Scope decision (2026-07-02):** chat/completions already computed real
+   costs; the fix covers embeddings (real token usage × provider pricing now
+   feeds the rate limiter, not just free-tier tracking) and `catalog_info`
+   provenance in `/v1/models`. Audio endpoints intentionally stay at
+   `cost_usd: 0.0`: `AudioTranscriptionResponse` carries no usage data, and
+   per-minute-billed models (whisper-1, tts-1) have no token pricing in the
+   catalog — a file-size-based token estimate × token pricing would fabricate
+   costs into dashboards. Real audio cost needs usage fields plumbed through
+   provider responses plus per-minute catalog pricing (future work).
 5. **Replace `unimplemented!()` panics** in `crates/lr-providers/src/health.rs:257,264`.
 6. **Implement Anthropic thinking-block parsing**
    (`crates/lr-providers/src/features/anthropic_thinking.rs:114`), per

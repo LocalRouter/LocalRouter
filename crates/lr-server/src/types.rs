@@ -910,7 +910,7 @@ impl From<&lr_providers::ModelInfo> for ModelData {
             features: None,              // Will be filled by /v1/models endpoint
             supported_parameters: None,  // Will be filled by /v1/models endpoint
             performance: None,           // Will be filled by /v1/models endpoint
-            catalog_info: None,          // TODO: Populate from catalog
+            catalog_info: None,          // Will be filled by /v1/models endpoint
         }
     }
 }

@@ -2222,11 +2222,19 @@ impl Router {
             }
         };
 
+        // Embeddings only consume input tokens
+        let total_tokens = response.usage.prompt_tokens as u64;
+        let pricing = provider_instance
+            .get_pricing(model)
+            .await
+            .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+        let cost = calculate_cost(total_tokens, 0, None, &pricing);
+
         // Record usage for rate limiting (embeddings have simpler usage)
         let usage = UsageInfo {
-            input_tokens: response.usage.prompt_tokens as u64,
+            input_tokens: total_tokens,
             output_tokens: 0, // Embeddings don't have output tokens
-            cost_usd: 0.0,    // TODO: Calculate cost from provider pricing
+            cost_usd: cost,
         };
 
         // Record usage for rate limiting
@@ -2240,12 +2248,6 @@ impl Router {
 
         // Record free tier usage
         let free_tier = self.get_effective_free_tier(provider);
-        let total_tokens = response.usage.prompt_tokens as u64;
-        let pricing = provider_instance
-            .get_pricing(model)
-            .await
-            .unwrap_or_else(|_| lr_providers::PricingInfo::free());
-        let cost = calculate_cost(total_tokens, 0, None, &pricing);
         self.free_tier_manager
             .record_usage(provider, &free_tier, total_tokens, cost);
 

@@ -11,7 +11,29 @@ use axum::{
 use super::helpers::{check_llm_access_with_state, get_client_with_strategy};
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
-use crate::types::{ModelData, ModelPricing, ModelsResponse};
+use crate::types::{CatalogInfo, ModelData, ModelPricing, ModelsResponse, PricingSource};
+
+/// Apply embedded-catalog pricing and provenance (`catalog_info`) to a model entry.
+/// Prefers an exact provider+id match, falling back to a name-only match.
+fn apply_catalog_pricing(model_data: &mut ModelData, provider_type: &str, model_id: &str) {
+    let (catalog_model, matched_via) = match lr_catalog::find_model(provider_type, model_id) {
+        Some(cm) => (Some(cm), "provider_and_id"),
+        None => (lr_catalog::find_model_by_name(model_id), "name"),
+    };
+
+    if let Some(cm) = catalog_model {
+        model_data.pricing = Some(ModelPricing {
+            input_cost_per_1k: cm.pricing.prompt_cost_per_1k(),
+            output_cost_per_1k: cm.pricing.completion_cost_per_1k(),
+            currency: cm.pricing.currency.to_string(),
+        });
+        model_data.catalog_info = Some(CatalogInfo {
+            pricing_source: PricingSource::Catalog,
+            catalog_date: Some(lr_catalog::metadata().fetch_date().to_rfc3339()),
+            matched_via: Some(matched_via.to_string()),
+        });
+    }
+}
 
 /// GET /v1/models
 /// List available models filtered by the authenticated API key's model selection
@@ -101,16 +123,7 @@ pub async fn list_models<B>(
             .get_provider_type_for_instance(&model_info.provider)
             .unwrap_or_else(|| model_info.provider.clone());
 
-        let catalog_model = lr_catalog::find_model(&provider_type, &model_info.id)
-            .or_else(|| lr_catalog::find_model_by_name(&model_info.id));
-
-        if let Some(cm) = catalog_model {
-            model_data.pricing = Some(ModelPricing {
-                input_cost_per_1k: cm.pricing.prompt_cost_per_1k(),
-                output_cost_per_1k: cm.pricing.completion_cost_per_1k(),
-                currency: cm.pricing.currency.to_string(),
-            });
-        }
+        apply_catalog_pricing(&mut model_data, &provider_type, &model_info.id);
 
         model_data_vec.push(model_data);
     }
@@ -244,16 +257,7 @@ pub async fn get_model<B>(
         .get_provider_type_for_instance(&model_info.provider)
         .unwrap_or_else(|| model_info.provider.clone());
 
-    let catalog_model = lr_catalog::find_model(&provider_type, &model_info.id)
-        .or_else(|| lr_catalog::find_model_by_name(&model_info.id));
-
-    if let Some(cm) = catalog_model {
-        model_data.pricing = Some(ModelPricing {
-            input_cost_per_1k: cm.pricing.prompt_cost_per_1k(),
-            output_cost_per_1k: cm.pricing.completion_cost_per_1k(),
-            currency: cm.pricing.currency.to_string(),
-        });
-    }
+    apply_catalog_pricing(&mut model_data, &provider_type, &model_info.id);
 
     Ok(Json(model_data))
 }
@@ -333,4 +337,62 @@ pub async fn get_model_pricing<B>(
         output_cost_per_1k: pricing_info.output_cost_per_1k,
         currency: pricing_info.currency,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blank_model(id: &str) -> ModelData {
+        ModelData {
+            id: id.to_string(),
+            object: "model".to_string(),
+            owned_by: "test".to_string(),
+            created: None,
+            provider: "test".to_string(),
+            parameter_count: None,
+            context_window: 0,
+            supports_streaming: true,
+            capabilities: vec![],
+            pricing: None,
+            detailed_capabilities: None,
+            features: None,
+            supported_parameters: None,
+            performance: None,
+            catalog_info: None,
+        }
+    }
+
+    #[test]
+    fn apply_catalog_pricing_populates_pricing_and_provenance() {
+        // A model that exists in the embedded models.dev catalog.
+        let model_id = "gpt-4o";
+        assert!(
+            lr_catalog::find_model_by_name(model_id).is_some(),
+            "expected {model_id} in embedded catalog"
+        );
+        let mut data = blank_model(model_id);
+
+        apply_catalog_pricing(&mut data, "no-such-provider", model_id);
+
+        assert!(data.pricing.is_some());
+        let info = data.catalog_info.expect("catalog_info populated");
+        assert!(matches!(info.pricing_source, PricingSource::Catalog));
+        assert!(info.matched_via.is_some());
+        assert!(info.catalog_date.is_some());
+    }
+
+    #[test]
+    fn apply_catalog_pricing_leaves_unknown_model_untouched() {
+        let mut data = blank_model("definitely-not-a-real-model-xyz");
+
+        apply_catalog_pricing(
+            &mut data,
+            "no-such-provider",
+            "definitely-not-a-real-model-xyz",
+        );
+
+        assert!(data.pricing.is_none());
+        assert!(data.catalog_info.is_none());
+    }
 }
