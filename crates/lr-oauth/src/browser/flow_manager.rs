@@ -78,7 +78,12 @@ impl OAuthFlowManager {
         // Register callback listener
         let callback_rx = self
             .callback_manager
-            .register_listener(flow_id, config.callback_port, csrf_state.clone())
+            .register_listener_with_issuer(
+                flow_id,
+                config.callback_port,
+                csrf_state.clone(),
+                config.expected_issuer.clone(),
+            )
             .await?;
 
         // Create flow state
@@ -365,6 +370,7 @@ mod tests {
             account_id: "test_account".to_string(),
             extra_auth_params: HashMap::new(),
             extra_token_params: HashMap::new(),
+            expected_issuer: None,
         }
     }
 

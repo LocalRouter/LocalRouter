@@ -77,6 +77,7 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
             account_id: "anthropic-claude".to_string(),
             extra_auth_params: std::collections::HashMap::new(),
             extra_token_params: std::collections::HashMap::new(),
+            expected_issuer: None,
         };
 
         // Start flow via unified manager
@@ -179,6 +180,7 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
             account_id: "anthropic-claude".to_string(),
             extra_auth_params: std::collections::HashMap::new(),
             extra_token_params: std::collections::HashMap::new(),
+            expected_issuer: None,
         };
 
         // Use unified token exchanger

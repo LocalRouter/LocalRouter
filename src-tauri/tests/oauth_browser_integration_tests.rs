@@ -142,6 +142,7 @@ async fn test_flow_config_creation() {
         account_id: "test_account".to_string(),
         extra_auth_params: HashMap::new(),
         extra_token_params: HashMap::new(),
+        expected_issuer: None,
     };
 
     assert_eq!(config.client_id, "test-client");

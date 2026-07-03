@@ -57,6 +57,10 @@ pub enum FrontendAuthConfig {
         /// OAuth scopes to request
         #[serde(default)]
         scopes: Vec<String>,
+        /// Authorization server issuer identifier from discovery (RFC 8414),
+        /// used for RFC 9207 iss validation
+        #[serde(default)]
+        issuer: Option<String>,
         /// Redirect URI (defaults to http://localhost:8080/callback)
         #[serde(default)]
         redirect_uri: Option<String>,
@@ -198,6 +202,7 @@ fn process_auth_config(
             auth_url,
             token_url,
             scopes,
+            issuer,
             redirect_uri,
         } => {
             // Store client secret in keychain if provided
@@ -225,6 +230,7 @@ fn process_auth_config(
                 scopes,
                 redirect_uri: redirect_uri
                     .unwrap_or_else(|| "http://localhost:8080/callback".to_string()),
+                issuer,
             }
         }
     };
@@ -611,6 +617,7 @@ fn clone_mcp_auth_config(
             token_url,
             scopes,
             redirect_uri,
+            issuer,
         } => {
             let new_ref = format!("{}_oauth_browser_secret", new_server_id);
             if let Ok(Some(secret)) =
@@ -627,6 +634,7 @@ fn clone_mcp_auth_config(
                 token_url: token_url.clone(),
                 scopes: scopes.clone(),
                 redirect_uri: redirect_uri.clone(),
+                issuer: issuer.clone(),
             }))
         }
 
@@ -1953,6 +1961,9 @@ pub struct InlineOAuthDiscovery {
     pub auth_url: String,
     pub token_url: String,
     pub scopes: Vec<String>,
+    /// Authorization server issuer identifier (RFC 8414), when discovered
+    #[serde(default)]
+    pub issuer: Option<String>,
 }
 
 /// Result of polling an inline OAuth flow
@@ -2034,6 +2045,7 @@ pub async fn start_inline_oauth_flow(
         account_id: temp_account_id,
         extra_auth_params: std::collections::HashMap::new(),
         extra_token_params: std::collections::HashMap::new(),
+        expected_issuer: discovery.issuer.clone(),
     };
 
     // Start the OAuth flow
@@ -2051,6 +2063,7 @@ pub async fn start_inline_oauth_flow(
             auth_url,
             token_url,
             scopes,
+            issuer: discovery.issuer,
         },
     })
 }

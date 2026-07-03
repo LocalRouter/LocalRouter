@@ -711,9 +711,18 @@ impl McpServerManager {
 
                     tracing::info!("Applied OAuth token for SSE server: {}", server_id);
                 }
-                lr_config::McpAuthConfig::OAuthBrowser { .. } => {
+                lr_config::McpAuthConfig::OAuthBrowser {
+                    token_url, issuer, ..
+                } => {
                     // OAuth browser flow - token should already be stored in keychain
                     // by the McpOAuthBrowserManager after successful authentication
+
+                    // Never replay credentials issued by a different
+                    // authorization server (SEP-2352).
+                    let issuer_identity = issuer.clone().unwrap_or_else(|| token_url.clone());
+                    self.oauth_manager
+                        .enforce_issuer_binding(&config.id, &issuer_identity);
+
                     let keychain = lr_api_keys::CachedKeychain::auto()
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
 
@@ -1310,7 +1319,15 @@ impl McpServerManager {
                 );
                 tracing::info!("Applied OAuth token for server: {}", server_id);
             }
-            lr_config::McpAuthConfig::OAuthBrowser { .. } => {
+            lr_config::McpAuthConfig::OAuthBrowser {
+                token_url, issuer, ..
+            } => {
+                // Never replay credentials issued by a different
+                // authorization server (SEP-2352).
+                let issuer_identity = issuer.clone().unwrap_or_else(|| token_url.clone());
+                self.oauth_manager
+                    .enforce_issuer_binding(&config.id, &issuer_identity);
+
                 let keychain = lr_api_keys::CachedKeychain::auto()
                     .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
 

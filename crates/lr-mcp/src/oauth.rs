@@ -87,6 +87,11 @@ pub struct ProtectedResourceMetadata {
 /// Response from .well-known/oauth-authorization-server endpoint
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthorizationServerMetadata {
+    /// Authorization server issuer identifier (RFC 8414; used for
+    /// RFC 9207 `iss` validation)
+    #[serde(default)]
+    pub issuer: Option<String>,
+
     /// Authorization endpoint URL
     pub authorization_endpoint: String,
 
@@ -108,6 +113,12 @@ pub struct AuthorizationServerMetadata {
 /// information from protected resource metadata and authorization server metadata
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OAuthDiscoveryResponse {
+    /// Authorization server issuer identifier, when known.
+    /// Used to validate the `iss` authorization-response parameter
+    /// (RFC 9207) and to bind cached credentials to their issuer.
+    #[serde(default)]
+    pub issuer: Option<String>,
+
     /// Authorization endpoint URL
     #[serde(rename = "authorization_endpoint")]
     pub auth_url: String,
@@ -590,6 +601,12 @@ impl McpOAuthManager {
                     };
 
                     return Ok(Some(OAuthDiscoveryResponse {
+                        // RFC 8414 requires `issuer` to equal the URL the
+                        // metadata was derived from, so fall back to the
+                        // authorization server URL when it's omitted.
+                        issuer: metadata
+                            .issuer
+                            .or_else(|| Some(auth_server_url.trim_end_matches('/').to_string())),
                         auth_url: metadata.authorization_endpoint,
                         token_endpoint: metadata.token_endpoint,
                         scopes_supported: scopes,
@@ -622,6 +639,7 @@ impl McpOAuthManager {
         // GitHub OAuth
         if url_lower.contains("github.com") {
             return Some(OAuthDiscoveryResponse {
+                issuer: Some("https://github.com".to_string()),
                 auth_url: "https://github.com/login/oauth/authorize".to_string(),
                 token_endpoint: "https://github.com/login/oauth/access_token".to_string(),
                 scopes_supported: resource_scopes.to_vec(),
@@ -632,6 +650,7 @@ impl McpOAuthManager {
         // Google OAuth
         if url_lower.contains("google.com") || url_lower.contains("googleapis.com") {
             return Some(OAuthDiscoveryResponse {
+                issuer: Some("https://accounts.google.com".to_string()),
                 auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
                 token_endpoint: "https://oauth2.googleapis.com/token".to_string(),
                 scopes_supported: resource_scopes.to_vec(),
@@ -648,6 +667,7 @@ impl McpOAuthManager {
             || url_lower.contains("live.com")
         {
             return Some(OAuthDiscoveryResponse {
+                issuer: Some("https://login.microsoftonline.com/common/v2.0".to_string()),
                 auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
                     .to_string(),
                 token_endpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token"
@@ -676,6 +696,9 @@ impl McpOAuthManager {
         server_id: &str,
         oauth_config: &McpOAuthConfig,
     ) -> AppResult<String> {
+        // Never reuse credentials with a different authorization server
+        self.enforce_issuer_binding(server_id, &oauth_config.token_url);
+
         // Check cache first
         if let Some(token) = self.get_cached_token(server_id).await {
             return Ok(token);
@@ -815,6 +838,10 @@ impl McpOAuthManager {
     ) -> AppResult<String> {
         tracing::info!("Refreshing OAuth token for: {}", server_id);
 
+        // Never send a refresh token to a different authorization server
+        // than the one that issued it.
+        self.enforce_issuer_binding(server_id, &oauth_config.token_url);
+
         // Get refresh token from cache or keychain
         let refresh_token = if let Some(token_info) = self.token_cache.read().get(server_id) {
             token_info.refresh_token.clone()
@@ -928,6 +955,42 @@ impl McpOAuthManager {
             .ok();
     }
 
+    /// Enforce that cached credentials are only reused with the authorization
+    /// server that issued them (MCP spec / SEP-2352).
+    ///
+    /// `current_issuer` identifies the authorization server about to be used:
+    /// the RFC 8414 `issuer` when known, otherwise the token endpoint URL as
+    /// a stable stand-in. If a *different* issuer was recorded for this
+    /// server's cached credentials, they are dropped so the user
+    /// re-authenticates against the new authorization server. Caches created
+    /// before issuer recording existed adopt the current issuer on first use.
+    pub fn enforce_issuer_binding(&self, server_id: &str, current_issuer: &str) {
+        let key = format!("{}_issuer", server_id);
+        match self.keychain.get(MCP_OAUTH_SERVICE, &key) {
+            Ok(Some(recorded)) if recorded == current_issuer => {}
+            Ok(Some(recorded)) => {
+                tracing::warn!(
+                    "Authorization server for MCP server '{}' changed from '{}' to '{}'; \
+                     discarding cached OAuth credentials and requiring re-authentication",
+                    server_id,
+                    recorded,
+                    current_issuer
+                );
+                self.clear_token(server_id);
+                self.keychain
+                    .store(MCP_OAUTH_SERVICE, &key, current_issuer)
+                    .ok();
+            }
+            _ => {
+                // First use, or a cache from before issuer recording existed:
+                // adopt the current issuer.
+                self.keychain
+                    .store(MCP_OAUTH_SERVICE, &key, current_issuer)
+                    .ok();
+            }
+        }
+    }
+
     /// Update token cache with new access token
     ///
     /// # Arguments
@@ -1010,6 +1073,10 @@ impl McpOAuthManager {
         code_verifier: &str,
     ) -> AppResult<String> {
         tracing::info!("Exchanging authorization code for token: {}", server_id);
+
+        // Record which authorization server the new credentials come from
+        // (drops any stale credentials from a previous one).
+        self.enforce_issuer_binding(server_id, &oauth_config.token_url);
 
         // Retrieve client_secret from keychain
         let client_secret = self
@@ -1121,6 +1188,89 @@ mod tests {
 
         // Should find the token
         assert!(manager.token_cache.read().contains_key("test_server"));
+    }
+
+    fn mock_manager() -> McpOAuthManager {
+        let keychain = CachedKeychain::new(Arc::new(lr_api_keys::MockKeychain::new()));
+        McpOAuthManager::new_with_keychain(keychain)
+    }
+
+    #[test]
+    fn test_issuer_binding_adopts_issuer_on_first_use() {
+        let manager = mock_manager();
+
+        manager.enforce_issuer_binding("srv", "https://as.example.com");
+
+        assert_eq!(
+            manager
+                .keychain
+                .get(MCP_OAUTH_SERVICE, "srv_issuer")
+                .unwrap()
+                .as_deref(),
+            Some("https://as.example.com")
+        );
+    }
+
+    #[test]
+    fn test_issuer_binding_same_issuer_keeps_tokens() {
+        let manager = mock_manager();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_access_token", "tok")
+            .unwrap();
+        manager.enforce_issuer_binding("srv", "https://as.example.com");
+
+        // Same issuer again: token survives
+        manager.enforce_issuer_binding("srv", "https://as.example.com");
+        assert_eq!(
+            manager
+                .keychain
+                .get(MCP_OAUTH_SERVICE, "srv_access_token")
+                .unwrap()
+                .as_deref(),
+            Some("tok")
+        );
+    }
+
+    #[test]
+    fn test_issuer_binding_change_drops_credentials() {
+        let manager = mock_manager();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_access_token", "tok")
+            .unwrap();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_refresh_token", "ref")
+            .unwrap();
+        manager.enforce_issuer_binding("srv", "https://old-as.example.com");
+
+        // Authorization server changed: credentials must be dropped and the
+        // new issuer recorded.
+        manager.enforce_issuer_binding("srv", "https://new-as.example.com");
+
+        assert_eq!(
+            manager
+                .keychain
+                .get(MCP_OAUTH_SERVICE, "srv_access_token")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            manager
+                .keychain
+                .get(MCP_OAUTH_SERVICE, "srv_refresh_token")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            manager
+                .keychain
+                .get(MCP_OAUTH_SERVICE, "srv_issuer")
+                .unwrap()
+                .as_deref(),
+            Some("https://new-as.example.com")
+        );
     }
 
     #[test]

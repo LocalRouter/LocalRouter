@@ -3154,6 +3154,12 @@ pub enum McpAuthConfig {
         /// Redirect URI (usually http://localhost:8080/callback)
         /// Must match OAuth app registration
         redirect_uri: String,
+
+        /// Authorization server issuer identifier, when known (RFC 8414).
+        /// Used to validate the `iss` authorization-response parameter
+        /// (RFC 9207) and to bind cached credentials to their issuer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        issuer: Option<String>,
     },
 
     /// Environment variables (for STDIO only)

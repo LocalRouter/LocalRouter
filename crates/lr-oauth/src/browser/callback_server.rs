@@ -24,6 +24,8 @@ use tracing::{error, info, warn};
 struct OAuthCallbackQuery {
     code: Option<String>,
     state: Option<String>,
+    /// Issuer identifier from the authorization response (RFC 9207)
+    iss: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
 }
@@ -44,6 +46,9 @@ struct CallbackListener {
     flow_id: FlowId,
     /// Expected CSRF state parameter
     expected_state: String,
+    /// Expected authorization server issuer, when known (RFC 9207).
+    /// A present `iss` response parameter MUST match this value.
+    expected_issuer: Option<String>,
     /// Channel to send result
     result_tx: Option<oneshot::Sender<AppResult<CallbackResult>>>,
 }
@@ -96,11 +101,27 @@ impl CallbackServerManager {
         port: u16,
         expected_state: String,
     ) -> AppResult<oneshot::Receiver<AppResult<CallbackResult>>> {
+        self.register_listener_with_issuer(flow_id, port, expected_state, None)
+            .await
+    }
+
+    /// Register a callback listener with an expected issuer (RFC 9207)
+    ///
+    /// Like [`register_listener`], but a present `iss` parameter on the
+    /// authorization response is validated against `expected_issuer`.
+    pub async fn register_listener_with_issuer(
+        &self,
+        flow_id: FlowId,
+        port: u16,
+        expected_state: String,
+        expected_issuer: Option<String>,
+    ) -> AppResult<oneshot::Receiver<AppResult<CallbackResult>>> {
         let (tx, rx) = oneshot::channel();
 
         let listener = CallbackListener {
             flow_id,
             expected_state: expected_state.clone(),
+            expected_issuer,
             result_tx: Some(tx),
         };
 
@@ -245,6 +266,42 @@ impl CallbackServerManager {
                     match matching_listener {
                         Some((flow_id, listener)) => {
                             info!("Matched callback to flow {}", flow_id);
+
+                            // RFC 9207: when the authorization response carries an
+                            // `iss` parameter and we know which issuer we sent the
+                            // user to, the two MUST match (mix-up attack defense).
+                            match (&params.iss, &listener.expected_issuer) {
+                                (Some(iss), Some(expected)) if iss != expected => {
+                                    error!(
+                                        "OAuth callback iss mismatch for flow {}: got '{}', expected '{}'",
+                                        flow_id, iss, expected
+                                    );
+                                    if let Some(sender) = listener.result_tx.take() {
+                                        let _ = sender.send(Err(AppError::OAuthBrowser(format!(
+                                            "Authorization response issuer mismatch (RFC 9207): got '{}', expected '{}'",
+                                            iss, expected
+                                        ))));
+                                    }
+                                    return (
+                                        StatusCode::BAD_REQUEST,
+                                        Html(
+                                            r#"<html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                                                <h1>❌ Error</h1>
+                                                <p>Authorization server issuer mismatch (possible mix-up attack).</p>
+                                                <p>The authorization attempt was rejected. You can close this window.</p>
+                                            </body></html>"#,
+                                        ),
+                                    )
+                                        .into_response();
+                                }
+                                (Some(iss), None) => {
+                                    warn!(
+                                        "OAuth callback for flow {} carried iss '{}' but no expected issuer is recorded; skipping RFC 9207 validation",
+                                        flow_id, iss
+                                    );
+                                }
+                                _ => {}
+                            }
 
                             // Send result through channel
                             if let Some(sender) = listener.result_tx.take() {
@@ -455,6 +512,108 @@ mod tests {
 
         assert_eq!(manager.active_server_count(), 1);
         assert_eq!(manager.active_listener_count(), 2);
+    }
+
+    /// Poll until the callback server accepts connections (it starts in a
+    /// spawned task, so an immediate request can race the bind).
+    async fn wait_for_server(port: u16) {
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("callback server on port {port} never came up");
+    }
+
+    #[tokio::test]
+    async fn test_callback_iss_mismatch_rejected() {
+        let manager = CallbackServerManager::new();
+        let flow_id = FlowId::new();
+        let port = find_available_port();
+
+        let rx = manager
+            .register_listener_with_issuer(
+                flow_id,
+                port,
+                "state123".to_string(),
+                Some("https://as.example.com".to_string()),
+            )
+            .await
+            .unwrap();
+        wait_for_server(port).await;
+
+        let resp = reqwest::get(format!(
+            "http://127.0.0.1:{port}/callback?code=abc&state=state123&iss=https%3A%2F%2Fevil.example.com"
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(resp.status(), 400);
+        let result = rx.await.expect("channel delivers a result");
+        let err = result.expect_err("mismatched iss must be rejected");
+        assert!(err.to_string().contains("issuer mismatch"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_callback_iss_match_accepted() {
+        let manager = CallbackServerManager::new();
+        let flow_id = FlowId::new();
+        let port = find_available_port();
+
+        let rx = manager
+            .register_listener_with_issuer(
+                flow_id,
+                port,
+                "state123".to_string(),
+                Some("https://as.example.com".to_string()),
+            )
+            .await
+            .unwrap();
+        wait_for_server(port).await;
+
+        let resp = reqwest::get(format!(
+            "http://127.0.0.1:{port}/callback?code=abc&state=state123&iss=https%3A%2F%2Fas.example.com"
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let result = rx.await.unwrap().unwrap();
+        assert_eq!(result.code, "abc");
+    }
+
+    #[tokio::test]
+    async fn test_callback_without_iss_still_accepted() {
+        // RFC 9207 validation only applies when the response carries iss;
+        // legacy authorization servers that omit it must keep working.
+        let manager = CallbackServerManager::new();
+        let flow_id = FlowId::new();
+        let port = find_available_port();
+
+        let rx = manager
+            .register_listener_with_issuer(
+                flow_id,
+                port,
+                "state123".to_string(),
+                Some("https://as.example.com".to_string()),
+            )
+            .await
+            .unwrap();
+        wait_for_server(port).await;
+
+        let resp = reqwest::get(format!(
+            "http://127.0.0.1:{port}/callback?code=abc&state=state123"
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let result = rx.await.unwrap().unwrap();
+        assert_eq!(result.code, "abc");
     }
 
     #[tokio::test]

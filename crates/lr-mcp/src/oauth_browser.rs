@@ -96,13 +96,14 @@ impl McpOAuthBrowserManager {
         auth_config: &McpAuthConfig,
     ) -> AppResult<OAuthBrowserFlowResult> {
         // Extract OAuth browser config
-        let (client_id, auth_url, token_url, scopes, redirect_uri) = match auth_config {
+        let (client_id, auth_url, token_url, scopes, redirect_uri, issuer) = match auth_config {
             McpAuthConfig::OAuthBrowser {
                 client_id,
                 auth_url,
                 token_url,
                 scopes,
                 redirect_uri,
+                issuer,
                 ..
             } => (
                 client_id.clone(),
@@ -110,6 +111,7 @@ impl McpOAuthBrowserManager {
                 token_url.clone(),
                 scopes.clone(),
                 redirect_uri.clone(),
+                issuer.clone(),
             ),
             _ => {
                 return Err(AppError::Mcp(
@@ -129,6 +131,13 @@ impl McpOAuthBrowserManager {
         // Parse port from redirect URI
         let callback_port = Self::parse_port(&redirect_uri)?;
 
+        // Bind credentials to the authorization server (SEP-2352): if this
+        // server's auth server changed since tokens were last cached, the
+        // stale credentials are dropped before the new flow starts.
+        let issuer_identity = issuer.clone().unwrap_or_else(|| token_url.clone());
+        self.oauth_manager
+            .enforce_issuer_binding(server_id, &issuer_identity);
+
         info!(
             "Starting browser OAuth flow for server {}: {}",
             server_id, redirect_uri
@@ -147,6 +156,7 @@ impl McpOAuthBrowserManager {
             account_id: server_id.to_string(),
             extra_auth_params: HashMap::new(),
             extra_token_params: HashMap::new(),
+            expected_issuer: issuer,
         };
 
         // Start flow via unified manager

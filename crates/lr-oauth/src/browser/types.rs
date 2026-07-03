@@ -88,6 +88,11 @@ pub struct OAuthFlowConfig {
 
     /// Additional token exchange parameters (optional)
     pub extra_token_params: HashMap<String, String>,
+
+    /// Expected authorization server issuer identifier, when known
+    /// (RFC 8414 `issuer`). Used to validate the `iss` parameter on
+    /// authorization responses per RFC 9207.
+    pub expected_issuer: Option<String>,
 }
 
 /// OAuth flow state (internal tracking)

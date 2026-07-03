@@ -1517,12 +1517,27 @@ export interface ModelPricingOverride {
 // =============================================================================
 
 /**
+ * Inline OAuth discovery info.
+ * Rust: src-tauri/src/ui/commands_mcp.rs - InlineOAuthDiscovery struct
+ */
+export interface InlineOAuthDiscovery {
+  auth_url: string
+  token_url: string
+  scopes: string[]
+  /** Authorization server issuer identifier (RFC 8414), when discovered */
+  issuer?: string | null
+}
+
+/**
  * Inline OAuth flow result.
  * Rust: src-tauri/src/ui/commands_mcp.rs - InlineOAuthFlowResult struct
  */
 export interface InlineOAuthFlowResult {
   flow_id: string
   auth_url: string
+  redirect_uri: string
+  state: string
+  discovery: InlineOAuthDiscovery
 }
 
 /**
