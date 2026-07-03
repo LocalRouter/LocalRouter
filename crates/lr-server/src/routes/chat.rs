@@ -1047,9 +1047,13 @@ async fn handle_non_streaming(
     let llm_outcome = if let Some(g_handle) = guardrail_handle {
         let router = state.router.clone();
         let api_key_id = auth.api_key_id.clone();
-        let llm_handle =
-            tokio::spawn(async move { router.complete(&api_key_id, provider_request).await });
-        let (guardrail_result, llm_result) = tokio::join!(g_handle, llm_handle);
+        // Run the LLM call as an in-handler future rather than a detached
+        // spawn: if the request is aborted (client disconnect or server
+        // Stop), the provider call is dropped with it, which closes the
+        // upstream connection and cancels generation (local providers like
+        // Ollama otherwise keep generating to completion).
+        let llm_future = router.complete(&api_key_id, provider_request);
+        let (guardrail_result, llm_result) = tokio::join!(g_handle, llm_future);
 
         // Process guardrail result first — if denied, discard LLM response.
         let guardrail_result = guardrail_result.map_err(|e| {
@@ -1067,7 +1071,6 @@ async fn handle_non_streaming(
         }
 
         llm_result
-            .map_err(|e| ApiErrorResponse::internal_error(format!("LLM request failed: {}", e)))?
     } else {
         state
             .router
@@ -1995,6 +1998,19 @@ async fn handle_streaming_parallel(
 
             loop {
                 tokio::select! {
+                    // The client is gone — disconnect, or server Stop dropped
+                    // the response body via the kill-switch. Stop consuming the
+                    // provider stream so it is dropped and the upstream
+                    // connection closes, cancelling generation (local
+                    // providers like Ollama otherwise keep generating).
+                    // The client is gone — disconnect, or server Stop dropped
+                    // the response body via the kill-switch. Stop consuming the
+                    // provider stream so it is dropped and the upstream
+                    // connection closes, cancelling generation (local
+                    // providers like Ollama otherwise keep generating).
+                    _ = event_tx.closed() => {
+                        break;
+                    }
                     chunk = stream.next() => {
                         match chunk {
                             Some(Ok(provider_chunk)) => {
@@ -2072,7 +2088,10 @@ async fn handle_streaming_parallel(
                                         serde_json::to_string(&error_response)
                                             .unwrap_or_else(|_| "[ERROR]".to_string()),
                                     ))).await;
-                                    // Don't break yet — let the stream drain
+                                    // Drop the provider stream immediately —
+                                    // no point letting the model keep
+                                    // generating a response nobody will see.
+                                    break;
                                 }
                                 GuardrailGate::Pending => unreachable!(),
                             }

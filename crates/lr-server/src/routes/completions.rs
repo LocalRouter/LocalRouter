@@ -538,14 +538,17 @@ async fn handle_non_streaming_parallel(
     // Start LLM request immediately. Preserve the router's routing
     // metadata so `build_non_streaming_response` can attach it to the
     // monitor event — matches `handle_non_streaming`'s behavior.
-    let llm_handle = {
-        let router = state.router.clone();
-        let api_key_id = auth.api_key_id.clone();
-        tokio::spawn(async move { router.complete(&api_key_id, provider_request).await })
-    };
+    // Run the LLM call as an in-handler future rather than a detached spawn:
+    // if the request is aborted (client disconnect or server Stop), the
+    // provider call is dropped with it, which closes the upstream connection
+    // and cancels generation (local providers like Ollama otherwise keep
+    // generating to completion).
+    let router = state.router.clone();
+    let api_key_id = auth.api_key_id.clone();
+    let llm_future = router.complete(&api_key_id, provider_request);
 
     // Wait for both concurrently
-    let (guardrail_result, llm_result) = tokio::join!(guardrail_handle, llm_handle);
+    let (guardrail_result, llm_result) = tokio::join!(guardrail_handle, llm_future);
 
     // Process guardrail result first
     let guardrail_result = guardrail_result.map_err(|e| {
@@ -563,45 +566,43 @@ async fn handle_non_streaming_parallel(
     }
 
     // Unwrap LLM response (and router's routing metadata)
-    let (response, routing_metadata) = llm_result
-        .map_err(|e| ApiErrorResponse::internal_error(format!("LLM request failed: {}", e)))?
-        .map_err(|e| {
-            let latency = Instant::now().duration_since(started_at).as_millis() as u64;
-            let strategy_id = state
-                .client_manager
-                .get_client(&auth.api_key_id)
-                .map(|c| c.strategy_id.clone())
-                .unwrap_or_else(|| "default".to_string());
-            state.metrics_collector.record_failure(
-                &auth.api_key_id,
-                "unknown",
-                "unknown",
-                &strategy_id,
-                latency,
-            );
-            if let Err(log_err) = state.access_logger.log_failure(
-                &auth.api_key_id,
-                "unknown",
-                "unknown",
-                latency,
-                &generation_id,
-                502,
-            ) {
-                tracing::warn!("Failed to write access log: {}", log_err);
-            }
+    let (response, routing_metadata) = llm_result.map_err(|e| {
+        let latency = Instant::now().duration_since(started_at).as_millis() as u64;
+        let strategy_id = state
+            .client_manager
+            .get_client(&auth.api_key_id)
+            .map(|c| c.strategy_id.clone())
+            .unwrap_or_else(|| "default".to_string());
+        state.metrics_collector.record_failure(
+            &auth.api_key_id,
+            "unknown",
+            "unknown",
+            &strategy_id,
+            latency,
+        );
+        if let Err(log_err) = state.access_logger.log_failure(
+            &auth.api_key_id,
+            "unknown",
+            "unknown",
+            latency,
+            &generation_id,
+            502,
+        ) {
+            tracing::warn!("Failed to write access log: {}", log_err);
+        }
 
-            // Emit monitor error event
-            super::monitor_helpers::complete_llm_call_error(
-                &state,
-                &llm_event_id,
-                "unknown",
-                &request.model,
-                502,
-                &e.to_string(),
-            );
+        // Emit monitor error event
+        super::monitor_helpers::complete_llm_call_error(
+            &state,
+            &llm_event_id,
+            "unknown",
+            &request.model,
+            502,
+            &e.to_string(),
+        );
 
-            ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
-        })?;
+        ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
+    })?;
 
     build_non_streaming_response(
         state,
@@ -1207,6 +1208,14 @@ async fn handle_streaming_parallel(
 
             loop {
                 tokio::select! {
+                    // The client is gone — disconnect, or server Stop dropped
+                    // the response body via the kill-switch. Stop consuming the
+                    // provider stream so it is dropped and the upstream
+                    // connection closes, cancelling generation (local
+                    // providers like Ollama otherwise keep generating).
+                    _ = event_tx.closed() => {
+                        break;
+                    }
                     chunk = stream.next() => {
                         match chunk {
                             Some(Ok(provider_chunk)) => {
@@ -1280,6 +1289,10 @@ async fn handle_streaming_parallel(
                                         serde_json::to_string(&error_response)
                                             .unwrap_or_else(|_| "[ERROR]".to_string()),
                                     ))).await;
+                                    // Drop the provider stream immediately —
+                                    // no point letting the model keep
+                                    // generating a response nobody will see.
+                                    break;
                                 }
                                 GuardrailGate::Pending => unreachable!(),
                             }

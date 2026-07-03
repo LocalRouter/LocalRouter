@@ -72,6 +72,7 @@ dashmap = { workspace = true }
 serde_yaml = { workspace = true }
 toml = { workspace = true }
 keyring = { workspace = true }
+tokio-util = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]
@@ -83,6 +84,7 @@ base64 = { workspace = true }
 futures-util = { workspace = true }
 tokio-tungstenite = { workspace = true }
 keyring = { workspace = true }
+tokio-util = { workspace = true }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
