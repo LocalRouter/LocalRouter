@@ -29,6 +29,9 @@ Follow-up from a whole-project review. A2A integration was explicitly excluded b
    costs into dashboards. Real audio cost needs usage fields plumbed through
    provider responses plus per-minute catalog pricing (future work).
 5. **Replace `unimplemented!()` panics** in `crates/lr-providers/src/health.rs:257,264`.
+   **Resolution (2026-07-02):** no change needed — both are in the
+   `#[cfg(test)]` MockProvider on methods the health tests never call;
+   unreachable in production.
 6. **Implement Anthropic thinking-block parsing**
    (`crates/lr-providers/src/features/anthropic_thinking.rs:114`), per
    `plan/2026-03-22-REASONING_TOKEN_SUPPORT.md`.
