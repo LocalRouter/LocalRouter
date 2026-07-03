@@ -2748,7 +2748,7 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
-        let (allowed_servers, transports) = {
+        let (mut allowed_servers, transports) = {
             let session_read = session.read().await;
             (
                 session_read.allowed_servers.clone(),
@@ -2758,6 +2758,20 @@ impl McpGateway {
                     .ok_or_else(|| AppError::Mcp("Session not initialized".into()))?,
             )
         };
+
+        // ping and logging/setLevel were removed in 2026-07-28: don't send
+        // them to stateless backends (they would only answer
+        // method_not_found and pollute their logs).
+        if matches!(request.method.as_str(), "ping" | "logging/setLevel") {
+            allowed_servers.retain(|server_id| !transports.revision(server_id).is_stateless());
+            if allowed_servers.is_empty() {
+                // Nothing legacy to forward to; acknowledge locally.
+                return Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    json!({}),
+                ));
+            }
+        }
 
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;

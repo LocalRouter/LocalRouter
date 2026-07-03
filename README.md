@@ -10,13 +10,15 @@
 
 <p align="center">
   Centralized credential store with per-client access control. Automatic model failover across providers.<br/>
-  Unified MCP gateway aggregating all MCPs and skills. Runtime approval firewall for sensitive operations.
+  Unified MCP gateway aggregating all MCPs and skills. Runtime approval firewall for sensitive operations.<br/>
+  Speaks both MCP <code>2026-07-28</code> (stateless) and legacy revisions — and bridges between them,<br/>
+  so new clients work with old servers and vice versa.
 </p>
 
 <p align="center">
   <img src="website/public/icons/apple.svg" alt="macOS" width="16" height="16" />&nbsp;macOS&nbsp;&nbsp;
   <img src="website/public/icons/microsoft-windows.svg" alt="Windows" width="16" height="16" />&nbsp;Windows&nbsp;&nbsp;
-  <img src="website/public/icons/penguin.svg" alt="Linux" width="16" height="16" />&nbsp;Linux
+  <img src="website/public/icons/penguin.svg" alt="Linux" width="16" height="16" />&nbsp;Linux (x86_64 &amp; ARM64)
 </p>
 
 <p align="center">
