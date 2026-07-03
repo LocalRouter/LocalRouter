@@ -153,15 +153,179 @@ pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
 
-/// Latest MCP protocol version supported by LocalRouter.
+/// Legacy (session-based) MCP protocol version supported by LocalRouter.
 /// Elicitation requires >= 2025-03-26; sampling improvements >= 2025-06-18.
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+
+/// Stateless MCP protocol revision (2026-07-28 spec).
+pub const MCP_PROTOCOL_VERSION_STATELESS: &str = "2026-07-28";
+
+/// All protocol versions LocalRouter can speak, newest first.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &[MCP_PROTOCOL_VERSION_STATELESS, MCP_PROTOCOL_VERSION];
 
 // Application-specific error codes (MCP Gateway)
 pub const TOOL_NOT_FOUND: i32 = -32001;
 pub const RESOURCE_NOT_FOUND: i32 = -32002;
 pub const PROMPT_NOT_FOUND: i32 = -32003;
 pub const SERVER_UNAVAILABLE: i32 = -32004;
+
+// MCP 2026-07-28 spec-reserved error codes (range -32020..-32099)
+pub const HEADER_MISMATCH: i32 = -32020;
+pub const MISSING_REQUIRED_CLIENT_CAPABILITY: i32 = -32021;
+pub const UNSUPPORTED_PROTOCOL_VERSION: i32 = -32022;
+
+/// A protocol revision LocalRouter can speak on either side of the gateway.
+///
+/// Ordering is chronological: newer revisions compare greater.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum ProtocolRevision {
+    /// 2025-11-25 and earlier: session-based lifecycle with the
+    /// `initialize`/`notifications/initialized` handshake.
+    #[default]
+    V2025_11_25,
+    /// 2026-07-28: stateless lifecycle (`server/discover`, per-request
+    /// `_meta`, MRTR, `subscriptions/listen`).
+    V2026_07_28,
+}
+
+impl ProtocolRevision {
+    /// Canonical version string for this revision.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProtocolRevision::V2025_11_25 => MCP_PROTOCOL_VERSION,
+            ProtocolRevision::V2026_07_28 => MCP_PROTOCOL_VERSION_STATELESS,
+        }
+    }
+
+    /// Map a peer-supplied version string to a revision.
+    ///
+    /// Anything other than `2026-07-28` is treated as the legacy revision:
+    /// pre-2026 peers commonly negotiate older date strings (2025-06-18,
+    /// 2025-03-26, 2024-11-05, ...) and the legacy request path handles them
+    /// exactly as before. Only the exact new version string opts a peer into
+    /// stateless semantics.
+    pub fn from_peer_version(version: &str) -> Self {
+        if version == MCP_PROTOCOL_VERSION_STATELESS {
+            ProtocolRevision::V2026_07_28
+        } else {
+            ProtocolRevision::V2025_11_25
+        }
+    }
+
+    /// True when this revision uses the stateless (2026-07-28) semantics.
+    pub fn is_stateless(&self) -> bool {
+        matches!(self, ProtocolRevision::V2026_07_28)
+    }
+
+    /// The JSON-RPC error code for a missing resource under this revision.
+    /// 2026-07-28 aligns with JSON-RPC Invalid Params (-32602); earlier
+    /// revisions use the MCP-custom -32002.
+    pub fn resource_not_found_code(&self) -> i32 {
+        match self {
+            ProtocolRevision::V2025_11_25 => RESOURCE_NOT_FOUND,
+            ProtocolRevision::V2026_07_28 => INVALID_PARAMS,
+        }
+    }
+}
+
+/// Reserved `_meta` keys defined by the 2026-07-28 revision.
+pub mod meta_keys {
+    /// Protocol version the client speaks (every request).
+    pub const PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+    /// Client identity (every request).
+    pub const CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
+    /// Client capabilities (every request).
+    pub const CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+    /// Per-request log level (replaces `logging/setLevel`).
+    pub const LOG_LEVEL: &str = "io.modelcontextprotocol/logLevel";
+    /// Tag on notifications delivered via `subscriptions/listen`.
+    pub const SUBSCRIPTION_ID: &str = "io.modelcontextprotocol/subscriptionId";
+}
+
+/// `resultType` values required on all 2026-07-28 results.
+pub const RESULT_TYPE_COMPLETE: &str = "complete";
+pub const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
+
+/// `cacheScope` values for `CacheableResult` (SEP-2549).
+pub const CACHE_SCOPE_PRIVATE: &str = "private";
+pub const CACHE_SCOPE_PUBLIC: &str = "public";
+
+/// Client metadata carried in `_meta` on every 2026-07-28 request.
+#[derive(Debug, Clone, Default)]
+pub struct RequestClientMeta {
+    /// `io.modelcontextprotocol/protocolVersion`
+    pub protocol_version: Option<String>,
+    /// `io.modelcontextprotocol/clientInfo`
+    pub client_info: Option<Value>,
+    /// `io.modelcontextprotocol/clientCapabilities`
+    pub client_capabilities: Option<Value>,
+    /// `io.modelcontextprotocol/logLevel`
+    pub log_level: Option<String>,
+}
+
+impl RequestClientMeta {
+    /// Extract the reserved client metadata keys from a request's params
+    /// (`params._meta`). Absent or non-object params yield an empty meta.
+    pub fn from_params(params: Option<&Value>) -> Self {
+        let meta = match params.and_then(|p| p.get("_meta")) {
+            Some(Value::Object(m)) => m,
+            _ => return Self::default(),
+        };
+
+        Self {
+            protocol_version: meta
+                .get(meta_keys::PROTOCOL_VERSION)
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            client_info: meta.get(meta_keys::CLIENT_INFO).cloned(),
+            client_capabilities: meta.get(meta_keys::CLIENT_CAPABILITIES).cloned(),
+            log_level: meta
+                .get(meta_keys::LOG_LEVEL)
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        }
+    }
+
+    /// The revision this request was sent under, when declared in `_meta`.
+    pub fn revision(&self) -> Option<ProtocolRevision> {
+        self.protocol_version
+            .as_deref()
+            .map(ProtocolRevision::from_peer_version)
+    }
+}
+
+/// Result of the `server/discover` method (2026-07-28).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerDiscoverResult {
+    /// Protocol versions the server supports, newest first.
+    pub protocol_versions: Vec<String>,
+    /// Server identity.
+    pub server_info: Value,
+    /// Server capabilities.
+    pub capabilities: Value,
+}
+
+/// Tag a result object as `resultType: "complete"` (2026-07-28 requires the
+/// field on every result). Non-object results are left untouched.
+pub fn tag_result_complete(result: &mut Value) {
+    if let Value::Object(map) = result {
+        map.entry("resultType".to_string())
+            .or_insert_with(|| Value::String(RESULT_TYPE_COMPLETE.to_string()));
+    }
+}
+
+/// Attach `CacheableResult` fields (`ttlMs`, `cacheScope`; SEP-2549) to a
+/// result object. Existing values (e.g. forwarded from a backend) win.
+pub fn tag_cacheable(result: &mut Value, ttl_ms: u64, cache_scope: &str) {
+    if let Value::Object(map) = result {
+        map.entry("ttlMs".to_string())
+            .or_insert_with(|| Value::Number(ttl_ms.into()));
+        map.entry("cacheScope".to_string())
+            .or_insert_with(|| Value::String(cache_scope.to_string()));
+    }
+}
 
 impl JsonRpcRequest {
     /// Create a new JSON-RPC request
@@ -1017,5 +1181,139 @@ mod tests {
         assert_eq!(parsed.stop_reason, "tool_calls");
         assert!(parsed.tool_calls.is_some());
         assert_eq!(parsed.tool_calls.unwrap()[0].function.name, "search_code");
+    }
+
+    #[test]
+    fn test_protocol_revision_mapping() {
+        use ProtocolRevision::*;
+
+        assert_eq!(
+            ProtocolRevision::from_peer_version("2026-07-28"),
+            V2026_07_28
+        );
+        // Everything else is legacy, including older negotiated versions
+        assert_eq!(
+            ProtocolRevision::from_peer_version("2025-11-25"),
+            V2025_11_25
+        );
+        assert_eq!(
+            ProtocolRevision::from_peer_version("2025-06-18"),
+            V2025_11_25
+        );
+        assert_eq!(
+            ProtocolRevision::from_peer_version("2024-11-05"),
+            V2025_11_25
+        );
+        assert_eq!(ProtocolRevision::from_peer_version("garbage"), V2025_11_25);
+
+        // Chronological ordering
+        assert!(V2026_07_28 > V2025_11_25);
+
+        // Round trip
+        assert_eq!(
+            ProtocolRevision::from_peer_version(V2026_07_28.as_str()),
+            V2026_07_28
+        );
+        assert!(V2026_07_28.is_stateless());
+        assert!(!V2025_11_25.is_stateless());
+    }
+
+    #[test]
+    fn test_revision_resource_not_found_code() {
+        assert_eq!(
+            ProtocolRevision::V2025_11_25.resource_not_found_code(),
+            RESOURCE_NOT_FOUND
+        );
+        assert_eq!(
+            ProtocolRevision::V2026_07_28.resource_not_found_code(),
+            INVALID_PARAMS
+        );
+    }
+
+    #[test]
+    fn test_request_client_meta_extraction() {
+        let params = serde_json::json!({
+            "name": "some_tool",
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": { "name": "test-client", "version": "1.0" },
+                "io.modelcontextprotocol/clientCapabilities": { "elicitation": {} },
+                "io.modelcontextprotocol/logLevel": "debug"
+            }
+        });
+
+        let meta = RequestClientMeta::from_params(Some(&params));
+        assert_eq!(meta.protocol_version.as_deref(), Some("2026-07-28"));
+        assert_eq!(meta.revision(), Some(ProtocolRevision::V2026_07_28));
+        assert_eq!(
+            meta.client_info
+                .as_ref()
+                .and_then(|c| c.get("name"))
+                .and_then(|v| v.as_str()),
+            Some("test-client")
+        );
+        assert!(meta.client_capabilities.is_some());
+        assert_eq!(meta.log_level.as_deref(), Some("debug"));
+    }
+
+    #[test]
+    fn test_request_client_meta_absent() {
+        let meta = RequestClientMeta::from_params(None);
+        assert!(meta.protocol_version.is_none());
+        assert!(meta.revision().is_none());
+
+        let no_meta = serde_json::json!({ "name": "tool" });
+        let meta = RequestClientMeta::from_params(Some(&no_meta));
+        assert!(meta.protocol_version.is_none());
+        assert!(meta.client_info.is_none());
+    }
+
+    #[test]
+    fn test_tag_result_complete() {
+        let mut result = serde_json::json!({ "tools": [] });
+        tag_result_complete(&mut result);
+        assert_eq!(result["resultType"], "complete");
+
+        // Existing resultType (e.g. input_required from a backend) wins
+        let mut result = serde_json::json!({ "resultType": "input_required" });
+        tag_result_complete(&mut result);
+        assert_eq!(result["resultType"], "input_required");
+
+        // Non-object results untouched
+        let mut result = serde_json::json!("plain");
+        tag_result_complete(&mut result);
+        assert_eq!(result, "plain");
+    }
+
+    #[test]
+    fn test_tag_cacheable() {
+        let mut result = serde_json::json!({ "tools": [] });
+        tag_cacheable(&mut result, 60_000, CACHE_SCOPE_PRIVATE);
+        assert_eq!(result["ttlMs"], 60_000);
+        assert_eq!(result["cacheScope"], "private");
+
+        // Backend-provided values win
+        let mut result = serde_json::json!({ "ttlMs": 5, "cacheScope": "public" });
+        tag_cacheable(&mut result, 60_000, CACHE_SCOPE_PRIVATE);
+        assert_eq!(result["ttlMs"], 5);
+        assert_eq!(result["cacheScope"], "public");
+    }
+
+    #[test]
+    fn test_server_discover_result_serialization() {
+        let result = ServerDiscoverResult {
+            protocol_versions: SUPPORTED_PROTOCOL_VERSIONS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            server_info: serde_json::json!({ "name": "localrouter", "version": "0.0.1" }),
+            capabilities: serde_json::json!({ "tools": { "listChanged": true } }),
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["protocolVersions"][0], "2026-07-28");
+        assert_eq!(json["protocolVersions"][1], "2025-11-25");
+        assert_eq!(json["serverInfo"]["name"], "localrouter");
+        assert!(json["capabilities"]["tools"].is_object());
     }
 }
