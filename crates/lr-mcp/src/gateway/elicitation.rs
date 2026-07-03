@@ -24,6 +24,10 @@ pub struct ElicitationSession {
     /// Backend MCP server ID that initiated the request
     pub server_id: String,
 
+    /// Gateway session key of the downstream client whose request triggered
+    /// this elicitation (used to route MRTR input_required results).
+    pub session_key: Option<String>,
+
     /// Message to display to user
     pub message: String,
 
@@ -92,6 +96,20 @@ impl ElicitationManager {
         request: ElicitationRequest,
         timeout_secs: Option<u64>,
     ) -> AppResult<ElicitationResponse> {
+        self.request_input_for_session(server_id, None, request, timeout_secs)
+            .await
+    }
+
+    /// Like [`request_input`], but records which gateway session triggered
+    /// the elicitation so stateless (2026-07-28) clients can be served the
+    /// request via the MRTR `input_required` pattern.
+    pub async fn request_input_for_session(
+        &self,
+        server_id: String,
+        session_key: Option<String>,
+        request: ElicitationRequest,
+        timeout_secs: Option<u64>,
+    ) -> AppResult<ElicitationResponse> {
         let request_id = Uuid::new_v4().to_string();
         let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
 
@@ -107,6 +125,7 @@ impl ElicitationManager {
         let session = ElicitationSession {
             request_id: request_id.clone(),
             server_id: server_id.clone(),
+            session_key: session_key.clone(),
             message: request.message.clone(),
             schema: request.schema.clone(),
             created_at: Instant::now(),
@@ -130,6 +149,7 @@ impl ElicitationManager {
                 params: Some(json!({
                     "request_id": request_id,
                     "server_id": server_id,
+                    "session_key": session_key,
                     "message": request.message,
                     "schema": request.schema,
                     "timeout_seconds": timeout,
@@ -305,6 +325,29 @@ impl ElicitationManager {
             .collect()
     }
 
+    /// Pending elicitations that were triggered by requests from a specific
+    /// gateway session (used by the MRTR input_required flow).
+    pub fn pending_for_session(&self, session_key: &str) -> Vec<ElicitationDetails> {
+        self.pending
+            .iter()
+            .filter(|entry| {
+                entry.value().session_key.as_deref() == Some(session_key)
+                    && !entry.value().is_expired()
+            })
+            .map(|entry| {
+                let session = entry.value();
+                ElicitationDetails {
+                    request_id: session.request_id.clone(),
+                    server_id: session.server_id.clone(),
+                    message: session.message.clone(),
+                    schema: session.schema.clone(),
+                    timeout_seconds: session.timeout_seconds,
+                    created_at_secs_ago: session.created_at.elapsed().as_secs(),
+                }
+            })
+            .collect()
+    }
+
     /// Clean up expired sessions
     pub fn cleanup_expired(&self) {
         let expired: Vec<String> = self
@@ -375,6 +418,7 @@ mod tests {
         let session = ElicitationSession {
             request_id: "test-123".to_string(),
             server_id: "server-1".to_string(),
+            session_key: None,
             message: "Test message".to_string(),
             schema: json!({"type": "object"}),
             created_at: Instant::now() - Duration::from_secs(150),
@@ -390,6 +434,7 @@ mod tests {
         let session = ElicitationSession {
             request_id: "test-123".to_string(),
             server_id: "server-1".to_string(),
+            session_key: None,
             message: "Test message".to_string(),
             schema: json!({"type": "object"}),
             created_at: Instant::now(),
@@ -562,6 +607,48 @@ mod tests {
             let result = handle.await.unwrap().unwrap();
             assert_eq!(result.data, json!({"free": "form"}));
         }
+    }
+
+    #[tokio::test]
+    async fn test_pending_for_session() {
+        let manager = ElicitationManager::new(120);
+
+        let manager_clone = manager.clone();
+        let handle = tokio::spawn(async move {
+            manager_clone
+                .request_input_for_session(
+                    "server-1".to_string(),
+                    Some("session-abc".to_string()),
+                    ElicitationRequest {
+                        message: "Need input".to_string(),
+                        schema: json!({"type": "object"}),
+                    },
+                    None,
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Matching session sees the pending elicitation
+        let pending = manager.pending_for_session("session-abc");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].message, "Need input");
+
+        // Other sessions see nothing
+        assert!(manager.pending_for_session("other-session").is_empty());
+        // Legacy elicitations (no session) are invisible to session queries
+        let request_id = pending[0].request_id.clone();
+
+        manager
+            .submit_response(
+                &request_id,
+                ElicitationResponse {
+                    data: json!({"ok": true}),
+                },
+            )
+            .unwrap();
+        assert!(manager.pending_for_session("session-abc").is_empty());
+        let _ = handle.await;
     }
 
     #[tokio::test]

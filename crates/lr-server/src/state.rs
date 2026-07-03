@@ -43,6 +43,55 @@ pub enum SseMessage {
     Endpoint { endpoint: String },
 }
 
+/// A stateless (2026-07-28) client's in-flight gateway request that returned
+/// `resultType: "input_required"` and awaits the client's retry carrying
+/// `inputResponses` (MRTR, SEP-2322).
+pub struct ParkedMrtrCall {
+    /// The still-running gateway request task.
+    pub task: tokio::task::JoinHandle<lr_types::AppResult<JsonRpcResponse>>,
+    /// The downstream client that owns this parked call.
+    pub client_id: String,
+    /// When the call was parked.
+    pub parked_at: std::time::Instant,
+}
+
+/// Parked MRTR calls keyed by the opaque `requestState` handed to the client.
+#[derive(Default)]
+pub struct MrtrManager {
+    pending: DashMap<String, ParkedMrtrCall>,
+}
+
+impl MrtrManager {
+    /// Calls parked longer than this are dropped; the underlying task keeps
+    /// running to completion on its own (elicitation timeouts unblock it),
+    /// only the handle is discarded.
+    const MAX_PARK: std::time::Duration = std::time::Duration::from_secs(600);
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Park an in-flight call under the given request state id.
+    pub fn park(&self, state_id: String, call: ParkedMrtrCall) {
+        self.sweep();
+        self.pending.insert(state_id, call);
+    }
+
+    /// Take a parked call for resumption. The call is only released to the
+    /// client that parked it.
+    pub fn resume(&self, state_id: &str, client_id: &str) -> Option<ParkedMrtrCall> {
+        self.sweep();
+        self.pending
+            .remove_if(state_id, |_, call| call.client_id == client_id)
+            .map(|(_, call)| call)
+    }
+
+    fn sweep(&self) {
+        self.pending
+            .retain(|_, call| call.parked_at.elapsed() < Self::MAX_PARK);
+    }
+}
+
 /// Manages active SSE connections for MCP clients
 ///
 /// Each client can have one active SSE connection. When a client sends
@@ -768,6 +817,10 @@ pub struct AppState {
     /// Tracks active SSE connections and routes responses to the correct stream
     pub sse_connection_manager: Arc<SseConnectionManager>,
 
+    /// Parked MRTR calls for stateless (2026-07-28) MCP clients
+    /// (in-flight gateway requests that returned input_required, SEP-2322)
+    pub mrtr_manager: Arc<MrtrManager>,
+
     /// Track which MCP servers have notification handlers registered (to prevent duplicates)
     pub mcp_notification_handlers_registered: Arc<DashMap<String, bool>>,
 
@@ -898,6 +951,7 @@ impl AppState {
             mcp_notification_broadcast: notification_broadcast.clone(),
             client_notification_broadcast: Arc::new(client_notification_tx),
             sse_connection_manager: Arc::new(SseConnectionManager::new()),
+            mrtr_manager: Arc::new(MrtrManager::new()),
             mcp_notification_handlers_registered: Arc::new(DashMap::new()),
             health_cache: health_cache.unwrap_or_else(|| Arc::new(HealthCacheManager::new())),
             model_approval_tracker: Arc::new(ModelApprovalTracker::new()),
@@ -1535,5 +1589,51 @@ mod tests {
         assert!(tracker.has_valid_approval("client-1", "openai", "gpt-4"));
         assert!(!tracker.has_valid_approval("client-1", "openai", "gpt-3.5"));
         assert!(!tracker.has_valid_approval("client-2", "openai", "gpt-4"));
+    }
+
+    fn parked_call(client_id: &str) -> ParkedMrtrCall {
+        ParkedMrtrCall {
+            task: tokio::spawn(async {
+                Ok(JsonRpcResponse::success(
+                    serde_json::Value::Null,
+                    serde_json::json!({}),
+                ))
+            }),
+            client_id: client_id.to_string(),
+            parked_at: std::time::Instant::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mrtr_park_and_resume() {
+        let manager = MrtrManager::new();
+        manager.park("state-1".to_string(), parked_call("client-a"));
+
+        // Wrong client must not be able to resume someone else's call
+        assert!(manager.resume("state-1", "client-b").is_none());
+        // ...and the failed attempt must not consume the parked call
+        let resumed = manager.resume("state-1", "client-a");
+        assert!(resumed.is_some());
+        // Resume is take-once
+        assert!(manager.resume("state-1", "client-a").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mrtr_unknown_state() {
+        let manager = MrtrManager::new();
+        assert!(manager.resume("nope", "client-a").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mrtr_expired_calls_swept() {
+        let manager = MrtrManager::new();
+        let mut call = parked_call("client-a");
+        call.parked_at = std::time::Instant::now() - MrtrManager::MAX_PARK * 2;
+        manager.park("old".to_string(), call);
+
+        // Any subsequent operation sweeps expired entries
+        manager.park("fresh".to_string(), parked_call("client-a"));
+        assert!(manager.resume("old", "client-a").is_none());
+        assert!(manager.resume("fresh", "client-a").is_some());
     }
 }

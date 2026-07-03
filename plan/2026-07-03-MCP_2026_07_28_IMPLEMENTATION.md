@@ -22,7 +22,14 @@ Tracked in the session task list (tasks below) and by per-phase commits.
   + HTTP headers), B4 (extensions passthrough), B5 (backend discover
   probe + upstream stateless), B6 (per-revision method sets/error codes)
 - C1 (`feat(server)`): subscriptions/listen stream
-- **C2 (MRTR) is the remaining item.** Design sketch: when a stateless
+- **C2 (MRTR) landed 2026-07-03** for elicitation in both directions
+  (`feat(mcp)` MRTR commit). Scope decision: MRTR covers *elicitation*
+  input requests only — sampling is Deprecated in 2026-07-28 (its
+  replacement is direct LLM API integration, i.e. LocalRouter itself),
+  so no sampling input-request bridging was built; passthrough sampling
+  toward stateless clients falls back to Direct/local-approval modes as
+  before. Firewall Ask remains a local desktop-UI interaction (it is
+  not client-directed input). Original design sketch: when a stateless
   downstream client's tools/call triggers a backend elicitation /
   passthrough-sampling / firewall Ask, the gateway cannot push over SSE.
   Instead: run the backend call as a task; when a server-initiated

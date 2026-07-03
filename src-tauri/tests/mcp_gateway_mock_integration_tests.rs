@@ -2645,3 +2645,155 @@ async fn test_resource_not_found_code_depends_on_revision() {
         .unwrap();
     assert_eq!(response.error.expect("missing resource").code, -32602);
 }
+
+#[tokio::test]
+async fn test_upstream_mrtr_elicitation_roundtrip() {
+    use wiremock::matchers::body_string_contains;
+
+    let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
+
+    // server1 is a stateless (2026-07-28) backend
+    server1_mock
+        .mock_method(
+            "server/discover",
+            json!({
+                "protocolVersions": ["2026-07-28"],
+                "serverInfo": { "name": "Stateless One", "version": "2.0" },
+                "capabilities": { "tools": { "listChanged": true } }
+            }),
+        )
+        .await;
+    server1_mock
+        .mock_method(
+            "tools/list",
+            json!({
+                "tools": [{"name": "ask_tool", "description": "asks", "inputSchema": {"type": "object"}}]
+            }),
+        )
+        .await;
+    server2_mock
+        .mock_method("tools/list", json!({ "tools": [] }))
+        .await;
+
+    // tools/call retry (carrying inputResponses) succeeds — higher priority
+    let retry_response = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "resultType": "complete",
+            "content": [{"type": "text", "text": "answered: 42"}]
+        }
+    });
+    Mock::given(http_method("POST"))
+        .and(json_rpc_method("tools/call"))
+        .and(body_string_contains("inputResponses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!(
+                    "data: {}\n\n",
+                    serde_json::to_string(&retry_response).unwrap()
+                ))
+                .insert_header("content-type", "text/event-stream"),
+        )
+        .with_priority(1)
+        .mount(&server1_mock.server)
+        .await;
+
+    // First tools/call answers with input_required (MRTR)
+    let input_required_response = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "resultType": "input_required",
+            "requestState": "backend-state-7",
+            "inputRequests": [{
+                "id": "inp-1",
+                "method": "elicitation/create",
+                "params": { "message": "Need a value", "requestedSchema": {"type": "object"} }
+            }]
+        }
+    });
+    Mock::given(http_method("POST"))
+        .and(json_rpc_method("tools/call"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!(
+                    "data: {}\n\n",
+                    serde_json::to_string(&input_required_response).unwrap()
+                ))
+                .insert_header("content-type", "text/event-stream"),
+        )
+        .with_priority(5)
+        .mount(&server1_mock.server)
+        .await;
+
+    let allowed = vec!["server1".to_string(), "server2".to_string()];
+    init_session(&gateway, "mrtr-client", allowed.clone()).await;
+
+    // Populate the tool mapping
+    let list = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
+    let _ = gateway
+        .handle_request("mrtr-client", allowed.clone(), vec![], list)
+        .await
+        .unwrap();
+
+    // Call the tool in a background task: it will block on the elicitation
+    let gateway_clone = gateway.clone();
+    let allowed_clone = allowed.clone();
+    let call_task = tokio::spawn(async move {
+        let call = JsonRpcRequest::new(
+            Some(json!(2)),
+            "tools/call".to_string(),
+            Some(json!({ "name": "test-server-1__ask_tool", "arguments": {} })),
+        );
+        gateway_clone
+            .handle_request("mrtr-client", allowed_clone, vec![], call)
+            .await
+    });
+
+    // The gateway should surface the backend's input request as a pending
+    // elicitation; answer it like the desktop UI would.
+    let elicitation_mgr = gateway.get_elicitation_manager();
+    let mut pending_id = None;
+    for _ in 0..50 {
+        let pending = elicitation_mgr.list_pending();
+        if let Some(id) = pending.first() {
+            pending_id = Some(id.clone());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let pending_id = pending_id.expect("backend input request became a pending elicitation");
+    elicitation_mgr
+        .submit_response(
+            &pending_id,
+            localrouter::mcp::protocol::ElicitationResponse {
+                data: json!({"value": 42}),
+            },
+        )
+        .unwrap();
+
+    // The original call resolves with the backend's final result
+    let response = call_task.await.unwrap().unwrap();
+    assert!(response.error.is_none(), "{:?}", response.error);
+    let result = extract_result(&response);
+    assert_eq!(result["content"][0]["text"], "answered: 42");
+
+    // The retry to the backend carried the responses and echoed state
+    let reqs = server1_mock.server.received_requests().await.unwrap();
+    let retry = reqs
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<serde_json::Value>(&r.body).ok())
+        .find(|b| b["method"] == "tools/call" && b["params"].get("inputResponses").is_some())
+        .expect("backend received MRTR retry");
+    assert_eq!(retry["params"]["requestState"], "backend-state-7");
+    assert_eq!(retry["params"]["inputResponses"][0]["id"], "inp-1");
+    assert_eq!(
+        retry["params"]["inputResponses"][0]["response"]["action"],
+        "accept"
+    );
+    assert_eq!(
+        retry["params"]["inputResponses"][0]["response"]["content"]["value"],
+        42
+    );
+}

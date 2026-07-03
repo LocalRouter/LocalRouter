@@ -1221,18 +1221,18 @@ impl McpGateway {
                                         } else {
                                             tracing::warn!("No SSE connection for client - falling back to Direct elicitation");
                                             Self::handle_elicitation_direct(
-                                                &elicitation_mgr, server_id, request.params, request_id
+                                                &elicitation_mgr, server_id, Some(session_key.clone()), request.params, request_id
                                             ).await
                                         }
                                     } else {
                                         Self::handle_elicitation_direct(
-                                            &elicitation_mgr, server_id, request.params, request_id
+                                            &elicitation_mgr, server_id, Some(session_key.clone()), request.params, request_id
                                         ).await
                                     }
                                 }
                                 lr_config::ElicitationMode::Direct => {
                                     Self::handle_elicitation_direct(
-                                        &elicitation_mgr, server_id, request.params, request_id
+                                        &elicitation_mgr, server_id, Some(session_key.clone()), request.params, request_id
                                     ).await
                                 }
                                 lr_config::ElicitationMode::Off => {
@@ -1550,6 +1550,7 @@ impl McpGateway {
     async fn handle_elicitation_direct(
         elicitation_mgr: &super::elicitation::ElicitationManager,
         server_id: String,
+        session_key: Option<String>,
         params: Option<Value>,
         request_id: Value,
     ) -> JsonRpcResponse {
@@ -1568,7 +1569,7 @@ impl McpGateway {
         let elicitation_req = crate::protocol::ElicitationRequest { message, schema };
 
         match elicitation_mgr
-            .request_input(server_id, elicitation_req, None)
+            .request_input_for_session(server_id, session_key, elicitation_req, None)
             .await
         {
             Ok(response) => {

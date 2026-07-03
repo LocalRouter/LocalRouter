@@ -31,6 +31,121 @@ pub enum FirewallDecisionResult {
 }
 
 impl McpGateway {
+    /// Send a tool call to a backend, resolving MRTR `input_required`
+    /// rounds (2026-07-28, SEP-2322) via the elicitation manager.
+    ///
+    /// Legacy backends return plain results and take the fast path
+    /// unchanged. Only elicitation input requests are supported — sampling
+    /// is deprecated in 2026-07-28 and never had an input-request shape
+    /// LocalRouter forwards. At most three input rounds are resolved.
+    pub(crate) async fn send_tool_call_with_mrtr(
+        &self,
+        transports: &Arc<SessionTransportSet>,
+        server_id: &str,
+        mut request: JsonRpcRequest,
+        session_key: &str,
+    ) -> AppResult<JsonRpcResponse> {
+        const MAX_INPUT_ROUNDS: usize = 3;
+
+        for _round in 0..=MAX_INPUT_ROUNDS {
+            let response = transports.send_request(server_id, request.clone()).await?;
+
+            let Some(result) = response.result.as_ref() else {
+                return Ok(response);
+            };
+            if result.get("resultType").and_then(|v| v.as_str())
+                != Some(crate::protocol::RESULT_TYPE_INPUT_REQUIRED)
+            {
+                return Ok(response);
+            }
+
+            let request_state = result.get("requestState").cloned();
+            let input_requests = result
+                .get("inputRequests")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if input_requests.is_empty() {
+                return Err(AppError::Mcp(format!(
+                    "Backend {} returned input_required without inputRequests",
+                    server_id
+                )));
+            }
+
+            tracing::info!(
+                "Backend {} requires input ({} request(s)); resolving via elicitation",
+                server_id,
+                input_requests.len()
+            );
+
+            let mut input_responses = Vec::new();
+            for input_request in &input_requests {
+                let id = input_request.get("id").cloned().unwrap_or(Value::Null);
+                let method = input_request
+                    .get("method")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("elicitation/create");
+                let params = input_request
+                    .get("params")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+
+                if !method.starts_with("elicitation/") {
+                    return Err(AppError::Mcp(format!(
+                        "Backend {} requested unsupported input kind '{}' \
+                         (only elicitation is supported; sampling is deprecated in 2026-07-28)",
+                        server_id, method
+                    )));
+                }
+
+                let message = params
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Server requests input")
+                    .to_string();
+                let schema = params
+                    .get("requestedSchema")
+                    .or_else(|| params.get("schema"))
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+
+                let answer = self
+                    .elicitation_manager
+                    .request_input_for_session(
+                        server_id.to_string(),
+                        Some(session_key.to_string()),
+                        crate::protocol::ElicitationRequest { message, schema },
+                        None,
+                    )
+                    .await;
+
+                let response_value = match answer {
+                    Ok(resp) => json!({ "action": "accept", "content": resp.data }),
+                    Err(e) => {
+                        tracing::warn!("MRTR elicitation for backend {} failed: {}", server_id, e);
+                        json!({ "action": "decline" })
+                    }
+                };
+                input_responses.push(json!({ "id": id, "response": response_value }));
+            }
+
+            // Retry the original call carrying the collected responses and
+            // the echoed request state.
+            let params = request.params.get_or_insert_with(|| json!({}));
+            if let Some(obj) = params.as_object_mut() {
+                obj.insert("inputResponses".to_string(), Value::Array(input_responses));
+                if let Some(state) = &request_state {
+                    obj.insert("requestState".to_string(), state.clone());
+                }
+            }
+        }
+
+        Err(AppError::Mcp(format!(
+            "Backend {} still required input after {} MRTR rounds",
+            server_id, MAX_INPUT_ROUNDS
+        )))
+    }
+
     /// Handle tools/list request
     pub(crate) async fn handle_tools_list(
         &self,
@@ -412,9 +527,17 @@ impl McpGateway {
                 .insert(request_id_str.clone(), server_id.clone());
         }
 
-        // Route to server
-        let result = transports
-            .send_request(&server_id, transformed_request)
+        // Route to server. Stateless (2026-07-28) backends may answer with
+        // resultType: "input_required" (MRTR, SEP-2322); those rounds are
+        // resolved through the elicitation manager before returning.
+        let session_key_for_mrtr = { session.read().await.session_key.clone() };
+        let result = self
+            .send_tool_call_with_mrtr(
+                &transports,
+                &server_id,
+                transformed_request,
+                &session_key_for_mrtr,
+            )
             .await;
 
         // Remove from pending requests

@@ -1085,6 +1085,28 @@ pub async fn mcp_gateway_handler(
 
         (axum::http::StatusCode::ACCEPTED, "").into_response()
     } else {
+        // Detect stateless (2026-07-28) peers by header or body _meta
+        let stateless_peer = stateless_transport
+            || lr_mcp::protocol::RequestClientMeta::from_params(request.params.as_ref())
+                .revision()
+                .is_some_and(|r| r.is_stateless());
+
+        if stateless_peer {
+            // Stateless peer without an SSE push channel: run with MRTR
+            // support — a backend elicitation that needs this client's input
+            // parks the call and returns input_required (SEP-2322).
+            return run_stateless_with_mrtr(
+                state,
+                client_id,
+                client,
+                session_id,
+                allowed_servers,
+                roots,
+                request,
+            )
+            .await;
+        }
+
         // No SSE connection — process synchronously and return response in body
         match state
             .mcp_gateway
@@ -1112,24 +1134,268 @@ pub async fn mcp_gateway_handler(
             )
             .await
         {
-            Ok(response) => {
-                let mut http_response =
-                    send_response(&state.sse_connection_manager, &connection_key, response);
-                // Echo the negotiated protocol version to stateless peers
-                if stateless_transport {
-                    if let Ok(value) = axum::http::HeaderValue::from_str(
-                        lr_mcp::protocol::MCP_PROTOCOL_VERSION_STATELESS,
-                    ) {
-                        http_response
-                            .headers_mut()
-                            .insert("mcp-protocol-version", value);
-                    }
-                }
-                http_response
-            }
+            Ok(response) => send_response(&state.sse_connection_manager, &connection_key, response),
             Err(err) => {
                 tracing::error!("Gateway error for client {}: {}", client_id, err);
                 ApiErrorResponse::internal_error(format!("Gateway error: {}", err)).into_response()
+            }
+        }
+    }
+}
+
+/// Build a JSON HTTP response for a stateless (2026-07-28) peer, echoing the
+/// negotiated protocol version header.
+fn stateless_json_response(response: JsonRpcResponse) -> Response {
+    let mut http_response = Json(response).into_response();
+    if let Ok(value) =
+        axum::http::HeaderValue::from_str(lr_mcp::protocol::MCP_PROTOCOL_VERSION_STATELESS)
+    {
+        http_response
+            .headers_mut()
+            .insert("mcp-protocol-version", value);
+    }
+    http_response
+}
+
+/// Run a stateless (2026-07-28) peer's request with MRTR support (SEP-2322).
+///
+/// The gateway call runs as a task. If a backend elicitation directed at
+/// this client fires while the call is in flight, the task is parked in the
+/// [`MrtrManager`] and the client receives `resultType: "input_required"`
+/// with the pending input requests and an opaque `requestState`. The client
+/// retries the call carrying `inputResponses` + `requestState`; the parked
+/// task is resumed after the responses are submitted (schema-validated)
+/// through the elicitation manager.
+#[allow(clippy::too_many_arguments)]
+async fn run_stateless_with_mrtr(
+    state: AppState,
+    client_id: String,
+    client: lr_config::Client,
+    session_id: Option<String>,
+    allowed_servers: Vec<String>,
+    roots: Vec<Root>,
+    request: JsonRpcRequest,
+) -> Response {
+    let elicitation_mgr = state.mcp_gateway.get_elicitation_manager();
+    // Gateway session key: per-connection id when present, else the client id
+    let session_key = session_id.clone().unwrap_or_else(|| client_id.clone());
+    let request_id = request.id.clone().unwrap_or(serde_json::Value::Null);
+
+    let resume_state = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("requestState"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let mut task = if let Some(state_id) = resume_state {
+        // Retry of a parked call: submit the provided input responses, then
+        // keep waiting on the original task.
+        let Some(parked) = state.mrtr_manager.resume(&state_id, &client_id) else {
+            return stateless_json_response(JsonRpcResponse::error(
+                request_id,
+                lr_mcp::protocol::JsonRpcError::invalid_params(format!(
+                    "Unknown or expired requestState: {}",
+                    state_id
+                )),
+            ));
+        };
+
+        let responses = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("inputResponses"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        for entry in &responses {
+            let Some(id) = entry.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let response_value = entry
+                .get("response")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+
+            // Client answers use the MCP elicitation result shape
+            // { action, content }: accept submits the (schema-validated)
+            // content; decline/cancel cancels the pending elicitation.
+            let action = response_value
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("accept");
+            let outcome = if action == "accept" {
+                let data = response_value
+                    .get("content")
+                    .cloned()
+                    .unwrap_or_else(|| response_value.clone());
+                elicitation_mgr.submit_response(id, lr_mcp::protocol::ElicitationResponse { data })
+            } else {
+                elicitation_mgr.cancel_request(id)
+            };
+
+            if let Err(e) = outcome {
+                // Keep the call parked (same requestState) so the client can
+                // retry with corrected input.
+                state.mrtr_manager.park(state_id.clone(), parked);
+                return stateless_json_response(JsonRpcResponse::error(
+                    request_id,
+                    lr_mcp::protocol::JsonRpcError::invalid_params(format!(
+                        "inputResponse for {} rejected: {}",
+                        id, e
+                    )),
+                ));
+            }
+        }
+
+        parked.task
+    } else {
+        // Fresh request: run the gateway call as a task we can park
+        let gateway = state.mcp_gateway.clone();
+        let client_for_task = client.clone();
+        let client_id_for_task = client_id.clone();
+        let session_id_for_task = session_id.clone();
+        tokio::spawn(async move {
+            gateway
+                .handle_request_with_skills(
+                    &client_id_for_task,
+                    session_id_for_task.as_deref(),
+                    allowed_servers,
+                    roots,
+                    client_for_task.mcp_permissions.clone(),
+                    client_for_task.skills_permissions.clone(),
+                    client_for_task.name.clone(),
+                    client_for_task.marketplace_permission.clone(),
+                    client_for_task.coding_agent_permission.clone(),
+                    client_for_task.coding_agent_type,
+                    Some(lr_config::ContextManagementOverrides {
+                        context_management_enabled: client_for_task.context_management_enabled,
+                        catalog_compression_enabled: client_for_task.catalog_compression_enabled,
+                    }),
+                    client_for_task.mcp_sampling_permission.clone(),
+                    client_for_task.mcp_elicitation_permission.clone(),
+                    client_for_task.memory_enabled,
+                    client_for_task.client_mode.clone(),
+                    request,
+                    None, // monitor_session_id
+                )
+                .await
+        })
+    };
+
+    // Race the in-flight task against elicitations directed at this session
+    let mut events = state.mcp_notification_broadcast.subscribe();
+    loop {
+        // Catch up on elicitations that fired before (or while) we listened
+        let pending = elicitation_mgr.pending_for_session(&session_key);
+        if !pending.is_empty() {
+            let state_id = Uuid::new_v4().to_string();
+            let input_requests: Vec<serde_json::Value> = pending
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "id": d.request_id,
+                        "method": "elicitation/create",
+                        "params": {
+                            "message": d.message,
+                            "requestedSchema": d.schema,
+                        },
+                    })
+                })
+                .collect();
+
+            tracing::info!(
+                "Parking stateless request for client {} ({} pending input(s), requestState={})",
+                &client_id[..8.min(client_id.len())],
+                input_requests.len(),
+                &state_id[..8]
+            );
+            state.mrtr_manager.park(
+                state_id.clone(),
+                crate::state::ParkedMrtrCall {
+                    task,
+                    client_id: client_id.clone(),
+                    parked_at: std::time::Instant::now(),
+                },
+            );
+
+            return stateless_json_response(JsonRpcResponse::success(
+                request_id,
+                serde_json::json!({
+                    "resultType": lr_mcp::protocol::RESULT_TYPE_INPUT_REQUIRED,
+                    "requestState": state_id,
+                    "inputRequests": input_requests,
+                }),
+            ));
+        }
+
+        tokio::select! {
+            res = &mut task => {
+                let response = match res {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(err)) => {
+                        tracing::error!("Gateway error for client {}: {}", client_id, err);
+                        JsonRpcResponse::error(
+                            request_id.clone(),
+                            lr_mcp::protocol::JsonRpcError::internal_error(format!(
+                                "Gateway error: {}",
+                                err
+                            )),
+                        )
+                    }
+                    Err(join_err) => JsonRpcResponse::error(
+                        request_id.clone(),
+                        lr_mcp::protocol::JsonRpcError::internal_error(format!(
+                            "Gateway task failed: {}",
+                            join_err
+                        )),
+                    ),
+                };
+                return stateless_json_response(response);
+            }
+            event = events.recv() => {
+                match event {
+                    Ok((source, notification)) => {
+                        let for_this_session = source == "_elicitation"
+                            && notification
+                                .params
+                                .as_ref()
+                                .and_then(|p| p.get("session_key"))
+                                .and_then(|v| v.as_str())
+                                == Some(session_key.as_str());
+                        if for_this_session {
+                            // Loop re-reads pending_for_session
+                            continue;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Missed events; the pending re-check at loop top
+                        // covers anything we lost.
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // Shutdown path: just wait for the task itself.
+                        let response = match (&mut task).await {
+                            Ok(Ok(response)) => response,
+                            Ok(Err(err)) => JsonRpcResponse::error(
+                                request_id.clone(),
+                                lr_mcp::protocol::JsonRpcError::internal_error(format!(
+                                    "Gateway error: {}",
+                                    err
+                                )),
+                            ),
+                            Err(join_err) => JsonRpcResponse::error(
+                                request_id.clone(),
+                                lr_mcp::protocol::JsonRpcError::internal_error(format!(
+                                    "Gateway task failed: {}",
+                                    join_err
+                                )),
+                            ),
+                        };
+                        return stateless_json_response(response);
+                    }
+                }
             }
         }
     }
