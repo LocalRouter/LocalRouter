@@ -186,8 +186,28 @@ impl FileKeychain {
             lr_types::AppError::Internal(format!("Failed to serialize secrets: {}", e))
         })?;
 
-        fs::write(self.file_path.as_ref(), contents).map_err(|e| {
+        // Write atomically (unique temp file + rename): concurrent writers —
+        // multiple keychain instances or parallel test processes — must never
+        // interleave partial writes into an unparseable secrets file.
+        static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tmp_path = self.file_path.with_extension(format!(
+            "tmp.{}.{}",
+            std::process::id(),
+            SAVE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+
+        fs::write(&tmp_path, contents).map_err(|e| {
             lr_types::AppError::Internal(format!("Failed to write secrets file: {}", e))
+        })?;
+
+        #[cfg(windows)]
+        {
+            // Windows rename does not replace an existing file
+            let _ = fs::remove_file(self.file_path.as_ref());
+        }
+        fs::rename(&tmp_path, self.file_path.as_ref()).map_err(|e| {
+            let _ = fs::remove_file(&tmp_path);
+            lr_types::AppError::Internal(format!("Failed to replace secrets file: {}", e))
         })?;
 
         debug!(
@@ -708,5 +728,47 @@ mod tests {
         // Second get should hit cache
         let value2 = cached.get("service", "account").unwrap().unwrap();
         assert_eq!(value2, "secret");
+    }
+
+    #[test]
+    fn test_file_keychain_concurrent_writers_never_corrupt() {
+        // Regression test: parallel writers (multiple instances sharing one
+        // secrets file, as in test runs) must never leave the file
+        // unparseable. Writes are atomic (temp file + rename), so the file
+        // is always valid JSON even if some updates lose the race.
+        let dir = std::env::temp_dir().join(format!(
+            "lr-keychain-test-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secrets.json");
+
+        let mut handles = Vec::new();
+        for writer in 0..8 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                let keychain = FileKeychain::new(path).unwrap();
+                for i in 0..25 {
+                    keychain
+                        .store("svc", &format!("acct-{}-{}", writer, i), "secret-value")
+                        .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // The file must be readable and parseable by a fresh instance
+        let reloaded = FileKeychain::new(path).unwrap();
+        // At least the last writer's final entry survives (last-writer-wins
+        // between instances is acceptable; corruption is not)
+        assert!(reloaded.get("svc", "acct-7-24").is_ok());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

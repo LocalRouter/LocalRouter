@@ -697,7 +697,8 @@ impl McpOAuthManager {
         oauth_config: &McpOAuthConfig,
     ) -> AppResult<String> {
         // Never reuse credentials with a different authorization server
-        self.enforce_issuer_binding(server_id, &oauth_config.token_url);
+        // (read-only on the hot path; the issuer is recorded on acquisition)
+        self.check_issuer_binding(server_id, &oauth_config.token_url);
 
         // Check cache first
         if let Some(token) = self.get_cached_token(server_id).await {
@@ -786,6 +787,16 @@ impl McpOAuthManager {
                 .ok(); // Ignore errors for refresh token
         }
 
+        // Bind the new credentials to the authorization server that issued
+        // them (adopt-write happens here, alongside the token writes).
+        self.keychain
+            .store(
+                MCP_OAUTH_SERVICE,
+                &format!("{}_issuer", server_id),
+                &oauth_config.token_url,
+            )
+            .ok();
+
         tracing::info!("OAuth token acquired successfully for: {}", server_id);
 
         Ok(token_response.access_token)
@@ -840,7 +851,7 @@ impl McpOAuthManager {
 
         // Never send a refresh token to a different authorization server
         // than the one that issued it.
-        self.enforce_issuer_binding(server_id, &oauth_config.token_url);
+        self.check_issuer_binding(server_id, &oauth_config.token_url);
 
         // Get refresh token from cache or keychain
         let refresh_token = if let Some(token_info) = self.token_cache.read().get(server_id) {
@@ -936,6 +947,15 @@ impl McpOAuthManager {
                 .ok();
         }
 
+        // Re-record the issuer binding alongside the refreshed tokens
+        self.keychain
+            .store(
+                MCP_OAUTH_SERVICE,
+                &format!("{}_issuer", server_id),
+                &oauth_config.token_url,
+            )
+            .ok();
+
         tracing::info!("OAuth token refreshed successfully for: {}", server_id);
 
         Ok(token_response.access_token)
@@ -984,6 +1004,30 @@ impl McpOAuthManager {
             _ => {
                 // First use, or a cache from before issuer recording existed:
                 // adopt the current issuer.
+                self.keychain
+                    .store(MCP_OAUTH_SERVICE, &key, current_issuer)
+                    .ok();
+            }
+        }
+    }
+
+    /// Read-only variant of [`enforce_issuer_binding`] for hot paths (every
+    /// backend connection builds auth headers): drops credentials on an
+    /// issuer mismatch but does NOT adopt-write on first use, so ordinary
+    /// connections never write to the keychain. The issuer gets recorded by
+    /// the token-acquisition flows instead.
+    pub fn check_issuer_binding(&self, server_id: &str, current_issuer: &str) {
+        let key = format!("{}_issuer", server_id);
+        if let Ok(Some(recorded)) = self.keychain.get(MCP_OAUTH_SERVICE, &key) {
+            if recorded != current_issuer {
+                tracing::warn!(
+                    "Authorization server for MCP server '{}' changed from '{}' to '{}'; \
+                     discarding cached OAuth credentials and requiring re-authentication",
+                    server_id,
+                    recorded,
+                    current_issuer
+                );
+                self.clear_token(server_id);
                 self.keychain
                     .store(MCP_OAUTH_SERVICE, &key, current_issuer)
                     .ok();
@@ -1229,6 +1273,54 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("tok")
+        );
+    }
+
+    #[test]
+    fn test_check_issuer_binding_is_read_only_on_first_use() {
+        let manager = mock_manager();
+
+        // Hot-path check must NOT adopt-write on first use — connection
+        // paths run this constantly and writes caused secrets-file
+        // contention (the issuer is recorded by token-acquisition flows).
+        manager.check_issuer_binding("srv", "https://as.example.com");
+        assert_eq!(
+            manager
+                .keychain
+                .get(MCP_OAUTH_SERVICE, "srv_issuer")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_check_issuer_binding_drops_credentials_on_mismatch() {
+        let manager = mock_manager();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_access_token", "tok")
+            .unwrap();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_issuer", "https://old.example.com")
+            .unwrap();
+
+        manager.check_issuer_binding("srv", "https://new.example.com");
+
+        assert_eq!(
+            manager
+                .keychain
+                .get(MCP_OAUTH_SERVICE, "srv_access_token")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            manager
+                .keychain
+                .get(MCP_OAUTH_SERVICE, "srv_issuer")
+                .unwrap()
+                .as_deref(),
+            Some("https://new.example.com")
         );
     }
 

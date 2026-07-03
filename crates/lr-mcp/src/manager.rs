@@ -721,7 +721,7 @@ impl McpServerManager {
                     // authorization server (SEP-2352).
                     let issuer_identity = issuer.clone().unwrap_or_else(|| token_url.clone());
                     self.oauth_manager
-                        .enforce_issuer_binding(&config.id, &issuer_identity);
+                        .check_issuer_binding(&config.id, &issuer_identity);
 
                     let keychain = lr_api_keys::CachedKeychain::auto()
                         .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
@@ -1326,7 +1326,7 @@ impl McpServerManager {
                 // authorization server (SEP-2352).
                 let issuer_identity = issuer.clone().unwrap_or_else(|| token_url.clone());
                 self.oauth_manager
-                    .enforce_issuer_binding(&config.id, &issuer_identity);
+                    .check_issuer_binding(&config.id, &issuer_identity);
 
                 let keychain = lr_api_keys::CachedKeychain::auto()
                     .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
