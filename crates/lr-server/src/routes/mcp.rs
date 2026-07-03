@@ -730,6 +730,13 @@ pub async fn mcp_gateway_handler(
     let global_roots = state.config_manager.get_roots();
     let roots = merge_roots(&global_roots, client.roots.as_ref());
 
+    // 2026-07-28 subscriptions/listen (SEP-2575): a long-lived response
+    // stream carrying opted-in change notifications; replaces the legacy
+    // GET SSE endpoint + resources/subscribe for stateless clients.
+    if request.method == "subscriptions/listen" {
+        return subscriptions_listen_response(&state, &client_id, allowed_servers, request);
+    }
+
     // Intercept client capability methods before routing to gateway
     // These are requests FROM backend servers TO gateway (gateway acts as MCP client)
     match request.method.as_str() {
@@ -1128,6 +1135,158 @@ pub async fn mcp_gateway_handler(
     }
 }
 
+/// The `subscriptions/listen` opt-in type for a gateway notification method
+/// (2026-07-28, SEP-2575). Request-scoped notifications (progress, message)
+/// stay on the response stream of the request they relate to.
+fn subscription_type_for_method(method: &str) -> Option<&'static str> {
+    match method {
+        "notifications/tools/list_changed" => Some("toolsListChanged"),
+        "notifications/prompts/list_changed" => Some("promptsListChanged"),
+        "notifications/resources/list_changed" => Some("resourcesListChanged"),
+        "notifications/resources/updated" => Some("resourceSubscriptions"),
+        _ => None,
+    }
+}
+
+/// All opt-in types a client may subscribe to.
+const ALL_SUBSCRIPTION_TYPES: &[&str] = &[
+    "toolsListChanged",
+    "promptsListChanged",
+    "resourcesListChanged",
+    "resourceSubscriptions",
+];
+
+/// Transform a backend notification for delivery on a `subscriptions/listen`
+/// stream: filter by opted-in type, namespace resource URIs, and tag with the
+/// subscription id. Returns `None` when the notification isn't subscribed.
+fn build_subscription_notification(
+    server_id: &str,
+    notification: &lr_mcp::protocol::JsonRpcNotification,
+    requested_types: &std::collections::HashSet<String>,
+    subscription_id: &str,
+) -> Option<lr_mcp::protocol::JsonRpcNotification> {
+    let sub_type = subscription_type_for_method(&notification.method)?;
+    if !requested_types.contains(sub_type) {
+        return None;
+    }
+
+    let mut params = notification
+        .params
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    // Namespace resource URIs the same way the legacy SSE stream does
+    if notification.method == "notifications/resources/updated" {
+        if let Some(uri) = params.get("uri").and_then(|v| v.as_str()) {
+            let namespaced = format!("{}::{}", server_id, uri);
+            params["uri"] = serde_json::Value::String(namespaced);
+        }
+    }
+
+    if let Some(obj) = params.as_object_mut() {
+        let meta = obj.entry("_meta").or_insert_with(|| serde_json::json!({}));
+        if let Some(meta_obj) = meta.as_object_mut() {
+            meta_obj.insert(
+                lr_mcp::protocol::meta_keys::SUBSCRIPTION_ID.to_string(),
+                serde_json::json!(subscription_id),
+            );
+        }
+    }
+
+    Some(lr_mcp::protocol::JsonRpcNotification {
+        jsonrpc: "2.0".to_string(),
+        method: notification.method.clone(),
+        params: Some(params),
+    })
+}
+
+/// Handle `subscriptions/listen` (2026-07-28): acknowledge the subscription,
+/// then keep the POST response stream open, delivering opted-in change
+/// notifications tagged with the subscription id.
+fn subscriptions_listen_response(
+    state: &AppState,
+    client_id: &str,
+    allowed_servers: Vec<String>,
+    request: JsonRpcRequest,
+) -> Response {
+    // Opt-in types; an omitted list subscribes to everything.
+    let requested_types: std::collections::HashSet<String> = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("types"))
+        .and_then(|t| t.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            ALL_SUBSCRIPTION_TYPES
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        });
+
+    let subscription_id = Uuid::new_v4().to_string();
+    let mut notification_rx = state.mcp_notification_broadcast.subscribe();
+    let request_id = request.id.clone().unwrap_or(serde_json::Value::Null);
+    let client_id = client_id.to_string();
+
+    tracing::info!(
+        "subscriptions/listen opened: client={}, subscription={}, types={:?}",
+        &client_id[..8.min(client_id.len())],
+        &subscription_id[..8],
+        requested_types
+    );
+
+    let sse_stream = async_stream::stream! {
+        // Acknowledge the subscription first
+        let ack = JsonRpcResponse::success(
+            request_id,
+            serde_json::json!({
+                "resultType": "complete",
+                "subscriptionId": subscription_id,
+                "types": requested_types.iter().collect::<Vec<_>>(),
+            }),
+        );
+        if let Ok(json) = serde_json::to_string(&ack) {
+            yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+        }
+
+        loop {
+            match notification_rx.recv().await {
+                Ok((server_id, notification)) => {
+                    if !allowed_servers.contains(&server_id) {
+                        continue;
+                    }
+                    if let Some(tagged) = build_subscription_notification(
+                        &server_id,
+                        &notification,
+                        &requested_types,
+                        &subscription_id,
+                    ) {
+                        if let Ok(json) = serde_json::to_string(&tagged) {
+                            yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        "subscriptions/listen for client {} lagged, missed {} notifications",
+                        client_id,
+                        n
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+
+    Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
 /// Merge global and per-client roots
 ///
 /// If client has custom roots configured, use those exclusively.
@@ -1304,5 +1463,68 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].uri, "file:///enabled");
+    }
+
+    fn notification(
+        method: &str,
+        params: serde_json::Value,
+    ) -> lr_mcp::protocol::JsonRpcNotification {
+        lr_mcp::protocol::JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: method.to_string(),
+            params: Some(params),
+        }
+    }
+
+    fn all_types() -> std::collections::HashSet<String> {
+        ALL_SUBSCRIPTION_TYPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn test_subscription_notification_tagged_and_delivered() {
+        let n = notification("notifications/tools/list_changed", serde_json::json!({}));
+        let tagged = build_subscription_notification("srv1", &n, &all_types(), "sub-123")
+            .expect("subscribed type is delivered");
+
+        assert_eq!(tagged.method, "notifications/tools/list_changed");
+        let meta = &tagged.params.unwrap()["_meta"];
+        assert_eq!(meta["io.modelcontextprotocol/subscriptionId"], "sub-123");
+    }
+
+    #[test]
+    fn test_subscription_notification_filters_unrequested_types() {
+        let n = notification("notifications/tools/list_changed", serde_json::json!({}));
+        let only_resources: std::collections::HashSet<String> =
+            ["resourcesListChanged".to_string()].into_iter().collect();
+
+        assert!(build_subscription_notification("srv1", &n, &only_resources, "sub").is_none());
+    }
+
+    #[test]
+    fn test_subscription_notification_ignores_request_scoped() {
+        // Progress/log notifications belong to their request's response
+        // stream, never the subscriptions/listen stream.
+        for method in ["notifications/progress", "notifications/message"] {
+            let n = notification(method, serde_json::json!({}));
+            assert!(build_subscription_notification("srv1", &n, &all_types(), "sub").is_none());
+        }
+    }
+
+    #[test]
+    fn test_subscription_notification_namespaces_resource_uri() {
+        let n = notification(
+            "notifications/resources/updated",
+            serde_json::json!({ "uri": "file:///a.txt" }),
+        );
+        let tagged = build_subscription_notification("srv1", &n, &all_types(), "sub").unwrap();
+        let params = tagged.params.unwrap();
+        assert_eq!(params["uri"], "srv1::file:///a.txt");
+        assert_eq!(
+            params["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            "sub"
+        );
     }
 }
