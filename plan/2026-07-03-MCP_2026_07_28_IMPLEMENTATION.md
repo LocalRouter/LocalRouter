@@ -16,6 +16,39 @@ behavior is selected per peer:
 
 Tracked in the session task list (tasks below) and by per-phase commits.
 
+**Status 2026-07-03:** Phases A and B fully landed, plus C1.
+- A1/A2 (`feat(oauth)`): iss validation + issuer-bound credentials
+- B1 (`feat(mcp)` protocol types), B2+B3 (stateless downstream lifecycle
+  + HTTP headers), B4 (extensions passthrough), B5 (backend discover
+  probe + upstream stateless), B6 (per-revision method sets/error codes)
+- C1 (`feat(server)`): subscriptions/listen stream
+- **C2 (MRTR) is the remaining item.** Design sketch: when a stateless
+  downstream client's tools/call triggers a backend elicitation /
+  passthrough-sampling / firewall Ask, the gateway cannot push over SSE.
+  Instead: run the backend call as a task; when a server-initiated
+  request fires, park the task + pending manager ids in an MrtrManager
+  keyed by an opaque `requestState`, and resolve the original call with
+  `resultType: "input_required"` + `inputRequests`. The client retries
+  the call carrying `inputResponses` + `requestState`; the gateway
+  submits the responses through the existing managers (elicitation
+  schema validation already exists), awaits the parked task, and
+  returns its result (or another input_required round). Upstream:
+  handle `input_required` results from stateless backends by resolving
+  through the same managers and retrying with `inputResponses`.
+  Watch: timeout/cleanup of parked tasks; firewall Ask flows for
+  stateless peers currently still block the HTTP request (works, but
+  MRTR is the spec-preferred shape).
+
+Known accepted tradeoffs:
+- First session to a misbehaving backend that neither answers nor
+  rejects `server/discover` pays the 5s probe timeout once (cached
+  after).
+- `broadcast_and_return_first` still sends ping/logging to stateless
+  backends when a legacy client broadcasts; they answer method-not-found
+  harmlessly.
+- Per-request `_meta` logLevel is captured on the session but not yet
+  translated into `logging/setLevel` for legacy backends.
+
 ## Phase A — Tier-0 security (spec-version independent)
 
 - **A1. RFC 9207 `iss` validation (SEP-2468).** Add `issuer` to the AS

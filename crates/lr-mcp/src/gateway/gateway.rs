@@ -835,6 +835,16 @@ impl McpGateway {
         session: &Arc<RwLock<GatewaySession>>,
         client_meta: &crate::protocol::RequestClientMeta,
     ) -> AppResult<()> {
+        // Serialize concurrent lazy initializations: without this, two
+        // simultaneous first requests would both create backend transports
+        // and the losing set's stdio processes would leak.
+        let init_lock = session.read().await.lazy_init_lock.clone();
+        let _guard = init_lock.lock().await;
+        if session.read().await.transports.is_some() {
+            // Another request initialized the session while we waited.
+            return Ok(());
+        }
+
         let params = json!({
             "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
             "capabilities": client_meta

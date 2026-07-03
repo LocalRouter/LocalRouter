@@ -140,6 +140,11 @@ pub struct GatewaySession {
     /// Per-request log level from `_meta` (2026-07-28 replaces
     /// `logging/setLevel`); last seen value.
     pub log_level: Option<String>,
+
+    /// Serializes lazy backend initialization for stateless clients so
+    /// concurrent first requests can't double-create transports (which
+    /// would leak the first set's stdio processes).
+    pub lazy_init_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl GatewaySession {
@@ -198,6 +203,7 @@ impl GatewaySession {
             transports: None,
             protocol_revision: crate::protocol::ProtocolRevision::default(),
             log_level: None,
+            lazy_init_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
