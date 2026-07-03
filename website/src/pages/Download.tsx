@@ -27,11 +27,13 @@ const platforms = [
   {
     name: 'Linux',
     iconSrc: '/icons/penguin.svg',
-    requirements: ['Modern Linux (glibc 2.31+)', 'DEB or AppImage'],
+    requirements: ['Modern Linux (glibc 2.31+)', 'x86_64 or ARM64 (Raspberry Pi 4/5)'],
     downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_amd64.deb',
     downloadLabel: 'Download .deb',
     altDownloads: [
       { label: '.AppImage', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_amd64.AppImage' },
+      { label: 'ARM64 .deb', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_arm64.deb' },
+      { label: 'ARM64 .AppImage', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_aarch64.AppImage' },
     ],
   },
 ]
