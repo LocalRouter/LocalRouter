@@ -266,11 +266,9 @@ jobs:
             find "$LINUX_DIR" -type f -name "*.deb" | while read f; do
               cp "$f" "release-assets/LocalRouter_${VERSION}_amd64.deb"
             done
-            find "$LINUX_DIR" -type f -name "*.AppImage.tar.gz" ! -name "*.sig" | while read f; do
-              cp "$f" "release-assets/LocalRouter_${VERSION}_amd64.AppImage.tar.gz"
-            done
-            find "$LINUX_DIR" -type f -name "*.AppImage.tar.gz.sig" | while read f; do
-              cp "$f" "release-assets/LocalRouter_${VERSION}_amd64.AppImage.tar.gz.sig"
+            # Tauri v2 updater artifact: the AppImage itself + detached signature
+            find "$LINUX_DIR" -type f -name "*.AppImage.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_amd64.AppImage.sig"
             done
           fi
 
@@ -283,11 +281,9 @@ jobs:
             find "$LINUX_ARM_DIR" -type f -name "*.deb" | while read f; do
               cp "$f" "release-assets/LocalRouter_${VERSION}_arm64.deb"
             done
-            find "$LINUX_ARM_DIR" -type f -name "*.AppImage.tar.gz" ! -name "*.sig" | while read f; do
-              cp "$f" "release-assets/LocalRouter_${VERSION}_aarch64.AppImage.tar.gz"
-            done
-            find "$LINUX_ARM_DIR" -type f -name "*.AppImage.tar.gz.sig" | while read f; do
-              cp "$f" "release-assets/LocalRouter_${VERSION}_aarch64.AppImage.tar.gz.sig"
+            # Tauri v2 updater artifact: the AppImage itself + detached signature
+            find "$LINUX_ARM_DIR" -type f -name "*.AppImage.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_aarch64.AppImage.sig"
             done
           fi
 
@@ -300,17 +296,12 @@ jobs:
             find "$WIN_DIR" -type f -name "*-setup.exe" | while read f; do
               cp "$f" "release-assets/LocalRouter_${VERSION}_x64-setup.exe"
             done
-            find "$WIN_DIR" -type f -name "*.msi.zip" ! -name "*.sig" | while read f; do
-              cp "$f" "release-assets/LocalRouter_${VERSION}_x64_en-US.msi.zip"
+            # Tauri v2 updater artifacts: the installers themselves + detached signatures
+            find "$WIN_DIR" -type f -name "*.msi.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_x64_en-US.msi.sig"
             done
-            find "$WIN_DIR" -type f -name "*.msi.zip.sig" | while read f; do
-              cp "$f" "release-assets/LocalRouter_${VERSION}_x64_en-US.msi.zip.sig"
-            done
-            find "$WIN_DIR" -type f -name "*.nsis.zip" ! -name "*.sig" | while read f; do
-              cp "$f" "release-assets/LocalRouter_${VERSION}_x64-setup.nsis.zip"
-            done
-            find "$WIN_DIR" -type f -name "*.nsis.zip.sig" | while read f; do
-              cp "$f" "release-assets/LocalRouter_${VERSION}_x64-setup.nsis.zip.sig"
+            find "$WIN_DIR" -type f -name "*-setup.exe.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_x64-setup.exe.sig"
             done
           fi
 
@@ -370,11 +361,13 @@ jobs:
             fi
           }
 
+          # Tauri v2 updater artifacts: macOS uses .app.tar.gz bundles; Linux
+          # and Windows use the raw AppImage / installer with a detached .sig.
           MACOS_X64_SIG=$(get_sig "LocalRouter_${VERSION}_x64.app.tar.gz.sig")
           MACOS_AARCH64_SIG=$(get_sig "LocalRouter_${VERSION}_aarch64.app.tar.gz.sig")
-          LINUX_SIG=$(get_sig "LocalRouter_${VERSION}_amd64.AppImage.tar.gz.sig")
-          LINUX_ARM_SIG=$(get_sig "LocalRouter_${VERSION}_aarch64.AppImage.tar.gz.sig")
-          WINDOWS_MSI_SIG=$(get_sig "LocalRouter_${VERSION}_x64_en-US.msi.zip.sig")
+          LINUX_SIG=$(get_sig "LocalRouter_${VERSION}_amd64.AppImage.sig")
+          LINUX_ARM_SIG=$(get_sig "LocalRouter_${VERSION}_aarch64.AppImage.sig")
+          WINDOWS_SETUP_SIG=$(get_sig "LocalRouter_${VERSION}_x64-setup.exe.sig")
 
           cat > release-assets/latest.json << EOF
           {
@@ -392,15 +385,15 @@ jobs:
               },
               "linux-x86_64": {
                 "signature": "${LINUX_SIG}",
-                "url": "${BASE_URL}/LocalRouter_${VERSION}_amd64.AppImage.tar.gz"
+                "url": "${BASE_URL}/LocalRouter_${VERSION}_amd64.AppImage"
               },
               "linux-aarch64": {
                 "signature": "${LINUX_ARM_SIG}",
-                "url": "${BASE_URL}/LocalRouter_${VERSION}_aarch64.AppImage.tar.gz"
+                "url": "${BASE_URL}/LocalRouter_${VERSION}_aarch64.AppImage"
               },
               "windows-x86_64": {
-                "signature": "${WINDOWS_MSI_SIG}",
-                "url": "${BASE_URL}/LocalRouter_${VERSION}_x64_en-US.msi.zip"
+                "signature": "${WINDOWS_SETUP_SIG}",
+                "url": "${BASE_URL}/LocalRouter_${VERSION}_x64-setup.exe"
               }
             }
           }
