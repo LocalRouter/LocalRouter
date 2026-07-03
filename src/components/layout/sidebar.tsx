@@ -26,6 +26,11 @@ import {
   TooltipTrigger,
   TooltipProvider,
 } from "@/components/ui/tooltip"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import type { SetSidebarExpandedParams } from "@/types/tauri-commands"
 
 type AggregateHealthStatus = 'red' | 'yellow' | 'green'
@@ -742,127 +747,142 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
           {bottomNavItems.map(renderNavItem)}
         </nav>
 
-        {/* Status indicator + global server start/stop toggle */}
-        <div className={cn(
-          "flex border-t p-2 gap-1",
-          expanded ? "items-center" : "flex-col items-center"
-        )}>
-          <Tooltip>
-            <TooltipTrigger asChild>
+        {/* Server status button — opens popover with status + controls */}
+        <div className={cn("border-t p-2", !expanded && "flex justify-center")}>
+          <Popover>
+            <PopoverTrigger asChild>
               <button
-                onClick={handleRefresh}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-accent transition-colors"
-                disabled={isRefreshing}
+                className={cn(
+                  "flex h-8 items-center rounded-md transition-colors hover:bg-accent",
+                  expanded ? "w-full gap-2 px-2" : "w-8 justify-center"
+                )}
+                aria-label="Server status and controls"
               >
                 {isRefreshing || hasAnyPending() ? (
-                  <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
+                  <RefreshCw className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
                 ) : (
                   <div className={cn(
-                    "h-2 w-2 rounded-full transition-colors",
+                    "h-2 w-2 shrink-0 rounded-full transition-colors",
                     getStatusColor(healthState?.server_running === false ? 'red' : healthState?.aggregate_status)
                   )} />
                 )}
+                {expanded && (
+                  <span className="truncate text-xs text-muted-foreground">
+                    {healthState === null
+                      ? 'Checking status…'
+                      : healthState.server_running
+                        ? `Running · :${healthState.server_port}`
+                        : 'Server stopped'}
+                  </span>
+                )}
               </button>
-            </TooltipTrigger>
-            <TooltipContent side="right" sideOffset={8} className="max-w-xs">
-              <div className="space-y-2 text-xs">
-                {/* Server status */}
-                <div>
-                  <span className="font-medium text-muted-foreground">LocalRouter LLM & MCP Server</span>
-                </div>
-                <div className="flex items-center gap-2 pl-2">
+            </PopoverTrigger>
+            <PopoverContent side="right" align="end" sideOffset={8} className="w-80 p-0 text-xs">
+              {/* Server status header */}
+              <div className="p-3 pb-2">
+                <div className="text-sm font-medium">LocalRouter Server</div>
+                <div className="mt-1 flex items-center gap-2 text-muted-foreground">
                   <div className={cn(
-                    "h-1.5 w-1.5 rounded-full",
+                    "h-1.5 w-1.5 shrink-0 rounded-full",
                     healthState?.server_running ? "bg-green-500" : "bg-red-500"
                   )} />
-                  <span className="truncate flex-1">
-                    {healthState?.server_host ?? '...'}:{healthState?.server_port ?? '...'}
+                  <span className="truncate">
+                    {healthState?.server_running
+                      ? `Running on ${healthState.server_host ?? '…'}:${healthState.server_port ?? '…'}`
+                      : 'Stopped — LLM API & MCP gateway are offline'}
                   </span>
-                  <span className="text-muted-foreground text-[10px]">
-                    {healthState?.server_running ? 'Running' : 'Stopped'}
-                  </span>
-                </div>
-
-                {/* Providers section */}
-                {healthState && Object.keys(healthState.providers).length > 0 && (
-                  <>
-                    <div className="border-t pt-2">
-                      <span className="font-medium text-muted-foreground">LLM Providers</span>
-                    </div>
-                    {Object.entries(healthState.providers).map(([name, health]) => (
-                      <div key={name} className="flex items-center gap-2 pl-2">
-                        <div className={cn(
-                          "h-1.5 w-1.5 rounded-full",
-                          getItemStatusColor(health.status)
-                        )} />
-                        <span className="truncate flex-1">{health.name || name}</span>
-                        <span className="text-muted-foreground text-[10px]">
-                          {formatStatus(health.status)}
-                        </span>
-                      </div>
-                    ))}
-                  </>
-                )}
-
-                {/* MCP Servers section */}
-                {healthState && Object.keys(healthState.mcp_servers).length > 0 && (
-                  <>
-                    <div className="border-t pt-2">
-                      <span className="font-medium text-muted-foreground">MCP Servers</span>
-                    </div>
-                    {Object.entries(healthState.mcp_servers).map(([id, health]) => (
-                      <div key={id} className="flex items-center gap-2 pl-2">
-                        <div className={cn(
-                          "h-1.5 w-1.5 rounded-full",
-                          getItemStatusColor(health.status)
-                        )} />
-                        <span className="truncate flex-1">{health.name || id}</span>
-                        <span className="text-muted-foreground text-[10px]">
-                          {formatStatus(health.status)}
-                        </span>
-                      </div>
-                    ))}
-                  </>
-                )}
-
-                {/* Refresh hint */}
-                <div className="border-t pt-2 text-muted-foreground text-[10px]">
-                  Click to refresh
                 </div>
               </div>
-            </TooltipContent>
-          </Tooltip>
 
-          {/* Push the toggle to the far right when expanded */}
-          {expanded && <div className="flex-1" />}
+              {/* Start / stop control with explanation */}
+              <div className="px-3 pb-3">
+                <button
+                  onClick={handleToggleServer}
+                  disabled={serverToggling || healthState === null}
+                  className={cn(
+                    "flex w-full items-center justify-center gap-2 rounded-md border px-3 py-1.5 font-medium transition-colors disabled:opacity-50",
+                    healthState?.server_running
+                      ? "border-red-500/30 text-red-600 hover:bg-red-500/10 dark:text-red-400"
+                      : "border-green-600/30 text-green-700 hover:bg-green-500/10 dark:text-green-400"
+                  )}
+                >
+                  {serverToggling ? (
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                  ) : healthState?.server_running ? (
+                    <Square className="h-3 w-3 fill-current" />
+                  ) : (
+                    <Play className="h-3 w-3 fill-current" />
+                  )}
+                  {serverToggling
+                    ? (healthState?.server_running ? 'Stopping…' : 'Starting…')
+                    : healthState?.server_running ? 'Stop server' : 'Start server'}
+                </button>
+                <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+                  {healthState?.server_running
+                    ? 'Takes the LLM API and MCP gateway offline. In-flight requests are cancelled; connected apps will get errors until you start it again.'
+                    : 'Brings the LLM API and MCP gateway back online for your connected apps.'}
+                </p>
+              </div>
 
-          {/* Global start/stop toggle (LLM + MCP) */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={handleToggleServer}
-                disabled={serverToggling}
-                className={cn(
-                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:opacity-50",
-                  healthState?.server_running
-                    ? "text-red-500 hover:bg-red-500/10"
-                    : "text-green-600 hover:bg-green-500/10"
-                )}
-                aria-label={healthState?.server_running ? 'Stop server' : 'Start server'}
-              >
-                {healthState?.server_running ? (
-                  <Square className="h-3.5 w-3.5 fill-current" />
-                ) : (
-                  <Play className="h-3.5 w-3.5 fill-current" />
-                )}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right" sideOffset={8}>
-              {healthState?.server_running
-                ? 'Stop server (LLM + MCP) — cancels in-flight requests'
-                : 'Start server (LLM + MCP)'}
-            </TooltipContent>
-          </Tooltip>
+              {/* Health details */}
+              {healthState && (Object.keys(healthState.providers).length > 0 || Object.keys(healthState.mcp_servers).length > 0) && (
+                <div className="max-h-64 space-y-2 overflow-y-auto border-t px-3 py-2">
+                  {Object.keys(healthState.providers).length > 0 && (
+                    <>
+                      <div>
+                        <span className="font-medium text-muted-foreground">LLM Providers</span>
+                      </div>
+                      {Object.entries(healthState.providers).map(([name, health]) => (
+                        <div key={name} className="flex items-center gap-2 pl-2">
+                          <div className={cn(
+                            "h-1.5 w-1.5 rounded-full",
+                            getItemStatusColor(health.status)
+                          )} />
+                          <span className="truncate flex-1">{health.name || name}</span>
+                          <span className="text-muted-foreground text-[10px]">
+                            {formatStatus(health.status)}
+                          </span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+
+                  {Object.keys(healthState.mcp_servers).length > 0 && (
+                    <>
+                      <div className={cn(Object.keys(healthState.providers).length > 0 && "border-t pt-2")}>
+                        <span className="font-medium text-muted-foreground">MCP Servers</span>
+                      </div>
+                      {Object.entries(healthState.mcp_servers).map(([id, health]) => (
+                        <div key={id} className="flex items-center gap-2 pl-2">
+                          <div className={cn(
+                            "h-1.5 w-1.5 rounded-full",
+                            getItemStatusColor(health.status)
+                          )} />
+                          <span className="truncate flex-1">{health.name || id}</span>
+                          <span className="text-muted-foreground text-[10px]">
+                            {formatStatus(health.status)}
+                          </span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Health refresh */}
+              <div className="flex items-center justify-between border-t px-3 py-2">
+                <span className="text-[10px] text-muted-foreground">Health checks</span>
+                <button
+                  onClick={handleRefresh}
+                  disabled={isRefreshing}
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+                >
+                  <RefreshCw className={cn("h-2.5 w-2.5", isRefreshing && "animate-spin")} />
+                  Refresh
+                </button>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
         </div>
 
