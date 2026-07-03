@@ -50,6 +50,14 @@ jobs:
           sed -i 's/^version = ".*"/version = "${{ steps.version.outputs.version }}"/' Cargo.toml
           echo "Updated Cargo.toml version"
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Sync Cargo.lock with new version
+        run: |
+          cargo update --workspace
+          echo "Updated Cargo.lock"
+
       - name: Update version in tauri.conf.json
         run: |
           cd src-tauri
@@ -65,7 +73,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml src-tauri/tauri.conf.json package.json
+          git add Cargo.toml Cargo.lock src-tauri/tauri.conf.json package.json
           git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
           git push origin master
           echo "Version bump committed and pushed"
