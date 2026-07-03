@@ -115,6 +115,59 @@ impl AnthropicProvider {
     }
 
     /// Convert OpenAI format messages to Anthropic format
+    /// Resolve the extended-thinking budget for a request, if any.
+    ///
+    /// Sources, in priority order:
+    /// 1. `extensions.anthropic_thinking.thinking_budget` — set by the
+    ///    `extended_thinking` feature adapter or passed directly by clients
+    /// 2. `reasoning_effort` (OpenAI-style), translated to a token budget
+    ///
+    /// Budgets are clamped to Anthropic's minimum of 1024 tokens.
+    fn thinking_budget(request: &CompletionRequest) -> Option<u32> {
+        if let Some(budget) = request
+            .extensions
+            .as_ref()
+            .and_then(|ext| ext.get("anthropic_thinking"))
+            .and_then(|cfg| cfg.get("thinking_budget"))
+            .and_then(|v| v.as_u64())
+        {
+            return Some((budget as u32).max(1024));
+        }
+
+        match request.reasoning_effort.as_deref() {
+            Some("minimal") => Some(1024),
+            Some("low") => Some(2048),
+            Some("medium") => Some(8192),
+            Some("high") => Some(16384),
+            _ => None,
+        }
+    }
+
+    /// Compute the thinking config plus the `max_tokens`/`temperature`
+    /// adjustments the Messages API requires when thinking is enabled:
+    /// `max_tokens` must exceed `budget_tokens`, and `temperature` must be
+    /// omitted (Anthropic only accepts 1 with thinking).
+    fn thinking_params(
+        request: &CompletionRequest,
+    ) -> (Option<AnthropicThinkingConfig>, u32, Option<f32>) {
+        let thinking =
+            Self::thinking_budget(request).map(|budget_tokens| AnthropicThinkingConfig {
+                config_type: "enabled".to_string(),
+                budget_tokens,
+            });
+
+        let mut max_tokens = request.max_tokens.unwrap_or(4096);
+        let mut temperature = request.temperature;
+        if let Some(t) = &thinking {
+            if max_tokens <= t.budget_tokens {
+                max_tokens = t.budget_tokens.saturating_add(4096);
+            }
+            temperature = None;
+        }
+
+        (thinking, max_tokens, temperature)
+    }
+
     fn convert_messages(
         messages: &[ChatMessage],
     ) -> AppResult<(Option<String>, Vec<AnthropicMessage>)> {
@@ -525,17 +578,19 @@ impl ModelProvider for AnthropicProvider {
             (tools, tool_choice)
         };
 
+        let (thinking, max_tokens, temperature) = Self::thinking_params(&request);
         let anthropic_request = AnthropicRequest {
             model: request.model.clone(),
             messages,
             system,
-            max_tokens: request.max_tokens.unwrap_or(4096),
-            temperature: request.temperature,
+            max_tokens,
+            temperature,
             top_p: request.top_p,
             stop_sequences: request.stop,
             stream: Some(false),
             tools,
             tool_choice,
+            thinking,
         };
 
         let response = self
@@ -567,8 +622,9 @@ impl ModelProvider for AnthropicProvider {
             .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
 
         // Convert Anthropic response to OpenAI format
-        // Parse content blocks - extract text and tool_use blocks
+        // Parse content blocks - extract text, tool_use and thinking blocks
         let mut text_content = String::new();
+        let mut reasoning_content = String::new();
         let mut tool_calls = Vec::new();
 
         for content_block in &anthropic_response.content {
@@ -589,6 +645,14 @@ impl ModelProvider for AnthropicProvider {
                         },
                     });
                 }
+                AnthropicResponseContent::Thinking { thinking, .. } => {
+                    if !reasoning_content.is_empty() {
+                        reasoning_content.push('\n');
+                    }
+                    reasoning_content.push_str(thinking);
+                }
+                // Encrypted; nothing user-visible to surface.
+                AnthropicResponseContent::RedactedThinking { .. } => {}
             }
         }
 
@@ -625,7 +689,7 @@ impl ModelProvider for AnthropicProvider {
                     tool_calls: tool_calls_opt,
                     tool_call_id: None,
                     name: None,
-                    reasoning_content: None,
+                    reasoning_content: (!reasoning_content.is_empty()).then_some(reasoning_content),
                 },
                 finish_reason,
                 logprobs: None, // Anthropic does not support logprobs
@@ -691,17 +755,19 @@ impl ModelProvider for AnthropicProvider {
             (tools, tool_choice)
         };
 
+        let (thinking, max_tokens, temperature) = Self::thinking_params(&request);
         let anthropic_request = AnthropicRequest {
             model: request.model.clone(),
             messages,
             system,
-            max_tokens: request.max_tokens.unwrap_or(4096),
-            temperature: request.temperature,
+            max_tokens,
+            temperature,
             top_p: request.top_p,
             stop_sequences: request.stop,
             stream: Some(true),
             tools,
             tool_choice,
+            thinking,
         };
 
         let response = self
@@ -841,6 +907,26 @@ impl ModelProvider for AnthropicProvider {
                                                             content: Some(text.clone()),
                                                             tool_calls: None,
                                                             reasoning_content: None,
+                                                        },
+                                                        finish_reason: None,
+                                                    }],
+                                                    extensions: None,
+                                                }));
+                                            } else if let Some(thinking) = &delta.thinking {
+                                                chunks.push(Ok(CompletionChunk {
+                                                    id: msg_id.lock().unwrap().clone(),
+                                                    object: "chat.completion.chunk".to_string(),
+                                                    created: Utc::now().timestamp(),
+                                                    model: model.clone(),
+                                                    choices: vec![ChunkChoice {
+                                                        index: 0,
+                                                        delta: ChunkDelta {
+                                                            role: None,
+                                                            content: None,
+                                                            tool_calls: None,
+                                                            reasoning_content: Some(
+                                                                thinking.clone(),
+                                                            ),
                                                         },
                                                         finish_reason: None,
                                                     }],
@@ -1046,6 +1132,17 @@ struct AnthropicRequest {
     /// Tool choice mode
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<AnthropicToolChoice>,
+    /// Extended thinking configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinkingConfig>,
+}
+
+/// Extended thinking configuration for the Anthropic Messages API
+#[derive(Debug, Serialize)]
+struct AnthropicThinkingConfig {
+    #[serde(rename = "type")]
+    config_type: String,
+    budget_tokens: u32,
 }
 
 /// Anthropic message with content blocks
@@ -1102,6 +1199,22 @@ enum AnthropicResponseContent {
         id: String,
         name: String,
         input: serde_json::Value,
+    },
+    /// Extended thinking block (when thinking is enabled)
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(default)]
+        #[allow(dead_code)]
+        signature: Option<String>,
+    },
+    /// Thinking block redacted by Anthropic's safety systems; the payload
+    /// is encrypted and only meaningful when passed back to the API.
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking {
+        #[serde(default)]
+        #[allow(dead_code)]
+        data: Option<String>,
     },
 }
 
@@ -1161,6 +1274,9 @@ struct AnthropicDelta {
     partial_json: Option<String>,
     #[serde(default)]
     stop_reason: Option<String>,
+    /// Extended thinking text (`thinking_delta` events)
+    #[serde(default)]
+    thinking: Option<String>,
 }
 
 #[cfg(test)]
@@ -1406,6 +1522,7 @@ mod tests {
                         },
                     });
                 }
+                _ => {}
             }
         }
 
@@ -1463,6 +1580,7 @@ mod tests {
                         },
                     });
                 }
+                _ => {}
             }
         }
 
@@ -1480,5 +1598,150 @@ mod tests {
 
         assert!(!models.is_empty());
         assert!(models.iter().any(|m| m.id.contains("claude")));
+    }
+
+    fn blank_request() -> CompletionRequest {
+        CompletionRequest {
+            model: "claude-sonnet-4-5".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
+            n: None,
+            logit_bias: None,
+            parallel_tool_calls: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
+            pre_computed_routing: None,
+        }
+    }
+
+    #[test]
+    fn test_thinking_params_disabled_by_default() {
+        let request = blank_request();
+        let (thinking, max_tokens, temperature) = AnthropicProvider::thinking_params(&request);
+        assert!(thinking.is_none());
+        assert_eq!(max_tokens, 4096);
+        assert_eq!(temperature, None);
+    }
+
+    #[test]
+    fn test_thinking_params_from_extensions() {
+        let mut request = blank_request();
+        request.temperature = Some(0.7);
+        request.max_tokens = Some(2000);
+        let mut ext = std::collections::HashMap::new();
+        ext.insert(
+            "anthropic_thinking".to_string(),
+            serde_json::json!({ "thinking_budget": 10000 }),
+        );
+        request.extensions = Some(ext);
+
+        let (thinking, max_tokens, temperature) = AnthropicProvider::thinking_params(&request);
+
+        let thinking = thinking.expect("thinking enabled");
+        assert_eq!(thinking.config_type, "enabled");
+        assert_eq!(thinking.budget_tokens, 10000);
+        // max_tokens must exceed the budget
+        assert!(max_tokens > 10000);
+        // temperature must be dropped when thinking is enabled
+        assert_eq!(temperature, None);
+    }
+
+    #[test]
+    fn test_thinking_params_from_reasoning_effort() {
+        for (effort, expected_budget) in [
+            ("minimal", 1024),
+            ("low", 2048),
+            ("medium", 8192),
+            ("high", 16384),
+        ] {
+            let mut request = blank_request();
+            request.reasoning_effort = Some(effort.to_string());
+
+            let (thinking, max_tokens, _) = AnthropicProvider::thinking_params(&request);
+            let thinking = thinking.unwrap_or_else(|| panic!("{effort} enables thinking"));
+            assert_eq!(thinking.budget_tokens, expected_budget);
+            assert!(max_tokens > expected_budget);
+        }
+    }
+
+    #[test]
+    fn test_thinking_params_clamps_minimum_budget() {
+        let mut request = blank_request();
+        let mut ext = std::collections::HashMap::new();
+        ext.insert(
+            "anthropic_thinking".to_string(),
+            serde_json::json!({ "thinking_budget": 10 }),
+        );
+        request.extensions = Some(ext);
+
+        let (thinking, _, _) = AnthropicProvider::thinking_params(&request);
+        assert_eq!(thinking.unwrap().budget_tokens, 1024);
+    }
+
+    #[test]
+    fn test_parse_thinking_content_blocks() {
+        let json = r#"{
+            "id": "msg_123",
+            "model": "claude-sonnet-4-5",
+            "content": [
+                { "type": "thinking", "thinking": "Let me reason about this.", "signature": "sig" },
+                { "type": "redacted_thinking", "data": "opaque" },
+                { "type": "text", "text": "The answer is 4." }
+            ],
+            "stop_reason": "end_turn",
+            "usage": { "input_tokens": 10, "output_tokens": 20 }
+        }"#;
+
+        let response: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.content.len(), 3);
+        assert!(matches!(
+            &response.content[0],
+            AnthropicResponseContent::Thinking { thinking, .. } if thinking == "Let me reason about this."
+        ));
+        assert!(matches!(
+            &response.content[1],
+            AnthropicResponseContent::RedactedThinking { .. }
+        ));
+    }
+
+    #[test]
+    fn test_parse_thinking_stream_delta() {
+        let delta: AnthropicDelta =
+            serde_json::from_str(r#"{ "type": "thinking_delta", "thinking": "hmm" }"#).unwrap();
+        assert_eq!(delta.thinking.as_deref(), Some("hmm"));
+        assert!(delta.text.is_none());
+    }
+
+    #[test]
+    fn test_thinking_request_serialization() {
+        let config = AnthropicThinkingConfig {
+            config_type: "enabled".to_string(),
+            budget_tokens: 2048,
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "enabled", "budget_tokens": 2048 })
+        );
     }
 }

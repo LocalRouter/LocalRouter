@@ -72,7 +72,7 @@ impl FeatureAdapter for AnthropicThinkingAdapter {
 
     fn adapt_request(
         &self,
-        _request: &mut CompletionRequest,
+        request: &mut CompletionRequest,
         params: &FeatureParams,
     ) -> AppResult<()> {
         let thinking_budget = Self::get_thinking_budget(params)?;
@@ -85,13 +85,16 @@ impl FeatureAdapter for AnthropicThinkingAdapter {
             )));
         }
 
-        // Store thinking budget in request metadata
-        // The Anthropic provider will read this and add it to the API request
-        // Note: We use a simple approach where we could extend CompletionRequest
-        // to have a metadata field, but for now we'll rely on the provider
-        // to check the extensions field in the original ChatCompletionRequest
+        // Store the budget in request extensions; the Anthropic provider
+        // reads extensions.anthropic_thinking.thinking_budget and maps it to
+        // the Messages API `thinking.budget_tokens` parameter.
+        let mut extensions = request.extensions.clone().unwrap_or_default();
+        extensions.insert(
+            "anthropic_thinking".to_string(),
+            serde_json::json!({ "thinking_budget": thinking_budget }),
+        );
+        request.extensions = Some(extensions);
 
-        // Log for debugging
         tracing::debug!(
             "Extended thinking enabled with budget of {} tokens",
             thinking_budget
@@ -101,26 +104,22 @@ impl FeatureAdapter for AnthropicThinkingAdapter {
     }
 
     fn adapt_response(&self, response: &mut CompletionResponse) -> AppResult<Option<FeatureData>> {
-        // Extract thinking blocks from response if present
-        // In Anthropic's API, thinking content comes as separate content blocks
-        // with type "thinking"
+        // The Anthropic provider parses thinking blocks directly into each
+        // choice's `reasoning_content`, so no response rewriting is needed.
+        // Report whether reasoning was produced as feature data.
+        let has_reasoning = response
+            .choices
+            .iter()
+            .any(|c| c.message.reasoning_content.is_some());
 
-        // For now, we return None as we need to integrate with the actual
-        // Anthropic response structure. This will be implemented when we
-        // update the Anthropic provider to parse thinking blocks.
-
-        let _ = response; // Suppress unused warning
-
-        // TODO: Parse thinking blocks from Anthropic response
-        // The response structure will be:
-        // {
-        //   "content": [
-        //     { "type": "thinking", "thinking": "..." },
-        //     { "type": "text", "text": "..." }
-        //   ]
-        // }
-
-        Ok(None)
+        if has_reasoning {
+            Ok(Some(FeatureData::new(
+                self.feature_name(),
+                serde_json::json!({ "reasoning_present": true }),
+            )))
+        } else {
+            Ok(None)
+        }
     }
 
     fn validate_params(&self, params: &FeatureParams) -> AppResult<()> {
@@ -226,5 +225,68 @@ mod tests {
     fn test_cost_multiplier() {
         let adapter = AnthropicThinkingAdapter;
         assert_eq!(adapter.cost_multiplier(), 1.0);
+    }
+
+    fn blank_request() -> CompletionRequest {
+        CompletionRequest {
+            model: "claude-sonnet-4-5".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
+            n: None,
+            logit_bias: None,
+            parallel_tool_calls: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
+            pre_computed_routing: None,
+        }
+    }
+
+    #[test]
+    fn test_adapt_request_writes_budget_to_extensions() {
+        let adapter = AnthropicThinkingAdapter;
+        let mut request = blank_request();
+        let mut params = HashMap::new();
+        params.insert("thinking_budget".to_string(), json!(5000));
+
+        adapter.adapt_request(&mut request, &params).unwrap();
+
+        let ext = request.extensions.expect("extensions populated");
+        assert_eq!(
+            ext.get("anthropic_thinking")
+                .and_then(|cfg| cfg.get("thinking_budget"))
+                .and_then(|v| v.as_u64()),
+            Some(5000)
+        );
+    }
+
+    #[test]
+    fn test_adapt_request_rejects_small_budget() {
+        let adapter = AnthropicThinkingAdapter;
+        let mut request = blank_request();
+        let mut params = HashMap::new();
+        params.insert("thinking_budget".to_string(), json!(500));
+
+        assert!(adapter.adapt_request(&mut request, &params).is_err());
+        assert!(request.extensions.is_none());
     }
 }

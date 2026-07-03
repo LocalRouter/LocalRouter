@@ -32,6 +32,19 @@ Follow-up from a whole-project review. A2A integration was explicitly excluded b
 6. **Implement Anthropic thinking-block parsing**
    (`crates/lr-providers/src/features/anthropic_thinking.rs:114`), per
    `plan/2026-03-22-REASONING_TOKEN_SUPPORT.md`.
+
+   **Scope note (2026-07-02):** the feature was advertised but entirely
+   unwired — the provider never sent `thinking` to the API, and a thinking
+   block in a response would have failed deserialization (missing enum
+   variant). Implemented end-to-end: budget flows from the feature adapter
+   (extensions) or OpenAI-style `reasoning_effort` into the Messages API
+   `thinking` param (with the required max_tokens > budget and temperature
+   omission), and thinking blocks are parsed into `reasoning_content` for
+   both non-streaming and streaming responses. Known limitation: signed
+   thinking blocks are not round-tripped into subsequent requests (OpenAI
+   wire format has no channel for them), so multi-turn tool use with
+   thinking enabled may be rejected by Anthropic — same limitation other
+   OpenAI-compatible proxies have.
 7. **Validate MCP elicitation responses against schema**
    (`crates/lr-mcp/src/gateway/elicitation.rs:191`).
 8. **linux/arm64 builds** (GitHub issue #6) — add `linux/arm64` to
