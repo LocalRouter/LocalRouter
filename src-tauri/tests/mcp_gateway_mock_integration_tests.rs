@@ -2474,3 +2474,112 @@ async fn test_legacy_clients_get_untagged_responses() {
     assert!(result.get("ttlMs").is_none());
     assert!(result.get("cacheScope").is_none());
 }
+
+#[tokio::test]
+async fn test_backend_discover_probe_skips_initialize() {
+    let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
+
+    // server1 is a 2026-07-28 stateless backend: it answers server/discover
+    server1_mock
+        .mock_method(
+            "server/discover",
+            json!({
+                "protocolVersions": ["2026-07-28", "2025-11-25"],
+                "serverInfo": { "name": "Stateless One", "version": "2.0" },
+                "capabilities": { "tools": { "listChanged": true } }
+            }),
+        )
+        .await;
+    server1_mock
+        .mock_method(
+            "tools/list",
+            json!({
+                "tools": [{"name": "s_tool", "description": "x", "inputSchema": {"type": "object"}}],
+                "resultType": "complete",
+                "ttlMs": 30000,
+                "cacheScope": "private"
+            }),
+        )
+        .await;
+    // server2 is legacy: no server/discover mock (probe 404s → initialize fallback)
+    server2_mock
+        .mock_method("tools/list", json!({ "tools": [] }))
+        .await;
+
+    let allowed = vec!["server1".to_string(), "server2".to_string()];
+    init_session(&gateway, "mixed-client", allowed.clone()).await;
+
+    let request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
+    let response = gateway
+        .handle_request("mixed-client", allowed, vec![], request)
+        .await
+        .unwrap();
+
+    assert!(response.error.is_none(), "{:?}", response.error);
+    let result = extract_result(&response);
+    let tools = result["tools"].as_array().unwrap();
+    assert!(
+        tools.iter().any(|t| t["name"] == "test-server-1__s_tool"),
+        "expected tool from stateless backend, got: {}",
+        result["tools"]
+    );
+
+    // The stateless backend must never receive an initialize handshake…
+    let reqs = server1_mock.server.received_requests().await.unwrap();
+    let init_posts = reqs
+        .iter()
+        .filter(|r| {
+            serde_json::from_slice::<serde_json::Value>(&r.body)
+                .ok()
+                .and_then(|b| b.get("method").and_then(|m| m.as_str()).map(String::from))
+                .as_deref()
+                == Some("initialize")
+        })
+        .count();
+    assert_eq!(init_posts, 0, "stateless backend received initialize");
+
+    // …and its tools/list request must carry the stateless _meta and headers.
+    let tools_post = reqs
+        .iter()
+        .find(|r| {
+            serde_json::from_slice::<serde_json::Value>(&r.body)
+                .ok()
+                .and_then(|b| b.get("method").and_then(|m| m.as_str()).map(String::from))
+                .as_deref()
+                == Some("tools/list")
+        })
+        .expect("stateless backend received tools/list");
+    let body: serde_json::Value = serde_json::from_slice(&tools_post.body).unwrap();
+    assert_eq!(
+        body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
+        "2026-07-28"
+    );
+    assert_eq!(
+        tools_post
+            .headers
+            .get("mcp-method")
+            .and_then(|v| v.to_str().ok()),
+        Some("tools/list")
+    );
+    assert_eq!(
+        tools_post
+            .headers
+            .get("mcp-protocol-version")
+            .and_then(|v| v.to_str().ok()),
+        Some("2026-07-28")
+    );
+
+    // The legacy backend still gets the classic handshake.
+    let legacy_reqs = server2_mock.server.received_requests().await.unwrap();
+    let legacy_inits = legacy_reqs
+        .iter()
+        .filter(|r| {
+            serde_json::from_slice::<serde_json::Value>(&r.body)
+                .ok()
+                .and_then(|b| b.get("method").and_then(|m| m.as_str()).map(String::from))
+                .as_deref()
+                == Some("initialize")
+        })
+        .count();
+    assert!(legacy_inits > 0, "legacy backend never got initialize");
+}

@@ -89,6 +89,40 @@ pub struct SseTransport {
     stream_task: Arc<RwLock<Option<JoinHandle<()>>>>,
 }
 
+/// Derive the standard MCP HTTP headers for an outgoing POST (SEP-2243).
+///
+/// `MCP-Protocol-Version` reflects the revision declared in the request's
+/// `_meta` (injected by the session transport set for stateless backends),
+/// defaulting to the legacy version. `Mcp-Method`/`Mcp-Name` mirror the
+/// JSON-RPC body so 2026-07-28 servers and load balancers can route on the
+/// operation without inspecting it; legacy servers ignore them.
+fn mcp_request_headers(request: &JsonRpcRequest) -> Vec<(&'static str, String)> {
+    let version = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("_meta"))
+        .and_then(|m| m.get(crate::protocol::meta_keys::PROTOCOL_VERSION))
+        .and_then(|v| v.as_str())
+        .unwrap_or(crate::protocol::MCP_PROTOCOL_VERSION)
+        .to_string();
+
+    let mut headers = vec![
+        ("MCP-Protocol-Version", version),
+        ("Mcp-Method", request.method.clone()),
+    ];
+
+    if let Some(name) = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("name").or_else(|| p.get("uri")))
+        .and_then(|v| v.as_str())
+    {
+        headers.push(("Mcp-Name", name.to_string()));
+    }
+
+    headers
+}
+
 impl SseTransport {
     /// Parse SSE response and extract JSON data
     ///
@@ -681,6 +715,9 @@ impl Transport for SseTransport {
             // Build POST request for notification (no ID added)
             let mut req_builder = self.client.post(&post_url).json(&request);
             req_builder = req_builder.header("Accept", "application/json, text/event-stream");
+            for (key, value) in mcp_request_headers(&request) {
+                req_builder = req_builder.header(key, value);
+            }
             for (key, value) in &self.headers {
                 req_builder = req_builder.header(key, value);
             }
@@ -745,6 +782,11 @@ impl Transport for SseTransport {
 
         // Add Accept header for content negotiation
         req_builder = req_builder.header("Accept", "application/json, text/event-stream");
+
+        // Add standard MCP request headers (SEP-2243)
+        for (key, value) in mcp_request_headers(&request) {
+            req_builder = req_builder.header(key, value);
+        }
 
         // Add custom headers
         for (key, value) in &self.headers {
@@ -899,6 +941,11 @@ impl Transport for SseTransport {
 
         // Build POST request
         let mut req_builder = self.client.post(&self.url).json(&request);
+
+        // Add standard MCP request headers (SEP-2243)
+        for (key, value) in mcp_request_headers(&request) {
+            req_builder = req_builder.header(key, value);
+        }
 
         // Add headers
         for (key, value) in &self.headers {

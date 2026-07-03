@@ -39,6 +39,11 @@ pub struct McpGateway {
     /// MCP server manager
     pub(crate) server_manager: Arc<McpServerManager>,
 
+    /// Cached protocol revision per backend server id, learned from the
+    /// `server/discover` probe. Known-legacy backends skip re-probing on
+    /// every new session; entries live for the gateway's lifetime.
+    pub(crate) backend_revision_cache: DashMap<String, crate::protocol::ProtocolRevision>,
+
     /// Gateway configuration
     pub(crate) config: GatewayConfig,
 
@@ -193,6 +198,7 @@ impl McpGateway {
         Self {
             sessions: Arc::new(DashMap::new()),
             server_manager,
+            backend_revision_cache: DashMap::new(),
             client_request_sender: parking_lot::RwLock::new(None),
             live_sampling: Arc::new(parking_lot::RwLock::new(config.sampling.clone())),
             live_elicitation_mode: Arc::new(parking_lot::RwLock::new(
@@ -859,6 +865,84 @@ impl McpGateway {
             )));
         }
         Ok(())
+    }
+
+    /// Probe a backend with `server/discover` (2026-07-28).
+    ///
+    /// Returns a synthesized `InitializeResult` when the backend supports the
+    /// stateless revision, so it can be merged alongside legacy handshake
+    /// results. Any error, timeout, or missing 2026-07-28 support means the
+    /// backend is treated as legacy.
+    async fn probe_server_discover(
+        &self,
+        transport_set: &Arc<SessionTransportSet>,
+        server_id: &str,
+        timeout: Duration,
+    ) -> Option<InitializeResult> {
+        let discover = JsonRpcRequest::with_id(
+            0,
+            "server/discover".to_string(),
+            Some(json!({
+                "_meta": {
+                    crate::protocol::meta_keys::PROTOCOL_VERSION:
+                        crate::protocol::MCP_PROTOCOL_VERSION_STATELESS,
+                    crate::protocol::meta_keys::CLIENT_INFO: {
+                        "name": "LocalRouter MCP Gateway",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                }
+            })),
+        );
+
+        let response =
+            tokio::time::timeout(timeout, transport_set.send_request(server_id, discover))
+                .await
+                .ok()?
+                .ok()?;
+        if response.error.is_some() {
+            return None;
+        }
+        let value = response.result?;
+
+        let supports_stateless = value
+            .get("protocolVersions")
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| {
+                arr.iter()
+                    .any(|v| v.as_str() == Some(crate::protocol::MCP_PROTOCOL_VERSION_STATELESS))
+            });
+        if !supports_stateless {
+            return None;
+        }
+
+        let capabilities = value
+            .get("capabilities")
+            .cloned()
+            .and_then(|c| serde_json::from_value(c).ok())
+            .unwrap_or_default();
+        let server_info = value
+            .get("serverInfo")
+            .cloned()
+            .and_then(|s| serde_json::from_value(s).ok())
+            .unwrap_or(ServerInfo {
+                name: server_id.to_string(),
+                version: String::new(),
+                description: None,
+            });
+
+        Some(InitializeResult {
+            // Reported downstream via the min() of backend versions: keep the
+            // legacy string so legacy clients never see a revision they can't
+            // speak. The backend's stateless revision is tracked separately
+            // on the transport set.
+            protocol_version: crate::protocol::MCP_PROTOCOL_VERSION.to_string(),
+            capabilities,
+            server_info,
+            instructions: value
+                .get("instructions")
+                .and_then(|i| i.as_str())
+                .map(str::to_string),
+        })
     }
 
     /// Handle `server/discover` (2026-07-28): advertise supported protocol
@@ -2052,12 +2136,60 @@ impl McpGateway {
             modified_request
         };
 
-        // Broadcast initialize to all successfully started servers
+        // Declare the (filtered) client capabilities to stateless backends:
+        // they travel in `_meta` on every request instead of an initialize.
+        if let Some(caps) = broadcast_request_msg
+            .params
+            .as_ref()
+            .and_then(|p| p.get("capabilities"))
+        {
+            transport_set.set_client_capabilities(caps.clone());
+        }
+
+        // Probe backends for 2026-07-28 stateless support (server/discover)
+        // before falling back to the legacy initialize handshake. Backends
+        // already known to be legacy skip the probe.
+        let mut discovered_results: Vec<(String, InitializeResult)> = Vec::new();
+        let mut servers_needing_initialize: Vec<String> = Vec::new();
+        let probe_timeout = Duration::from_secs(5);
+        for server_id in &servers_to_initialize {
+            let known_legacy = self
+                .backend_revision_cache
+                .get(server_id)
+                .map(|e| !e.value().is_stateless())
+                .unwrap_or(false);
+            if !known_legacy {
+                if let Some(init_result) = self
+                    .probe_server_discover(&transport_set, server_id, probe_timeout)
+                    .await
+                {
+                    tracing::info!(
+                        "Backend {} speaks MCP 2026-07-28 (stateless); skipping initialize",
+                        server_id
+                    );
+                    self.backend_revision_cache.insert(
+                        server_id.clone(),
+                        crate::protocol::ProtocolRevision::V2026_07_28,
+                    );
+                    transport_set
+                        .set_revision(server_id, crate::protocol::ProtocolRevision::V2026_07_28);
+                    discovered_results.push((server_id.clone(), init_result));
+                    continue;
+                }
+                self.backend_revision_cache.insert(
+                    server_id.clone(),
+                    crate::protocol::ProtocolRevision::V2025_11_25,
+                );
+            }
+            servers_needing_initialize.push(server_id.clone());
+        }
+
+        // Broadcast initialize to the legacy backends
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
         let results = broadcast_request(
-            &servers_to_initialize,
+            &servers_needing_initialize,
             broadcast_request_msg,
             &transport_set,
             timeout,
@@ -2071,8 +2203,8 @@ impl McpGateway {
         // Include servers that failed to start in the failures list
         failures.extend(start_failures);
 
-        // Parse initialize results
-        let init_results: Vec<(String, InitializeResult)> = successes
+        // Parse initialize results from the legacy handshake
+        let legacy_init_results: Vec<(String, InitializeResult)> = successes
             .into_iter()
             .filter_map(|(server_id, value)| {
                 serde_json::from_value::<InitializeResult>(value)
@@ -2080,6 +2212,16 @@ impl McpGateway {
                     .map(|result| (server_id, result))
             })
             .collect();
+
+        // Only legacy-handshake backends expect notifications/initialized
+        let legacy_server_ids: Vec<String> = legacy_init_results
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        // Combine legacy and discover-probed backends for merging and handlers
+        let mut init_results = legacy_init_results;
+        init_results.extend(discovered_results);
 
         // Register per-session request callbacks on transports before completing
         // the handshake. Servers may send requests (elicitation, sampling, roots/list)
@@ -2109,11 +2251,12 @@ impl McpGateway {
             &transport_set,
         );
 
-        // Send notifications/initialized to all successfully initialized servers
-        // via session transports. This completes the MCP handshake — servers fire
+        // Send notifications/initialized to legacy-handshake servers via
+        // session transports. This completes the MCP handshake — servers fire
         // oninitialized callbacks which may register conditional tools based on
-        // client capabilities.
-        for (server_id, _) in &init_results {
+        // client capabilities. Stateless (2026-07-28) backends have no
+        // handshake to complete.
+        for server_id in &legacy_server_ids {
             let notification = JsonRpcRequest::new(
                 None,
                 "notifications/initialized".to_string(),
