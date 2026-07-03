@@ -100,6 +100,9 @@ jobs:
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             bundles: deb,appimage
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: deb,appimage
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: msi,nsis
@@ -138,7 +141,7 @@ jobs:
           restore-keys: catalog-
 
       - name: Install Linux dependencies
-        if: matrix.settings.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.settings.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -271,6 +274,23 @@ jobs:
             done
           fi
 
+          # --- Linux (arm64) ---
+          LINUX_ARM_DIR="artifacts/artifacts-aarch64-unknown-linux-gnu"
+          if [ -d "$LINUX_ARM_DIR" ]; then
+            find "$LINUX_ARM_DIR" -type f -name "*.AppImage" ! -name "*.tar.gz" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_aarch64.AppImage"
+            done
+            find "$LINUX_ARM_DIR" -type f -name "*.deb" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_arm64.deb"
+            done
+            find "$LINUX_ARM_DIR" -type f -name "*.AppImage.tar.gz" ! -name "*.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_aarch64.AppImage.tar.gz"
+            done
+            find "$LINUX_ARM_DIR" -type f -name "*.AppImage.tar.gz.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_aarch64.AppImage.tar.gz.sig"
+            done
+          fi
+
           # --- Windows ---
           WIN_DIR="artifacts/artifacts-x86_64-pc-windows-msvc"
           if [ -d "$WIN_DIR" ]; then
@@ -302,6 +322,8 @@ jobs:
           for f in *_x64_en-US.msi; do [ -f "$f" ] && cp "$f" "LocalRouter_x64.msi"; done
           for f in *_amd64.deb; do [ -f "$f" ] && cp "$f" "LocalRouter_amd64.deb"; done
           for f in *_amd64.AppImage; do [ -f "$f" ] && cp "$f" "LocalRouter_amd64.AppImage"; done
+          for f in *_arm64.deb; do [ -f "$f" ] && cp "$f" "LocalRouter_arm64.deb"; done
+          for f in *_"${VERSION}"_aarch64.AppImage; do [ -f "$f" ] && cp "$f" "LocalRouter_aarch64.AppImage"; done
           cd ..
 
           echo "Release assets prepared:"
@@ -351,6 +373,7 @@ jobs:
           MACOS_X64_SIG=$(get_sig "LocalRouter_${VERSION}_x64.app.tar.gz.sig")
           MACOS_AARCH64_SIG=$(get_sig "LocalRouter_${VERSION}_aarch64.app.tar.gz.sig")
           LINUX_SIG=$(get_sig "LocalRouter_${VERSION}_amd64.AppImage.tar.gz.sig")
+          LINUX_ARM_SIG=$(get_sig "LocalRouter_${VERSION}_aarch64.AppImage.tar.gz.sig")
           WINDOWS_MSI_SIG=$(get_sig "LocalRouter_${VERSION}_x64_en-US.msi.zip.sig")
 
           cat > release-assets/latest.json << EOF
@@ -370,6 +393,10 @@ jobs:
               "linux-x86_64": {
                 "signature": "${LINUX_SIG}",
                 "url": "${BASE_URL}/LocalRouter_${VERSION}_amd64.AppImage.tar.gz"
+              },
+              "linux-aarch64": {
+                "signature": "${LINUX_ARM_SIG}",
+                "url": "${BASE_URL}/LocalRouter_${VERSION}_aarch64.AppImage.tar.gz"
               },
               "windows-x86_64": {
                 "signature": "${WINDOWS_MSI_SIG}",

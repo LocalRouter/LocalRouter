@@ -13,10 +13,13 @@
 # ---- Stage 1: download the AppImage --------------------------------------
 FROM debian:bookworm-slim AS downloader
 
-# Default to the version-agnostic stable URL produced by release.yml so a plain
-# `docker build .` works without arguments. CI overrides this with the exact
-# versioned URL of the release that just published.
-ARG APPIMAGE_URL=https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_amd64.AppImage
+# Default to the version-agnostic stable URLs produced by release.yml so a
+# plain `docker build .` works without arguments. CI overrides these with the
+# exact versioned URLs of the release that just published. The per-platform
+# TARGETARCH (set automatically by BuildKit) selects which one to fetch.
+ARG TARGETARCH
+ARG APPIMAGE_URL_AMD64=https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_amd64.AppImage
+ARG APPIMAGE_URL_ARM64=https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_aarch64.AppImage
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -24,6 +27,11 @@ RUN apt-get update \
 
 WORKDIR /tmp/dl
 RUN set -eux; \
+    case "$TARGETARCH" in \
+        amd64) APPIMAGE_URL="$APPIMAGE_URL_AMD64" ;; \
+        arm64) APPIMAGE_URL="$APPIMAGE_URL_ARM64" ;; \
+        *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
     curl -fL --retry 5 --retry-delay 5 -o LocalRouter.AppImage "$APPIMAGE_URL"; \
     chmod +x LocalRouter.AppImage
 

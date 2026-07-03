@@ -92,9 +92,11 @@ docker run --rm -it \
 ```bash
 docker build -t local-router .
 
-# Pin to a specific release:
+# Pin to a specific release (per-arch AppImage URLs; BuildKit picks the
+# right one for the target platform via TARGETARCH):
 docker build \
-  --build-arg APPIMAGE_URL=https://github.com/LocalRouter/LocalRouter/releases/download/v0.1.0/LocalRouter_0.1.0_amd64.AppImage \
+  --build-arg APPIMAGE_URL_AMD64=https://github.com/LocalRouter/LocalRouter/releases/download/v0.1.0/LocalRouter_0.1.0_amd64.AppImage \
+  --build-arg APPIMAGE_URL_ARM64=https://github.com/LocalRouter/LocalRouter/releases/download/v0.1.0/LocalRouter_0.1.0_aarch64.AppImage \
   -t local-router:0.1.0 .
 ```
 
@@ -124,8 +126,8 @@ versions inherit that setting automatically.
 ## Limitations and roadmap
 
 - Linux hosts only (X11 forwarding requirement).
-- linux/amd64 only — multi-arch (linux/arm64) support depends on adding
-  aarch64 Linux to the release CI matrix.
+- Multi-arch: linux/amd64 and linux/arm64 (Raspberry Pi 4/5 and other
+  aarch64 hosts) for releases from v0.0.125 onward.
 - A true headless `--server-only` mode (no Tauri/webview) and a corresponding
   slim image are tracked as future work — they would make the image runnable
   on macOS, Windows, and ARM hosts as a server-only API gateway.
