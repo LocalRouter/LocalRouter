@@ -1953,6 +1953,7 @@ impl McpGateway {
                     prompts: None,
                     logging: None,
                     completions: None,
+                    extensions: None,
                 },
                 server_info: ServerInfo {
                     name: "LocalRouter MCP Gateway".to_string(),
@@ -2163,6 +2164,7 @@ impl McpGateway {
                         prompts: None,
                         logging: None,
                         completions: None,
+                        extensions: None,
                     },
                     server_info: ServerInfo {
                         name: "LocalRouter MCP Gateway (skills-only)".to_string(),

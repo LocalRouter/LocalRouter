@@ -449,6 +449,11 @@ pub struct ServerCapabilities {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completions: Option<CompletionsCapability>,
+
+    /// Extensions map (2026-07-28, SEP-2133): reverse-DNS extension id →
+    /// extension-specific configuration. Passed through from backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<serde_json::Value>,
 }
 
 /// Completions capability (argument auto-completion)

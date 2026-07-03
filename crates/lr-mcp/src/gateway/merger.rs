@@ -120,6 +120,21 @@ pub fn merge_initialize_results(
         if result.capabilities.completions.is_some() {
             merged_capabilities.completions = Some(CompletionsCapability {});
         }
+
+        // Union extension maps (2026-07-28, SEP-2133). The first backend to
+        // declare an extension id wins on conflicting configurations.
+        if let Some(serde_json::Value::Object(ext)) = &result.capabilities.extensions {
+            let merged_ext = merged_capabilities
+                .extensions
+                .get_or_insert_with(|| serde_json::Value::Object(Default::default()));
+            if let Some(merged_map) = merged_ext.as_object_mut() {
+                for (key, value) in ext {
+                    merged_map
+                        .entry(key.clone())
+                        .or_insert_with(|| value.clone());
+                }
+            }
+        }
     }
 
     // Build server description with catalog listing
@@ -2366,6 +2381,70 @@ mod tests {
         assert!(merged.capabilities.tools.is_some());
         assert!(merged.capabilities.resources.is_some());
         assert_eq!(merged.server_info.name, "LocalRouter Unified Gateway");
+    }
+
+    #[test]
+    fn test_merge_initialize_results_unions_extensions() {
+        let make_result = |ext: serde_json::Value| InitializeResult {
+            protocol_version: "2025-11-25".to_string(),
+            capabilities: ServerCapabilities {
+                extensions: Some(ext),
+                ..Default::default()
+            },
+            server_info: ServerInfo {
+                name: "srv".to_string(),
+                version: "1.0.0".to_string(),
+                description: None,
+            },
+            instructions: None,
+        };
+
+        let results = vec![
+            (
+                "a".to_string(),
+                make_result(json!({
+                    "io.modelcontextprotocol/tasks": { "version": "1" },
+                    "com.example/shared": { "from": "a" }
+                })),
+            ),
+            (
+                "b".to_string(),
+                make_result(json!({
+                    "com.example/other": {},
+                    "com.example/shared": { "from": "b" }
+                })),
+            ),
+        ];
+
+        let merged = merge_initialize_results(results, vec![]);
+        let ext = merged.capabilities.extensions.unwrap();
+
+        // Union of all extension ids
+        assert!(ext.get("io.modelcontextprotocol/tasks").is_some());
+        assert!(ext.get("com.example/other").is_some());
+        // First declaration wins on conflict
+        assert_eq!(ext["com.example/shared"]["from"], "a");
+    }
+
+    #[test]
+    fn test_merge_initialize_results_no_extensions_stays_absent() {
+        let results = vec![(
+            "a".to_string(),
+            InitializeResult {
+                protocol_version: "2025-11-25".to_string(),
+                capabilities: ServerCapabilities::default(),
+                server_info: ServerInfo {
+                    name: "srv".to_string(),
+                    version: "1.0.0".to_string(),
+                    description: None,
+                },
+                instructions: None,
+            },
+        )];
+
+        let merged = merge_initialize_results(results, vec![]);
+        // Legacy responses must not grow an extensions key
+        assert!(merged.capabilities.extensions.is_none());
     }
 
     #[test]
