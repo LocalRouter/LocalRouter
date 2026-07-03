@@ -93,21 +93,30 @@ moving on to other work.
 
 ## Project Structure
 
-### Backend (~67k LOC)
+### Backend (~67k LOC, multi-crate workspace)
+
+Backend logic lives in `crates/`; `src-tauri/src` is a thin Tauri shell
+(`lib.rs` re-exports the crates, only `cli`, `launcher`, `ui`, `updater`
+are local modules).
+
 ```
+crates/
+├── lr-server/      # Axum, OpenAI API, OpenAPI (routes/, middleware/, openapi/)
+├── lr-providers/   # 19 providers, feature adapters, OAuth (features/, oauth/)
+├── lr-mcp/         # MCP proxy (bridge/, gateway/, transport/)
+├── lr-monitoring/  # 4-tier metrics, logging
+├── lr-config/      # YAML config, validation, migration
+├── lr-router/      # Rate limiting, routing engine
+├── lr-clients/     # Unified client system
+├── lr-catalog/     # Model catalog and pricing
+├── lr-routellm/    # RouteLLM integration
+└── ...             # skills, memory, guardrails, oauth, types, utils, more
+
 src-tauri/src/
-├── server/         # Axum, OpenAI API, OpenAPI (routes/, middleware/, openapi/)
-├── providers/      # 19 providers, feature adapters, OAuth (features/, oauth/)
-├── mcp/            # MCP proxy (bridge/, gateway/, transport/)
-├── monitoring/     # 4-tier metrics, logging
-├── config/         # YAML config, validation, migration
-├── router/         # Rate limiting, routing engine
-├── clients/        # Unified client system
-├── catalog/        # Model catalog
-├── routellm/       # RouteLLM integration
+├── ui/             # Tauri commands, tray
+├── launcher/       # App startup wiring
 ├── updater/        # App updates
-├── ui/             # Tauri commands
-└── utils/          # Crypto, errors
+└── cli.rs          # CLI entry
 ```
 
 ### Frontend (~28k LOC)
@@ -120,11 +129,12 @@ src/
 ```
 
 ### Key Locations
-- Config: `src-tauri/src/config/`
-- API server: `src-tauri/src/server/`
-- Providers: `src-tauri/src/providers/`
-- MCP: `src-tauri/src/mcp/`
-- OpenAPI: `src-tauri/src/server/openapi/`
+- Config: `crates/lr-config/`
+- API server: `crates/lr-server/`
+- Providers: `crates/lr-providers/`
+- MCP: `crates/lr-mcp/`
+- OpenAPI: `crates/lr-server/src/openapi/`
+- Tauri commands: `src-tauri/src/ui/`
 
 ---
 
@@ -158,16 +168,19 @@ export LOCALROUTER_KEYCHAIN=file  # WARNING: plain text secrets!
 
 ## Documentation
 
-Plans in `./plan/` directory (223 documents). Key files:
+Plans in `./plan/` directory (260+ dated documents — the newest files are the
+current source of truth). Key files:
 - `plan/2026-01-14-ARCHITECTURE.md` - System design
-- `plan/2026-01-14-PROGRESS.md` - Feature tracking
 - `plan/2026-01-17-MCP_AUTH_REDESIGN.md` - Client architecture
+
+Note: `plan/2026-01-14-PROGRESS.md` is historical (abandoned 2026-01-21) —
+do not use it for feature tracking.
 
 ---
 
 ## Development Workflow
 
-1. Check `plan/2026-01-14-PROGRESS.md` for available features
+1. Check the newest dated files in `plan/` for current work and context
 2. Read relevant architecture docs
 3. Implement with tests
 4. Run `cargo test && cargo clippy && cargo fmt`

@@ -56,14 +56,20 @@ cargo test && cargo clippy && cargo fmt
 Built with Rust (backend) and React (frontend) using Tauri 2.x.
 
 ```
+crates/
+├── lr-server/      # Axum web server, OpenAI-compatible API
+├── lr-providers/   # Provider implementations, feature adapters, OAuth
+├── lr-router/      # Request routing, rate limiting
+├── lr-mcp/         # MCP proxy (STDIO, SSE transports), unified gateway
+├── lr-monitoring/  # Metrics collection, dashboards
+├── lr-config/      # YAML config, validation, migration
+├── lr-catalog/     # Model catalog and pricing
+└── ...             # clients, skills, memory, guardrails, and more
+
 src-tauri/src/
-├── server/         # Axum web server, OpenAI-compatible API
-├── providers/      # Provider implementations, feature adapters
-├── router/         # Request routing, rate limiting
-├── mcp/            # MCP proxy (STDIO, SSE transports)
-├── monitoring/     # Metrics collection, dashboards
-├── config/         # YAML config, validation
-└── ui/             # Tauri command handlers
+├── ui/             # Tauri command handlers, tray
+├── launcher/       # App startup wiring
+└── updater/        # Self-update
 
 src/
 ├── components/     # React UI components
