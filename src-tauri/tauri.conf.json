@@ -1,6 +1,6 @@
 {
   "productName": "LocalRouter",
-  "version": "0.0.125",
+  "version": "0.0.126",
   "identifier": "ai.localrouter.app",
   "build": {
     "beforeDevCommand": "npm run dev",
