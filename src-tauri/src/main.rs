@@ -591,6 +591,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         .await?;
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -600,6 +604,30 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
             // Set app handle on config manager for event emission
             config_manager.set_app_handle(app.handle().clone());
+
+            // Sync the OS launch-at-login state with the config setting
+            // (default on). The OS state can drift (e.g. removed via macOS
+            // System Settings); the config is the source of truth.
+            // Skipped in debug builds so `cargo tauri dev` doesn't register
+            // the dev binary as a login item; the Settings toggle still
+            // works manually for testing.
+            if !cfg!(debug_assertions) {
+                use tauri_plugin_autostart::ManagerExt;
+                let autolaunch = app.autolaunch();
+                let want = config_manager.get().start_on_boot;
+                let is = autolaunch.is_enabled().unwrap_or(false);
+                if want && !is {
+                    if let Err(e) = autolaunch.enable() {
+                        tracing::warn!("Failed to enable start-on-boot: {}", e);
+                    } else {
+                        info!("Start-on-boot enabled (login item registered)");
+                    }
+                } else if !want && is {
+                    if let Err(e) = autolaunch.disable() {
+                        tracing::warn!("Failed to disable start-on-boot: {}", e);
+                    }
+                }
+            }
 
             // File watcher disabled - it was causing duplicate config-changed events
             // when saving from the app. The update() method already emits events.
@@ -2596,6 +2624,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Setup wizard commands
             ui::commands::get_setup_wizard_shown,
             ui::commands::set_setup_wizard_shown,
+            // Start-on-boot (launch at login)
+            ui::commands::get_start_on_boot,
+            ui::commands::set_start_on_boot,
             // RouteLLM intelligent routing commands
             ui::commands_routellm::routellm_get_status,
             ui::commands_routellm::routellm_test_prediction,

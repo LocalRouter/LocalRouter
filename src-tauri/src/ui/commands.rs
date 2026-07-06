@@ -971,6 +971,49 @@ pub async fn set_setup_wizard_shown(
     config_manager.save().await.map_err(|e| e.to_string())
 }
 
+/// Whether LocalRouter launches automatically at login.
+///
+/// Reflects the config setting (source of truth); the OS launch mechanism
+/// is kept in sync on startup and by `set_start_on_boot`.
+#[tauri::command]
+pub async fn get_start_on_boot(config_manager: State<'_, ConfigManager>) -> Result<bool, String> {
+    Ok(config_manager.get().start_on_boot)
+}
+
+/// Enable or disable launching LocalRouter at login.
+///
+/// Updates the OS launch mechanism (macOS LaunchAgent, Windows registry,
+/// XDG autostart) and persists the setting to the config.
+#[tauri::command]
+pub async fn set_start_on_boot(
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch
+            .enable()
+            .map_err(|e| format!("Failed to enable start-on-boot: {}", e))?;
+    } else {
+        autolaunch
+            .disable()
+            .map_err(|e| format!("Failed to disable start-on-boot: {}", e))?;
+    }
+
+    config_manager
+        .update(|cfg| {
+            cfg.start_on_boot = enabled;
+        })
+        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    tracing::info!("Start-on-boot set to {}", enabled);
+    Ok(())
+}
+
 // ============================================================================
 // Access Logs Commands
 // ============================================================================

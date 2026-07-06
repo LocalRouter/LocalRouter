@@ -2298,6 +2298,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'end_coding_session': () => null,
   'get_max_coding_sessions': () => 10,
   'set_max_coding_sessions': () => null,
+  'get_start_on_boot': () => true,
+  'set_start_on_boot': () => null,
   'set_client_coding_agent_permission': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId)
     if (client) {

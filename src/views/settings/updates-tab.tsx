@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { check, Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { toast } from "sonner"
-import { RefreshCw, Download, SkipForward } from "lucide-react"
+import { Power, RefreshCw, Download, SkipForward } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import ReactMarkdown from "react-markdown"
+import type { SetStartOnBootParams } from "@/types/tauri-commands"
 
 
 interface UpdateConfig {
@@ -38,13 +39,40 @@ export function UpdatesTab() {
   const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null)
   const [skippedUpdate, setSkippedUpdate] = useState<Update | null>(null)
   const [isDownloading, setIsDownloading] = useState(false)
+  const [startOnBoot, setStartOnBoot] = useState<boolean>(true)
+  const [startOnBootBusy, setStartOnBootBusy] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
 
   useEffect(() => {
     loadCurrentVersion()
     loadUpdateConfig()
+    loadStartOnBoot()
     checkForUpdatesOnMount()
   }, [])
+
+  const loadStartOnBoot = async () => {
+    try {
+      const enabled = await invoke<boolean>("get_start_on_boot")
+      setStartOnBoot(enabled)
+    } catch (error) {
+      console.error("Failed to load start-on-boot setting:", error)
+    }
+  }
+
+  const toggleStartOnBoot = async (enabled: boolean) => {
+    setStartOnBootBusy(true)
+    // Optimistic update; reverted on failure
+    setStartOnBoot(enabled)
+    try {
+      await invoke("set_start_on_boot", { enabled } satisfies SetStartOnBootParams)
+      toast.success(enabled ? "LocalRouter will start at login" : "Start at login disabled")
+    } catch (error: any) {
+      setStartOnBoot(!enabled)
+      toast.error(`Failed to update start at login: ${error.message || error}`)
+    } finally {
+      setStartOnBootBusy(false)
+    }
+  }
 
   const loadCurrentVersion = async () => {
     try {
@@ -251,6 +279,35 @@ export function UpdatesTab() {
 
   return (
     <div className="space-y-6 max-w-2xl">
+      {/* Startup */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Power className="h-4 w-4" />
+            Startup
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <Label htmlFor="start-on-boot" className="text-sm">
+                Start LocalRouter at login
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Launches LocalRouter automatically when you log in, so connected
+                apps can always reach the LLM API and MCP gateway.
+              </p>
+            </div>
+            <Switch
+              id="start-on-boot"
+              checked={startOnBoot}
+              disabled={startOnBootBusy}
+              onCheckedChange={toggleStartOnBoot}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Version & Check */}
       <Card>
         <CardContent className="pt-6">

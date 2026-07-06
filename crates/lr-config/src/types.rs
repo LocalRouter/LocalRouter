@@ -514,6 +514,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub setup_wizard_shown: bool,
 
+    /// Launch LocalRouter automatically when the user logs in.
+    /// Synced to the OS launch mechanism (macOS LaunchAgent, Windows
+    /// registry, XDG autostart) on startup and when toggled in settings.
+    #[serde(default = "default_true")]
+    pub start_on_boot: bool,
+
     /// Health check configuration for providers and MCP servers
     #[serde(default)]
     pub health_check: HealthCheckConfig,
@@ -3623,6 +3629,7 @@ impl Default for AppConfig {
             roots: Vec::new(),
             streaming: StreamingConfig::default(),
             setup_wizard_shown: false,
+            start_on_boot: true,
             health_check: HealthCheckConfig::default(),
             skills: SkillsConfig::default(),
             marketplace: MarketplaceConfig::default(),

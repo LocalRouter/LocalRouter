@@ -2909,6 +2909,11 @@ export interface SetMaxCodingSessionsParams {
   maxSessions: number
 }
 
+/** Params for set_start_on_boot */
+export interface SetStartOnBootParams {
+  enabled: boolean
+}
+
 /** Params for set_coding_agent_tool_prefix */
 export interface SetCodingAgentToolPrefixParams {
   prefix: string
