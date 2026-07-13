@@ -1363,12 +1363,35 @@ impl ChatMessageContent {
     }
 }
 
+impl Default for ChatMessageContent {
+    fn default() -> Self {
+        ChatMessageContent::Text(String::new())
+    }
+}
+
+/// Deserialize `content` tolerating a `null` or absent value.
+///
+/// OpenAI (and OpenAI-compatible) providers return `"content": null` on an
+/// assistant message that carries `tool_calls`. `content` is a required,
+/// non-optional field, so without this a non-streaming `.json()` decode of
+/// such a response fails with "error decoding response body" (surfaced to
+/// clients as a 502). We map `null`/missing to empty text — the assistant
+/// turn's signal lives in `tool_calls`, not `content`. The streaming path
+/// already tolerates this because its delta `content` is `Option<String>`.
+fn deserialize_nullable_content<'de, D>(deserializer: D) -> Result<ChatMessageContent, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<ChatMessageContent>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Chat message
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChatMessage {
     /// Role (system, user, assistant, tool)
     pub role: String,
     /// Message content (text or multimodal)
+    #[serde(default, deserialize_with = "deserialize_nullable_content")]
     pub content: ChatMessageContent,
     /// Tool calls made by the assistant (only for assistant role)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2201,6 +2224,38 @@ pub fn build_feature_endpoint_matrix() -> FeatureEndpointMatrix {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_message_tolerates_null_content_with_tool_calls() {
+        // Regression: OpenAI (and compatible providers) return
+        // `"content": null` alongside `tool_calls` on a non-streaming
+        // assistant turn. This MUST decode rather than fail `.json()` with
+        // "error decoding response body" (which surfaced to clients as 502).
+        let json = r#"{
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}}
+            ]
+        }"#;
+        let msg: ChatMessage = serde_json::from_str(json).expect("null content must parse");
+        assert_eq!(msg.role, "assistant");
+        assert!(msg.content.is_empty());
+        let calls = msg.tool_calls.expect("tool_calls must survive");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "get_weather");
+
+        // A completely absent `content` field must also decode.
+        let msg2: ChatMessage =
+            serde_json::from_str(r#"{"role":"assistant"}"#).expect("missing content must parse");
+        assert!(msg2.content.is_empty());
+
+        // Normal text content still round-trips unchanged.
+        let msg3: ChatMessage =
+            serde_json::from_str(r#"{"role":"assistant","content":"hi"}"#).unwrap();
+        assert_eq!(msg3.content.as_str(), "hi");
+    }
 
     #[test]
     fn test_token_usage_basic_serialization() {

@@ -162,20 +162,26 @@ pub async fn image_generations(
     let provider_response = match provider.generate_image(provider_request).await {
         Ok(resp) => resp,
         Err(e) => {
+            let err_text = e.to_string();
+            let api_err: ApiErrorResponse = e.into();
+            let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
 
             // Emit monitor error event
-            llm_guard.complete_error(&state, &provider_name, &request.model, 502, &e.to_string());
+            llm_guard.complete_error(
+                &state,
+                &provider_name,
+                &request.model,
+                status_code,
+                &err_text,
+            );
 
             tracing::error!(
                 "Image generation failed: latency={}ms, error={}",
                 latency,
-                e
+                err_text
             );
-            return Err(ApiErrorResponse::bad_gateway(format!(
-                "Provider error: {}",
-                e
-            )));
+            return Err(api_err);
         }
     };
 

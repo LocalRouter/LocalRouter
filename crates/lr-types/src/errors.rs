@@ -10,6 +10,16 @@ pub enum AppError {
     #[error("Provider error: {0}")]
     Provider(String),
 
+    /// Upstream provider returned a client (4xx) error whose real HTTP
+    /// status must survive to the API response, so callers can distinguish a
+    /// permanent request error (e.g. an unsupported `max_tokens`/`temperature`
+    /// param → 400) from a transient upstream failure (which stays a 502).
+    /// Carries the numeric upstream status alongside the message. Emitted by
+    /// `classify_openai_error` for 4xx bodies it can't map to a more specific
+    /// typed variant.
+    #[error("Provider error ({status}): {message}")]
+    ProviderStatus { status: u16, message: String },
+
     #[error("Router error: {0}")]
     Router(String),
 

@@ -229,6 +229,73 @@ Anthropic, Cerebras, Cohere, DeepInfra, Gemini, Groq, LMStudio, Mistral, Ollama,
 
 ---
 
+## Updating the Model Catalog
+
+Where each provider's model list comes from, and how to refresh it when a
+provider ships new models. Most providers self-update; only a few carry a
+hardcoded list that can go stale.
+
+### 1. models.dev snapshot (shared pricing/metadata) — `lr-catalog`
+
+`crates/lr-catalog/catalog/modelsdev_raw.json` is an **auto-generated,
+build-time** snapshot of the [models.dev](https://models.dev) catalog. It
+backs pricing and metadata for every catalog-aware provider. Do **not**
+hand-edit it. Refresh it (network happens at build time only — never at
+runtime):
+
+```bash
+LOCALROUTER_REBUILD_CATALOG=1 cargo build -p lr-catalog   # re-fetches + rewrites the JSON
+```
+
+Commit the regenerated `modelsdev_raw.json` (and `catalog/.last_fetch`). The
+build otherwise re-uses the cached snapshot for 7 days.
+(`LOCALROUTER_SKIP_CATALOG_FETCH=1` forces cache-only / offline builds.)
+
+### 2. Dynamic providers — nothing to do
+
+OpenAI (public API), Anthropic, Gemini, Groq, Cerebras, Cohere, DeepInfra,
+Mistral, OpenRouter, TogetherAI, xAI, and the local providers
+(Ollama, LMStudio, gpt4all, …) fetch their model list live from the
+upstream `GET /models` (or `/api/tags`) endpoint. They surface whatever the
+provider returns, so **new models appear automatically** — no code change.
+Any hardcoded `get_known_models()` in these files is only an offline/pricing
+backstop, not the served list.
+
+- **Anthropic** is dynamic but curates display names via a `match` in
+  `get_model_info` (`crates/lr-providers/src/anthropic.rs`). Unknown ids are
+  **not** dropped — `model_info_from_api` falls back to catalog/`display_name`
+  defaults — so a new Claude model lists without a code change. Add a `match`
+  arm only to give a known model nicer curated metadata.
+
+### 3. ChatGPT Plus/Pro (Codex backend) — hardcoded fallback to sync
+
+This provider's primary path is dynamic (`GET
+chatgpt.com/backend-api/codex/models`, OAuth-gated). The **offline fallback**
+list `chatgpt_plus_fallback_models()` in `crates/lr-providers/src/openai.rs`
+must mirror codex-rs's authoritative
+`codex-rs/models-manager/models.json` — specifically the entries marked
+`visibility: "list"`. To refresh it, pull the upstream file and copy the
+list-visible slugs / display names / context windows:
+
+```bash
+gh api repos/openai/codex/contents/codex-rs/models-manager/models.json \
+  --jq '.content' | base64 -d | \
+  python3 -c 'import json,sys; [print(m["slug"], m["context_window"], m["display_name"]) for m in json.load(sys.stdin)["models"] if m.get("visibility")=="list"]'
+```
+
+Use the **codex** context windows (they are the backend-specific caps — do
+**not** pull these from models.dev, whose same-named public-API models
+advertise a larger window). The test
+`chatgpt_plus_fallback_list_covers_codex_visible_models` guards this list.
+
+### 4. Perplexity — models.dev only
+
+No public `/models` endpoint. The served list comes from the models.dev
+snapshot (registered `CatalogOnly`), so refresh it via step 1. The in-code
+`get_known_models()` is only a backstop.
+
+---
+
 ## Environment
 
 **Dev**: `~/.localrouter-dev/`

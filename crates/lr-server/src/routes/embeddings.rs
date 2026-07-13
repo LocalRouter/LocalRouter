@@ -172,6 +172,9 @@ pub async fn embeddings(
         Ok(resp) => resp,
         Err(e) => {
             // Record failure metrics
+            let err_text = e.to_string();
+            let api_err: ApiErrorResponse = e.into();
+            let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -193,19 +196,16 @@ pub async fn embeddings(
                 &request.model,
                 latency,
                 &request_id,
-                502, // Bad Gateway
+                status_code,
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
 
             // Emit monitor error event
-            llm_guard.complete_error(&state, "unknown", &request.model, 502, &e.to_string());
+            llm_guard.complete_error(&state, "unknown", &request.model, status_code, &err_text);
 
-            tracing::error!("Embedding request failed: {}", e);
-            return Err(ApiErrorResponse::bad_gateway(format!(
-                "Provider error: {}",
-                e
-            )));
+            tracing::error!("Embedding request failed: {}", err_text);
+            return Err(api_err);
         }
     };
 

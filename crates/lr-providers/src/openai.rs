@@ -145,29 +145,43 @@ impl OpenAIProvider {
     /// `lr-catalog` so this fallback stays in sync with the embedded
     /// models.dev snapshot rather than carrying its own copy.
     fn chatgpt_plus_fallback_models() -> Vec<ModelInfo> {
-        // Order is newest-first so the model picker defaults to the
-        // latest. Update this list when codex-rs adds new visible
-        // entries to its `models-manager/models.json`.
-        let ids = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
-        ids.iter()
-            .map(|id| {
-                let catalog = lr_catalog::find_model("openai", id);
-                let mut caps = vec![Capability::Chat, Capability::FunctionCalling];
-                if catalog.map(|c| c.capabilities.vision).unwrap_or(true) {
-                    caps.push(Capability::Vision);
-                }
-                ModelInfo {
-                    id: (*id).to_string(),
-                    name: catalog
-                        .map(|c| c.name.to_string())
-                        .unwrap_or_else(|| (*id).to_string()),
-                    provider: "openai".to_string(),
-                    parameter_count: None,
-                    context_window: catalog.map(|c| c.context_length).unwrap_or(272_000),
-                    supports_streaming: true,
-                    capabilities: caps,
-                    detailed_capabilities: None,
-                }
+        // Mirrors codex-rs `models-manager/models.json` — the entries it
+        // marks `visibility: "list"` — newest-first so the picker defaults
+        // to the latest frontier model. Keep in sync with that upstream
+        // file; see CLAUDE.md "Updating the Model Catalog". Each tuple is
+        // (id, display name, context window) copied verbatim from that
+        // source; the 5.6 models ship a larger 372k window than the 272k
+        // older ones.
+        //
+        // These are the ChatGPT-Codex-*backend* variants, so codex's context
+        // windows are authoritative — deliberately NOT resolved via
+        // lr-catalog/models.dev, whose identically-named public-API models
+        // advertise a much larger window (e.g. 1.05M) that the Codex backend
+        // does not honor. Every list-visible codex model accepts image input.
+        let models = [
+            ("gpt-5.6-sol", "GPT-5.6-Sol", 372_000),
+            ("gpt-5.6-terra", "GPT-5.6-Terra", 372_000),
+            ("gpt-5.6-luna", "GPT-5.6-Luna", 372_000),
+            ("gpt-5.5", "GPT-5.5", 272_000),
+            ("gpt-5.4", "GPT-5.4", 272_000),
+            ("gpt-5.4-mini", "GPT-5.4-Mini", 272_000),
+            ("gpt-5.2", "GPT-5.2", 272_000),
+        ];
+        models
+            .iter()
+            .map(|(id, name, ctx)| ModelInfo {
+                id: (*id).to_string(),
+                name: (*name).to_string(),
+                provider: "openai".to_string(),
+                parameter_count: None,
+                context_window: *ctx,
+                supports_streaming: true,
+                capabilities: vec![
+                    Capability::Chat,
+                    Capability::FunctionCalling,
+                    Capability::Vision,
+                ],
+                detailed_capabilities: None,
             })
             .collect()
     }
@@ -1628,9 +1642,18 @@ mod tests {
         // Latest-first ordering — the picker uses the head of the list
         // as the default suggestion.
         assert_eq!(ids.first().copied(), Some("gpt-5.6-sol"));
+        // Full codex `visibility: "list"` set — the 5.6 frontier trio plus
+        // the older models codex still surfaces.
         assert!(ids.contains(&"gpt-5.6-sol"));
         assert!(ids.contains(&"gpt-5.6-terra"));
         assert!(ids.contains(&"gpt-5.6-luna"));
+        assert!(ids.contains(&"gpt-5.5"));
+        assert!(ids.contains(&"gpt-5.4"));
+        assert!(ids.contains(&"gpt-5.4-mini"));
+        assert!(ids.contains(&"gpt-5.2"));
+        // The 5.6 frontier models carry the larger 372k window.
+        let sol = models.iter().find(|m| m.id == "gpt-5.6-sol").unwrap();
+        assert_eq!(sol.context_window, 372_000);
         // The old invalid ids must not sneak back in.
         assert!(!ids.contains(&"o1"));
         assert!(!ids.contains(&"o1-mini"));

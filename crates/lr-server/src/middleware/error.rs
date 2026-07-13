@@ -117,6 +117,17 @@ impl From<AppError> for ApiErrorResponse {
             AppError::Provider(msg) => {
                 ApiErrorResponse::bad_gateway(format!("Provider error: {}", msg))
             }
+            // Upstream 4xx passes through with its real status so clients can
+            // tell a permanent request error from a transient upstream one.
+            // A non-4xx (or malformed) status falls back to 502.
+            AppError::ProviderStatus { status, message } => match StatusCode::from_u16(status) {
+                Ok(code) if code.is_client_error() => ApiErrorResponse::new(
+                    code,
+                    "provider_error",
+                    format!("Provider error: {}", message),
+                ),
+                _ => ApiErrorResponse::bad_gateway(format!("Provider error: {}", message)),
+            },
             AppError::RateLimitExceeded => ApiErrorResponse::rate_limited("Rate limit exceeded"),
             AppError::FreeTierExhausted { .. } => ApiErrorResponse::payment_required(
                 "Free tier exhausted. All free-tier providers are at capacity.",
@@ -165,3 +176,43 @@ impl From<AppError> for ApiErrorResponse {
 
 /// Result type for API handlers
 pub type ApiResult<T> = Result<T, ApiErrorResponse>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_status_4xx_passes_through() {
+        // An upstream 4xx must surface with its real status, not a 502, so
+        // clients can tell a permanent request error from a transient one.
+        let resp: ApiErrorResponse = AppError::ProviderStatus {
+            status: 400,
+            message: "API error (400 Bad Request): unsupported param".to_string(),
+        }
+        .into();
+        assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+
+        let resp403: ApiErrorResponse = AppError::ProviderStatus {
+            status: 403,
+            message: "forbidden".to_string(),
+        }
+        .into();
+        assert_eq!(resp403.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn provider_status_non_4xx_falls_back_to_502() {
+        // A 5xx (or otherwise non-client) upstream status is an upstream
+        // failure and stays a 502.
+        let resp: ApiErrorResponse = AppError::ProviderStatus {
+            status: 503,
+            message: "upstream down".to_string(),
+        }
+        .into();
+        assert_eq!(resp.status, StatusCode::BAD_GATEWAY);
+
+        // Plain Provider errors remain 502 as before.
+        let resp2: ApiErrorResponse = AppError::Provider("boom".to_string()).into();
+        assert_eq!(resp2.status, StatusCode::BAD_GATEWAY);
+    }
+}

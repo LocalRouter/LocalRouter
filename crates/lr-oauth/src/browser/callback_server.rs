@@ -322,10 +322,18 @@ impl CallbackServerManager {
                             (
                                 StatusCode::OK,
                                 Html(
-                                    r#"
+                                    // `r##"…"##` (not `r#"…"#`): the inline logo
+                                    // SVG contains `stroke="#4f46e5"`, whose `"#`
+                                    // would otherwise close a `r#"` raw string.
+                                    r##"
                                     <html>
                                         <head><title>Authorization Successful</title></head>
                                         <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" width="80" height="80" style="display: block; margin: 0 auto 24px;" role="img" aria-label="LocalRouter logo">
+                                                <circle cx="20" cy="20" r="12" stroke="#4f46e5" stroke-width="10" fill="none"/>
+                                                <circle cx="80" cy="80" r="12" stroke="#4f46e5" stroke-width="10" fill="none"/>
+                                                <path d="M 32 22 C 75 15, 90 40, 50 50 C 10 60, 25 85, 68 78" stroke="#4f46e5" stroke-width="10" stroke-linecap="round" fill="none"/>
+                                            </svg>
                                             <h1>✅ Authorization Successful!</h1>
                                             <p>You have successfully authorized the application.</p>
                                             <p>You can close this window and return to LocalRouter.</p>
@@ -334,7 +342,7 @@ impl CallbackServerManager {
                                             </script>
                                         </body>
                                     </html>
-                                    "#,
+                                    "##,
                                 ),
                             )
                                 .into_response()

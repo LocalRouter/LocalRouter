@@ -367,6 +367,37 @@ impl AnthropicProvider {
         }
     }
 
+    /// Map a model entry from the live `/models` API to `ModelInfo`.
+    ///
+    /// Known ids keep their curated metadata (see [`Self::get_model_info`]);
+    /// any unknown id (a new Claude release the hardcoded table hasn't caught
+    /// up to) falls through to catalog-backed defaults — the models.dev
+    /// context window / name when present, otherwise the API `display_name`
+    /// and a conservative 200k window — rather than being dropped from the
+    /// list entirely.
+    fn model_info_from_api(id: &str, display_name: Option<&str>) -> ModelInfo {
+        Self::get_model_info(id).unwrap_or_else(|| {
+            let catalog = lr_catalog::find_model("anthropic", id);
+            let mut capabilities = vec![Capability::Chat, Capability::FunctionCalling];
+            if catalog.map(|c| c.capabilities.vision).unwrap_or(true) {
+                capabilities.push(Capability::Vision);
+            }
+            ModelInfo {
+                name: catalog
+                    .map(|c| c.name.to_string())
+                    .or_else(|| display_name.map(|s| s.to_string()))
+                    .unwrap_or_else(|| id.to_string()),
+                context_window: catalog.map(|c| c.context_length).unwrap_or(200_000),
+                id: id.to_string(),
+                provider: "anthropic".to_string(),
+                parameter_count: None,
+                supports_streaming: true,
+                capabilities,
+                detailed_capabilities: None,
+            }
+        })
+    }
+
     /// Get pricing for a model
     fn get_model_pricing(model_id: &str) -> PricingInfo {
         match model_id {
@@ -510,10 +541,15 @@ impl ModelProvider for AnthropicProvider {
             AppError::Provider(format!("Failed to parse Anthropic models response: {}", e))
         })?;
 
+        // Known models get curated metadata; anything else the live
+        // `/models` API returns (new Claude releases) falls through to a
+        // catalog-backed generic mapping instead of being silently
+        // dropped, so fresh models surface without a code change. See
+        // CLAUDE.md "Updating the Model Catalog".
         let models = models_response
             .data
             .into_iter()
-            .filter_map(|m| Self::get_model_info(&m.id))
+            .map(|m| Self::model_info_from_api(&m.id, m.display_name.as_deref()))
             .collect();
 
         Ok(models)
@@ -1364,6 +1400,27 @@ mod tests {
     fn test_model_info_unknown() {
         let info = AnthropicProvider::get_model_info("unknown-model");
         assert!(info.is_none());
+    }
+
+    #[test]
+    fn list_models_surfaces_unknown_models_instead_of_dropping() {
+        // Known ids keep their curated display name.
+        let known = AnthropicProvider::model_info_from_api("claude-3-5-sonnet-20241022", None);
+        assert_eq!(known.name, "Claude 3.5 Sonnet");
+
+        // Regression: a model the hardcoded table doesn't know (a future
+        // Claude release the live `/models` API returns) must NOT be dropped —
+        // it surfaces with the API display name and sane defaults. Previously
+        // `list_models` filtered these out via `filter_map(get_model_info)`.
+        let fresh = AnthropicProvider::model_info_from_api(
+            "claude-fictional-99",
+            Some("Claude Fictional 99"),
+        );
+        assert_eq!(fresh.id, "claude-fictional-99");
+        assert_eq!(fresh.name, "Claude Fictional 99");
+        assert_eq!(fresh.provider, "anthropic");
+        assert!(fresh.capabilities.contains(&Capability::Chat));
+        assert!(fresh.context_window >= 200_000);
     }
 
     #[test]

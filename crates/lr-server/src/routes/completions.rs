@@ -567,6 +567,9 @@ async fn handle_non_streaming_parallel(
 
     // Unwrap LLM response (and router's routing metadata)
     let (response, routing_metadata) = llm_result.map_err(|e| {
+        let err_text = e.to_string();
+        let api_err: ApiErrorResponse = e.into();
+        let status_code = api_err.status.as_u16();
         let latency = Instant::now().duration_since(started_at).as_millis() as u64;
         let strategy_id = state
             .client_manager
@@ -586,7 +589,7 @@ async fn handle_non_streaming_parallel(
             "unknown",
             latency,
             &generation_id,
-            502,
+            status_code,
         ) {
             tracing::warn!("Failed to write access log: {}", log_err);
         }
@@ -597,11 +600,11 @@ async fn handle_non_streaming_parallel(
             &llm_event_id,
             "unknown",
             &request.model,
-            502,
-            &e.to_string(),
+            status_code,
+            &err_text,
         );
 
-        ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
+        api_err
     })?;
 
     build_non_streaming_response(
@@ -644,6 +647,9 @@ async fn handle_non_streaming(
     {
         Ok((resp, routing_meta)) => (resp, routing_meta),
         Err(e) => {
+            let err_text = e.to_string();
+            let api_err: ApiErrorResponse = e.into();
+            let status_code = api_err.status.as_u16();
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
@@ -666,7 +672,7 @@ async fn handle_non_streaming(
                 "unknown",
                 latency,
                 &generation_id,
-                502, // Bad Gateway
+                status_code,
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
@@ -677,14 +683,11 @@ async fn handle_non_streaming(
                 &llm_event_id,
                 "unknown",
                 &request.model,
-                502,
-                &e.to_string(),
+                status_code,
+                &err_text,
             );
 
-            return Err(ApiErrorResponse::bad_gateway(format!(
-                "Provider error: {}",
-                e
-            )));
+            return Err(api_err);
         }
     };
 
@@ -816,6 +819,9 @@ async fn handle_streaming(
     {
         Ok((s, routing_meta)) => (s, routing_meta),
         Err(e) => {
+            let err_text = e.to_string();
+            let api_err: ApiErrorResponse = e.into();
+            let status_code = api_err.status.as_u16();
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
@@ -838,7 +844,7 @@ async fn handle_streaming(
                 &model,
                 latency,
                 &generation_id,
-                502, // Bad Gateway
+                status_code,
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
@@ -849,14 +855,11 @@ async fn handle_streaming(
                 &llm_event_id,
                 "unknown",
                 &model,
-                502,
-                &e.to_string(),
+                status_code,
+                &err_text,
             );
 
-            return Err(ApiErrorResponse::bad_gateway(format!(
-                "Provider error: {}",
-                e
-            )));
+            return Err(api_err);
         }
     };
 
@@ -1059,6 +1062,9 @@ async fn handle_streaming_parallel(
     {
         Ok((s, routing_meta)) => (s, routing_meta),
         Err(e) => {
+            let err_text = e.to_string();
+            let api_err: ApiErrorResponse = e.into();
+            let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -1078,7 +1084,7 @@ async fn handle_streaming_parallel(
                 &model,
                 latency,
                 &generation_id,
-                502,
+                status_code,
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
@@ -1089,14 +1095,11 @@ async fn handle_streaming_parallel(
                 &llm_event_id,
                 "unknown",
                 &model,
-                502,
-                &e.to_string(),
+                status_code,
+                &err_text,
             );
 
-            return Err(ApiErrorResponse::bad_gateway(format!(
-                "Provider error: {}",
-                e
-            )));
+            return Err(api_err);
         }
     };
 

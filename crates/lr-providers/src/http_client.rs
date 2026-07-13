@@ -85,6 +85,16 @@ pub fn classify_openai_error(status: reqwest::StatusCode, body: &str) -> AppErro
     match status {
         reqwest::StatusCode::UNAUTHORIZED => AppError::Unauthorized,
         reqwest::StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+        // Preserve an upstream *client* error (4xx) so it passes through to
+        // the API response as a 4xx instead of being masked as a generic
+        // 502. These are permanent request errors (e.g. an unsupported
+        // `max_tokens`/`temperature` param → 400) that clients must not
+        // retry as if transient. Server errors (5xx) and everything else
+        // stay a generic Provider error → 502.
+        s if s.is_client_error() => AppError::ProviderStatus {
+            status: s.as_u16(),
+            message: format!("API error ({}): {}", s, body),
+        },
         _ => AppError::Provider(format!("API error ({}): {}", status, body)),
     }
 }
@@ -195,6 +205,37 @@ mod tests {
             AppError::Provider(msg) => assert!(msg.contains("API error (500")),
             other => panic!("expected Provider, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_classify_preserves_upstream_4xx_status() {
+        // A 400 for an unsupported param (e.g. `max_tokens`) that we can't
+        // map to a more specific typed variant must keep its 400 status via
+        // ProviderStatus, so it passes through as a 4xx instead of a 502.
+        let err = classify_openai_error(
+            StatusCode::BAD_REQUEST,
+            "Unsupported parameter: 'max_tokens' is not supported with this model.",
+        );
+        match err {
+            AppError::ProviderStatus { status, message } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("API error (400"));
+            }
+            other => panic!("expected ProviderStatus(400), got {:?}", other),
+        }
+
+        // 403/422 likewise pass through as client errors.
+        assert!(matches!(
+            classify_openai_error(StatusCode::FORBIDDEN, "nope"),
+            AppError::ProviderStatus { status: 403, .. }
+        ));
+
+        // 5xx stays a generic Provider error (→ 502 downstream), NOT a
+        // pass-through client status.
+        assert!(matches!(
+            classify_openai_error(StatusCode::BAD_GATEWAY, "upstream boom"),
+            AppError::Provider(_)
+        ));
     }
 
     #[test]

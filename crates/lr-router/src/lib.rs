@@ -1867,10 +1867,15 @@ impl Router {
                         provider_name, model_name, e
                     );
 
-                    // Determine if we should retry with next model
+                    // Determine if we should retry with next model. An
+                    // upstream 4xx (ProviderStatus) is still worth trying on
+                    // the next model — another model may accept the request —
+                    // but if it turns out to be the final error we preserve
+                    // its status rather than flattening it into a 502 (below).
                     let should_retry = matches!(
                         e,
                         AppError::Provider(_)
+                            | AppError::ProviderStatus { .. }
                             | AppError::RateLimitExceeded
                             | AppError::Router(_)
                             | AppError::Internal(_)
@@ -1882,11 +1887,23 @@ impl Router {
                         return Err(e);
                     }
 
-                    // Store error message for later use
-                    last_error = Some(AppError::Router(format!(
-                        "Model '{}' from provider '{}' failed: {}",
-                        model_name, provider_name, e
-                    )));
+                    // Store error message for later use. Preserve an upstream
+                    // 4xx status through the wrap so a permanent request error
+                    // surfaces as a 4xx even after exhausting the model list;
+                    // other errors collapse to a generic Router error (502).
+                    last_error = Some(match e {
+                        AppError::ProviderStatus { status, message } => AppError::ProviderStatus {
+                            status,
+                            message: format!(
+                                "Model '{}' from provider '{}' failed: {}",
+                                model_name, provider_name, message
+                            ),
+                        },
+                        other => AppError::Router(format!(
+                            "Model '{}' from provider '{}' failed: {}",
+                            model_name, provider_name, other
+                        )),
+                    });
 
                     // Continue to next model
                     if idx < prioritized_models.len() - 1 {

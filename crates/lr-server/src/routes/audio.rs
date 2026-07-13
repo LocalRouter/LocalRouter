@@ -364,6 +364,9 @@ pub async fn audio_transcriptions(
     {
         Ok(resp) => resp,
         Err(e) => {
+            let err_text = e.to_string();
+            let api_err: ApiErrorResponse = e.into();
+            let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -383,19 +386,16 @@ pub async fn audio_transcriptions(
                 &model_for_log,
                 latency,
                 &request_id,
-                502,
+                status_code,
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
 
             // Emit monitor error event
-            llm_guard.complete_error(&state, "unknown", &model_for_log, 502, &e.to_string());
+            llm_guard.complete_error(&state, "unknown", &model_for_log, status_code, &err_text);
 
-            tracing::error!("Audio transcription failed: {}", e);
-            return Err(ApiErrorResponse::bad_gateway(format!(
-                "Provider error: {}",
-                e
-            )));
+            tracing::error!("Audio transcription failed: {}", err_text);
+            return Err(api_err);
         }
     };
 
@@ -806,6 +806,9 @@ pub async fn audio_translations(
     {
         Ok(resp) => resp,
         Err(e) => {
+            let err_text = e.to_string();
+            let api_err: ApiErrorResponse = e.into();
+            let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -825,19 +828,16 @@ pub async fn audio_translations(
                 &model_for_log,
                 latency,
                 &request_id,
-                502,
+                status_code,
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
 
             // Emit monitor error event
-            llm_guard.complete_error(&state, "unknown", &model_for_log, 502, &e.to_string());
+            llm_guard.complete_error(&state, "unknown", &model_for_log, status_code, &err_text);
 
-            tracing::error!("Audio translation failed: {}", e);
-            return Err(ApiErrorResponse::bad_gateway(format!(
-                "Provider error: {}",
-                e
-            )));
+            tracing::error!("Audio translation failed: {}", err_text);
+            return Err(api_err);
         }
     };
 
@@ -1046,6 +1046,9 @@ pub async fn audio_speech(
     {
         Ok(resp) => resp,
         Err(e) => {
+            let err_text = e.to_string();
+            let api_err: ApiErrorResponse = e.into();
+            let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -1065,19 +1068,16 @@ pub async fn audio_speech(
                 &request.model,
                 latency,
                 &request_id,
-                502,
+                status_code,
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
 
             // Emit monitor error event
-            llm_guard.complete_error(&state, "unknown", &request.model, 502, &e.to_string());
+            llm_guard.complete_error(&state, "unknown", &request.model, status_code, &err_text);
 
-            tracing::error!("Speech generation failed: {}", e);
-            return Err(ApiErrorResponse::bad_gateway(format!(
-                "Provider error: {}",
-                e
-            )));
+            tracing::error!("Speech generation failed: {}", err_text);
+            return Err(api_err);
         }
     };
 
