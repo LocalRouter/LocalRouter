@@ -148,14 +148,7 @@ impl OpenAIProvider {
         // Order is newest-first so the model picker defaults to the
         // latest. Update this list when codex-rs adds new visible
         // entries to its `models-manager/models.json`.
-        let ids = [
-            "gpt-5.5",
-            "gpt-5.5-mini",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.3-codex",
-            "gpt-5.2",
-        ];
+        let ids = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
         ids.iter()
             .map(|id| {
                 let catalog = lr_catalog::find_model("openai", id);
@@ -1634,13 +1627,10 @@ mod tests {
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         // Latest-first ordering — the picker uses the head of the list
         // as the default suggestion.
-        assert_eq!(ids.first().copied(), Some("gpt-5.5"));
-        assert!(ids.contains(&"gpt-5.5"));
-        assert!(ids.contains(&"gpt-5.5-mini"));
-        assert!(ids.contains(&"gpt-5.4"));
-        assert!(ids.contains(&"gpt-5.4-mini"));
-        assert!(ids.contains(&"gpt-5.3-codex"));
-        assert!(ids.contains(&"gpt-5.2"));
+        assert_eq!(ids.first().copied(), Some("gpt-5.6-sol"));
+        assert!(ids.contains(&"gpt-5.6-sol"));
+        assert!(ids.contains(&"gpt-5.6-terra"));
+        assert!(ids.contains(&"gpt-5.6-luna"));
         // The old invalid ids must not sneak back in.
         assert!(!ids.contains(&"o1"));
         assert!(!ids.contains(&"o1-mini"));
