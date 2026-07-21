@@ -162,6 +162,29 @@ impl MonitorEventType {
     }
 }
 
+/// Where an LLM call was observed: the native API server, or the HTTPS
+/// inspection proxy (passive MITM).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmCallSource {
+    /// Observed on LocalRouter's own `/v1` API endpoints.
+    #[default]
+    Api,
+    /// Observed by decrypting proxied traffic (inspect-only).
+    Proxy,
+}
+
+/// The wire protocol an observed LLM call used.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmProtocol {
+    /// OpenAI-compatible (the native server path).
+    #[default]
+    Openai,
+    /// Anthropic Messages API (e.g. proxied Claude Code traffic).
+    Anthropic,
+}
+
 /// Type-specific event payload. Uses serde tag for frontend dispatch.
 ///
 /// Combined events (request+response merged) use `Option<T>` for response fields
@@ -181,6 +204,13 @@ pub enum MonitorEventData {
         tool_count: usize,
         /// Full request body (may be truncated for very large requests)
         request_body: serde_json::Value,
+
+        /// Whether this call was seen on the native API or via the proxy.
+        #[serde(default)]
+        source: LlmCallSource,
+        /// The wire protocol of the observed call.
+        #[serde(default)]
+        protocol: LlmProtocol,
 
         // Transformation fields (filled via update when transformations applied)
         #[serde(skip_serializing_if = "Option::is_none")]

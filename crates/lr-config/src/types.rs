@@ -456,6 +456,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub server: ServerConfig,
 
+    /// HTTPS inspection-proxy configuration
+    #[serde(default)]
+    pub proxy: ProxyConfig,
+
     /// Provider configurations
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
@@ -852,6 +856,41 @@ pub struct ServerConfig {
 
     /// Enable CORS for local development
     pub enable_cors: bool,
+}
+
+/// HTTPS inspection-proxy configuration.
+///
+/// When enabled, LocalRouter listens as an HTTPS forward proxy so tools that
+/// set `HTTPS_PROXY` (e.g. Claude Code) route their LLM traffic through it for
+/// passive inspection in the monitor. Disabled by default; the launcher may
+/// auto-start it when a client is in a proxy `llm_mode`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyConfig {
+    /// Whether the proxy listener should run.
+    pub enabled: bool,
+
+    /// Proxy listen host (loopback by default).
+    pub host: String,
+
+    /// Proxy listen port.
+    pub port: u16,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        // Mirror the server's debug/release port split (server uses 33625/3625).
+        #[cfg(debug_assertions)]
+        let default_port = 33626;
+
+        #[cfg(not(debug_assertions))]
+        let default_port = 3626;
+
+        Self {
+            enabled: false,
+            host: "127.0.0.1".to_string(),
+            port: default_port,
+        }
+    }
 }
 
 /// OAuth client configuration for MCP
@@ -3721,6 +3760,7 @@ impl Default for AppConfig {
         Self {
             version: CONFIG_VERSION,
             server: ServerConfig::default(),
+            proxy: ProxyConfig::default(),
             providers: Vec::new(), // Empty by default, discovered on first startup
             logging: LoggingConfig::default(),
             oauth_clients: Vec::new(),

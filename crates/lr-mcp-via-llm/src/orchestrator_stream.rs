@@ -327,6 +327,8 @@ async fn streaming_loop(
                     has_tools: !mcp_tool_names.is_empty(),
                     tool_count: mcp_tool_names.len(),
                     request_body: req_json,
+                    source: lr_monitor::LlmCallSource::Api,
+                    protocol: lr_monitor::LlmProtocol::Openai,
                     transformed_body: None,
                     transformations_applied: None,
                     provider: None,

@@ -139,6 +139,8 @@ pub fn emit_llm_call(
             has_tools,
             tool_count,
             request_body: truncate_json(request_body, 10_000),
+            source: lr_monitor::LlmCallSource::Api,
+            protocol: lr_monitor::LlmProtocol::Openai,
             transformed_body: None,
             transformations_applied: None,
             provider: None,

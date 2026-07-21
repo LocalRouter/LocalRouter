@@ -3,6 +3,8 @@ use std::time::Instant;
 
 use crate::store::MonitorEventStore;
 use crate::types::{EventStatus, MonitorEventData, MonitorEventType};
+#[cfg(test)]
+use crate::types::{LlmCallSource, LlmProtocol};
 
 /// RAII guard that ensures a combined monitor event is completed.
 ///
@@ -130,6 +132,8 @@ mod tests {
                 has_tools: false,
                 tool_count: 0,
                 request_body: serde_json::json!({}),
+                source: LlmCallSource::Api,
+                protocol: LlmProtocol::Openai,
                 transformed_body: None,
                 transformations_applied: None,
                 provider: None,

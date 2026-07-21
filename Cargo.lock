@@ -5625,6 +5625,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "lr-proxy"
+version = "0.0.128"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "lr-config",
+ "lr-monitor",
+ "lr-types",
+ "lr-utils",
+ "parking_lot",
+ "rcgen",
+ "rustls 0.23.37",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lr-responses-sessions"
 version = "0.0.128"
 dependencies = [
@@ -8111,6 +8133,7 @@ checksum = "10b99e0098aa4082912d4c649628623db6aba77335e4f4569ff5083a6448b32e"
 dependencies = [
  "aws-lc-rs",
  "pem",
+ "ring",
  "rustls-pki-types",
  "time",
  "x509-parser",
