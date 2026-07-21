@@ -81,6 +81,13 @@ export interface ClientTemplate {
   docsUrl?: string
   supportsMcp: boolean
   supportsLlm: boolean
+  /**
+   * Whether this client can use the HTTPS inspection proxy. True only for tools
+   * that (a) talk to an intercepted provider (currently Anthropic) and (b) can
+   * trust the proxy's root CA via `NODE_EXTRA_CA_CERTS` — i.e. Claude Code and
+   * the generic/custom client. Undefined = not supported.
+   */
+  supportsProxy?: boolean
   binaryNames?: string[]
 }
 
@@ -101,6 +108,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     docsUrl: 'https://docs.anthropic.com/en/docs/claude-code',
     supportsMcp: true,
     supportsLlm: true,
+    supportsProxy: true,
     binaryNames: ['claude'],
   },
   {
@@ -464,6 +472,7 @@ export const CUSTOM_CLIENT_TEMPLATE: ClientTemplate = {
   setupType: 'generic',
   supportsMcp: true,
   supportsLlm: true,
+  supportsProxy: true,
 }
 
 // Category metadata for display

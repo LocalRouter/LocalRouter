@@ -33,7 +33,8 @@ import { CLIENT_TEMPLATES, resolveTemplatePlaceholders } from "./ClientTemplates
 import type { ClientTemplate } from "./ClientTemplates"
 import ServiceIcon from "@/components/ServiceIcon"
 import { isValidHttpUrl } from "@/utils/url"
-import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams } from "@/types/tauri-commands"
+import { listenSafe } from "@/hooks/useTauriListener"
+import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams, ProxySetupInfo, GetClientProxySetupParams } from "@/types/tauri-commands"
 
 interface ServerConfig {
   host: string
@@ -676,6 +677,96 @@ function QuickSetupTab({
   )
 }
 
+// LLM connection instructions for a client in an HTTPS-proxy mode. Replaces the
+// native ANTHROPIC_BASE_URL setup — the tool keeps talking to the provider, but
+// its traffic is routed through LocalRouter (via HTTPS_PROXY) for inspection.
+function ProxyLlmSetup({
+  clientUuid,
+  template,
+}: {
+  clientUuid: string
+  template: ClientTemplate | null
+}) {
+  const [info, setInfo] = useState<ProxySetupInfo | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = () => {
+      invoke<ProxySetupInfo>("get_client_proxy_setup", { clientId: clientUuid } satisfies GetClientProxySetupParams)
+        .then((data) => { if (!cancelled) { setInfo(data); setError(null) } })
+        .catch((e) => { if (!cancelled) setError(String(e)) })
+    }
+    load()
+    const l = listenSafe("clients-changed", load)
+    return () => { cancelled = true; l.cleanup() }
+  }, [clientUuid])
+
+  if (error) return <p className="text-sm text-destructive">Failed to load proxy setup: {error}</p>
+  if (!info) return <p className="text-sm text-muted-foreground">Loading proxy setup…</p>
+
+  const binary = template?.binaryNames?.[0]
+  const isClaudeCode = template?.id === "claude-code"
+  const oneoff = info.proxy_url
+    ? `HTTPS_PROXY=${info.proxy_url} NODE_EXTRA_CA_CERTS=${info.ca_cert_path} ${binary ?? "<your-tool>"}`
+    : null
+
+  return (
+    <div className="rounded-lg border p-4 space-y-4">
+      <div className="flex items-center gap-2">
+        <Globe className="h-4 w-4 text-muted-foreground" />
+        <span className="text-sm font-medium">HTTPS Inspection Proxy</span>
+      </div>
+
+      <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-muted-foreground">
+        LocalRouter decrypts this client's LLM traffic to show it in the Monitor, then forwards it
+        unchanged — credentials pass straight through and are never stored. Trust the root CA below
+        only on machines you control.
+      </div>
+
+      {!info.running && (
+        <p className="text-xs text-destructive">The proxy listener is not running.</p>
+      )}
+
+      {oneoff && (
+        <div className="space-y-1.5">
+          <Label className="text-xs text-muted-foreground">
+            Run {isClaudeCode ? "Claude Code" : "your tool"} once through the proxy
+          </Label>
+          <CopyableCode value={oneoff} />
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {info.proxy_url && (
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">HTTPS_PROXY</Label>
+            <CopyableCode value={info.proxy_url} />
+          </div>
+        )}
+        <div className="space-y-1.5">
+          <Label className="text-xs text-muted-foreground">NODE_EXTRA_CA_CERTS (root CA to trust)</Label>
+          <CopyableCode value={info.ca_cert_path} />
+        </div>
+      </div>
+
+      {isClaudeCode && info.settings_json && (
+        <div className="space-y-1.5">
+          <Label className="text-xs text-muted-foreground">
+            Permanent setup — merge into <code>~/.claude/settings.json</code>
+          </Label>
+          <CopyableCode value={info.settings_json} />
+          <p className="text-[11px] text-muted-foreground">
+            The one-off command above covers an interactive session. Background agents
+            (<code>claude --bg</code>, <code>claude agents</code>) only pick these up from
+            settings.json, so use this for persistent setups.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function HowToConnect({
   clientId,
   clientUuid,
@@ -703,10 +794,10 @@ export function HowToConnect({
     ? CLIENT_TEMPLATES.find(t => t.id === templateId) || null
     : null
 
+  const isLlmProxy = llmMode === "proxy_inspect" || llmMode === "proxy_rewrite"
   const hasQuickSetup = template && template.setupType !== "generic"
-  // Native LLM connect info is shown for the gateway. Proxy clients will get a
-  // dedicated proxy setup panel (env vars + CA to trust) once the HTTPS proxy
-  // backend lands; for now they simply don't show the native LLM tab.
+  // Native LLM connect info is shown only for the gateway; proxy clients get the
+  // ProxyLlmSetup block instead.
   const showModelsTab = llmMode === "gateway"
   // Direct MCP connect info only for the MCP gateway (not via-LLM/off).
   const showMcpTab = mcpMode === "gateway"
@@ -751,9 +842,10 @@ export function HowToConnect({
     fetchConfigDir()
   }, [])
 
-  // Fetch models filtered by client's strategy via the real API endpoint
+  // Fetch models filtered by client's strategy via the real API endpoint.
+  // Only the native gateway can call /v1/models — proxy/off clients would 403.
   useEffect(() => {
-    if (!secret || !serverConfig) return
+    if (!secret || !serverConfig || llmMode !== "gateway") return
     const port = serverConfig.actual_port ?? serverConfig.port ?? 3625
     const host = serverConfig.host ?? "127.0.0.1"
     const url = `http://${host}:${port}/v1/models`
@@ -770,7 +862,7 @@ export function HowToConnect({
       }
     }
     fetchModels()
-  }, [secret, serverConfig])
+  }, [secret, serverConfig, llmMode])
 
   // Compute URLs based on server config
   const port = serverConfig?.actual_port ?? serverConfig?.port ?? 3625
@@ -869,9 +961,13 @@ export function HowToConnect({
           )}
         </div>
       </CardHeader>
-      <CardContent>
-        {/* Template-based clients: show Quick Setup directly (no outer tabs) */}
-        {hasQuickSetup && template ? (
+      <CardContent className="space-y-4">
+        {/* LLM proxy modes: show proxy instructions instead of the native
+            ANTHROPIC_BASE_URL setup. MCP (if a gateway) still renders below. */}
+        {isLlmProxy && <ProxyLlmSetup clientUuid={clientUuid} template={template} />}
+
+        {/* Template-based clients (native gateway): show Quick Setup directly */}
+        {!isLlmProxy && hasQuickSetup && template ? (
           <QuickSetupTab
             template={template}
             clientId={clientId}
@@ -882,7 +978,7 @@ export function HowToConnect({
             models={models}
             syncConfig={syncConfig}
           />
-        ) : (
+        ) : (showModelsTab || showMcpTab) ? (
         /* Custom/generic clients: show Models and MCP tabs */
         <Tabs defaultValue={defaultManualTab}>
           <TabsList className={`mb-4 grid w-full ${manualGridCols}`}>
@@ -1199,7 +1295,7 @@ export function HowToConnect({
             </TabsContent>
           )}
         </Tabs>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   )

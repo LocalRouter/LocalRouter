@@ -164,8 +164,12 @@ function llmOptionState(
   // The active rewrite proxy is not implemented yet.
   if (value === "proxy_rewrite") return { allowed: false, reason: "Coming soon" }
 
-  // Template must support LLM for any non-off LLM mode.
-  if (value !== "off" && template && !template.supportsLlm) {
+  // Gateway needs LLM support; proxy needs proxy support. A null template
+  // (custom/no-template client) supports both.
+  if (value === "gateway" && template && !template.supportsLlm) {
+    return { allowed: false, reason: `Not supported by ${template.name}` }
+  }
+  if (value === "proxy_inspect" && template && !template.supportsProxy) {
     return { allowed: false, reason: `Not supported by ${template.name}` }
   }
 

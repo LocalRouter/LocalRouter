@@ -3,7 +3,6 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { HowToConnect } from "@/components/client/HowToConnect"
-import { ProxySetup } from "@/components/client/ProxySetup"
 import type { LlmMode, McpMode } from "@/types/tauri-commands"
 
 interface Client {
@@ -62,15 +61,10 @@ export function ClientConfigTab({ client }: ConfigTabProps) {
     }
   }, [client.id])
 
-  const isLlmProxy = client.llm_mode === "proxy_inspect" || client.llm_mode === "proxy_rewrite"
-
   return (
     <div className="space-y-6">
-      {/* HTTPS proxy setup (LLM proxy modes) */}
-      {isLlmProxy && <ProxySetup clientId={client.id} />}
-
-      {/* Native connection instructions (LLM gateway + MCP). In proxy mode the
-          LLM tab hides itself; the MCP tab still shows when MCP is a gateway. */}
+      {/* Connection instructions. HowToConnect renders the proxy setup block
+          itself when the client is in an LLM proxy mode. */}
       <HowToConnect
         clientId={client.client_id}
         clientUuid={client.id}
