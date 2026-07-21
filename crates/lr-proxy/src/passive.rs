@@ -30,20 +30,34 @@ impl PassiveInterceptor {
 
     /// Record a fully-observed exchange as one combined LLM-call monitor event.
     fn record(&self, ex: &ObservedExchange) {
-        let req_meta = ex
+        // Parse the raw request body as Anthropic JSON (best-effort).
+        let request_json = ex
             .request_body
+            .as_ref()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
+        let req_meta = request_json
             .as_ref()
             .map(anthropic::parse_request)
             .unwrap_or_default();
 
-        let resp_meta = ex
-            .response_body
-            .as_ref()
-            .map(anthropic::parse_response)
-            .unwrap_or_default();
+        // The response is either a single JSON object or an SSE stream.
+        let (resp_meta, response_json) = match &ex.response_body {
+            Some(bytes) if ex.response_is_sse => {
+                let raw = String::from_utf8_lossy(bytes);
+                (anthropic::reconstruct_sse(&raw), None)
+            }
+            Some(bytes) => {
+                let json = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+                let meta = json
+                    .as_ref()
+                    .map(anthropic::parse_response)
+                    .unwrap_or_default();
+                (meta, json)
+            }
+            None => (Default::default(), None),
+        };
 
-        let tool_count = ex
-            .request_body
+        let tool_count = request_json
             .as_ref()
             .and_then(|b| b.get("tools"))
             .and_then(|t| t.as_array())
@@ -68,7 +82,7 @@ impl PassiveInterceptor {
             message_count: req_meta.message_count,
             has_tools: req_meta.has_tools,
             tool_count,
-            request_body: ex.request_body.clone().unwrap_or(serde_json::Value::Null),
+            request_body: request_json.clone().unwrap_or(serde_json::Value::Null),
             source: LlmCallSource::Proxy,
             protocol: LlmProtocol::Anthropic,
             transformed_body: None,
@@ -84,7 +98,7 @@ impl PassiveInterceptor {
             finish_reason: resp_meta.stop_reason,
             content_preview: resp_meta.content_preview,
             streamed: Some(req_meta.stream),
-            response_body: ex.response_body.clone(),
+            response_body: response_json,
             error: None,
             routing_info: None,
         };
@@ -136,22 +150,25 @@ mod tests {
     use serde_json::json;
 
     fn exchange() -> ObservedExchange {
+        let req = json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "t"}]
+        });
+        let resp = json!({
+            "content": [{"type": "text", "text": "hello"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 3}
+        });
         ObservedExchange {
             client_id: "client-1".to_string(),
             host: "api.anthropic.com".to_string(),
             method: "POST".to_string(),
             path: "/v1/messages".to_string(),
-            request_body: Some(json!({
-                "model": "claude-sonnet-4-20250514",
-                "messages": [{"role": "user", "content": "hi"}],
-                "tools": [{"name": "t"}]
-            })),
+            request_body: Some(serde_json::to_vec(&req).unwrap()),
             status: Some(200),
-            response_body: Some(json!({
-                "content": [{"type": "text", "text": "hello"}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 5, "output_tokens": 3}
-            })),
+            response_body: Some(serde_json::to_vec(&resp).unwrap()),
+            response_is_sse: false,
         }
     }
 

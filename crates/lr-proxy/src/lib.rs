@@ -22,9 +22,15 @@ pub mod anthropic;
 pub mod cert;
 pub mod error;
 pub mod interceptor;
+pub mod manager;
 pub mod passive;
+pub mod resolver;
+pub mod tap;
+pub mod tls;
+pub mod transport;
 
 pub use error::ProxyError;
+pub use manager::ProxyManager;
 
 /// Hosts the proxy will MITM (decrypt + inspect). Everything else is tunneled
 /// blindly. Kept deliberately narrow: only LLM API endpoints belong here, never

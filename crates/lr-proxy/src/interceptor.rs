@@ -41,11 +41,12 @@ pub enum InterceptAction<T> {
     Replace(T),
 }
 
-/// A parsed, decrypted HTTP exchange handed to the interceptor for observation.
+/// A decrypted HTTP exchange handed to the interceptor for observation.
 ///
-/// Bodies are size-capped copies (see the transport layer) so large or
-/// streaming payloads never buffer unbounded here.
-#[derive(Debug, Clone)]
+/// Bodies are raw, size-capped byte copies captured by the transport (which
+/// stays protocol-agnostic); the interceptor decides how to parse them. Large
+/// or streaming payloads are truncated at the cap, never buffered unbounded.
+#[derive(Debug, Clone, Default)]
 pub struct ObservedExchange {
     /// The client this exchange belongs to.
     pub client_id: String,
@@ -55,12 +56,15 @@ pub struct ObservedExchange {
     pub method: String,
     /// Request path (e.g. `/v1/messages`).
     pub path: String,
-    /// Parsed request body, if it was JSON and within the size cap.
-    pub request_body: Option<serde_json::Value>,
+    /// Raw request body bytes (capped), if any.
+    pub request_body: Option<Vec<u8>>,
     /// Response status code, once the response head is available.
     pub status: Option<u16>,
-    /// Parsed / reconstructed response body, once available.
-    pub response_body: Option<serde_json::Value>,
+    /// Raw response body bytes (capped), if any. For SSE this is the raw event
+    /// stream; see [`response_is_sse`](Self::response_is_sse).
+    pub response_body: Option<Vec<u8>>,
+    /// Whether the response was an SSE stream (`text/event-stream`).
+    pub response_is_sse: bool,
 }
 
 /// Hooks the transport calls at each stage of an intercepted connection.
