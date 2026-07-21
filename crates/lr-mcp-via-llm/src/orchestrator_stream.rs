@@ -1155,7 +1155,7 @@ async fn execute_resource_read_background(
                 permissions.mcp_sampling_permission.clone(),
                 permissions.mcp_elicitation_permission.clone(),
                 permissions.memory_enabled,
-                permissions.client_mode.clone(),
+                permissions.client_mode,
                 request,
                 None,
             )
@@ -1215,7 +1215,7 @@ async fn execute_resource_read_background(
             permissions.mcp_sampling_permission.clone(),
             permissions.mcp_elicitation_permission.clone(),
             permissions.memory_enabled,
-            permissions.client_mode.clone(),
+            permissions.client_mode,
             list_request,
             None,
         ),
@@ -1474,7 +1474,7 @@ async fn execute_prompt_get_background(
             permissions.mcp_sampling_permission.clone(),
             permissions.mcp_elicitation_permission.clone(),
             permissions.memory_enabled,
-            permissions.client_mode.clone(),
+            permissions.client_mode,
             request,
             None, // monitor_session_id
         ),

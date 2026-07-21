@@ -160,6 +160,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v26(config)?;
     }
 
+    // Migrate to v27: Split single-axis ClientMode into llm_mode + mcp_mode
+    if config.version < 27 {
+        config = migrate_to_v27(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -893,6 +898,25 @@ fn migrate_to_v26(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
+/// Migrate to version 27: Split `ClientMode` into `llm_mode` + `mcp_mode`.
+///
+/// The legacy single-axis `client_mode` field is deserialized into a
+/// (now deserialize-only) shim; here we project it onto the two independent
+/// axes via [`ClientMode::split`]. Configs already at v27 carry `llm_mode`/
+/// `mcp_mode` directly and never reach this function.
+fn migrate_to_v27(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 27: Split client_mode into llm_mode + mcp_mode");
+
+    for client in &mut config.clients {
+        let (llm_mode, mcp_mode) = client.client_mode.split();
+        client.llm_mode = llm_mode;
+        client.mcp_mode = mcp_mode;
+    }
+
+    config.version = 27;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,6 +944,45 @@ mod tests {
         // Should succeed (no migration needed)
         assert!(result.is_ok());
         assert_eq!(result.unwrap().version, CONFIG_VERSION + 1);
+    }
+
+    #[test]
+    fn test_migrate_to_v27_splits_client_mode() {
+        use crate::{ClientMode, LlmMode, McpMode};
+
+        let cases = [
+            (ClientMode::Both, LlmMode::Gateway, McpMode::Gateway),
+            (ClientMode::LlmOnly, LlmMode::Gateway, McpMode::Off),
+            (ClientMode::McpOnly, LlmMode::Off, McpMode::Gateway),
+            (ClientMode::McpViaLlm, LlmMode::Gateway, McpMode::ViaLlm),
+        ];
+
+        for (legacy, want_llm, want_mcp) in cases {
+            let mut client = crate::Client::new_with_strategy("c".into(), "s".into());
+            client.client_mode = legacy;
+            // Simulate a pre-v27 config where the new fields are still default.
+            client.llm_mode = LlmMode::default();
+            client.mcp_mode = McpMode::default();
+
+            let config = AppConfig {
+                version: 26,
+                clients: vec![client],
+                ..Default::default()
+            };
+
+            let migrated = migrate_to_v27(config).unwrap();
+            assert_eq!(migrated.version, 27);
+            assert_eq!(
+                migrated.clients[0].llm_mode, want_llm,
+                "llm for {:?}",
+                legacy
+            );
+            assert_eq!(
+                migrated.clients[0].mcp_mode, want_mcp,
+                "mcp for {:?}",
+                legacy
+            );
+        }
     }
 
     #[test]

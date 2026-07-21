@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use lr_config::{
-    client_strategy_name, ClientMode, CodingAgentType, ConfigManager, McpPermissions,
+    client_strategy_name, CodingAgentType, ConfigManager, LlmMode, McpMode, McpPermissions,
     ModelPermissions, PermissionState, SkillsPermissions,
 };
 use serde::{Deserialize, Serialize};
@@ -54,8 +54,10 @@ pub struct ClientInfo {
     pub mcp_sampling_permission: PermissionState,
     /// Elicitation permission (Allow/Ask/Off)
     pub mcp_elicitation_permission: PermissionState,
-    /// Client mode (both, llm_only, mcp_only)
-    pub client_mode: ClientMode,
+    /// LLM access mode (off, gateway, proxy_inspect, proxy_rewrite)
+    pub llm_mode: LlmMode,
+    /// MCP access mode (off, gateway, via_llm)
+    pub mcp_mode: McpMode,
     /// Template ID used to create this client
     pub template_id: Option<String>,
     /// Whether auto-sync of external app config is enabled
@@ -103,7 +105,8 @@ pub async fn list_clients(
                 marketplace_permission: c.marketplace_permission.clone(),
                 mcp_sampling_permission: c.mcp_sampling_permission.clone(),
                 mcp_elicitation_permission: c.mcp_elicitation_permission.clone(),
-                client_mode: c.client_mode.clone(),
+                llm_mode: c.llm_mode,
+                mcp_mode: c.mcp_mode,
                 template_id: c.template_id.clone(),
                 sync_config: c.sync_config,
                 guardrails_active: {
@@ -129,7 +132,8 @@ pub async fn list_clients(
 #[tauri::command]
 pub async fn create_client(
     name: String,
-    client_mode: Option<lr_config::ClientMode>,
+    llm_mode: Option<LlmMode>,
+    mcp_mode: Option<McpMode>,
     template_id: Option<String>,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
@@ -146,15 +150,17 @@ pub async fn create_client(
 
     // Apply optional mode/template in the same Tauri command so the
     // client never leaves this command in a half-configured state.
-    if client_mode.is_some() || template_id.is_some() {
+    if llm_mode.is_some() || mcp_mode.is_some() || template_id.is_some() {
         let cid = client.id.clone();
-        let mode = client_mode.clone();
         let tid = template_id.clone();
         config_manager
             .update(|cfg| {
                 if let Some(c) = cfg.clients.iter_mut().find(|c| c.id == cid) {
-                    if let Some(m) = mode {
-                        c.client_mode = m;
+                    if let Some(m) = llm_mode {
+                        c.llm_mode = m;
+                    }
+                    if let Some(m) = mcp_mode {
+                        c.mcp_mode = m;
                     }
                     if let Some(t) = tid {
                         c.template_id = Some(t);
@@ -222,7 +228,8 @@ pub async fn create_client(
         marketplace_permission: client.marketplace_permission.clone(),
         mcp_sampling_permission: client.mcp_sampling_permission.clone(),
         mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
-        client_mode: client.client_mode.clone(),
+        llm_mode: client.llm_mode,
+        mcp_mode: client.mcp_mode,
         template_id: client.template_id.clone(),
         sync_config: client.sync_config,
         guardrails_active: {
@@ -403,7 +410,9 @@ pub async fn clone_client(
         coding_agents_permissions: lr_config::CodingAgentsPermissions::default(),
         coding_agent_permission: source_client.coding_agent_permission.clone(),
         coding_agent_type: source_client.coding_agent_type,
-        client_mode: source_client.client_mode.clone(),
+        client_mode: source_client.client_mode,
+        llm_mode: source_client.llm_mode,
+        mcp_mode: source_client.mcp_mode,
         template_id: source_client.template_id.clone(),
         sync_config: false, // Disabled for clones to avoid conflicts
         guardrails_enabled: None,
@@ -472,7 +481,8 @@ pub async fn clone_client(
         marketplace_permission: new_client.marketplace_permission.clone(),
         mcp_sampling_permission: new_client.mcp_sampling_permission.clone(),
         mcp_elicitation_permission: new_client.mcp_elicitation_permission.clone(),
-        client_mode: new_client.client_mode.clone(),
+        llm_mode: new_client.llm_mode,
+        mcp_mode: new_client.mcp_mode,
         template_id: new_client.template_id.clone(),
         sync_config: false,
         guardrails_active: {
@@ -2988,23 +2998,68 @@ pub async fn set_client_elicitation_permission(
 // Client Template & Mode Commands
 // ============================================================================
 
-/// Set the client mode (both, llm_only, mcp_only, mcp_via_llm)
+/// Set the client's LLM access mode (off, gateway, proxy_inspect, proxy_rewrite)
 #[tauri::command]
-pub async fn set_client_mode(
+pub async fn set_client_llm_mode(
     client_id: String,
-    mode: ClientMode,
+    mode: LlmMode,
     config_manager: State<'_, ConfigManager>,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!("Setting client {} mode to: {:?}", client_id, mode);
+    tracing::info!("Setting client {} LLM mode to: {:?}", client_id, mode);
+    apply_client_mode_change(
+        &client_id,
+        |c| c.llm_mode = mode,
+        config_manager,
+        client_manager,
+        provider_registry,
+        app,
+    )
+    .await
+}
 
+/// Set the client's MCP access mode (off, gateway, via_llm)
+#[tauri::command]
+pub async fn set_client_mcp_mode(
+    client_id: String,
+    mode: McpMode,
+    config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Setting client {} MCP mode to: {:?}", client_id, mode);
+    apply_client_mode_change(
+        &client_id,
+        |c| c.mcp_mode = mode,
+        config_manager,
+        client_manager,
+        provider_registry,
+        app,
+    )
+    .await
+}
+
+/// Shared implementation for the two mode-setter commands: mutate the client,
+/// persist, notify the UI, and resync any external app config to the new mode.
+async fn apply_client_mode_change(
+    client_id: &str,
+    mutate: impl FnOnce(&mut lr_config::Client),
+    config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let mut found = false;
+    let mut mutate = Some(mutate);
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.client_mode = mode.clone();
+                if let Some(f) = mutate.take() {
+                    f(client);
+                }
                 found = true;
             }
         })
@@ -3022,7 +3077,7 @@ pub async fn set_client_mode(
 
     // Resync external config to match the new mode
     if let Err(e) = sync_client_config_inner(
-        &client_id,
+        client_id,
         config_manager.inner(),
         client_manager.inner(),
         provider_registry.inner(),
@@ -3376,12 +3431,20 @@ pub async fn sync_client_config_inner(
         vec![]
     };
 
+    // Proxy connection info for clients in a proxy llm_mode.
+    // TODO(https-proxy): populate from the ProxyManager (bound port + root CA
+    // path) once it is wired into the launcher. None disables proxy sync.
+    let (proxy_url, ca_cert_path): (Option<String>, Option<String>) = (None, None);
+
     let ctx = launcher::ConfigSyncContext {
         base_url,
         client_secret,
         client_id: client_id.to_string(),
         models,
-        client_mode: client.client_mode.clone(),
+        llm_mode: client.llm_mode,
+        mcp_mode: client.mcp_mode,
+        proxy_url,
+        ca_cert_path,
     };
 
     integration.sync_config(&ctx).map(Some)

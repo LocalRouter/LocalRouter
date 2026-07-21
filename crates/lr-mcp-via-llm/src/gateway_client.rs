@@ -131,7 +131,7 @@ impl<'a> GatewayClient<'a> {
             mcp_sampling_permission: client.mcp_sampling_permission.clone(),
             mcp_elicitation_permission: client.mcp_elicitation_permission.clone(),
             memory_enabled: client.memory_enabled,
-            client_mode: client.client_mode.clone(),
+            client_mode: client.effective_client_mode(),
             monitor_session_id: None,
         }
     }
@@ -158,7 +158,7 @@ impl<'a> GatewayClient<'a> {
             mcp_sampling_permission: permissions.mcp_sampling_permission.clone(),
             mcp_elicitation_permission: permissions.mcp_elicitation_permission.clone(),
             memory_enabled: permissions.memory_enabled,
-            client_mode: permissions.client_mode.clone(),
+            client_mode: permissions.client_mode,
             monitor_session_id: None,
         }
     }
@@ -190,7 +190,7 @@ impl<'a> GatewayClient<'a> {
                 self.mcp_sampling_permission.clone(),
                 self.mcp_elicitation_permission.clone(),
                 self.memory_enabled,
-                self.client_mode.clone(),
+                self.client_mode,
                 request,
                 self.monitor_session_id.clone(),
             )

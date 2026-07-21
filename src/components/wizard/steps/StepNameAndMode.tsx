@@ -6,7 +6,7 @@
  * - Shared ClientModeSelector below (with custom arrow icons)
  */
 
-import type { ClientMode } from "@/types/tauri-commands"
+import type { LlmMode, McpMode } from "@/types/tauri-commands"
 import type { ClientTemplate } from "@/components/client/ClientTemplates"
 import { ClientModeSelector } from "@/components/client/ClientModeSelector"
 import { Input } from "@/components/ui/Input"
@@ -15,16 +15,20 @@ import { Label } from "@/components/ui/label"
 interface StepNameAndModeProps {
   name: string
   onNameChange: (name: string) => void
-  mode: ClientMode
-  onModeChange: (mode: ClientMode) => void
+  llmMode: LlmMode
+  mcpMode: McpMode
+  onLlmModeChange: (mode: LlmMode) => void
+  onMcpModeChange: (mode: McpMode) => void
   template: ClientTemplate | null
 }
 
 export function StepNameAndMode({
   name,
   onNameChange,
-  mode,
-  onModeChange,
+  llmMode,
+  mcpMode,
+  onLlmModeChange,
+  onMcpModeChange,
   template,
 }: StepNameAndModeProps) {
   return (
@@ -44,7 +48,13 @@ export function StepNameAndMode({
       {/* Mode selection */}
       <div className="space-y-2">
         <Label>Access Mode</Label>
-        <ClientModeSelector mode={mode} onModeChange={onModeChange} template={template} />
+        <ClientModeSelector
+          llmMode={llmMode}
+          mcpMode={mcpMode}
+          onLlmModeChange={onLlmModeChange}
+          onMcpModeChange={onMcpModeChange}
+          template={template}
+        />
       </div>
     </div>
   )

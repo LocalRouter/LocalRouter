@@ -16,7 +16,8 @@ import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 import type { CodingAgentType } from "@/types/tauri-commands"
-import type { ClientMode } from "@/types/tauri-commands"
+import type { LlmMode, McpMode } from "@/types/tauri-commands"
+import { combineClientMode } from "@/components/client/ClientTemplates"
 
 interface Client {
   id: string
@@ -32,7 +33,8 @@ interface Client {
   coding_agent_type: CodingAgentType | null
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
-  client_mode?: ClientMode
+  llm_mode?: LlmMode
+  mcp_mode?: McpMode
   template_id?: string | null
   sync_config: boolean
   guardrails_active: boolean
@@ -64,12 +66,16 @@ export function ClientDetail({
 
   const [mcpInnerPath, setMcpInnerPath] = useState<string | null>(null)
 
-  const clientMode = client?.client_mode || "both"
-  const showModelsTab = clientMode !== "mcp_only"
-  const showMcpTab = clientMode !== "llm_only"
-  const showTryItOutLlm = clientMode !== "mcp_only"
-  // MCP via LLM clients speak only OpenAI protocol — no direct MCP try-it-out
-  const showTryItOutMcp = clientMode !== "llm_only" && clientMode !== "mcp_via_llm"
+  const llmMode = client?.llm_mode || "gateway"
+  const mcpMode = client?.mcp_mode || "gateway"
+  const clientMode = combineClientMode(llmMode, mcpMode)
+  // Model selection and per-client optimizations only apply to the native
+  // gateway — the passive proxy can't construct or rewrite requests.
+  const showModelsTab = llmMode === "gateway"
+  const showMcpTab = mcpMode !== "off"
+  const showTryItOutLlm = llmMode === "gateway"
+  // Direct MCP try-it-out only for the MCP gateway (not via-LLM/off).
+  const showTryItOutMcp = mcpMode === "gateway"
   const showTryItOut = showTryItOutLlm || showTryItOutMcp
   const [trySubTab, setTrySubTab] = useState(showTryItOutLlm ? "llm" : "mcp")
 

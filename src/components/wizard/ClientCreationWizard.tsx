@@ -23,8 +23,8 @@ import { Button } from "@/components/ui/Button"
 import { StepWelcome } from "./steps/StepWelcome"
 import { StepTemplate } from "./steps/StepTemplate"
 import { StepNameAndMode } from "./steps/StepNameAndMode"
-import { CLIENT_TEMPLATES, type ClientTemplate } from "@/components/client/ClientTemplates"
-import type { ClientMode, CreateClientParams } from "@/types/tauri-commands"
+import { CLIENT_TEMPLATES, templateDefaultModes, type ClientTemplate } from "@/components/client/ClientTemplates"
+import type { LlmMode, McpMode, CreateClientParams } from "@/types/tauri-commands"
 
 // Logical step identifiers
 type StepId = "welcome" | "template" | "name_mode"
@@ -37,7 +37,8 @@ interface StepDef {
 
 interface WizardState {
   selectedTemplate: ClientTemplate | null
-  clientMode: ClientMode
+  llmMode: LlmMode
+  mcpMode: McpMode
   clientName: string
 }
 
@@ -59,7 +60,8 @@ interface ClientInfo {
 
 const INITIAL_STATE: WizardState = {
   selectedTemplate: null,
-  clientMode: "both",
+  llmMode: "gateway",
+  mcpMode: "gateway",
   clientName: "",
 }
 
@@ -101,10 +103,12 @@ export function ClientCreationWizard({
           const template = CLIENT_TEMPLATES.find(t => t.id === initialTemplateId)
           if (template) {
             const isCustom = template.id === "custom"
+            const modes = isCustom ? { llmMode: "gateway" as LlmMode, mcpMode: "gateway" as McpMode } : templateDefaultModes(template)
             setState(prev => ({
               ...prev,
               selectedTemplate: template,
-              clientMode: isCustom ? "both" : template.defaultMode,
+              llmMode: modes.llmMode,
+              mcpMode: modes.mcpMode,
               clientName: prev.clientName || (isCustom ? "" : generateSuggestedName(template.name, existingNamesRef.current)),
             }))
             setCurrentStep(showWelcome ? 2 : 1)
@@ -160,10 +164,12 @@ export function ClientCreationWizard({
 
   const handleTemplateSelect = (template: ClientTemplate) => {
     const isCustom = template.id === "custom"
+    const modes = isCustom ? { llmMode: "gateway" as LlmMode, mcpMode: "gateway" as McpMode } : templateDefaultModes(template)
     setState((prev) => ({
       ...prev,
       selectedTemplate: template,
-      clientMode: isCustom ? "both" : template.defaultMode,
+      llmMode: modes.llmMode,
+      mcpMode: modes.mcpMode,
       clientName: prev.clientName || (isCustom ? "" : generateSuggestedName(template.name, existingNamesRef.current)),
     }))
     // Auto-advance to next step
@@ -183,7 +189,8 @@ export function ClientCreationWizard({
       // half-configured state (mode/template applied atomically).
       const [, clientInfo] = await invoke<[string, ClientInfo]>("create_client", {
         name: state.clientName.trim(),
-        clientMode: state.clientMode !== "both" ? state.clientMode : null,
+        llmMode: state.llmMode,
+        mcpMode: state.mcpMode,
         templateId,
       } satisfies CreateClientParams)
 
@@ -216,8 +223,10 @@ export function ClientCreationWizard({
           <StepNameAndMode
             name={state.clientName}
             onNameChange={(name) => setState((prev) => ({ ...prev, clientName: name }))}
-            mode={state.clientMode}
-            onModeChange={(mode) => setState((prev) => ({ ...prev, clientMode: mode }))}
+            llmMode={state.llmMode}
+            mcpMode={state.mcpMode}
+            onLlmModeChange={(mode) => setState((prev) => ({ ...prev, llmMode: mode }))}
+            onMcpModeChange={(mode) => setState((prev) => ({ ...prev, mcpMode: mode }))}
             template={state.selectedTemplate}
           />
         )

@@ -175,7 +175,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       marketplace_permission: 'ask' as const,
       mcp_sampling_permission: 'ask' as const,
       mcp_elicitation_permission: 'ask' as const,
-      client_mode: (args?.clientMode ?? 'both') as 'both' | 'llm_only' | 'mcp_only' | 'mcp_via_llm',
+      llm_mode: (args?.llmMode ?? 'gateway') as 'off' | 'gateway' | 'proxy_inspect' | 'proxy_rewrite',
+      mcp_mode: (args?.mcpMode ?? 'gateway') as 'off' | 'gateway' | 'via_llm',
       template_id: args?.templateId ?? null,
       sync_config: false,
       guardrails_active: false,
@@ -279,10 +280,18 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Client guardrails config updated (demo)')
     return null
   },
-  'set_client_mode': (args) => {
+  'set_client_llm_mode': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client && args?.mode) {
-      (client as unknown as Record<string, unknown>).client_mode = args.mode
+      (client as unknown as Record<string, unknown>).llm_mode = args.mode
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
+    return null
+  },
+  'set_client_mcp_mode': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    if (client && args?.mode) {
+      (client as unknown as Record<string, unknown>).mcp_mode = args.mode
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null

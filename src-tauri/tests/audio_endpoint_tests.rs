@@ -57,6 +57,8 @@ fn create_test_client(id: &str, strategy_id: &str) -> Client {
         model_permissions: lr_config::ModelPermissions::default(),
         marketplace_permission: lr_config::PermissionState::Off,
         client_mode: lr_config::ClientMode::default(),
+        llm_mode: lr_config::LlmMode::default(),
+        mcp_mode: lr_config::McpMode::default(),
         template_id: None,
         sync_config: false,
         guardrails_enabled: None,

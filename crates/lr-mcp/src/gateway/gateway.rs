@@ -1107,7 +1107,6 @@ impl McpGateway {
             let router = self.router.clone();
             let client_id = client_id.to_string();
             let session_key = session_key.to_string();
-            let client_mode = client_mode.clone();
             let live_sampling = self.live_sampling.clone();
             let live_elicitation_mode = self.live_elicitation_mode.clone();
             let firewall_manager = self.firewall_manager.clone();
@@ -1120,7 +1119,7 @@ impl McpGateway {
                 let router = router.clone();
                 let client_id = client_id.clone();
                 let session_key = session_key.clone();
-                let client_mode = client_mode.clone();
+                let client_mode = client_mode;
                 let firewall_mgr = firewall_manager.clone();
                 let sampling_behavior = live_sampling.read().clone();
                 let elicitation_mode = live_elicitation_mode.read().clone();
@@ -2250,11 +2249,7 @@ impl McpGateway {
             init_results.iter().map(|(id, _)| id.clone()).collect();
         let (client_id_for_callbacks, session_key_for_callbacks, client_mode_for_callbacks) = {
             let s = session.read().await;
-            (
-                s.client_id.clone(),
-                s.session_key.clone(),
-                s.client_mode.clone(),
-            )
+            (s.client_id.clone(), s.session_key.clone(), s.client_mode)
         };
         self.register_request_handlers_on_transports(
             &initialized_server_ids,

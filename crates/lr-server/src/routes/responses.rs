@@ -234,7 +234,7 @@ pub async fn create_response(
         super::helpers::get_client_with_strategy(&state, &auth.api_key_id).ok();
     let use_mcp_via_llm = client_for_routing
         .as_ref()
-        .map(|(c, _)| c.client_mode == lr_config::ClientMode::McpViaLlm)
+        .map(|(c, _)| c.is_mcp_via_llm())
         .unwrap_or(false);
 
     if req.stream {

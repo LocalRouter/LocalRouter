@@ -310,7 +310,7 @@ pub(crate) async fn apply_model_access_checks(
                 {
                     use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
-                    let is_mcp_via_llm = client.client_mode == lr_config::ClientMode::McpViaLlm;
+                    let is_mcp_via_llm = client.is_mcp_via_llm();
 
                     let mut request_json = serde_json::to_value(&request)
                         .map(|mut v| {
@@ -477,7 +477,7 @@ pub(crate) async fn apply_model_access_checks(
         let is_mcp_via_llm_client = client_auth
             .as_ref()
             .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
-            .is_some_and(|c| c.client_mode == lr_config::ClientMode::McpViaLlm);
+            .is_some_and(|c| c.is_mcp_via_llm());
 
         let strategy_permission = get_client_with_strategy(state, &auth.api_key_id)
             .ok()

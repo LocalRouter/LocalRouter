@@ -177,10 +177,30 @@ export interface SetClientToolsIndexingParams {
 // =============================================================================
 
 /**
- * Client mode determines which features are exposed.
+ * Legacy single-axis client mode. Retained for reference/back-compat; new code
+ * uses the independent {@link LlmMode} + {@link McpMode} axes instead.
  * Rust: crates/lr-config/src/types.rs - ClientMode enum
  */
 export type ClientMode = 'both' | 'llm_only' | 'mcp_only' | 'mcp_via_llm'
+
+/**
+ * LLM access mode (one axis of the former ClientMode).
+ * - `off`: no LLM access
+ * - `gateway`: native `/v1` endpoints (the historical "on")
+ * - `proxy_inspect`: passive HTTPS inspection proxy (inspect only)
+ * - `proxy_rewrite`: active rewrite proxy — NOT IMPLEMENTED (UI disables it)
+ * Rust: crates/lr-config/src/types.rs - LlmMode enum
+ */
+export type LlmMode = 'off' | 'gateway' | 'proxy_inspect' | 'proxy_rewrite'
+
+/**
+ * MCP access mode (the other axis of the former ClientMode).
+ * - `off`: no MCP access
+ * - `gateway`: direct MCP proxy (the historical "on")
+ * - `via_llm`: MCP tools injected into LLM chat, executed server-side
+ * Rust: crates/lr-config/src/types.rs - McpMode enum
+ */
+export type McpMode = 'off' | 'gateway' | 'via_llm'
 
 /**
  * Client information returned from list_clients and create_client.
@@ -206,7 +226,10 @@ export interface ClientInfo {
   mcp_sampling_permission: PermissionState
   /** Elicitation permission (Allow/Ask/Off) */
   mcp_elicitation_permission: PermissionState
-  client_mode: ClientMode
+  /** LLM access mode (off, gateway, proxy_inspect, proxy_rewrite) */
+  llm_mode: LlmMode
+  /** MCP access mode (off, gateway, via_llm) */
+  mcp_mode: McpMode
   template_id: string | null
   sync_config: boolean
   guardrails_active: boolean
@@ -1615,8 +1638,10 @@ export interface PendingInstallInfo {
 /** Params for create_client */
 export interface CreateClientParams {
   name: string
-  /** Client mode (llm_only, mcp_only, both, mcp_via_llm). Null = backend default ("both"). */
-  clientMode?: ClientMode | null
+  /** LLM access mode. Null/omitted = backend default ("gateway"). */
+  llmMode?: LlmMode | null
+  /** MCP access mode. Null/omitted = backend default ("gateway"). */
+  mcpMode?: McpMode | null
   /** Template ID (e.g. "claude-code"). Null = no template. */
   templateId?: string | null
 }
@@ -1663,10 +1688,16 @@ export interface GetClientEffectiveConfigParams {
   clientId: string
 }
 
-/** Params for set_client_mode */
-export interface SetClientModeParams {
+/** Params for set_client_llm_mode */
+export interface SetClientLlmModeParams {
   clientId: string
-  mode: ClientMode
+  mode: LlmMode
+}
+
+/** Params for set_client_mcp_mode */
+export interface SetClientMcpModeParams {
+  clientId: string
+  mode: McpMode
 }
 
 /** Params for set_client_template */

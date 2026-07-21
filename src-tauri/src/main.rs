@@ -2494,7 +2494,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_clients_using_strategy,
             ui::commands::get_feature_clients_status,
             // Client template, mode & guardrails commands
-            ui::commands::set_client_mode,
+            ui::commands::set_client_llm_mode,
+            ui::commands::set_client_mcp_mode,
             ui::commands::set_client_template,
             ui::commands::get_client_guardrails_config,
             ui::commands::update_client_guardrails_config,

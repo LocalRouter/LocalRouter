@@ -3,8 +3,8 @@
 #![allow(deprecated)]
 
 use super::{
-    AppConfig, McpAuthConfig, McpServerConfig, McpTransportConfig, ProviderConfig,
-    CLIENT_KEYRING_SERVICE,
+    AppConfig, LlmMode, McpAuthConfig, McpMode, McpServerConfig, McpTransportConfig,
+    ProviderConfig, CLIENT_KEYRING_SERVICE,
 };
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_api_keys::CachedKeychain;
@@ -41,6 +41,9 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
 
     // Validate client strategy references
     validate_client_strategy_refs(config)?;
+
+    // Validate client LLM/MCP mode combinations
+    validate_client_modes(config)?;
 
     // Validate health check bounds
     validate_health_check_config(config)?;
@@ -288,6 +291,40 @@ fn validate_client_strategy_refs(config: &AppConfig) -> AppResult<()> {
     Ok(())
 }
 
+/// Validate the LLM/MCP mode combination for every client.
+///
+/// The two axes are independent, but not every combination is legal:
+/// - at least one axis must be enabled;
+/// - MCP-via-LLM requires the native LLM gateway (it can't inject tools into
+///   proxied traffic — passive proxy doesn't rewrite);
+/// - the active rewrite proxy is not implemented yet.
+fn validate_client_modes(config: &AppConfig) -> AppResult<()> {
+    for client in &config.clients {
+        if client.llm_mode == LlmMode::Off && client.mcp_mode == McpMode::Off {
+            return Err(AppError::Config(format!(
+                "Client '{}' has both LLM and MCP disabled — enable at least one",
+                client.name
+            )));
+        }
+
+        if client.mcp_mode == McpMode::ViaLlm && client.llm_mode != LlmMode::Gateway {
+            return Err(AppError::Config(format!(
+                "Client '{}' uses MCP via LLM, which requires the LLM gateway mode \
+                 (it is incompatible with the inspection proxy)",
+                client.name
+            )));
+        }
+
+        if client.llm_mode == LlmMode::ProxyRewrite {
+            return Err(AppError::Config(format!(
+                "Client '{}' uses the active rewrite proxy, which is not yet available",
+                client.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validate MCP server configurations
 fn validate_mcp_servers(servers: &[McpServerConfig]) -> AppResult<()> {
     for server in servers {
@@ -465,6 +502,62 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_config(&config).is_err());
+    }
+
+    fn client_with_modes(llm: LlmMode, mcp: McpMode) -> crate::Client {
+        let mut c = crate::Client::new_with_strategy("c".into(), "s".into());
+        c.llm_mode = llm;
+        c.mcp_mode = mcp;
+        c
+    }
+
+    fn config_with_client(client: crate::Client) -> AppConfig {
+        AppConfig {
+            clients: vec![client],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_validate_client_modes_accepts_valid_combos() {
+        for (llm, mcp) in [
+            (LlmMode::Gateway, McpMode::Gateway),
+            (LlmMode::Gateway, McpMode::Off),
+            (LlmMode::Off, McpMode::Gateway),
+            (LlmMode::Gateway, McpMode::ViaLlm),
+            (LlmMode::ProxyInspect, McpMode::Off),
+            (LlmMode::ProxyInspect, McpMode::Gateway),
+        ] {
+            let cfg = config_with_client(client_with_modes(llm, mcp));
+            assert!(
+                validate_client_modes(&cfg).is_ok(),
+                "expected ok for {:?}/{:?}",
+                llm,
+                mcp
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_client_modes_rejects_invalid_combos() {
+        // Both axes off.
+        assert!(validate_client_modes(&config_with_client(client_with_modes(
+            LlmMode::Off,
+            McpMode::Off
+        )))
+        .is_err());
+        // Via-LLM without native gateway (here: with the passive proxy).
+        assert!(validate_client_modes(&config_with_client(client_with_modes(
+            LlmMode::ProxyInspect,
+            McpMode::ViaLlm
+        )))
+        .is_err());
+        // Active rewrite proxy is not implemented.
+        assert!(validate_client_modes(&config_with_client(client_with_modes(
+            LlmMode::ProxyRewrite,
+            McpMode::Off
+        )))
+        .is_err());
     }
 
     fn make_strategy(name: &str) -> Strategy {

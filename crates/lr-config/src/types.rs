@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 26;
+pub(crate) const CONFIG_VERSION: u32 = 27;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -2713,7 +2713,7 @@ where
 }
 
 /// Client mode determines which features are exposed to the client
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientMode {
     /// Full access to both LLM routing and MCP features
@@ -2725,6 +2725,59 @@ pub enum ClientMode {
     McpOnly,
     /// MCP tools injected into LLM requests, executed server-side (experimental)
     McpViaLlm,
+}
+
+/// LLM access mode for a client (one half of the former `ClientMode`).
+///
+/// Splits the LLM axis from the MCP axis so the two can be configured
+/// independently. See [`McpMode`] for the other axis.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmMode {
+    /// No LLM access (native `/v1` endpoints denied).
+    Off,
+    /// Native gateway: client calls LocalRouter's `/v1` endpoints directly.
+    /// This is the historical "on" behavior.
+    #[default]
+    Gateway,
+    /// Passive HTTPS inspection proxy: client points `HTTPS_PROXY` at
+    /// LocalRouter, traffic is decrypted and inspected but forwarded
+    /// unchanged. No request rewriting.
+    ProxyInspect,
+    /// Active HTTPS proxy: inspects AND rewrites requests (model selection,
+    /// optimization, allow-listing).
+    ///
+    /// NOT IMPLEMENTED — reserved so configs/UI can reference it. The backend
+    /// rejects clients configured with this mode until it ships.
+    ProxyRewrite,
+}
+
+/// MCP access mode for a client (one half of the former `ClientMode`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpMode {
+    /// No MCP access (direct MCP endpoints denied).
+    Off,
+    /// Direct MCP proxy: client speaks MCP to LocalRouter's `/mcp` endpoints.
+    /// This is the historical "on" behavior.
+    #[default]
+    Gateway,
+    /// MCP tools injected into LLM chat requests and executed server-side
+    /// (the former `McpViaLlm`). Requires [`LlmMode::Gateway`].
+    ViaLlm,
+}
+
+impl ClientMode {
+    /// Map the legacy single-axis mode to the new (LLM, MCP) pair.
+    /// Used by config migration and the deserialize-only shim.
+    pub fn split(self) -> (LlmMode, McpMode) {
+        match self {
+            ClientMode::Both => (LlmMode::Gateway, McpMode::Gateway),
+            ClientMode::LlmOnly => (LlmMode::Gateway, McpMode::Off),
+            ClientMode::McpOnly => (LlmMode::Off, McpMode::Gateway),
+            ClientMode::McpViaLlm => (LlmMode::Gateway, McpMode::ViaLlm),
+        }
+    }
 }
 
 /// Unified client configuration (replaces ApiKeyConfig and OAuthClientConfig)
@@ -2865,9 +2918,18 @@ pub struct Client {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coding_agent_type: Option<CodingAgentType>,
 
-    /// Client mode: controls which features (LLM, MCP, both) are exposed
-    #[serde(default)]
+    /// Migration shim: legacy single-axis client mode (deserialize only).
+    /// Replaced by `llm_mode` + `mcp_mode`; read by `migrate_to_v27`.
+    #[serde(default, skip_serializing)]
     pub client_mode: ClientMode,
+
+    /// LLM access mode (Off / Gateway / passive proxy / active proxy).
+    #[serde(default)]
+    pub llm_mode: LlmMode,
+
+    /// MCP access mode (Off / Gateway / via LLM).
+    #[serde(default)]
+    pub mcp_mode: McpMode,
 
     /// Template ID used to create this client (e.g., "claude-code", "cursor")
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2914,6 +2976,50 @@ impl Client {
     /// Memory folder name (slug if set, falls back to UUID for legacy clients).
     pub fn memory_folder_name(&self) -> &str {
         self.memory_folder.as_deref().unwrap_or(&self.id)
+    }
+
+    /// Native LLM gateway is active (client calls `/v1` endpoints directly).
+    pub fn llm_gateway_enabled(&self) -> bool {
+        self.llm_mode == LlmMode::Gateway
+    }
+
+    /// Client routes LLM traffic through the HTTPS inspection proxy
+    /// (passive today; active reserved).
+    pub fn llm_proxy_enabled(&self) -> bool {
+        matches!(self.llm_mode, LlmMode::ProxyInspect | LlmMode::ProxyRewrite)
+    }
+
+    /// Client uses the passive (inspect-only) proxy.
+    pub fn llm_proxy_passive(&self) -> bool {
+        self.llm_mode == LlmMode::ProxyInspect
+    }
+
+    /// Direct MCP access is active (client speaks MCP to `/mcp`).
+    pub fn mcp_direct_enabled(&self) -> bool {
+        self.mcp_mode == McpMode::Gateway
+    }
+
+    /// MCP tools are injected into LLM chat and executed server-side.
+    pub fn is_mcp_via_llm(&self) -> bool {
+        self.mcp_mode == McpMode::ViaLlm
+    }
+
+    /// Reconstruct the legacy [`ClientMode`] for MCP gateway internals that
+    /// still thread a single enum for sampling/elicitation behavior. The MCP
+    /// gateway only distinguishes the MCP-relevant cases, so the LLM proxy
+    /// modes collapse onto the nearest legacy equivalent (they don't affect
+    /// MCP sampling/elicitation).
+    pub fn effective_client_mode(&self) -> ClientMode {
+        match (self.llm_mode, self.mcp_mode) {
+            (_, McpMode::ViaLlm) => ClientMode::McpViaLlm,
+            (LlmMode::Gateway, McpMode::Gateway) => ClientMode::Both,
+            (LlmMode::Gateway, McpMode::Off) => ClientMode::LlmOnly,
+            // LLM off/proxy with direct MCP → behaves like MCP-only for the gateway.
+            (_, McpMode::Gateway) => ClientMode::McpOnly,
+            // Degenerate (no MCP, no native LLM) — validation forbids Off+Off,
+            // so this only arises for proxy-LLM clients; treat as LLM-only.
+            (_, McpMode::Off) => ClientMode::LlmOnly,
+        }
     }
 }
 
@@ -3829,6 +3935,8 @@ impl Client {
             model_permissions: ModelPermissions::default(),
             marketplace_permission: PermissionState::default(),
             client_mode: ClientMode::default(),
+            llm_mode: LlmMode::default(),
+            mcp_mode: McpMode::default(),
             template_id: None,
             sync_config: false,
             guardrails_enabled: None,
@@ -4576,6 +4684,75 @@ sampling_permission: "off"
     #[test]
     fn test_client_mode_defaults() {
         assert_eq!(ClientMode::default(), ClientMode::Both);
+        assert_eq!(LlmMode::default(), LlmMode::Gateway);
+        assert_eq!(McpMode::default(), McpMode::Gateway);
+    }
+
+    #[test]
+    fn test_client_mode_split_maps_all_legacy_modes() {
+        assert_eq!(
+            ClientMode::Both.split(),
+            (LlmMode::Gateway, McpMode::Gateway)
+        );
+        assert_eq!(
+            ClientMode::LlmOnly.split(),
+            (LlmMode::Gateway, McpMode::Off)
+        );
+        assert_eq!(
+            ClientMode::McpOnly.split(),
+            (LlmMode::Off, McpMode::Gateway)
+        );
+        assert_eq!(
+            ClientMode::McpViaLlm.split(),
+            (LlmMode::Gateway, McpMode::ViaLlm)
+        );
+    }
+
+    #[test]
+    fn test_client_mode_helpers_and_effective_mode() {
+        let mut c = Client::new_with_strategy("t".into(), "s".into());
+
+        // Default is Gateway/Gateway (equivalent to legacy Both).
+        assert!(c.llm_gateway_enabled());
+        assert!(c.mcp_direct_enabled());
+        assert!(!c.is_mcp_via_llm());
+        assert!(!c.llm_proxy_enabled());
+        assert_eq!(c.effective_client_mode(), ClientMode::Both);
+
+        c.mcp_mode = McpMode::ViaLlm;
+        assert!(c.is_mcp_via_llm());
+        assert_eq!(c.effective_client_mode(), ClientMode::McpViaLlm);
+
+        c.mcp_mode = McpMode::Off;
+        assert_eq!(c.effective_client_mode(), ClientMode::LlmOnly);
+
+        c.llm_mode = LlmMode::ProxyInspect;
+        c.mcp_mode = McpMode::Gateway;
+        assert!(c.llm_proxy_enabled());
+        assert!(c.llm_proxy_passive());
+        assert!(!c.llm_gateway_enabled());
+        // LLM proxy + direct MCP collapses onto McpOnly for the MCP gateway.
+        assert_eq!(c.effective_client_mode(), ClientMode::McpOnly);
+    }
+
+    #[test]
+    fn test_client_mode_shim_is_deserialize_only() {
+        // Old configs carry `client_mode`; it must deserialize into the shim.
+        let json = r#"{"client_mode":"mcp_via_llm"}"#;
+        #[derive(serde::Deserialize)]
+        struct Probe {
+            #[serde(default)]
+            client_mode: ClientMode,
+            #[serde(default)]
+            llm_mode: LlmMode,
+            #[serde(default)]
+            mcp_mode: McpMode,
+        }
+        let p: Probe = serde_json::from_str(json).unwrap();
+        assert_eq!(p.client_mode, ClientMode::McpViaLlm);
+        // New fields default until migration projects the shim onto them.
+        assert_eq!(p.llm_mode, LlmMode::Gateway);
+        assert_eq!(p.mcp_mode, McpMode::Gateway);
     }
 
     #[test]

@@ -319,6 +319,8 @@ impl ConfigManager {
             model_permissions: ModelPermissions::default(),
             marketplace_permission: PermissionState::default(),
             client_mode: ClientMode::default(),
+            llm_mode: LlmMode::default(),
+            mcp_mode: McpMode::default(),
             template_id: None,
             sync_config: false,
             guardrails_enabled: None,

@@ -7,7 +7,7 @@ import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { TriStateButton } from "@/components/ui/TriStateButton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ClientToolsIndexingTree } from "@/components/permissions/ClientToolsIndexingTree"
-import type { ContextManagementConfig, ClientMode } from "@/types/tauri-commands"
+import type { ContextManagementConfig, McpMode } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -15,7 +15,7 @@ interface Client {
   client_id: string
   context_management_enabled: boolean | null
   catalog_compression_enabled: boolean | null
-  client_mode?: ClientMode
+  mcp_mode?: McpMode
   template_id?: string | null
 }
 
@@ -83,7 +83,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
     }
   }
 
-  const isMcpViaLlm = client.client_mode === "mcp_via_llm"
+  const isMcpViaLlm = client.mcp_mode === "via_llm"
 
   // Context management is implicitly enabled when any indexing is configured (mirrors Rust is_enabled())
   const isGloballyEnabled = globalConfig != null && (

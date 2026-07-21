@@ -18,7 +18,7 @@
 
 use crate::ui::tray::{rebuild_tray_menu, UpdateNotificationState};
 use lr_clients::ClientManager;
-use lr_config::{ClientMode, ConfigManager};
+use lr_config::{ConfigManager, McpMode};
 use lr_mcp::manager::McpServerManager;
 use lr_providers::health_cache::{AggregateHealthStatus, ItemHealthStatus};
 use std::sync::Arc;
@@ -188,8 +188,10 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
 
                 client_submenu = client_submenu.separator();
 
-                let show_llm = !matches!(client.client_mode, ClientMode::McpOnly);
-                let show_mcp = !matches!(client.client_mode, ClientMode::LlmOnly);
+                // LLM tray items are model toggles — only meaningful for the
+                // native gateway (proxy clients don't select models here).
+                let show_llm = client.llm_gateway_enabled();
+                let show_mcp = !matches!(client.mcp_mode, McpMode::Off);
 
                 // === Quick toggles section (hidden for McpOnly) ===
                 if show_llm {

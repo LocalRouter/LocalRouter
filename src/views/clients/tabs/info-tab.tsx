@@ -29,9 +29,10 @@ import { EndpointNode } from "@/components/connection-graph/nodes/EndpointNode"
 import { RouterGroupNode } from "@/components/connection-graph/nodes/RouterGroupNode"
 import type { GraphNodeData } from "@/components/connection-graph/types"
 import type {
-  ClientMode, CodingAgentType, ClientEffectiveConfig,
-  GetClientEffectiveConfigParams, Strategy, SetClientModeParams,
+  LlmMode, McpMode, CodingAgentType, ClientEffectiveConfig,
+  GetClientEffectiveConfigParams, Strategy, SetClientLlmModeParams, SetClientMcpModeParams,
 } from "@/types/tauri-commands"
+import { combineClientMode } from "@/components/client/ClientTemplates"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 
 const nodeTypes: NodeTypes = {
@@ -58,7 +59,8 @@ interface Client {
   coding_agent_type: CodingAgentType | null
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
-  client_mode?: ClientMode
+  llm_mode?: LlmMode
+  mcp_mode?: McpMode
   template_id?: string | null
   sync_config: boolean
   guardrails_active: boolean
@@ -83,25 +85,41 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
 
   const { clients: allClients, providers, mcpServers, skills, codingAgents, strategies, healthState, activeConnections, loading } = useGraphData()
 
-  const clientMode = client.client_mode || "both"
-  const showLlm = clientMode !== "mcp_only"
-  const showMcp = clientMode !== "llm_only"
+  const llmMode = client.llm_mode || "gateway"
+  const mcpMode = client.mcp_mode || "gateway"
+  const clientMode = combineClientMode(llmMode, mcpMode)
+  const showLlm = llmMode !== "off"
+  const showMcp = mcpMode !== "off"
 
   const template = client.template_id
     ? CLIENT_TEMPLATES.find(t => t.id === client.template_id) || null
     : null
 
-  const handleModeChange = async (mode: ClientMode) => {
+  const handleLlmModeChange = async (mode: LlmMode) => {
     try {
-      await invoke("set_client_mode", {
+      await invoke("set_client_llm_mode", {
         clientId: client.client_id,
         mode,
-      } satisfies SetClientModeParams)
-      toast.success("Client mode updated")
+      } satisfies SetClientLlmModeParams)
+      toast.success("LLM mode updated")
       onUpdate()
     } catch (error) {
-      console.error("Failed to update client mode:", error)
-      toast.error("Failed to update client mode")
+      console.error("Failed to update LLM mode:", error)
+      toast.error("Failed to update LLM mode")
+    }
+  }
+
+  const handleMcpModeChange = async (mode: McpMode) => {
+    try {
+      await invoke("set_client_mcp_mode", {
+        clientId: client.client_id,
+        mode,
+      } satisfies SetClientMcpModeParams)
+      toast.success("MCP mode updated")
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to update MCP mode:", error)
+      toast.error("Failed to update MCP mode")
     }
   }
 
@@ -230,7 +248,13 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ClientModeSelector mode={clientMode} onModeChange={handleModeChange} template={template} />
+          <ClientModeSelector
+            llmMode={llmMode}
+            mcpMode={mcpMode}
+            onLlmModeChange={handleLlmModeChange}
+            onMcpModeChange={handleMcpModeChange}
+            template={template}
+          />
         </CardContent>
       </Card>
 

@@ -113,23 +113,16 @@ pub async fn chat_completions(
                 "weak"
             }
         });
-        let client_mode = client_auth
+        let is_mcp_via_llm = client_auth
             .as_ref()
-            .and_then(|ext| {
-                state
-                    .client_manager
-                    .get_client(&ext.0.client_id)
-                    .map(|c| c.client_mode.clone())
-            })
-            .unwrap_or_default();
-        let is_mcp_via_llm = client_mode == lr_config::ClientMode::McpViaLlm;
+            .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
+            .is_some_and(|c| c.is_mcp_via_llm());
 
         tracing::info!(
-            "LLM request: client={}, model={}, stream={}, mode={:?}, guardrails={}, compression={}{}, routellm={}{}, mcp_via_llm={}",
+            "LLM request: client={}, model={}, stream={}, guardrails={}, compression={}{}, routellm={}{}, mcp_via_llm={}",
             client_id_short,
             request.model,
             request.stream,
-            client_mode,
             guardrails_active,
             compression_active,
             if compression_active { format!(" (saved {} tokens)", compression_tokens_saved) } else { String::new() },
@@ -143,7 +136,7 @@ pub async fn chat_completions(
     // Guardrails run in parallel with the LLM call when possible; the orchestrator
     // awaits the guardrail gate before executing tools or returning a response.
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        if client.client_mode == lr_config::ClientMode::McpViaLlm {
+        if client.is_mcp_via_llm() {
             return handle_mcp_via_llm(
                 state,
                 auth,

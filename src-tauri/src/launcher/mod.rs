@@ -19,23 +19,43 @@ pub struct ConfigSyncContext {
     pub client_id: String,
     /// Model IDs available to this client (e.g. "anthropic/claude-sonnet-4-20250514")
     pub models: Vec<String>,
-    /// Current client mode — controls which parts of config to sync
-    pub client_mode: lr_config::ClientMode,
+    /// Current LLM access mode — controls whether native or proxy config is synced.
+    pub llm_mode: lr_config::LlmMode,
+    /// Current MCP access mode — controls whether MCP config is synced.
+    pub mcp_mode: lr_config::McpMode,
+    /// HTTPS inspection-proxy URL (with embedded basic-auth), when the proxy is
+    /// running. `None` disables proxy sync even in a proxy `llm_mode`.
+    // TODO(https-proxy): consumed by the Claude Code proxy setup writer (Part E).
+    #[allow(dead_code)]
+    pub proxy_url: Option<String>,
+    /// Path to the proxy root CA the client must trust (`NODE_EXTRA_CA_CERTS`).
+    // TODO(https-proxy): consumed by the Claude Code proxy setup writer (Part E).
+    #[allow(dead_code)]
+    pub ca_cert_path: Option<String>,
 }
 
 impl ConfigSyncContext {
-    /// Whether LLM config should be written (all modes except mcp_only)
+    /// Whether native LLM gateway config should be written (gateway mode only).
+    /// Proxy modes use [`Self::should_sync_proxy`] instead.
     pub fn should_sync_llm(&self) -> bool {
-        !matches!(self.client_mode, lr_config::ClientMode::McpOnly)
+        self.llm_mode == lr_config::LlmMode::Gateway
     }
 
-    /// Whether MCP config should be written (both and mcp_only only;
+    /// Whether HTTPS-proxy env config should be written (a proxy `llm_mode`
+    /// with the proxy actually running).
+    // TODO(https-proxy): called by the Claude Code proxy setup writer (Part E).
+    #[allow(dead_code)]
+    pub fn should_sync_proxy(&self) -> bool {
+        matches!(
+            self.llm_mode,
+            lr_config::LlmMode::ProxyInspect | lr_config::LlmMode::ProxyRewrite
+        ) && self.proxy_url.is_some()
+    }
+
+    /// Whether MCP config should be written (direct MCP gateway only;
     /// mcp_via_llm handles MCP server-side so the external app shouldn't connect directly)
     pub fn should_sync_mcp(&self) -> bool {
-        matches!(
-            self.client_mode,
-            lr_config::ClientMode::Both | lr_config::ClientMode::McpOnly
-        )
+        self.mcp_mode == lr_config::McpMode::Gateway
     }
 }
 

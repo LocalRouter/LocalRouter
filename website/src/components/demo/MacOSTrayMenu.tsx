@@ -57,8 +57,8 @@ function Separator() {
 const MAX_TRAY_ITEMS = 10
 
 function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
-  const showLlm = client.client_mode !== 'mcp_only'
-  const showMcp = client.client_mode !== 'llm_only'
+  const showLlm = client.llm_mode === 'gateway'
+  const showMcp = client.mcp_mode !== 'off'
 
   return (
     <div className="py-1">

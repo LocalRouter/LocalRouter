@@ -830,9 +830,10 @@ pub async fn mcp_gateway_handler(
                 }
             }
 
-            // Branch on client mode
-            match client.client_mode {
-                lr_config::ClientMode::Both | lr_config::ClientMode::McpOnly => {
+            // Branch on client mode: direct-MCP clients get sampling forwarded to
+            // their external client; MCP-via-LLM routes sampling to an LLM provider.
+            if client.mcp_direct_enabled() {
+                {
                     // Passthrough: forward sampling request to external client via SSE notification
                     let (passthrough_id, passthrough_rx) =
                         state.sampling_passthrough_manager.create_pending(None);
@@ -891,8 +892,8 @@ pub async fn mcp_gateway_handler(
                         }
                     }
                 }
-
-                _ => {
+            } else {
+                {
                     // MCP via LLM (and fallback): route sampling to LLM provider
                     let mut completion_req =
                         match lr_mcp::gateway::sampling::convert_sampling_to_chat_request(
@@ -1025,7 +1026,7 @@ pub async fn mcp_gateway_handler(
                     client.mcp_sampling_permission.clone(),
                     client.mcp_elicitation_permission.clone(),
                     client.memory_enabled,
-                    client.client_mode.clone(),
+                    client.effective_client_mode(),
                     request,
                     None, // monitor_session_id
                 ),
@@ -1128,7 +1129,7 @@ pub async fn mcp_gateway_handler(
                 client.mcp_sampling_permission.clone(),
                 client.mcp_elicitation_permission.clone(),
                 client.memory_enabled,
-                client.client_mode.clone(),
+                client.effective_client_mode(),
                 request,
                 None, // monitor_session_id
             )
@@ -1276,7 +1277,7 @@ async fn run_stateless_with_mrtr(
                     client_for_task.mcp_sampling_permission.clone(),
                     client_for_task.mcp_elicitation_permission.clone(),
                     client_for_task.memory_enabled,
-                    client_for_task.client_mode.clone(),
+                    client_for_task.effective_client_mode(),
                     request,
                     None, // monitor_session_id
                 )

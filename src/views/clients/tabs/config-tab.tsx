@@ -3,7 +3,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { HowToConnect } from "@/components/client/HowToConnect"
-import type { ClientMode } from "@/types/tauri-commands"
+import type { LlmMode, McpMode } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -11,7 +11,8 @@ interface Client {
   client_id: string
   enabled: boolean
   strategy_id: string
-  client_mode?: ClientMode
+  llm_mode?: LlmMode
+  mcp_mode?: McpMode
   template_id?: string | null
   sync_config?: boolean
 }
@@ -69,7 +70,8 @@ export function ClientConfigTab({ client }: ConfigTabProps) {
         secret={secret}
         loadingSecret={loadingSecret}
         templateId={client.template_id}
-        clientMode={client.client_mode}
+        llmMode={client.llm_mode}
+        mcpMode={client.mcp_mode}
         syncConfig={client.sync_config}
       />
     </div>

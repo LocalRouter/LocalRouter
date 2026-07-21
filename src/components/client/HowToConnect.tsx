@@ -33,7 +33,7 @@ import { CLIENT_TEMPLATES, resolveTemplatePlaceholders } from "./ClientTemplates
 import type { ClientTemplate } from "./ClientTemplates"
 import ServiceIcon from "@/components/ServiceIcon"
 import { isValidHttpUrl } from "@/utils/url"
-import type { ClientMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams } from "@/types/tauri-commands"
+import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams } from "@/types/tauri-commands"
 
 interface ServerConfig {
   host: string
@@ -52,7 +52,8 @@ interface HowToConnectProps {
   rotating?: boolean
   className?: string
   templateId?: string | null
-  clientMode?: ClientMode
+  llmMode?: LlmMode
+  mcpMode?: McpMode
   syncConfig?: boolean
 }
 
@@ -685,7 +686,8 @@ export function HowToConnect({
   rotating = false,
   className,
   templateId,
-  clientMode,
+  llmMode,
+  mcpMode,
   syncConfig = false,
 }: HowToConnectProps) {
   const [showSecret, setShowSecret] = useState(false)
@@ -702,9 +704,12 @@ export function HowToConnect({
     : null
 
   const hasQuickSetup = template && template.setupType !== "generic"
-  const showModelsTab = clientMode !== "mcp_only"
-  // MCP via LLM clients speak only OpenAI protocol — no MCP connect info
-  const showMcpTab = clientMode !== "llm_only" && clientMode !== "mcp_via_llm"
+  // Native LLM connect info is shown for the gateway. Proxy clients will get a
+  // dedicated proxy setup panel (env vars + CA to trust) once the HTTPS proxy
+  // backend lands; for now they simply don't show the native LLM tab.
+  const showModelsTab = llmMode === "gateway"
+  // Direct MCP connect info only for the MCP gateway (not via-LLM/off).
+  const showMcpTab = mcpMode === "gateway"
 
   // Fetch server config, executable path, and home dir
   useEffect(() => {

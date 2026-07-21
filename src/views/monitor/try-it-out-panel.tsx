@@ -12,7 +12,8 @@ interface Client {
   name: string
   client_id: string
   enabled: boolean
-  client_mode: string
+  llm_mode: string
+  mcp_mode: string
 }
 
 interface TryItOutPanelProps {
@@ -29,8 +30,9 @@ export function TryItOutPanel({ onClose }: TryItOutPanelProps) {
   }, [])
 
   const selectedClient = clients.find(c => c.client_id === selectedClientId)
-  const showLlm = selectedClient ? selectedClient.client_mode !== 'mcp_only' : false
-  const showMcp = selectedClient ? (selectedClient.client_mode === 'both' || selectedClient.client_mode === 'mcp_only') : false
+  // Try-it-out constructs real requests, so only the native gateway qualifies.
+  const showLlm = selectedClient ? selectedClient.llm_mode === 'gateway' : false
+  const showMcp = selectedClient ? selectedClient.mcp_mode === 'gateway' : false
 
   // Auto-switch tab when selected client doesn't support the current tab
   useEffect(() => {

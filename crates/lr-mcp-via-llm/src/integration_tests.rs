@@ -15,7 +15,7 @@ mod helpers {
     use parking_lot::Mutex;
     use serde_json::{json, Value};
 
-    use lr_config::{AppConfig, Client, ClientMode, ConfigManager, McpViaLlmConfig};
+    use lr_config::{AppConfig, Client, ConfigManager, McpViaLlmConfig};
     use lr_mcp::gateway::types::GatewayConfig;
     use lr_mcp::gateway::virtual_server::{
         VirtualFirewallResult, VirtualInstructions, VirtualMcpServer, VirtualSessionState,
@@ -382,7 +382,7 @@ mod helpers {
         let mut client =
             Client::new_with_strategy("test-client".to_string(), "default".to_string());
         client.id = "internal-test".to_string();
-        client.client_mode = ClientMode::McpViaLlm;
+        client.mcp_mode = lr_config::McpMode::ViaLlm;
 
         TestEnv {
             gateway,

@@ -8,7 +8,39 @@
 
 import React from 'react'
 import ServiceIcon from '../ServiceIcon'
-import type { ClientMode } from '@/types/tauri-commands'
+import type { ClientMode, LlmMode, McpMode } from '@/types/tauri-commands'
+
+/** Project a legacy single-axis ClientMode onto the LLM + MCP axes.
+ *  Mirrors Rust `ClientMode::split` (crates/lr-config/src/types.rs). */
+export function splitClientMode(mode: ClientMode): { llmMode: LlmMode; mcpMode: McpMode } {
+  switch (mode) {
+    case 'both':
+      return { llmMode: 'gateway', mcpMode: 'gateway' }
+    case 'llm_only':
+      return { llmMode: 'gateway', mcpMode: 'off' }
+    case 'mcp_only':
+      return { llmMode: 'off', mcpMode: 'gateway' }
+    case 'mcp_via_llm':
+      return { llmMode: 'gateway', mcpMode: 'via_llm' }
+  }
+}
+
+/** The default LLM/MCP modes a template should apply to a new client. */
+export function templateDefaultModes(template: ClientTemplate): { llmMode: LlmMode; mcpMode: McpMode } {
+  return splitClientMode(template.defaultMode)
+}
+
+/** Collapse the LLM + MCP axes back onto a legacy ClientMode for visualizations
+ *  and gating that still think in the single-axis vocabulary. Mirrors Rust
+ *  `Client::effective_client_mode`. Proxy LLM modes collapse onto their nearest
+ *  gateway-shaped equivalent. */
+export function combineClientMode(llmMode: LlmMode, mcpMode: McpMode): ClientMode {
+  if (mcpMode === 'via_llm') return 'mcp_via_llm'
+  if (llmMode === 'gateway' && mcpMode === 'gateway') return 'both'
+  if (llmMode === 'gateway' && mcpMode === 'off') return 'llm_only'
+  if (mcpMode === 'gateway') return 'mcp_only'
+  return 'llm_only'
+}
 
 export type ClientTemplateCategory = 'coding_assistants' | 'ide_extensions' | 'ides' | 'chat' | 'automation' | 'cli'
 
