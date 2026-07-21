@@ -1688,6 +1688,28 @@ export interface GetClientEffectiveConfigParams {
   clientId: string
 }
 
+/**
+ * HTTPS inspection-proxy setup details for a client.
+ * Rust: src-tauri/src/ui/commands_clients.rs - ProxySetupInfo struct
+ */
+export interface ProxySetupInfo {
+  /** Whether the proxy listener is currently running. */
+  running: boolean
+  /** HTTPS_PROXY URL with embedded Basic auth (null if not running). */
+  proxy_url: string | null
+  /** Path to the root CA the client must trust (NODE_EXTRA_CA_CERTS). */
+  ca_cert_path: string
+  /** One-off terminal command to launch Claude Code through the proxy. */
+  oneoff_command: string | null
+  /** settings.json fragment (pretty JSON) for permanent setup. */
+  settings_json: string | null
+}
+
+/** Params for get_client_proxy_setup */
+export interface GetClientProxySetupParams {
+  clientId: string
+}
+
 /** Params for set_client_llm_mode */
 export interface SetClientLlmModeParams {
   clientId: string

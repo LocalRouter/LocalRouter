@@ -590,6 +590,34 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         )
         .await?;
 
+    // HTTPS inspection proxy: shares the server's monitor store; started when
+    // enabled in config or any client is in a proxy LLM mode.
+    let proxy_service: Option<Arc<launcher::proxy::ProxyService>> = {
+        let cfg = config_manager.get();
+        match server_manager.get_state().map(|s| s.monitor_store.clone()) {
+            Some(monitor_store) => match launcher::proxy::ProxyService::new(
+                monitor_store,
+                client_manager.clone(),
+                cfg.proxy.host.clone(),
+            ) {
+                Ok(svc) => {
+                    // The listener is a cheap loopback socket that is idle until a
+                    // client actually proxies through it, so we always start it —
+                    // that way selecting a proxy mode in the UI just works.
+                    if let Err(e) = svc.start(cfg.proxy.port).await {
+                        tracing::warn!("failed to start inspection proxy: {e}");
+                    }
+                    Some(Arc::new(svc))
+                }
+                Err(e) => {
+                    tracing::warn!("failed to init inspection proxy: {e}");
+                    None
+                }
+            },
+            None => None,
+        }
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -650,6 +678,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(provider_registry.clone());
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
+            if let Some(proxy) = proxy_service.clone() {
+                app.manage(proxy);
+            }
             app.manage(rate_limiter.clone());
             app.manage(free_tier_manager.clone());
             app.manage(oauth_manager.clone());
@@ -2496,6 +2527,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Client template, mode & guardrails commands
             ui::commands::set_client_llm_mode,
             ui::commands::set_client_mcp_mode,
+            ui::commands::get_client_proxy_setup,
             ui::commands::set_client_template,
             ui::commands::get_client_guardrails_config,
             ui::commands::update_client_guardrails_config,

@@ -296,6 +296,18 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
+  'get_client_proxy_setup': (args) => {
+    const cid = args?.clientId ?? 'client'
+    const url = `http://${cid}:lr-demo-secret@127.0.0.1:3626`
+    const ca = '~/.localrouter/proxy/root-ca.pem'
+    return {
+      running: true,
+      proxy_url: url,
+      ca_cert_path: ca,
+      oneoff_command: `HTTPS_PROXY=${url} NODE_EXTRA_CA_CERTS=${ca} claude`,
+      settings_json: JSON.stringify({ env: { HTTPS_PROXY: url, NODE_EXTRA_CA_CERTS: ca } }, null, 2),
+    }
+  },
   'set_client_template': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {

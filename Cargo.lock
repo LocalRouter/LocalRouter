@@ -5137,6 +5137,7 @@ dependencies = [
  "lr-monitoring",
  "lr-oauth",
  "lr-providers",
+ "lr-proxy",
  "lr-routellm",
  "lr-router",
  "lr-secret-scanner",

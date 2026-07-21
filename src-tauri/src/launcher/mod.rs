@@ -9,6 +9,7 @@
 
 pub mod backup;
 pub mod integrations;
+pub mod proxy;
 
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 

@@ -3094,6 +3094,66 @@ async fn apply_client_mode_change(
     Ok(())
 }
 
+/// HTTPS inspection-proxy connection details for a client, for the setup UI.
+#[derive(Serialize)]
+pub struct ProxySetupInfo {
+    /// Whether the proxy listener is currently running.
+    pub running: bool,
+    /// `HTTPS_PROXY` URL with embedded Basic auth (None if not running).
+    pub proxy_url: Option<String>,
+    /// Path to the root CA the client must trust (`NODE_EXTRA_CA_CERTS`).
+    pub ca_cert_path: String,
+    /// One-off terminal command to launch Claude Code through the proxy.
+    pub oneoff_command: Option<String>,
+    /// `settings.json` fragment (pretty JSON) for permanent setup.
+    pub settings_json: Option<String>,
+}
+
+/// Return the proxy setup instructions for a client (proxy URL, CA path, and a
+/// ready-to-run Claude Code one-off command).
+#[tauri::command]
+pub async fn get_client_proxy_setup(
+    client_id: String,
+    app: tauri::AppHandle,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+) -> Result<ProxySetupInfo, String> {
+    use crate::launcher::integrations::claude_code;
+    use tauri::Manager;
+
+    let secret = client_manager
+        .get_secret(&client_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Client secret not found".to_string())?;
+
+    match app.try_state::<Arc<crate::launcher::proxy::ProxyService>>() {
+        Some(proxy) => {
+            let ca_cert_path = proxy.ca_cert_path().display().to_string();
+            let proxy_url = proxy.client_proxy_url(&client_id, &secret);
+            let oneoff_command = proxy_url
+                .as_ref()
+                .map(|u| claude_code::proxy_oneoff_command(u, &ca_cert_path));
+            let settings_json = proxy_url.as_ref().map(|u| {
+                serde_json::to_string_pretty(&claude_code::proxy_settings_json(u, &ca_cert_path))
+                    .unwrap_or_default()
+            });
+            Ok(ProxySetupInfo {
+                running: proxy.is_running(),
+                proxy_url,
+                ca_cert_path,
+                oneoff_command,
+                settings_json,
+            })
+        }
+        None => Ok(ProxySetupInfo {
+            running: false,
+            proxy_url: None,
+            ca_cert_path: String::new(),
+            oneoff_command: None,
+            settings_json: None,
+        }),
+    }
+}
+
 /// Set the template ID for a client
 #[tauri::command]
 pub async fn set_client_template(

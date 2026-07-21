@@ -4,7 +4,7 @@
 //! to connect to LocalRouter.
 
 mod aider;
-mod claude_code;
+pub mod claude_code;
 mod codex;
 mod cursor;
 mod droid;
