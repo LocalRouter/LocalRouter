@@ -145,11 +145,17 @@ async fn proxy_request(
         .unwrap_or_else(|| "/".to_string());
 
     // Buffer the (small) request body so we can both forward and inspect it.
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
     let req_bytes = match body.collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => return bad_gateway("failed reading request body"),
     };
+
+    // Ask the upstream for an uncompressed response so we can read it. Without
+    // this, providers honor the client's `Accept-Encoding: gzip, br` and we'd
+    // capture compressed bytes we can't parse. The client still receives a
+    // valid (now uncompressed) response — semantics are unchanged.
+    parts.headers.remove(hyper::header::ACCEPT_ENCODING);
 
     // Base exchange (request half); response fields filled at stream end.
     let base = ObservedExchange {

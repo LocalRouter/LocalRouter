@@ -88,7 +88,13 @@ fn make_leaf(ca: &TestCa, host: &str) -> (CertificateDer<'static>, PrivateKeyDer
 }
 
 /// Spawn a TLS upstream that answers one request with the given response.
-async fn spawn_upstream(ca: &TestCa, sse: bool) -> (u16, tokio::task::JoinHandle<()>) {
+/// `seen_ae` records the `Accept-Encoding` header the upstream received (so the
+/// test can assert the proxy stripped it).
+async fn spawn_upstream(
+    ca: &TestCa,
+    sse: bool,
+    seen_ae: std::sync::Arc<std::sync::Mutex<Option<Option<String>>>>,
+) -> (u16, tokio::task::JoinHandle<()>) {
     let (leaf, key) = make_leaf(ca, HOST);
     let mut cfg = ServerConfig::builder()
         .with_no_client_auth()
@@ -106,25 +112,34 @@ async fn spawn_upstream(ca: &TestCa, sse: bool) -> (u16, tokio::task::JoinHandle
                 break;
             };
             let acceptor = acceptor.clone();
+            let seen_ae = seen_ae.clone();
             tokio::spawn(async move {
                 let Ok(tls) = acceptor.accept(tcp).await else {
                     return;
                 };
-                let svc = service_fn(move |_req: Request<Incoming>| async move {
-                    let resp = if sse {
-                        let body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hi\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n";
-                        Response::builder()
-                            .header("content-type", "text/event-stream")
-                            .body(Full::new(Bytes::from(body)))
-                            .unwrap()
-                    } else {
-                        let body = r#"{"content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":2}}"#;
-                        Response::builder()
-                            .header("content-type", "application/json")
-                            .body(Full::new(Bytes::from(body)))
-                            .unwrap()
-                    };
-                    Ok::<_, Infallible>(resp)
+                let svc = service_fn(move |req: Request<Incoming>| {
+                    let seen_ae = seen_ae.clone();
+                    *seen_ae.lock().unwrap() = Some(
+                        req.headers()
+                            .get("accept-encoding")
+                            .map(|v| v.to_str().unwrap_or("").to_string()),
+                    );
+                    async move {
+                        let resp = if sse {
+                            let body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hi\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n";
+                            Response::builder()
+                                .header("content-type", "text/event-stream")
+                                .body(Full::new(Bytes::from(body)))
+                                .unwrap()
+                        } else {
+                            let body = r#"{"content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":2}}"#;
+                            Response::builder()
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(body)))
+                                .unwrap()
+                        };
+                        Ok::<_, Infallible>(resp)
+                    }
                 });
                 hyper::server::conn::http1::Builder::new()
                     .serve_connection(TokioIo::new(tls), svc)
@@ -165,7 +180,8 @@ async fn run_case(sse: bool) -> (u16, Vec<u8>, usize) {
 
     // --- test upstream (stands in for api.anthropic.com) ---
     let up_ca = make_ca();
-    let (up_port, _up) = spawn_upstream(&up_ca, sse).await;
+    let seen_ae = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (up_port, _up) = spawn_upstream(&up_ca, sse, seen_ae.clone()).await;
 
     // proxy validates the upstream against the test CA.
     let mut up_roots = RootCertStore::empty();
@@ -234,6 +250,9 @@ async fn run_case(sse: bool) -> (u16, Vec<u8>, usize) {
         .uri("/v1/messages")
         .header("host", format!("{HOST}:{up_port}"))
         .header("content-type", "application/json")
+        // The client asks for compression; the proxy must strip it so it can
+        // read (and we can assert on) an uncompressed upstream response.
+        .header("accept-encoding", "gzip, br")
         .body(Full::new(Bytes::from(
             r#"{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"ping"}]}"#,
         )))
@@ -256,6 +275,13 @@ async fn run_case(sse: bool) -> (u16, Vec<u8>, usize) {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     let total = store.list(0, 10, None).total;
+
+    // The proxy must have stripped Accept-Encoding before forwarding upstream.
+    assert_eq!(
+        *seen_ae.lock().unwrap(),
+        Some(None),
+        "proxy should strip Accept-Encoding so responses are inspectable"
+    );
 
     let _ = shutdown_tx.send(());
     (status, body, total)

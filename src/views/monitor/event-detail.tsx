@@ -7,7 +7,72 @@ import { cn } from '@/lib/utils'
 import { Clock, User, Server, Copy, Check, FileText } from 'lucide-react'
 import { useState, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
+
+const MARKDOWN_STYLES =
+  'text-xs leading-relaxed [&_p]:my-1 [&_ul]:list-disc [&_ul]:ml-4 [&_ol]:list-decimal [&_ol]:ml-4 [&_li]:my-0.5 ' +
+  '[&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[11px] ' +
+  '[&_pre]:bg-muted [&_pre]:p-2 [&_pre]:rounded [&_pre]:overflow-auto [&_pre>code]:bg-transparent [&_pre>code]:p-0 ' +
+  '[&_h1]:font-bold [&_h1]:text-sm [&_h2]:font-bold [&_h3]:font-semibold [&_h1]:mt-2 [&_h2]:mt-2 [&_h3]:mt-1.5 ' +
+  '[&_a]:text-primary [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-2 [&_blockquote]:text-muted-foreground ' +
+  '[&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-1.5 [&_td]:border [&_td]:border-border [&_td]:px-1.5'
+
+/** Auto-detect the format of a text blob so we can render it appropriately. */
+function detectFormat(text: string): 'json' | 'markdown' | 'text' {
+  const t = text.trim()
+  if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
+    try {
+      JSON.parse(t)
+      return 'json'
+    } catch { /* not json */ }
+  }
+  // Markdown markers: headings, fences, lists, links, blockquotes, emphasis, inline code, tables.
+  if (/(^|\n)#{1,6}\s|```|(^|\n)\s*[-*+]\s|(^|\n)\s*\d+\.\s|\[[^\]]+\]\([^)]+\)|(^|\n)>\s|\*\*[^*]+\*\*|`[^`]+`|(^|\n)\|.+\|/.test(text)) {
+    return 'markdown'
+  }
+  return 'text'
+}
+
+/**
+ * Renders a text blob with format auto-detection (JSON / Markdown / plain) and,
+ * for JSON and Markdown, a toggle to view the raw source.
+ */
+function SmartText({ text }: { text: string }) {
+  const format = detectFormat(text)
+  const [raw, setRaw] = useState(false)
+
+  if (format === 'text') {
+    return <div className="whitespace-pre-wrap">{text}</div>
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-end gap-1">
+        <span className="text-[9px] uppercase tracking-wide text-muted-foreground/60">{format}</span>
+        <button
+          type="button"
+          onClick={() => setRaw((r) => !r)}
+          className="text-[10px] text-muted-foreground hover:text-foreground rounded border border-border/50 px-1"
+        >
+          {raw ? 'Rendered' : 'Raw'}
+        </button>
+      </div>
+      {raw ? (
+        <pre className="whitespace-pre-wrap font-mono text-[11px]">
+          {format === 'json' ? formatJsonString(text) : text}
+        </pre>
+      ) : format === 'json' ? (
+        <pre className="whitespace-pre-wrap font-mono text-[11px]">{formatJsonString(text)}</pre>
+      ) : (
+        <div className={MARKDOWN_STYLES}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        </div>
+      )}
+    </div>
+  )
+}
 
 interface EventDetailProps {
   event: MonitorEvent | null
@@ -54,13 +119,14 @@ export function EventDetail({ event }: EventDetailProps) {
             </span>
           )}
           <Button
-            variant="ghost"
-            size="icon"
-            className="ml-auto h-6 w-6"
+            variant="outline"
+            size="sm"
+            className="ml-auto h-6 gap-1 px-2 text-[11px]"
             onClick={handleCopyEvent}
-            title="Copy event JSON to clipboard"
+            title="Copy the entire event (request + response) as JSON"
           >
-            {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+            {copied ? 'Copied' : 'Copy full event'}
           </Button>
         </div>
 
@@ -177,8 +243,8 @@ function MessageItem({ message }: { message: Record<string, unknown> }) {
         {toolCallId && <span className="text-[10px] opacity-70 font-mono truncate">← {toolCallId}</span>}
       </div>
       {contentText && (
-        <div className="px-2 py-1.5 whitespace-pre-wrap max-h-[200px] overflow-auto">
-          {contentText}
+        <div className="px-2 py-1.5 max-h-[320px] overflow-auto">
+          <SmartText text={contentText} />
         </div>
       )}
       {hasImageContent(message.content) && (
@@ -225,7 +291,8 @@ function ServerField({ data }: { data: EventData }) {
   )
 }
 
-function JsonBlock({ data }: { data: unknown }) {
+function JsonBlock({ data, label }: { data: unknown; label?: string }) {
+  const [copied, setCopied] = useState(false)
   if (data === null || data === undefined) return null
 
   const cleanData = typeof data === 'object' && !Array.isArray(data)
@@ -234,10 +301,28 @@ function JsonBlock({ data }: { data: unknown }) {
 
   if (typeof cleanData === 'object' && !Array.isArray(cleanData) && Object.keys(cleanData as Record<string, unknown>).length === 0) return null
 
+  const text = JSON.stringify(cleanData, null, 2)
+
   return (
-    <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[400px] overflow-auto">
-      {JSON.stringify(cleanData, null, 2)}
-    </pre>
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => {
+          navigator.clipboard.writeText(text).then(() => {
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1500)
+          })
+        }}
+        title={label ? `Copy ${label} JSON` : 'Copy JSON'}
+        className="absolute right-1 top-1 z-10 flex items-center gap-1 rounded border border-border/60 bg-background/80 px-1 text-[10px] text-muted-foreground hover:text-foreground"
+      >
+        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+        {copied ? 'Copied' : label ? `Copy ${label}` : 'Copy'}
+      </button>
+      <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[400px] overflow-auto">
+        {text}
+      </pre>
+    </div>
   )
 }
 
@@ -315,7 +400,7 @@ function McpResponseTab({ data }: { data: EventData }) {
 }
 
 // Sub-tab styling
-const SUB_TABS_LIST = "h-7 w-full bg-muted/50 p-0.5"
+const SUB_TABS_LIST = "h-7 w-full bg-muted p-0.5 sticky top-9 z-10"
 const SUB_TAB = "text-[11px] h-6 px-2.5"
 
 // ---- LLM Response Content (sub-tabs: Overview | Content | Tool Calls | Full Body) ----
@@ -424,9 +509,9 @@ function LlmResponseContent({ data }: { data: EventData }) {
 
         {data.content_preview && (
           <TabsContent value="content">
-            <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-              {data.content_preview as string}
-            </pre>
+            <div className="p-2 bg-muted rounded max-h-[360px] overflow-auto">
+              <SmartText text={data.content_preview as string} />
+            </div>
           </TabsContent>
         )}
 
@@ -463,7 +548,7 @@ function LlmResponseContent({ data }: { data: EventData }) {
 
         {responseBody && (
           <TabsContent value="full_body">
-            <JsonBlock data={responseBody} />
+            <JsonBlock data={responseBody} label="response body" />
           </TabsContent>
         )}
       </Tabs>
@@ -506,12 +591,16 @@ function LlmCallDetail({ data }: { data: EventData }) {
     ['repetition_penalty', activeBody.repetition_penalty],
   ].filter(([, v]) => v != null) as [string, unknown][] : []
 
+  // Tools come in two shapes: OpenAI ({ function: { name, description, parameters } })
+  // and Anthropic ({ name, description, input_schema }). Handle both.
   const toolDisplayItems: McpToolDisplayItem[] = (tools || []).map(t => {
     const fn = t.function as Record<string, unknown> | undefined
     return {
       name: (fn?.name as string) || (t.name as string) || 'unknown',
-      description: (fn?.description as string) || null,
-      inputSchema: (fn?.parameters as Record<string, unknown>) || null,
+      description: (fn?.description as string) || (t.description as string) || null,
+      inputSchema: (fn?.parameters as Record<string, unknown>)
+        || (t.input_schema as Record<string, unknown>)
+        || null,
     }
   })
 
@@ -521,7 +610,7 @@ function LlmCallDetail({ data }: { data: EventData }) {
 
   return (
     <Tabs defaultValue="request">
-      <TabsList className="w-full">
+      <TabsList className="w-full sticky top-0 z-20 bg-background">
         <TabsTrigger value="request">Request</TabsTrigger>
         <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
         {hasRouting && <TabsTrigger value="routing">Routing</TabsTrigger>}
@@ -582,7 +671,7 @@ function LlmCallDetail({ data }: { data: EventData }) {
               )}
               {params.length > 0 && (
                 <TabsTrigger value="parameters" className={SUB_TAB}>
-                  Parameters
+                  Parameters ({params.length})
                 </TabsTrigger>
               )}
               <TabsTrigger value="body" className={SUB_TAB}>
@@ -622,7 +711,7 @@ function LlmCallDetail({ data }: { data: EventData }) {
             )}
 
             <TabsContent value="body">
-              <JsonBlock data={activeBody} />
+              <JsonBlock data={activeBody} label="request body" />
             </TabsContent>
           </Tabs>
         )}

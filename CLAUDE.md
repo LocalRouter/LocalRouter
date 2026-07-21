@@ -141,13 +141,32 @@ src/
 ## Commands
 
 ```bash
-cargo tauri dev              # Dev mode (port 3625, ~/.localrouter-dev/)
+cargo tauri dev              # Dev mode (dev ports 33625/33626, ~/.localrouter-dev/)
 cargo test && cargo clippy   # Test and lint
 cargo build --release        # Production build
 
 # Dev helper - avoid keychain prompts
 export LOCALROUTER_KEYCHAIN=file  # WARNING: plain text secrets!
 ```
+
+### Running the dev app (which mode to use)
+
+**Default to `cargo tauri dev --no-watch`** when iterating with an agent.
+Plain `cargo tauri dev` watches `src-tauri/` and does a **full Rust
+recompile + app restart on every backend edit** — disruptive when making many
+edits in a row. `--no-watch` disables that Rust file-watcher, so:
+
+- **Frontend edits** (`.tsx`/`.ts`) still **hot-reload instantly** via Vite HMR
+  (the `beforeDevCommand: npm run dev` server is independent of the watcher).
+- **Backend edits** do **not** auto-rebuild — restart the app deliberately when
+  a Rust change needs to go live.
+
+```bash
+cargo tauri dev --no-watch   # preferred: no backend auto-rebuild, frontend still HMRs
+cargo tauri dev              # only when you WANT auto-rebuild on Rust changes
+```
+
+Dev ports: app/server `33625`, HTTPS inspection proxy `33626`.
 
 ## API Endpoints (port 3625)
 
