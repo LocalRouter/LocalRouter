@@ -58,6 +58,9 @@ pub struct MonitorEventSummary {
     /// Session ID grouping all events from one API request
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// For LLM calls: whether it was seen on the native API or via the proxy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<LlmCallSource>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

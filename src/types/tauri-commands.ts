@@ -3462,6 +3462,8 @@ export interface MonitorEventSummary {
   status: EventStatus
   duration_ms: number | null
   summary: string
+  /** For LLM calls: 'api' (native) or 'proxy' (via the inspection proxy). */
+  source?: 'api' | 'proxy' | null
 }
 
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEvent */

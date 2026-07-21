@@ -390,6 +390,10 @@ pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
         duration_ms: event.duration_ms,
         summary: generate_summary(event),
         session_id: event.session_id.clone(),
+        source: match &event.data {
+            MonitorEventData::LlmCall { source, .. } => Some(*source),
+            _ => None,
+        },
     }
 }
 
@@ -402,5 +406,80 @@ fn truncate(s: &str, max_len: usize) -> &str {
             end -= 1;
         }
         &s[..end]
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use crate::store::MonitorEventStore;
+    use crate::types::{
+        EventStatus, LlmCallSource, LlmProtocol, MonitorEventData, MonitorEventType,
+    };
+
+    fn llm_call(source: LlmCallSource) -> MonitorEventData {
+        MonitorEventData::LlmCall {
+            endpoint: "/v1/messages".into(),
+            model: "claude".into(),
+            stream: false,
+            message_count: 1,
+            has_tools: false,
+            tool_count: 0,
+            request_body: serde_json::json!({}),
+            source,
+            protocol: LlmProtocol::Anthropic,
+            transformed_body: None,
+            transformations_applied: None,
+            provider: None,
+            status_code: Some(200),
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            reasoning_tokens: None,
+            cost_usd: None,
+            latency_ms: None,
+            finish_reason: None,
+            content_preview: None,
+            streamed: None,
+            response_body: None,
+            error: None,
+            routing_info: None,
+        }
+    }
+
+    #[test]
+    fn summary_carries_llm_call_source() {
+        let store = MonitorEventStore::new(8);
+        store.push(
+            MonitorEventType::LlmCall,
+            Some("c".into()),
+            None,
+            None,
+            llm_call(LlmCallSource::Proxy),
+            EventStatus::Complete,
+            None,
+        );
+        let listed = store.list(0, 10, None);
+        assert_eq!(listed.events[0].source, Some(LlmCallSource::Proxy));
+    }
+
+    #[test]
+    fn non_llm_events_have_no_source() {
+        let store = MonitorEventStore::new(8);
+        store.push(
+            MonitorEventType::AuthError,
+            None,
+            None,
+            None,
+            MonitorEventData::AuthError {
+                error_type: "invalid_key".into(),
+                endpoint: "/v1/messages".into(),
+                message: "nope".into(),
+                status_code: 401,
+            },
+            EventStatus::Error,
+            None,
+        );
+        let listed = store.list(0, 10, None);
+        assert_eq!(listed.events[0].source, None);
     }
 }

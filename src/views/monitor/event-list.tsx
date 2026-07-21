@@ -130,6 +130,14 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
                   <div className="flex items-center gap-1">
                     <Icon className={cn('h-3 w-3 shrink-0', config.color)} />
                     <span className="truncate">{getTypeLabel(event.event_type)}</span>
+                    {event.source === 'proxy' && (
+                      <span
+                        className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                        title="Observed via the HTTPS inspection proxy"
+                      >
+                        proxy
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="px-2 py-1 truncate text-muted-foreground">
