@@ -11,21 +11,44 @@ use async_trait::async_trait;
 use lr_monitor::{
     EventStatus, LlmCallSource, LlmProtocol, MonitorEventData, MonitorEventStore, MonitorEventType,
 };
+use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
 
 use crate::anthropic;
 use crate::interceptor::{
-    ClientCtx, ConnectDecision, InterceptAction, ObservedExchange, ProxyInterceptor,
+    ClientCtx, ConnectDecision, InterceptAction, ObservedExchange, PricingResolver,
+    ProxyInterceptor, TokenUsage,
 };
 
 /// Passive interceptor: MITM allow-listed LLM hosts, record what it sees, and
 /// forward everything unchanged.
 pub struct PassiveInterceptor {
     monitor: Arc<MonitorEventStore>,
+    /// Aggregate metrics sink (per-key/provider/model/strategy). Optional so the
+    /// interceptor is still usable in tests without the metrics stack.
+    metrics: Option<Arc<MetricsCollector>>,
+    /// Resolves USD cost from model + token usage (via the catalog).
+    pricing: Option<Arc<dyn PricingResolver>>,
 }
 
 impl PassiveInterceptor {
     pub fn new(monitor: Arc<MonitorEventStore>) -> Self {
-        Self { monitor }
+        Self {
+            monitor,
+            metrics: None,
+            pricing: None,
+        }
+    }
+
+    /// Attach the metrics collector so proxied calls feed the dashboards.
+    pub fn with_metrics(mut self, metrics: Arc<MetricsCollector>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// Attach a pricing resolver so proxied calls get a cost.
+    pub fn with_pricing(mut self, pricing: Arc<dyn PricingResolver>) -> Self {
+        self.pricing = Some(pricing);
+        self
     }
 
     /// Record a fully-observed exchange as one combined LLM-call monitor event.
@@ -40,11 +63,13 @@ impl PassiveInterceptor {
             .map(anthropic::parse_request)
             .unwrap_or_default();
 
-        // The response is either a single JSON object or an SSE stream.
+        // The response is either a single JSON object or an SSE stream. For SSE
+        // we reconstruct a full message body so it's captured like a plain one.
         let (resp_meta, response_json) = match &ex.response_body {
             Some(bytes) if ex.response_is_sse => {
                 let raw = String::from_utf8_lossy(bytes);
-                (anthropic::reconstruct_sse(&raw), None)
+                let (meta, body) = anthropic::reconstruct_sse(&raw);
+                (meta, Some(body))
             }
             Some(bytes) => {
                 let json = serde_json::from_slice::<serde_json::Value>(bytes).ok();
@@ -80,15 +105,59 @@ impl PassiveInterceptor {
             _ => None,
         };
 
+        let model = req_meta
+            .model
+            .clone()
+            .or_else(|| resp_meta.model.clone())
+            .unwrap_or_default();
+
+        // Cost from the catalog, including cache-write/cache-read/reasoning tokens.
+        let usage = TokenUsage {
+            input: resp_meta.input_tokens.unwrap_or(0),
+            output: resp_meta.output_tokens.unwrap_or(0),
+            cache_write: resp_meta.cache_creation_tokens.unwrap_or(0),
+            cache_read: resp_meta.cache_read_tokens.unwrap_or(0),
+            reasoning: resp_meta.reasoning_tokens.unwrap_or(0),
+        };
+        let cost_usd = self
+            .pricing
+            .as_ref()
+            .and_then(|p| p.cost_usd(&model, usage));
+
         let status = match ex.status {
             Some(code) if code >= 400 => EventStatus::Error,
             Some(_) => EventStatus::Complete,
             None => EventStatus::Error,
         };
 
+        // Feed aggregate metrics (per key/provider/model/strategy) so proxied
+        // traffic shows in the dashboards, just like native calls.
+        if let Some(metrics) = &self.metrics {
+            if status == EventStatus::Complete {
+                metrics.record_success(&RequestMetrics {
+                    api_key_name: &ex.client_id,
+                    provider: "anthropic",
+                    model: &model,
+                    strategy_id: &ex.strategy_id,
+                    input_tokens: usage.input,
+                    output_tokens: usage.output,
+                    cost_usd: cost_usd.unwrap_or(0.0),
+                    latency_ms: ex.latency_ms.unwrap_or(0),
+                });
+            } else {
+                metrics.record_failure(
+                    &ex.client_id,
+                    "anthropic",
+                    &model,
+                    &ex.strategy_id,
+                    ex.latency_ms.unwrap_or(0),
+                );
+            }
+        }
+
         let data = MonitorEventData::LlmCall {
             endpoint: ex.path.clone(),
-            model: req_meta.model.clone().unwrap_or_default(),
+            model,
             stream: req_meta.stream,
             message_count: req_meta.message_count,
             has_tools: req_meta.has_tools,
@@ -103,9 +172,9 @@ impl PassiveInterceptor {
             input_tokens: resp_meta.input_tokens,
             output_tokens: resp_meta.output_tokens,
             total_tokens,
-            reasoning_tokens: None,
-            cost_usd: None,
-            latency_ms: None,
+            reasoning_tokens: resp_meta.reasoning_tokens,
+            cost_usd,
+            latency_ms: ex.latency_ms,
             finish_reason: resp_meta.stop_reason,
             content_preview: resp_meta.content_preview,
             streamed: Some(req_meta.stream),
@@ -123,7 +192,7 @@ impl PassiveInterceptor {
             None,
             data,
             status,
-            None,
+            ex.latency_ms,
         );
     }
 }
@@ -198,6 +267,7 @@ mod tests {
             status: Some(200),
             response_body: Some(serde_json::to_vec(&resp).unwrap()),
             response_is_sse: false,
+            ..Default::default()
         }
     }
 
@@ -207,10 +277,12 @@ mod tests {
         let enabled = ClientCtx {
             client_id: "c".into(),
             proxy_enabled: true,
+            ..Default::default()
         };
         let disabled = ClientCtx {
             client_id: "c".into(),
             proxy_enabled: false,
+            ..Default::default()
         };
         assert_eq!(
             it.on_connect("api.anthropic.com", &enabled),

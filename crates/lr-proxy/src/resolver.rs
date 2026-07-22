@@ -26,6 +26,7 @@ impl ClientResolver for StaticResolver {
         if client_id == self.client_id && secret == self.secret {
             Some(ClientCtx {
                 client_id: self.client_id.clone(),
+                strategy_id: "default".to_string(),
                 proxy_enabled: self.proxy_enabled,
             })
         } else {

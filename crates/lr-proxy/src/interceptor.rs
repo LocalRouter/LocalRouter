@@ -10,10 +10,12 @@
 use async_trait::async_trait;
 
 /// Identity + policy for the client that opened a proxied tunnel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ClientCtx {
     /// Resolved LocalRouter client id (from proxy auth).
     pub client_id: String,
+    /// The client's routing strategy id (for metrics attribution).
+    pub strategy_id: String,
     /// Whether this client is allowed to use the proxy at all.
     pub proxy_enabled: bool,
 }
@@ -50,6 +52,10 @@ pub enum InterceptAction<T> {
 pub struct ObservedExchange {
     /// The client this exchange belongs to.
     pub client_id: String,
+    /// The client's routing strategy id (for metrics attribution).
+    pub strategy_id: String,
+    /// Wall-clock latency of the exchange in milliseconds, once known.
+    pub latency_ms: Option<u64>,
     /// Upstream host (e.g. `api.anthropic.com`).
     pub host: String,
     /// Request method (e.g. `POST`).
@@ -65,6 +71,23 @@ pub struct ObservedExchange {
     pub response_body: Option<Vec<u8>>,
     /// Whether the response was an SSE stream (`text/event-stream`).
     pub response_is_sse: bool,
+}
+
+/// Token usage for a single call, for cost computation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    pub reasoning: u64,
+}
+
+/// Resolves the USD cost of a call from its model + token usage. Implemented by
+/// the app against the model catalog; kept as a trait so `lr-proxy` doesn't
+/// depend on the catalog/provider crates.
+pub trait PricingResolver: Send + Sync {
+    fn cost_usd(&self, model: &str, usage: TokenUsage) -> Option<f64>;
 }
 
 /// Hooks the transport calls at each stage of an intercepted connection.

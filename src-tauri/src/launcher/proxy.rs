@@ -30,8 +30,24 @@ impl ClientResolver for AppClientResolver {
         }
         Some(ClientCtx {
             client_id: client.id.clone(),
+            strategy_id: client.strategy_id.clone(),
             proxy_enabled: client.llm_proxy_enabled(),
         })
+    }
+}
+
+/// Prices proxied Anthropic calls from the model catalog (sync, static lookup).
+struct CatalogPricing;
+
+impl lr_proxy::interceptor::PricingResolver for CatalogPricing {
+    fn cost_usd(&self, model: &str, usage: lr_proxy::interceptor::TokenUsage) -> Option<f64> {
+        let m = lr_catalog::find_model("anthropic", model)?;
+        Some(m.pricing.calculate_cost_with_cache(
+            usage.input as u32,
+            usage.output as u32,
+            usage.cache_read as u32,
+            usage.cache_write as u32,
+        ))
     }
 }
 
@@ -53,6 +69,7 @@ impl ProxyService {
     /// Build the service (generates/loads the root CA), without starting it.
     pub fn new(
         monitor_store: Arc<lr_monitor::MonitorEventStore>,
+        metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
         client_manager: Arc<lr_clients::ClientManager>,
         host: String,
     ) -> AppResult<Self> {
@@ -61,10 +78,13 @@ impl ProxyService {
             CertAuthority::load_or_create(&dir)
                 .map_err(|e| AppError::Internal(format!("proxy CA: {e}")))?,
         );
+        let interceptor = PassiveInterceptor::new(monitor_store)
+            .with_metrics(metrics_collector)
+            .with_pricing(Arc::new(CatalogPricing));
         Ok(Self {
             ca,
             host,
-            interceptor: Arc::new(PassiveInterceptor::new(monitor_store)),
+            interceptor: Arc::new(interceptor),
             resolver: Arc::new(AppClientResolver { client_manager }),
             running: Mutex::new(None),
         })

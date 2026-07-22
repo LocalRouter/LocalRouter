@@ -5640,6 +5640,7 @@ dependencies = [
  "hyper-util",
  "lr-config",
  "lr-monitor",
+ "lr-monitoring",
  "lr-types",
  "lr-utils",
  "parking_lot",

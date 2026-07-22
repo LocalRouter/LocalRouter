@@ -112,12 +112,16 @@ async fn mitm(
     let host = Arc::new(connect.host);
     let port = connect.port;
     let client_id = Arc::new(client_ctx.client_id);
+    let strategy_id = Arc::new(client_ctx.strategy_id);
 
     let service = service_fn(move |req: Request<Incoming>| {
         let ctx = ctx.clone();
         let host = host.clone();
         let client_id = client_id.clone();
-        async move { Ok::<_, Infallible>(proxy_request(req, ctx, host, port, client_id).await) }
+        let strategy_id = strategy_id.clone();
+        async move {
+            Ok::<_, Infallible>(proxy_request(req, ctx, host, port, client_id, strategy_id).await)
+        }
     });
 
     hyper::server::conn::http1::Builder::new()
@@ -136,7 +140,9 @@ async fn proxy_request(
     host: Arc<String>,
     port: u16,
     client_id: Arc<String>,
+    strategy_id: Arc<String>,
 ) -> Response<BoxedBody> {
+    let started = std::time::Instant::now();
     let method = req.method().to_string();
     let path = req
         .uri()
@@ -160,6 +166,7 @@ async fn proxy_request(
     // Base exchange (request half); response fields filled at stream end.
     let base = ObservedExchange {
         client_id: (*client_id).clone(),
+        strategy_id: (*strategy_id).clone(),
         host: (*host).clone(),
         method,
         path,
@@ -206,6 +213,7 @@ async fn proxy_request(
     let on_end: Box<dyn FnOnce(Vec<u8>) + Send> = Box::new(move |bytes| {
         let mut ex = recorded;
         ex.response_body = (!bytes.is_empty()).then_some(bytes);
+        ex.latency_ms = Some(started.elapsed().as_millis() as u64);
         tokio::spawn(async move {
             interceptor.on_response(&ex).await;
         });

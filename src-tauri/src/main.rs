@@ -597,6 +597,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         match server_manager.get_state().map(|s| s.monitor_store.clone()) {
             Some(monitor_store) => match launcher::proxy::ProxyService::new(
                 monitor_store,
+                metrics_collector.clone(),
                 client_manager.clone(),
                 cfg.proxy.host.clone(),
             ) {
@@ -2265,10 +2266,17 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 info!("Tray graph manager set on AppState");
             }
 
-            // Set up metrics callback to notify graph manager after metrics are recorded
+            // Feed the tray graph from the metrics choke point: every recorded
+            // request (server routes, HTTPS inspection proxy, ...) reports its
+            // token count here, so Fast/Medium modes see the same traffic the
+            // metrics store does without per-path record_tokens plumbing.
             let tray_graph_manager_for_metrics = tray_graph_manager.clone();
-            metrics_collector.set_on_metrics_recorded(move || {
-                tray_graph_manager_for_metrics.notify_activity();
+            metrics_collector.set_on_metrics_recorded(move |total_tokens| {
+                if total_tokens > 0 {
+                    tray_graph_manager_for_metrics.record_tokens(total_tokens);
+                } else {
+                    tray_graph_manager_for_metrics.notify_activity();
+                }
             });
             info!("Metrics callback registered with tray graph manager");
 

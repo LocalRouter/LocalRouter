@@ -11,6 +11,7 @@ description = "HTTPS inspection proxy (MITM) for passive LLM traffic monitoring 
 lr-config = { workspace = true }
 lr-utils = { workspace = true }
 lr-monitor = { workspace = true }
+lr-monitoring = { workspace = true }
 lr-types = { workspace = true }
 
 serde = { workspace = true }

@@ -157,8 +157,14 @@ pub struct MetricsCollector {
     /// MCP metrics collector (still in-memory for now)
     mcp_metrics: McpMetricsCollector,
 
-    /// Optional callback to notify when metrics are recorded
-    on_metrics_recorded: parking_lot::RwLock<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Optional callback to notify when metrics are recorded.
+    ///
+    /// Receives the total tokens (input + output) of the recorded request so
+    /// real-time consumers (e.g. the tray activity graph) get their token
+    /// counts from this single choke point instead of every request path
+    /// having to remember a separate `record_tokens` call. `0` means
+    /// "metrics changed, no request tokens" (feature events).
+    on_metrics_recorded: parking_lot::RwLock<Option<Box<dyn Fn(u64) + Send + Sync>>>,
 }
 
 impl MetricsCollector {
@@ -171,10 +177,13 @@ impl MetricsCollector {
         }
     }
 
-    /// Set callback to be called when metrics are recorded
+    /// Set callback to be called when metrics are recorded.
+    ///
+    /// The callback receives the total tokens of the recorded request
+    /// (`0` for token-less events like feature metrics).
     pub fn set_on_metrics_recorded<F>(&self, callback: F)
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn(u64) + Send + Sync + 'static,
     {
         *self.on_metrics_recorded.write() = Some(Box::new(callback));
     }
@@ -219,9 +228,11 @@ impl MetricsCollector {
             );
         }
 
-        // Notify callback that metrics were recorded
+        // Notify callback that metrics were recorded, passing the request's
+        // token count so real-time consumers (tray graph) stay in sync with
+        // the metrics store no matter which path recorded the request.
         if let Some(ref callback) = *self.on_metrics_recorded.read() {
-            callback();
+            callback(metrics.input_tokens + metrics.output_tokens);
         }
     }
 
@@ -489,7 +500,7 @@ impl MetricsCollector {
         );
 
         if let Some(ref callback) = *self.on_metrics_recorded.read() {
-            callback();
+            callback(0);
         }
     }
 
