@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/Button"
 import { Progress } from "@/components/ui/progress"
 import RateLimitEditor, { StrategyRateLimit } from "@/components/strategies/RateLimitEditor"
 import { ThreeZoneModelSelector } from "@/components/strategy/ThreeZoneModelSelector"
+import { ProxyAllowedModels } from "@/components/client/ProxyAllowedModels"
 import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
@@ -89,6 +90,13 @@ interface UnifiedModelsTabProps {
   client: Client
   onUpdate: () => void
   onViewChange?: (view: string, subTab?: string | null) => void
+  /**
+   * Restricted variant for HTTPS-proxy clients: keep Model Selection, Model
+   * Permissions and Rate Limits (which drive proxy interception), but hide the
+   * gateway-only Free-Tier and Weak-Model routing features (they require us to
+   * construct/route the request, which the proxy does not).
+   */
+  restricted?: boolean
 }
 
 interface DetailedModelInfo {
@@ -166,6 +174,7 @@ export function UnifiedModelsTab({
   client,
   onUpdate,
   onViewChange: _onViewChange,
+  restricted = false,
 }: UnifiedModelsTabProps) {
   // Strategy state
   const [strategy, setStrategy] = useState<StrategyConfig | null>(null)
@@ -687,7 +696,17 @@ export function UnifiedModelsTab({
 
   return (
     <div className="space-y-4">
-      {/* Section 1: Model Selection */}
+      {/* Section 1: Model Selection.
+          Gateway clients pick from the provider/model catalog and prioritize.
+          Proxy clients talk to their own upstream, so there is nothing to route
+          — they get a simple optional allowed-models whitelist instead. */}
+      {restricted ? (
+        <ProxyAllowedModels
+          value={strategy.model_permissions}
+          onChange={(model_permissions) => updateStrategy({ model_permissions })}
+          disabled={saving}
+        />
+      ) : (
       <Card>
         <CardHeader>
           <div className="flex items-center gap-3">
@@ -731,6 +750,7 @@ export function UnifiedModelsTab({
           />
         </CardContent>
       </Card>
+      )}
 
       {/* Section 2: Model Permissions */}
       <Card>
@@ -797,7 +817,8 @@ export function UnifiedModelsTab({
         </CardContent>
       </Card>
 
-      {/* Section 3: Free-Tier Mode */}
+      {/* Section 3: Free-Tier Mode (gateway-only) */}
+      {!restricted && (
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -865,8 +886,10 @@ export function UnifiedModelsTab({
           </CardContent>
         )}
       </Card>
+      )}
 
-      {/* Section 4: Weak Models (RouteLLM) */}
+      {/* Section 4: Weak Models (RouteLLM) — gateway-only */}
+      {!restricted && (
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -953,6 +976,7 @@ export function UnifiedModelsTab({
           )}
         </CardContent>
       </Card>
+      )}
     </div>
   )
 }

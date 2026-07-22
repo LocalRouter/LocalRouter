@@ -12,7 +12,6 @@ import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientContextTab } from "./tabs/context-tab"
 import { ClientLlmOptimizeTab } from "./tabs/llm-optimize-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
-import { ProxyFirewallSettings } from "@/components/client/ProxyFirewallSettings"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
@@ -70,19 +69,19 @@ export function ClientDetail({
   const llmMode = client?.llm_mode || "gateway"
   const mcpMode = client?.mcp_mode || "gateway"
   const clientMode = combineClientMode(llmMode, mcpMode)
-  // Model selection and per-client optimizations only apply to the native
-  // gateway — the passive proxy can't construct or rewrite requests.
-  const showModelsTab = llmMode === "gateway"
+  const isProxy = llmMode === "proxy"
+  // The LLM (models) tab applies to the native gateway and to proxy clients —
+  // for a proxy client its Model Permissions + rate limits drive interception.
+  // Proxy clients get a restricted variant (no weak-model / free-tier routing).
+  const showModelsTab = llmMode === "gateway" || isProxy
   const showMcpTab = mcpMode !== "off"
-  // HTTPS-proxy clients configure requests through the firewall instead of the
-  // gateway's model/optimize tabs.
-  const showFirewall = llmMode === "proxy"
+  // Try-It-Out needs the native gateway (we construct the request); a proxy
+  // client can't be exercised from here.
   const showTryItOutLlm = llmMode === "gateway"
   // Direct MCP try-it-out only for the MCP gateway (not via-LLM/off).
   const showTryItOutMcp = mcpMode === "gateway"
   const showTryItOut = showTryItOutLlm || showTryItOutMcp
-  // Optimize hosts gateway LLM optimization + MCP context; hide it when neither
-  // applies (e.g. an HTTPS-proxy client — its controls live in the Firewall card).
+  // Optimize hosts LLM optimization + MCP context; shown whenever either applies.
   const showOptimize = showModelsTab || showMcpTab
   const [trySubTab, setTrySubTab] = useState(showTryItOutLlm ? "llm" : "mcp")
 
@@ -121,8 +120,7 @@ export function ClientDetail({
     if (activeTab === "mcp" && !showMcpTab) setActiveTab("info")
     if (activeTab === "try" && !showTryItOut) setActiveTab("info")
     if (activeTab === "optimize" && !showOptimize) setActiveTab("info")
-    if (activeTab === "firewall" && !showFirewall) setActiveTab("info")
-  }, [clientMode, activeTab, showModelsTab, showMcpTab, showTryItOut, showOptimize, showFirewall])
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showTryItOut, showOptimize])
 
   const loadClient = async () => {
     try {
@@ -174,13 +172,12 @@ export function ClientDetail({
               {showTryItOut && <TabsTrigger value="try"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
             </div>
 
-            {(showModelsTab || showMcpTab || showFirewall) && (
+            {(showModelsTab || showMcpTab) && (
               <div>
                 <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">Configure</div>
                 <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
                   {showModelsTab && <TabsTrigger value="models"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM</TabsTrigger>}
                   {showMcpTab && <TabsTrigger value="mcp"><TAB_ICONS.mcp className={TAB_ICON_CLASS} />MCP</TabsTrigger>}
-                  {showFirewall && <TabsTrigger value="firewall"><TAB_ICONS.firewall className={TAB_ICON_CLASS} />Firewall</TabsTrigger>}
                 </div>
               </div>
             )}
@@ -248,6 +245,7 @@ export function ClientDetail({
                 client={client}
                 onUpdate={loadClient}
                 onViewChange={onViewChange}
+                restricted={isProxy}
               />
             </TabsContent>
           )}
@@ -255,12 +253,6 @@ export function ClientDetail({
           {showMcpTab && (
             <TabsContent value="mcp">
               <ClientMcpTab client={client} onUpdate={loadClient} />
-            </TabsContent>
-          )}
-
-          {showFirewall && (
-            <TabsContent value="firewall">
-              <ProxyFirewallSettings clientId={client.id} />
             </TabsContent>
           )}
 
