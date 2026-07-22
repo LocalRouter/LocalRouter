@@ -314,13 +314,6 @@ fn validate_client_modes(config: &AppConfig) -> AppResult<()> {
                 client.name
             )));
         }
-
-        if client.llm_mode == LlmMode::ProxyRewrite {
-            return Err(AppError::Config(format!(
-                "Client '{}' uses the active rewrite proxy, which is not yet available",
-                client.name
-            )));
-        }
     }
     Ok(())
 }
@@ -525,8 +518,8 @@ mod tests {
             (LlmMode::Gateway, McpMode::Off),
             (LlmMode::Off, McpMode::Gateway),
             (LlmMode::Gateway, McpMode::ViaLlm),
-            (LlmMode::ProxyInspect, McpMode::Off),
-            (LlmMode::ProxyInspect, McpMode::Gateway),
+            (LlmMode::Proxy, McpMode::Off),
+            (LlmMode::Proxy, McpMode::Gateway),
         ] {
             let cfg = config_with_client(client_with_modes(llm, mcp));
             assert!(
@@ -546,16 +539,10 @@ mod tests {
             McpMode::Off
         )))
         .is_err());
-        // Via-LLM without native gateway (here: with the passive proxy).
+        // Via-LLM without native gateway (here: with the proxy).
         assert!(validate_client_modes(&config_with_client(client_with_modes(
-            LlmMode::ProxyInspect,
+            LlmMode::Proxy,
             McpMode::ViaLlm
-        )))
-        .is_err());
-        // Active rewrite proxy is not implemented.
-        assert!(validate_client_modes(&config_with_client(client_with_modes(
-            LlmMode::ProxyRewrite,
-            McpMode::Off
         )))
         .is_err());
     }

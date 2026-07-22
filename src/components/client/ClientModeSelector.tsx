@@ -72,15 +72,6 @@ function InspectIcon({ className }: { className?: string }) {
   )
 }
 
-function RewriteIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      {/* pencil over a path — active rewrite */}
-      <path d="M3 12h7" />
-      <path d="M13 15l6-6a2 2 0 0 0-3-3l-6 6v3z" />
-    </svg>
-  )
-}
 
 // ── Option definitions ──────────────────────────────────────────────────
 
@@ -106,16 +97,10 @@ const LLM_OPTIONS: ModeOption<LlmMode>[] = [
     Icon: ArrowIcon,
   },
   {
-    value: "proxy_inspect",
-    label: "Inspect Proxy",
-    description: "Passive HTTPS proxy — inspect traffic in the monitor, no changes",
+    value: "proxy",
+    label: "HTTPS Proxy",
+    description: "Inspect traffic in the monitor and apply the firewall — allow/ask/deny, model rules, transforms",
     Icon: InspectIcon,
-  },
-  {
-    value: "proxy_rewrite",
-    label: "Rewrite Proxy",
-    description: "Active HTTPS proxy — inspect and rewrite requests (coming soon)",
-    Icon: RewriteIcon,
   },
 ]
 
@@ -142,7 +127,7 @@ const MCP_OPTIONS: ModeOption<McpMode>[] = [
 ]
 
 function isLlmProxy(mode: LlmMode): boolean {
-  return mode === "proxy_inspect" || mode === "proxy_rewrite"
+  return mode === "proxy"
 }
 
 // ── Component ───────────────────────────────────────────────────────────
@@ -161,15 +146,12 @@ function llmOptionState(
   mcpMode: McpMode,
   template: ClientTemplate | null | undefined,
 ): { allowed: boolean; reason?: string } {
-  // The active rewrite proxy is not implemented yet.
-  if (value === "proxy_rewrite") return { allowed: false, reason: "Coming soon" }
-
   // Gateway needs LLM support; proxy needs proxy support. A null template
   // (custom/no-template client) supports both.
   if (value === "gateway" && template && !template.supportsLlm) {
     return { allowed: false, reason: `Not supported by ${template.name}` }
   }
-  if (value === "proxy_inspect" && template && !template.supportsProxy) {
+  if (value === "proxy" && template && !template.supportsProxy) {
     return { allowed: false, reason: `Not supported by ${template.name}` }
   }
 

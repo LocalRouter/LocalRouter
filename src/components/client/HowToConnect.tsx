@@ -871,7 +871,7 @@ export function HowToConnect({
     ? CLIENT_TEMPLATES.find(t => t.id === templateId) || null
     : null
 
-  const isLlmProxy = llmMode === "proxy_inspect" || llmMode === "proxy_rewrite"
+  const isLlmProxy = llmMode === "proxy"
   const hasQuickSetup = template && template.setupType !== "generic"
   // Native LLM connect info is shown only for the gateway; proxy clients get the
   // ProxyLlmSetup block instead.

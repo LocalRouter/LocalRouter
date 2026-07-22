@@ -175,7 +175,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       marketplace_permission: 'ask' as const,
       mcp_sampling_permission: 'ask' as const,
       mcp_elicitation_permission: 'ask' as const,
-      llm_mode: (args?.llmMode ?? 'gateway') as 'off' | 'gateway' | 'proxy_inspect' | 'proxy_rewrite',
+      llm_mode: (args?.llmMode ?? 'gateway') as 'off' | 'gateway' | 'proxy',
       mcp_mode: (args?.mcpMode ?? 'gateway') as 'off' | 'gateway' | 'via_llm',
       template_id: args?.templateId ?? null,
       sync_config: false,

@@ -187,11 +187,11 @@ export type ClientMode = 'both' | 'llm_only' | 'mcp_only' | 'mcp_via_llm'
  * LLM access mode (one axis of the former ClientMode).
  * - `off`: no LLM access
  * - `gateway`: native `/v1` endpoints (the historical "on")
- * - `proxy_inspect`: passive HTTPS inspection proxy (inspect only)
- * - `proxy_rewrite`: active rewrite proxy — NOT IMPLEMENTED (UI disables it)
+ * - `proxy`: HTTPS inspection proxy — decrypt/inspect + firewall (allow/ask/deny,
+ *   model enforcement, request transforms) before forwarding
  * Rust: crates/lr-config/src/types.rs - LlmMode enum
  */
-export type LlmMode = 'off' | 'gateway' | 'proxy_inspect' | 'proxy_rewrite'
+export type LlmMode = 'off' | 'gateway' | 'proxy'
 
 /**
  * MCP access mode (the other axis of the former ClientMode).

@@ -2779,16 +2779,12 @@ pub enum LlmMode {
     /// This is the historical "on" behavior.
     #[default]
     Gateway,
-    /// Passive HTTPS inspection proxy: client points `HTTPS_PROXY` at
-    /// LocalRouter, traffic is decrypted and inspected but forwarded
-    /// unchanged. No request rewriting.
-    ProxyInspect,
-    /// Active HTTPS proxy: inspects AND rewrites requests (model selection,
-    /// optimization, allow-listing).
-    ///
-    /// NOT IMPLEMENTED — reserved so configs/UI can reference it. The backend
-    /// rejects clients configured with this mode until it ships.
-    ProxyRewrite,
+    /// HTTPS inspection proxy: the client points `HTTPS_PROXY` at LocalRouter,
+    /// which decrypts and inspects the traffic (monitor + metrics) and can
+    /// apply the firewall — allow/ask/deny, model enforcement, and request
+    /// transforms — before forwarding. Aliases keep old split configs loading.
+    #[serde(alias = "proxy_inspect", alias = "proxy_rewrite")]
+    Proxy,
 }
 
 /// MCP access mode for a client (one half of the former `ClientMode`).
@@ -3022,15 +3018,9 @@ impl Client {
         self.llm_mode == LlmMode::Gateway
     }
 
-    /// Client routes LLM traffic through the HTTPS inspection proxy
-    /// (passive today; active reserved).
+    /// Client routes LLM traffic through the HTTPS inspection proxy.
     pub fn llm_proxy_enabled(&self) -> bool {
-        matches!(self.llm_mode, LlmMode::ProxyInspect | LlmMode::ProxyRewrite)
-    }
-
-    /// Client uses the passive (inspect-only) proxy.
-    pub fn llm_proxy_passive(&self) -> bool {
-        self.llm_mode == LlmMode::ProxyInspect
+        self.llm_mode == LlmMode::Proxy
     }
 
     /// Direct MCP access is active (client speaks MCP to `/mcp`).
@@ -4766,10 +4756,9 @@ sampling_permission: "off"
         c.mcp_mode = McpMode::Off;
         assert_eq!(c.effective_client_mode(), ClientMode::LlmOnly);
 
-        c.llm_mode = LlmMode::ProxyInspect;
+        c.llm_mode = LlmMode::Proxy;
         c.mcp_mode = McpMode::Gateway;
         assert!(c.llm_proxy_enabled());
-        assert!(c.llm_proxy_passive());
         assert!(!c.llm_gateway_enabled());
         // LLM proxy + direct MCP collapses onto McpOnly for the MCP gateway.
         assert_eq!(c.effective_client_mode(), ClientMode::McpOnly);

@@ -47,10 +47,7 @@ impl ConfigSyncContext {
     // TODO(https-proxy): called by the Claude Code proxy setup writer (Part E).
     #[allow(dead_code)]
     pub fn should_sync_proxy(&self) -> bool {
-        matches!(
-            self.llm_mode,
-            lr_config::LlmMode::ProxyInspect | lr_config::LlmMode::ProxyRewrite
-        ) && self.proxy_url.is_some()
+        self.llm_mode == lr_config::LlmMode::Proxy && self.proxy_url.is_some()
     }
 
     /// Whether MCP config should be written (direct MCP gateway only;
