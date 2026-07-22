@@ -36,11 +36,34 @@ pub enum ConnectDecision {
 /// Passive mode always returns `Forward`. The `Replace` variant is the seam for
 /// active rewriting; it is intentionally opaque here so the transport crate owns
 /// the concrete request type.
-pub enum InterceptAction<T> {
-    /// Forward the original message unchanged.
+/// What the transport should do with an intercepted request.
+pub enum RequestAction {
+    /// Forward the original request unchanged.
     Forward,
-    /// Replace it with a rewritten message (active mode only).
-    Replace(T),
+    /// Forward a rewritten request body instead (e.g. model rewrite / transform).
+    Replace(Vec<u8>),
+    /// Block the request; return this synthesized response to the client and
+    /// never contact the upstream (firewall deny).
+    Reject {
+        status: u16,
+        content_type: String,
+        body: Vec<u8>,
+    },
+}
+
+impl RequestAction {
+    /// A JSON error `Reject` in the OpenAI/Anthropic-ish error envelope.
+    pub fn reject_json(status: u16, message: &str) -> Self {
+        let body = serde_json::json!({
+            "type": "error",
+            "error": { "type": "localrouter_firewall", "message": message }
+        });
+        RequestAction::Reject {
+            status,
+            content_type: "application/json".to_string(),
+            body: serde_json::to_vec(&body).unwrap_or_default(),
+        }
+    }
 }
 
 /// A decrypted HTTP exchange handed to the interceptor for observation.
@@ -99,13 +122,14 @@ pub trait ProxyInterceptor: Send + Sync {
     /// Decide MITM vs blind tunnel vs reject for a new `CONNECT`.
     fn on_connect(&self, host: &str, client: &ClientCtx) -> ConnectDecision;
 
-    /// Called with the decrypted request. Passive: record + `Forward`.
-    async fn on_request(&self, _exchange: &ObservedExchange) -> InterceptAction<()> {
-        InterceptAction::Forward
+    /// Called with the decrypted request before it is forwarded. The firewall
+    /// evaluates here and may forward, rewrite, or reject. Awaited by the
+    /// transport (so an "ask" rule can pause for user approval).
+    async fn on_request(&self, _exchange: &ObservedExchange) -> RequestAction {
+        RequestAction::Forward
     }
 
-    /// Called with the decrypted (and, for SSE, reconstructed) response.
-    async fn on_response(&self, _exchange: &ObservedExchange) -> InterceptAction<()> {
-        InterceptAction::Forward
-    }
+    /// Called with the decrypted (and, for SSE, reconstructed) response at end
+    /// of stream. Used to record the exchange (monitor + metrics).
+    async fn on_response(&self, _exchange: &ObservedExchange) {}
 }

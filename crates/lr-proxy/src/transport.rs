@@ -17,7 +17,9 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::error::ProxyError;
-use crate::interceptor::{ClientCtx, ConnectDecision, ObservedExchange, ProxyInterceptor};
+use crate::interceptor::{
+    ClientCtx, ConnectDecision, ObservedExchange, ProxyInterceptor, RequestAction,
+};
 use crate::resolver::ClientResolver;
 use crate::tls::TlsFactory;
 
@@ -162,6 +164,9 @@ async fn proxy_request(
     // capture compressed bytes we can't parse. The client still receives a
     // valid (now uncompressed) response — semantics are unchanged.
     parts.headers.remove(hyper::header::ACCEPT_ENCODING);
+    // hyper sets Content-Length from the forwarded body; drop the client's so a
+    // rewritten (or re-framed) request never carries a stale length.
+    parts.headers.remove(hyper::header::CONTENT_LENGTH);
 
     // Base exchange (request half); response fields filled at stream end.
     let base = ObservedExchange {
@@ -174,8 +179,28 @@ async fn proxy_request(
         ..Default::default()
     };
 
-    // Observe the request (passive: no-op; active: may rewrite later).
-    ctx.interceptor.on_request(&base).await;
+    // Firewall: forward, rewrite, or reject. (Passive returns Forward.)
+    let forward_bytes: Bytes = match ctx.interceptor.on_request(&base).await {
+        RequestAction::Forward => req_bytes,
+        RequestAction::Replace(new_body) => Bytes::from(new_body),
+        RequestAction::Reject {
+            status,
+            content_type,
+            body,
+        } => {
+            // Record the blocked call so it shows in the monitor, then answer
+            // the client directly without ever contacting the upstream.
+            let interceptor = ctx.interceptor.clone();
+            let mut blocked = base;
+            blocked.status = Some(status);
+            blocked.response_body = Some(body.clone());
+            blocked.latency_ms = Some(started.elapsed().as_millis() as u64);
+            tokio::spawn(async move {
+                interceptor.on_response(&blocked).await;
+            });
+            return synthesized_response(status, &content_type, body);
+        }
+    };
 
     // Establish a fresh upstream TLS connection for this request.
     let upstream = match connect_upstream(&ctx, &host, port).await {
@@ -191,7 +216,7 @@ async fn proxy_request(
         let _ = conn.await;
     });
 
-    let up_req = Request::from_parts(parts, Full::new(req_bytes));
+    let up_req = Request::from_parts(parts, Full::new(forward_bytes));
     let resp = match sender.send_request(up_req).await {
         Ok(r) => r,
         Err(e) => return bad_gateway(&format!("upstream request: {e}")),
@@ -246,6 +271,19 @@ fn bad_gateway(msg: &str) -> Response<BoxedBody> {
         .status(StatusCode::BAD_GATEWAY)
         .body(body)
         .expect("static 502 response")
+}
+
+/// A locally-synthesized response returned to the client (firewall deny), never
+/// contacting the upstream.
+fn synthesized_response(status: u16, content_type: &str, body: Vec<u8>) -> Response<BoxedBody> {
+    let boxed = Full::new(Bytes::from(body))
+        .map_err(|e: Infallible| match e {})
+        .boxed_unsync();
+    Response::builder()
+        .status(StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN))
+        .header(hyper::header::CONTENT_TYPE, content_type)
+        .body(boxed)
+        .expect("synthesized response")
 }
 
 /// Read the `CONNECT` request byte-by-byte up to the header terminator. The

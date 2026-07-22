@@ -2802,6 +2802,68 @@ pub enum McpMode {
     ViaLlm,
 }
 
+/// What the HTTPS-proxy firewall does with a matching request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FirewallAction {
+    /// Forward the request (subject to model rewrites/enforcement).
+    #[default]
+    Allow,
+    /// Pause and ask the user to approve before forwarding.
+    Ask,
+    /// Block the request; return an error to the client.
+    Deny,
+}
+
+/// Match conditions for a firewall rule (all present conditions must match).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct FirewallRuleMatch {
+    /// Case-insensitive substring of the requested model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_contains: Option<String>,
+    /// Case-insensitive substring anywhere in the request body text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_contains: Option<String>,
+    /// Match only requests that do (or don't) carry tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_tools: Option<bool>,
+}
+
+/// A single ordered firewall rule (first match wins).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FirewallRule {
+    pub name: String,
+    #[serde(default)]
+    pub matcher: FirewallRuleMatch,
+    pub action: FirewallAction,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// A forced model remap (`from` requested → `to` sent upstream).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ModelRewrite {
+    pub from: String,
+    pub to: String,
+}
+
+/// Per-client policy for the HTTPS inspection proxy (the firewall).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LlmProxyPolicy {
+    /// Action when no rule matches.
+    #[serde(default)]
+    pub default_action: FirewallAction,
+    /// Ordered rules; first enabled match wins.
+    #[serde(default)]
+    pub rules: Vec<FirewallRule>,
+    /// Forced model remaps applied to allowed requests.
+    #[serde(default)]
+    pub model_rewrites: Vec<ModelRewrite>,
+    /// Deny requests for models not permitted by the client's strategy.
+    #[serde(default)]
+    pub enforce_model_permissions: bool,
+}
+
 impl ClientMode {
     /// Map the legacy single-axis mode to the new (LLM, MCP) pair.
     /// Used by config migration and the deserialize-only shim.
@@ -2958,13 +3020,17 @@ pub struct Client {
     #[serde(default, skip_serializing)]
     pub client_mode: ClientMode,
 
-    /// LLM access mode (Off / Gateway / passive proxy / active proxy).
+    /// LLM access mode (Off / Gateway / HTTPS Proxy).
     #[serde(default)]
     pub llm_mode: LlmMode,
 
     /// MCP access mode (Off / Gateway / via LLM).
     #[serde(default)]
     pub mcp_mode: McpMode,
+
+    /// HTTPS-proxy firewall policy (only used when `llm_mode == Proxy`).
+    #[serde(default)]
+    pub llm_proxy: LlmProxyPolicy,
 
     /// Template ID used to create this client (e.g., "claude-code", "cursor")
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3967,6 +4033,7 @@ impl Client {
             client_mode: ClientMode::default(),
             llm_mode: LlmMode::default(),
             mcp_mode: McpMode::default(),
+            llm_proxy: LlmProxyPolicy::default(),
             template_id: None,
             sync_config: false,
             guardrails_enabled: None,

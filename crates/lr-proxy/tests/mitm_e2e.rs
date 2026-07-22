@@ -28,7 +28,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use lr_monitor::MonitorEventStore;
 use lr_proxy::cert::CertAuthority;
 use lr_proxy::interceptor::{
-    ClientCtx, ConnectDecision, InterceptAction, ObservedExchange, ProxyInterceptor,
+    ClientCtx, ConnectDecision, ObservedExchange, ProxyInterceptor, RequestAction,
 };
 use lr_proxy::passive::PassiveInterceptor;
 use lr_proxy::resolver::StaticResolver;
@@ -52,10 +52,10 @@ impl ProxyInterceptor for ForceMitm {
             ConnectDecision::Reject("disabled")
         }
     }
-    async fn on_request(&self, ex: &ObservedExchange) -> InterceptAction<()> {
+    async fn on_request(&self, ex: &ObservedExchange) -> RequestAction {
         self.0.on_request(ex).await
     }
-    async fn on_response(&self, ex: &ObservedExchange) -> InterceptAction<()> {
+    async fn on_response(&self, ex: &ObservedExchange) {
         self.0.on_response(ex).await
     }
 }

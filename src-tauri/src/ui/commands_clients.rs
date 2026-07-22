@@ -413,6 +413,7 @@ pub async fn clone_client(
         client_mode: source_client.client_mode,
         llm_mode: source_client.llm_mode,
         mcp_mode: source_client.mcp_mode,
+        llm_proxy: source_client.llm_proxy.clone(),
         template_id: source_client.template_id.clone(),
         sync_config: false, // Disabled for clones to avoid conflicts
         guardrails_enabled: None,
@@ -3152,6 +3153,17 @@ pub async fn get_client_proxy_setup(
             settings_json: None,
         }),
     }
+}
+
+/// Answer a pending HTTPS-proxy firewall approval ("ask") from the UI.
+#[tauri::command]
+pub async fn respond_proxy_firewall(
+    request_id: String,
+    allow: bool,
+    approval: State<'_, Arc<crate::launcher::proxy::ProxyApprovalManager>>,
+) -> Result<(), String> {
+    approval.respond(&request_id, allow);
+    Ok(())
 }
 
 /// Auto-configure a client's tool for the inspection proxy by writing its

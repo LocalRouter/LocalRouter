@@ -18,6 +18,7 @@
 //! The live MITM data-path (CONNECT handling, TLS terminate/re-originate,
 //! streaming tap) and the [`ProxyManager`] lifecycle build on these pieces.
 
+pub mod active;
 pub mod anthropic;
 pub mod cert;
 pub mod error;

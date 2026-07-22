@@ -15,8 +15,8 @@ use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
 
 use crate::anthropic;
 use crate::interceptor::{
-    ClientCtx, ConnectDecision, InterceptAction, ObservedExchange, PricingResolver,
-    ProxyInterceptor, TokenUsage,
+    ClientCtx, ConnectDecision, ObservedExchange, PricingResolver, ProxyInterceptor, RequestAction,
+    TokenUsage,
 };
 
 /// Passive interceptor: MITM allow-listed LLM hosts, record what it sees, and
@@ -52,7 +52,8 @@ impl PassiveInterceptor {
     }
 
     /// Record a fully-observed exchange as one combined LLM-call monitor event.
-    fn record(&self, ex: &ObservedExchange) {
+    /// Shared with the active interceptor, which reuses this for recording.
+    pub(crate) fn record(&self, ex: &ObservedExchange) {
         // Parse the raw request body as Anthropic JSON (best-effort).
         let request_json = ex
             .request_body
@@ -227,18 +228,17 @@ impl ProxyInterceptor for PassiveInterceptor {
         }
     }
 
-    async fn on_request(&self, _exchange: &ObservedExchange) -> InterceptAction<()> {
+    async fn on_request(&self, _exchange: &ObservedExchange) -> RequestAction {
         // Passive: nothing to rewrite. Recording happens once, on response,
         // so the monitor event carries both halves of the exchange.
-        InterceptAction::Forward
+        RequestAction::Forward
     }
 
-    async fn on_response(&self, exchange: &ObservedExchange) -> InterceptAction<()> {
+    async fn on_response(&self, exchange: &ObservedExchange) {
         // Only record exchanges we actually parsed as Anthropic Messages calls.
         if anthropic::is_messages_path(&exchange.path) {
             self.record(exchange);
         }
-        InterceptAction::Forward
     }
 }
 
