@@ -88,6 +88,7 @@ fn create_test_config(
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
+        llm_proxy: lr_config::LlmProxyPolicy::default(),
     };
 
     AppConfig {
@@ -563,6 +564,7 @@ async fn test_disabled_client_returns_unauthorized() {
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
+        llm_proxy: lr_config::LlmProxyPolicy::default(),
     };
 
     let config = AppConfig {
@@ -626,6 +628,7 @@ async fn test_client_with_missing_strategy() {
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
+        llm_proxy: lr_config::LlmProxyPolicy::default(),
     };
 
     let config = AppConfig {
@@ -1236,6 +1239,7 @@ fn create_free_tier_config(
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
+        llm_proxy: lr_config::LlmProxyPolicy::default(),
     };
 
     AppConfig {
