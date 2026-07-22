@@ -77,6 +77,9 @@ export function ClientDetail({
   // Direct MCP try-it-out only for the MCP gateway (not via-LLM/off).
   const showTryItOutMcp = mcpMode === "gateway"
   const showTryItOut = showTryItOutLlm || showTryItOutMcp
+  // Optimize hosts gateway LLM optimization + MCP context; hide it when neither
+  // applies (e.g. an HTTPS-proxy client — its controls live in the Firewall card).
+  const showOptimize = showModelsTab || showMcpTab
   const [trySubTab, setTrySubTab] = useState(showTryItOutLlm ? "llm" : "mcp")
 
   useEffect(() => {
@@ -113,7 +116,8 @@ export function ClientDetail({
     if (activeTab === "models" && !showModelsTab) setActiveTab("info")
     if (activeTab === "mcp" && !showMcpTab) setActiveTab("info")
     if (activeTab === "try" && !showTryItOut) setActiveTab("info")
-  }, [clientMode, activeTab, showModelsTab, showMcpTab, showTryItOut])
+    if (activeTab === "optimize" && !showOptimize) setActiveTab("info")
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showTryItOut, showOptimize])
 
   const loadClient = async () => {
     try {
@@ -176,7 +180,7 @@ export function ClientDetail({
             )}
 
             <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
-              <TabsTrigger value="optimize"><TAB_ICONS.optimize className={TAB_ICON_CLASS} />Optimize</TabsTrigger>
+              {showOptimize && <TabsTrigger value="optimize"><TAB_ICONS.optimize className={TAB_ICON_CLASS} />Optimize</TabsTrigger>}
               <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
             </div>
           </TabsList>
