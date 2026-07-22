@@ -5104,7 +5104,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "localrouter"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5227,7 +5227,7 @@ dependencies = [
 
 [[package]]
 name = "lr-api-keys"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -5245,7 +5245,7 @@ dependencies = [
 
 [[package]]
 name = "lr-catalog"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "chrono",
  "lr-types",
@@ -5258,7 +5258,7 @@ dependencies = [
 
 [[package]]
 name = "lr-clients"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5277,7 +5277,7 @@ dependencies = [
 
 [[package]]
 name = "lr-coding-agents"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5301,7 +5301,7 @@ dependencies = [
 
 [[package]]
 name = "lr-compression"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -5324,7 +5324,7 @@ dependencies = [
 
 [[package]]
 name = "lr-config"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5348,7 +5348,7 @@ dependencies = [
 
 [[package]]
 name = "lr-context"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "criterion",
  "dirs 5.0.1",
@@ -5366,7 +5366,7 @@ dependencies = [
 
 [[package]]
 name = "lr-embeddings"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -5385,7 +5385,7 @@ dependencies = [
 
 [[package]]
 name = "lr-guardrails"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "async-trait",
  "futures",
@@ -5403,7 +5403,7 @@ dependencies = [
 
 [[package]]
 name = "lr-json-repair"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "serde",
  "serde_json",
@@ -5412,7 +5412,7 @@ dependencies = [
 
 [[package]]
 name = "lr-marketplace"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5436,7 +5436,7 @@ dependencies = [
 
 [[package]]
 name = "lr-mcp"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5483,7 +5483,7 @@ dependencies = [
 
 [[package]]
 name = "lr-mcp-via-llm"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5510,7 +5510,7 @@ dependencies = [
 
 [[package]]
 name = "lr-memory"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5532,7 +5532,7 @@ dependencies = [
 
 [[package]]
 name = "lr-monitor"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "chrono",
  "parking_lot",
@@ -5544,7 +5544,7 @@ dependencies = [
 
 [[package]]
 name = "lr-monitoring"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5566,7 +5566,7 @@ dependencies = [
 
 [[package]]
 name = "lr-oauth"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -5591,7 +5591,7 @@ dependencies = [
 
 [[package]]
 name = "lr-providers"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5659,7 +5659,7 @@ dependencies = [
 
 [[package]]
 name = "lr-responses-sessions"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5677,7 +5677,7 @@ dependencies = [
 
 [[package]]
 name = "lr-routellm"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -5704,7 +5704,7 @@ dependencies = [
 
 [[package]]
 name = "lr-router"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5727,7 +5727,7 @@ dependencies = [
 
 [[package]]
 name = "lr-secret-scanner"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "aho-corasick",
  "lr-types",
@@ -5740,7 +5740,7 @@ dependencies = [
 
 [[package]]
 name = "lr-server"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5795,7 +5795,7 @@ dependencies = [
 
 [[package]]
 name = "lr-skills"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5818,7 +5818,7 @@ dependencies = [
 
 [[package]]
 name = "lr-types"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5834,7 +5834,7 @@ dependencies = [
 
 [[package]]
 name = "lr-utils"
-version = "0.0.128"
+version = "0.0.129"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
