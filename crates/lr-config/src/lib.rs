@@ -321,6 +321,7 @@ impl ConfigManager {
             client_mode: ClientMode::default(),
             llm_mode: LlmMode::default(),
             mcp_mode: McpMode::default(),
+            llm_proxy: LlmProxyPolicy::default(),
             template_id: None,
             sync_config: false,
             guardrails_enabled: None,
