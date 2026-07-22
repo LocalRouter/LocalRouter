@@ -248,10 +248,8 @@ pub async fn embeddings(
             latency_ms,
         });
 
-    // Record tokens for tray graph (real-time tracking)
-    if let Some(ref tray_graph) = *state.tray_graph_manager.read() {
-        tray_graph.record_tokens(response.usage.total_tokens as u64);
-    }
+    // Tray graph tokens flow through the metrics collector's
+    // on_metrics_recorded callback (fed by record_success above).
 
     // Log to access log (persistent storage)
     if let Err(e) = state.access_logger.log_success(

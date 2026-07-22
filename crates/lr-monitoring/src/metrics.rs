@@ -149,6 +149,10 @@ impl From<MetricRow> for MetricDataPoint {
     }
 }
 
+/// Callback invoked after metrics are recorded, receiving the total tokens
+/// (input + output) of the recorded request (`0` for token-less events).
+type MetricsRecordedCallback = Box<dyn Fn(u64) + Send + Sync>;
+
 /// Metrics collector for tracking usage with SQLite persistence
 pub struct MetricsCollector {
     /// SQLite database for persistent storage
@@ -164,7 +168,7 @@ pub struct MetricsCollector {
     /// counts from this single choke point instead of every request path
     /// having to remember a separate `record_tokens` call. `0` means
     /// "metrics changed, no request tokens" (feature events).
-    on_metrics_recorded: parking_lot::RwLock<Option<Box<dyn Fn(u64) + Send + Sync>>>,
+    on_metrics_recorded: parking_lot::RwLock<Option<MetricsRecordedCallback>>,
 }
 
 impl MetricsCollector {
@@ -612,6 +616,41 @@ mod tests {
         let model_metrics = collector.get_model_range("gpt-4", start, end);
         assert_eq!(model_metrics.len(), 1);
         assert_eq!(model_metrics[0].requests, 1);
+    }
+
+    /// The on_metrics_recorded callback is the single choke point feeding the
+    /// tray activity graph — every recorded request must report its token
+    /// count through it, regardless of which path (server route, HTTPS
+    /// inspection proxy) recorded the metrics.
+    #[test]
+    fn test_on_metrics_recorded_receives_token_count() {
+        let (collector, _dir) = create_test_collector();
+
+        let received = Arc::new(parking_lot::Mutex::new(Vec::<u64>::new()));
+        let received_clone = received.clone();
+        collector.set_on_metrics_recorded(move |tokens| {
+            received_clone.lock().push(tokens);
+        });
+
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 100,
+            output_tokens: 200,
+            cost_usd: 0.05,
+            latency_ms: 1000,
+            strategy_id: "default",
+        });
+
+        // Feature events carry no request tokens — callback fires with 0.
+        collector.record_feature_event("feature_json_repair", 0, 0.0);
+
+        assert_eq!(
+            *received.lock(),
+            vec![300, 0],
+            "record_success must report input+output tokens; feature events report 0"
+        );
     }
 
     #[test]

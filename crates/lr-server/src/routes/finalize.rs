@@ -3,8 +3,9 @@
 //! `/v1/completions`).
 //!
 //! Every endpoint needs the same bookkeeping after a provider call
-//! completes: cost computation, metrics recording, tray graph token
-//! push, access log write, `metrics-updated` tray event,
+//! completes: cost computation, metrics recording (which also feeds
+//! the tray graph via the metrics collector's `on_metrics_recorded`
+//! callback), access log write, `metrics-updated` tray event,
 //! `update_llm_call_routing` / `complete_llm_call` /
 //! `update_llm_call_response_body` monitor events, and
 //! `generation_tracker.record(...)`. This module centralizes those
@@ -217,10 +218,9 @@ pub(crate) async fn finalize_metrics_and_monitor(
             latency_ms,
         });
 
-    if let Some(ref tray_graph) = *state.tray_graph_manager.read() {
-        tray_graph
-            .record_tokens((incremental_prompt_tokens + response.usage.completion_tokens) as u64);
-    }
+    // Tray graph tokens flow through the metrics collector's
+    // on_metrics_recorded callback (fed by record_success above) — no
+    // direct record_tokens call here or it would double-count.
 
     if let Err(e) = state.access_logger.log_success(
         &auth.api_key_id,

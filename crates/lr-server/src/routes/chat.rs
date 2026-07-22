@@ -903,7 +903,10 @@ async fn handle_mcp_via_llm(
         .generation_tracker
         .record(generation_details.id.clone(), generation_details);
 
-    // Record tokens for tray graph
+    // Record tokens for tray graph directly: the MCP-via-LLM non-streaming
+    // path never calls metrics_collector.record_success, so the
+    // on_metrics_recorded choke point (which feeds the tray for every other
+    // path) doesn't fire here.
     if let Some(recorder) = state.tray_graph_manager.read().as_ref() {
         recorder.record_tokens(response.usage.total_tokens as u64);
     }
