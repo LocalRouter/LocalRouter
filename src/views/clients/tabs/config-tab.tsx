@@ -3,7 +3,6 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { HowToConnect } from "@/components/client/HowToConnect"
-import { ProxyFirewallSettings } from "@/components/client/ProxyFirewallSettings"
 import type { LlmMode, McpMode } from "@/types/tauri-commands"
 
 interface Client {
@@ -76,8 +75,6 @@ export function ClientConfigTab({ client }: ConfigTabProps) {
         mcpMode={client.mcp_mode}
         syncConfig={client.sync_config}
       />
-
-      {client.llm_mode === "proxy" && <ProxyFirewallSettings clientId={client.id} />}
     </div>
   )
 }

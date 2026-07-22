@@ -3,7 +3,7 @@ import {
   Info, PlayCircle, Settings, LayoutDashboard, Plug, MessageSquare,
   Cable, Blocks, Sparkles, Palette, HeartPulse,
   ScrollText, Download, FileCheck, Server, Cpu, GitCompare,
-  Search, Bot, History, Wand2, Store, Users, Coins, Brain,
+  Search, Bot, History, Wand2, Store, Users, Coins, Brain, ShieldCheck,
 } from "lucide-react"
 import { FEATURES } from "./features"
 
@@ -42,4 +42,5 @@ export const TAB_ICONS = {
   client: Users,
   freeTier: Coins,
   memory: Brain,
+  firewall: ShieldCheck,
 } as const satisfies Record<string, LucideIcon>

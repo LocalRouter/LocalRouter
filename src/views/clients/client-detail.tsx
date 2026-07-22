@@ -12,6 +12,7 @@ import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientContextTab } from "./tabs/context-tab"
 import { ClientLlmOptimizeTab } from "./tabs/llm-optimize-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
+import { ProxyFirewallSettings } from "@/components/client/ProxyFirewallSettings"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
@@ -73,6 +74,9 @@ export function ClientDetail({
   // gateway — the passive proxy can't construct or rewrite requests.
   const showModelsTab = llmMode === "gateway"
   const showMcpTab = mcpMode !== "off"
+  // HTTPS-proxy clients configure requests through the firewall instead of the
+  // gateway's model/optimize tabs.
+  const showFirewall = llmMode === "proxy"
   const showTryItOutLlm = llmMode === "gateway"
   // Direct MCP try-it-out only for the MCP gateway (not via-LLM/off).
   const showTryItOutMcp = mcpMode === "gateway"
@@ -117,7 +121,8 @@ export function ClientDetail({
     if (activeTab === "mcp" && !showMcpTab) setActiveTab("info")
     if (activeTab === "try" && !showTryItOut) setActiveTab("info")
     if (activeTab === "optimize" && !showOptimize) setActiveTab("info")
-  }, [clientMode, activeTab, showModelsTab, showMcpTab, showTryItOut, showOptimize])
+    if (activeTab === "firewall" && !showFirewall) setActiveTab("info")
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showTryItOut, showOptimize, showFirewall])
 
   const loadClient = async () => {
     try {
@@ -169,12 +174,13 @@ export function ClientDetail({
               {showTryItOut && <TabsTrigger value="try"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
             </div>
 
-            {(showModelsTab || showMcpTab) && (
+            {(showModelsTab || showMcpTab || showFirewall) && (
               <div>
                 <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50 pl-2 mb-0.5">Configure</div>
                 <div className="inline-flex h-9 items-center rounded-lg bg-muted p-1">
                   {showModelsTab && <TabsTrigger value="models"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM</TabsTrigger>}
                   {showMcpTab && <TabsTrigger value="mcp"><TAB_ICONS.mcp className={TAB_ICON_CLASS} />MCP</TabsTrigger>}
+                  {showFirewall && <TabsTrigger value="firewall"><TAB_ICONS.firewall className={TAB_ICON_CLASS} />Firewall</TabsTrigger>}
                 </div>
               </div>
             )}
@@ -249,6 +255,12 @@ export function ClientDetail({
           {showMcpTab && (
             <TabsContent value="mcp">
               <ClientMcpTab client={client} onUpdate={loadClient} />
+            </TabsContent>
+          )}
+
+          {showFirewall && (
+            <TabsContent value="firewall">
+              <ProxyFirewallSettings clientId={client.id} />
             </TabsContent>
           )}
 
