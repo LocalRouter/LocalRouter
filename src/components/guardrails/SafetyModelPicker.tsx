@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { Cloud, Download, CircleAlert, Loader2 } from "lucide-react"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
+import { RefreshModelsButton } from "@/components/shared/RefreshModelsButton"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
 import {
@@ -257,6 +258,7 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
           </SelectContent>
         </Select>
       </div>
+      <RefreshModelsButton variant="outline" className="h-9 shrink-0" />
       <Button
         size="sm"
         className="h-9"

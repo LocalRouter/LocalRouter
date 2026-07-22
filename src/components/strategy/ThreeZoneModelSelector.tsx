@@ -28,8 +28,9 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { GripVertical, Zap, Ban, Search, ChevronRight, ChevronDown, ArrowUpDown, Brain, Eye, Wrench, Layers, Gift, SlidersHorizontal } from "lucide-react"
+import { GripVertical, Zap, Ban, Check, Search, ChevronRight, ChevronDown, ArrowUpDown, Brain, Eye, Wrench, Layers, Gift, SlidersHorizontal } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Switch } from "@/components/ui/Toggle"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
 import type { FreeTierKind } from "@/types/tauri-commands"
 import type { Model, ModelPricingInfo } from "./DragThresholdModelSelector"
@@ -88,6 +89,12 @@ interface ThreeZoneModelSelectorProps {
   freeTierKinds?: Record<string, FreeTierKind>
   modelCapabilities?: Record<string, string[]>
   modelContextWindows?: Record<string, number>
+  /** When true, every model (including future ones) is allowed; the list only sets auto-router priority */
+  allowAll?: boolean
+  onAllowAllChange?: (allowed: boolean) => void
+  /** Providers whose entire model list (including future models) is allowed */
+  allowedProviders?: string[]
+  onProviderAllowChange?: (provider: string, allowed: boolean) => void
 }
 
 // Sortable row component
@@ -102,6 +109,7 @@ function SortableRow({
   pricing,
   freeTierKind,
   showProvider = true,
+  accessible = false,
 }: {
   id: string
   provider: string
@@ -113,6 +121,8 @@ function SortableRow({
   pricing?: ModelPricingInfo
   freeTierKind?: FreeTierKind
   showProvider?: boolean
+  /** Model is not prioritized but still accessible via an allow-all / provider-wide rule */
+  accessible?: boolean
 }) {
   const {
     attributes,
@@ -184,6 +194,8 @@ function SortableRow({
           <span className="text-xs font-mono font-medium text-primary">{index + 1}</span>
         ) : zone === 'weak' ? (
           <span className="text-xs font-mono font-medium text-purple-500">{index + 1}</span>
+        ) : accessible ? (
+          <Check className="h-3.5 w-3.5 text-emerald-500/70 mx-auto" />
         ) : (
           <Ban className="h-3.5 w-3.5 text-muted-foreground/50 mx-auto" />
         )}
@@ -389,6 +401,10 @@ export function ThreeZoneModelSelector({
   freeTierKinds,
   modelCapabilities,
   modelContextWindows,
+  allowAll = false,
+  onAllowAllChange,
+  allowedProviders,
+  onProviderAllowChange,
 }: ThreeZoneModelSelectorProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overZone, setOverZone] = useState<string | null>(null)
@@ -409,6 +425,17 @@ export function ThreeZoneModelSelector({
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     })
+  )
+
+  const allowedProviderSet = useMemo(
+    () => new Set(allowedProviders ?? []),
+    [allowedProviders]
+  )
+
+  /** Model in the bottom zone is still accessible via allow-all or a provider-wide rule */
+  const isAccessible = useCallback(
+    (provider: string) => allowAll || allowedProviderSet.has(provider),
+    [allowAll, allowedProviderSet]
   )
 
   // Create sets of enabled and weak models for quick lookup
@@ -820,6 +847,26 @@ export function ThreeZoneModelSelector({
       >
         {/* Main container */}
         <div className="border rounded-lg overflow-hidden">
+          {/* Allow-all bar */}
+          {onAllowAllChange && (
+            <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b bg-emerald-500/5">
+              <div>
+                <span className="text-sm font-medium">Allow all models</span>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {allowAll
+                    ? "Every model is available to this client, including models added in the future. The list below only sets auto-router priority."
+                    : "Only the models enabled below (or whole providers marked as allowed) are available to this client."}
+                </p>
+              </div>
+              <Switch
+                checked={allowAll}
+                onCheckedChange={onAllowAllChange}
+                disabled={disabled}
+                aria-label="Allow all models"
+              />
+            </div>
+          )}
+
           {/* Enabled section header */}
           <div className="bg-primary/5 px-4 py-2 border-b flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -909,11 +956,17 @@ export function ThreeZoneModelSelector({
           {/* Disabled section header */}
           <div className="bg-muted/30 px-4 py-2 border-b flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Ban className="h-4 w-4 text-muted-foreground/70" />
-              <span className="text-xs font-medium text-muted-foreground">Disabled Models</span>
+              {allowAll ? (
+                <Check className="h-4 w-4 text-emerald-500/70" />
+              ) : (
+                <Ban className="h-4 w-4 text-muted-foreground/70" />
+              )}
+              <span className="text-xs font-medium text-muted-foreground">
+                {allowAll ? "Not Prioritized (still allowed)" : "Disabled Models"}
+              </span>
             </div>
             <span className="text-xs text-muted-foreground/70">
-              {disabledItems.length} model{disabledItems.length !== 1 ? "s" : ""} &bull; Click to enable
+              {disabledItems.length} model{disabledItems.length !== 1 ? "s" : ""} &bull; Click to {allowAll ? "prioritize" : "enable"}
             </span>
           </div>
 
@@ -1080,6 +1133,7 @@ export function ThreeZoneModelSelector({
                     onToggle={() => handleToggle(item.provider, item.modelId)}
                     pricing={modelPricing?.[`${item.provider}/${item.modelId}`]}
                     freeTierKind={freeTierKinds?.[item.provider]}
+                    accessible={isAccessible(item.provider)}
                   />
                 ))
               ) : (
@@ -1095,22 +1149,55 @@ export function ThreeZoneModelSelector({
                   const providerItems = groups[provider]
                   if (providerItems.length === 0) return null
                   const collapsed = isProviderCollapsed(provider)
+                  const providerAllowed = allowedProviderSet.has(provider)
 
                   return (
                     <div key={provider}>
-                      <button
-                        type="button"
-                        onClick={() => toggleProviderCollapse(provider)}
-                        className="flex items-center gap-2 w-full px-3 py-1.5 bg-muted/20 border-b text-left hover:bg-muted/40 transition-colors"
-                      >
-                        {collapsed ? (
-                          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
-                        ) : (
-                          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                      <div
+                        className={cn(
+                          "flex items-center gap-2 w-full border-b transition-colors",
+                          providerAllowed ? "bg-emerald-500/10" : "bg-muted/20"
                         )}
-                        <span className="text-xs font-medium text-muted-foreground">{provider}</span>
-                        <span className="text-xs text-muted-foreground/60 ml-auto">{providerItems.length}</span>
-                      </button>
+                      >
+                        <button
+                          type="button"
+                          onClick={() => toggleProviderCollapse(provider)}
+                          className="flex items-center gap-2 flex-1 min-w-0 px-3 py-1.5 text-left hover:bg-muted/40 transition-colors"
+                        >
+                          {collapsed ? (
+                            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                          ) : (
+                            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                          )}
+                          <span className="text-xs font-medium text-muted-foreground">{provider}</span>
+                          {providerAllowed && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-medium shrink-0">
+                              all allowed
+                            </span>
+                          )}
+                          <span className="text-xs text-muted-foreground/60 ml-auto">{providerItems.length}</span>
+                        </button>
+                        {onProviderAllowChange && !allowAll && (
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => onProviderAllowChange(provider, !providerAllowed)}
+                            title={providerAllowed
+                              ? `Stop allowing all ${provider} models`
+                              : `Allow all ${provider} models, including future ones`}
+                            className={cn(
+                              "flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 mr-2 rounded-full border transition-colors shrink-0",
+                              providerAllowed
+                                ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                                : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
+                              disabled && "opacity-60 cursor-default"
+                            )}
+                          >
+                            <Check className="h-3 w-3" />
+                            Allow all
+                          </button>
+                        )}
+                      </div>
                       {!collapsed &&
                         providerItems.map((item, index) => (
                           <SortableRow
@@ -1125,6 +1212,7 @@ export function ThreeZoneModelSelector({
                             pricing={modelPricing?.[`${item.provider}/${item.modelId}`]}
                             freeTierKind={freeTierKinds?.[item.provider]}
                             showProvider={false}
+                            accessible={isAccessible(item.provider)}
                           />
                         ))}
                     </div>
@@ -1155,8 +1243,9 @@ export function ThreeZoneModelSelector({
 
       {/* Help text */}
       <p className="text-xs text-muted-foreground">
-        Drag models to reorder priorities. Drop below threshold to disable.
-        Click any row to toggle.
+        {allowAll
+          ? "All models are allowed. Drag models to set auto-router priority; click any row to toggle."
+          : "Drag models to reorder priorities. Drop below threshold to disable. Click any row to toggle."}
       </p>
     </div>
   )

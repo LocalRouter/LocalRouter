@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/Select"
 import { cn } from "@/lib/utils"
 import { ModelPricingBadge, FREE_TIER_LABELS } from "@/components/shared/model-pricing-badge"
+import { RefreshModelsButton } from "@/components/shared/RefreshModelsButton"
 import type { ProviderFreeTierStatus } from "@/types/tauri-commands"
 
 interface Model {
@@ -186,11 +187,14 @@ export function ModelsPanel({
       <ResizablePanel defaultSize={21} minSize={15}>
         <div className="flex flex-col h-full">
           <div className="p-4 border-b space-y-2">
-            <Input
-              placeholder="Search models..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+            <div className="flex items-center gap-2">
+              <Input
+                placeholder="Search models..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <RefreshModelsButton variant="outline" className="shrink-0" />
+            </div>
             <Select value={filterCapability} onValueChange={setFilterCapability}>
               <SelectTrigger>
                 <SelectValue placeholder="Filter by capability" />

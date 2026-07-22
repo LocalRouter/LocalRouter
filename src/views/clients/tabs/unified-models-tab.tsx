@@ -21,6 +21,7 @@ import { toast } from "sonner"
 import { Bot, Brain, Coins, Download, Gauge, Loader2, MessageSquareWarning, ShieldCheck } from "lucide-react"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
+import { RefreshModelsButton } from "@/components/shared/RefreshModelsButton"
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from "@/components/ui/Card"
@@ -138,34 +139,24 @@ const ensureAutoConfig = (s: StrategyConfig): StrategyConfig => {
     }
   }
 
-  // Sync model_permissions with auto_config when they're out of sync.
-  // This handles pre-merge strategies where global=allow but
-  // prioritized_models has specific models selected.
-  if (result.auto_config && result.model_permissions.global === 'allow'
-      && Object.keys(result.model_permissions.providers).length === 0
-      && Object.keys(result.model_permissions.models).length === 0) {
-    const strong = result.auto_config.prioritized_models || []
-    const weak = result.auto_config.routellm_config?.weak_models || []
-    const allEnabled = [...strong, ...weak]
-    if (allEnabled.length > 0) {
-      // Prioritized models exist but model_permissions says "all" — sync them
-      const models: Record<string, PermissionState> = {}
-      for (const [provider, modelId] of allEnabled) {
-        models[`${provider}__${modelId}`] = 'allow'
-      }
-      result = {
-        ...result,
-        model_permissions: {
-          global: 'off' as PermissionState,
-          providers: {},
-          models,
-        },
-      }
-    }
-  }
-
   return result
 }
+
+/** Per-model 'allow' entries for every enabled (strong + weak) model */
+const buildModelEntries = (
+  strong: [string, string][],
+  weak: [string, string][]
+): Record<string, PermissionState> => {
+  const models: Record<string, PermissionState> = {}
+  for (const [provider, modelId] of [...strong, ...weak]) {
+    models[`${provider}__${modelId}`] = 'allow'
+  }
+  return models
+}
+
+// Note: global='allow' with prioritized_models set is a valid state — it means
+// "all models allowed; the prioritized list only orders the auto-router".
+// Request-time enforcement treats it the same way, so no normalization happens.
 
 // ---------------------------------------------------------------------------
 // Component
@@ -251,31 +242,7 @@ export function UnifiedModelsTab({
         strategyId: client.strategy_id,
       })
       if (loadReqIdRef.current !== reqId) return
-      const normalized = ensureAutoConfig(strategyData)
-      setStrategy(normalized)
-
-      // If model_permissions was out of sync (e.g., global was allow but
-      // prioritized_models had specific models), persist the corrected state
-      const wasGlobalAllow = strategyData.model_permissions?.global === 'allow'
-        && Object.keys(strategyData.model_permissions?.models || {}).length === 0
-      const isNowSpecific = normalized.model_permissions?.global === 'off'
-        && Object.keys(normalized.model_permissions?.models || {}).length > 0
-      if (wasGlobalAllow && isNowSpecific) {
-        try {
-          await invoke("update_strategy", {
-            strategyId: normalized.id,
-            name: null,
-            allowedModels: null,
-            modelPermissions: normalized.model_permissions,
-            autoConfig: null,
-            rateLimits: null,
-            freeTierOnly: null,
-            freeTierFallback: null,
-          })
-        } catch (syncError) {
-          console.error("Failed to sync model_permissions:", syncError)
-        }
-      }
+      setStrategy(ensureAutoConfig(strategyData))
     } catch (error) {
       if (loadReqIdRef.current !== reqId) return
       console.error("Failed to load strategy:", error)
@@ -424,8 +391,15 @@ export function UnifiedModelsTab({
   }, [strategy, onUpdate])
 
   // -------------------------------------------------------------------------
-  // Model change handler — keeps allowed_models + auto_config in sync
+  // Model change handlers — keep model_permissions + auto_config in sync
   // -------------------------------------------------------------------------
+
+  // Access level derived from model_permissions: "all", whole providers, or
+  // specific models. The prioritized list always orders the auto-router.
+  const allowAll = strategy?.model_permissions?.global === 'allow'
+  const allowedProviders = Object.entries(strategy?.model_permissions?.providers ?? {})
+    .filter(([, state]) => state === 'allow')
+    .map(([provider]) => provider)
 
   const handleModelsChange = useCallback((
     strong: [string, string][],
@@ -433,26 +407,69 @@ export function UnifiedModelsTab({
   ) => {
     if (!strategy || !strategy.auto_config) return
 
-    const allEnabled = [...strong, ...weak]
+    const autoConfigUpdate = {
+      ...strategy.auto_config,
+      prioritized_models: strong,
+      routellm_config: strategy.auto_config.routellm_config
+        ? { ...strategy.auto_config.routellm_config, weak_models: weak }
+        : null,
+    }
 
-    // Build model_permissions from enabled models
-    const models: Record<string, PermissionState> = {}
-    for (const [provider, modelId] of allEnabled) {
-      models[`${provider}__${modelId}`] = 'allow'
+    if (strategy.model_permissions.global === 'allow') {
+      // Allow-all mode: permissions stay untouched, only priority order changes
+      updateStrategy({ auto_config: autoConfigUpdate })
+      return
     }
 
     updateStrategy({
       model_permissions: {
         global: 'off' as PermissionState,
-        providers: {},
-        models,
+        providers: strategy.model_permissions.providers,
+        models: buildModelEntries(strong, weak),
       },
-      auto_config: {
-        ...strategy.auto_config,
-        prioritized_models: strong,
-        routellm_config: strategy.auto_config.routellm_config
-          ? { ...strategy.auto_config.routellm_config, weak_models: weak }
-          : null,
+      auto_config: autoConfigUpdate,
+    })
+  }, [strategy, updateStrategy])
+
+  const handleAllowAllChange = useCallback((allowed: boolean) => {
+    if (!strategy) return
+    if (allowed) {
+      updateStrategy({
+        model_permissions: {
+          global: 'allow' as PermissionState,
+          providers: {},
+          models: {},
+        },
+      })
+    } else {
+      // Back to specific selection: rebuild from the current priority lists
+      const strong = strategy.auto_config?.prioritized_models ?? []
+      const weak = strategy.auto_config?.routellm_config?.weak_models ?? []
+      updateStrategy({
+        model_permissions: {
+          global: 'off' as PermissionState,
+          providers: {},
+          models: buildModelEntries(strong, weak),
+        },
+      })
+    }
+  }, [strategy, updateStrategy])
+
+  const handleProviderAllowChange = useCallback((provider: string, allowed: boolean) => {
+    if (!strategy) return
+    const providers = { ...strategy.model_permissions.providers }
+    if (allowed) {
+      providers[provider] = 'allow' as PermissionState
+    } else {
+      delete providers[provider]
+    }
+    const strong = strategy.auto_config?.prioritized_models ?? []
+    const weak = strategy.auto_config?.routellm_config?.weak_models ?? []
+    updateStrategy({
+      model_permissions: {
+        global: 'off' as PermissionState,
+        providers,
+        models: buildModelEntries(strong, weak),
       },
     })
   }, [strategy, updateStrategy])
@@ -677,7 +694,7 @@ export function UnifiedModelsTab({
             <div className="p-2 rounded-lg bg-primary/10">
               <Bot className="h-4 w-4 text-primary" />
             </div>
-            <div>
+            <div className="flex-1 min-w-0">
               <CardTitle className="text-base">Model Selection</CardTitle>
               <CardDescription>
                 Select and prioritize models. Enabled models appear in the API model list and are used for auto-routing in priority order.
@@ -690,6 +707,7 @@ export function UnifiedModelsTab({
                 </div>
               )}
             </div>
+            <RefreshModelsButton showLabel variant="outline" />
           </div>
         </CardHeader>
         <CardContent>
@@ -706,6 +724,10 @@ export function UnifiedModelsTab({
             freeTierKinds={freeTierKinds}
             modelCapabilities={modelCapabilities}
             modelContextWindows={modelContextWindows}
+            allowAll={allowAll}
+            onAllowAllChange={handleAllowAllChange}
+            allowedProviders={allowedProviders}
+            onProviderAllowChange={handleProviderAllowChange}
           />
         </CardContent>
       </Card>

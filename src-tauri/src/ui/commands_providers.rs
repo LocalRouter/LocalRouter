@@ -641,6 +641,10 @@ pub async fn set_provider_enabled(
         .set_provider_enabled(&instance_name, enabled)
         .map_err(|e| e.to_string())?;
 
+    // Drop the cached model list so re-enabling fetches a fresh one instead of
+    // serving a stale (up to TTL-old) snapshot.
+    registry.invalidate_provider_cache(&instance_name);
+
     // Update in config file
     config_manager
         .update(|cfg| {
