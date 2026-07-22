@@ -3155,6 +3155,46 @@ pub async fn get_client_proxy_setup(
     }
 }
 
+/// Get a client's HTTPS-proxy firewall policy.
+#[tauri::command]
+pub async fn get_client_proxy_policy(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<lr_config::LlmProxyPolicy, String> {
+    config_manager
+        .get()
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .map(|c| c.llm_proxy.clone())
+        .ok_or_else(|| format!("Client not found: {client_id}"))
+}
+
+/// Update a client's HTTPS-proxy firewall policy.
+#[tauri::command]
+pub async fn set_client_proxy_policy(
+    client_id: String,
+    policy: lr_config::LlmProxyPolicy,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(c) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                c.llm_proxy = policy.clone();
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    if !found {
+        return Err(format!("Client not found: {client_id}"));
+    }
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    let _ = app.emit("clients-changed", ());
+    Ok(())
+}
+
 /// Answer a pending HTTPS-proxy firewall approval ("ask") from the UI.
 #[tauri::command]
 pub async fn respond_proxy_firewall(

@@ -315,6 +315,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     backup_files: [],
     terminal_command: null,
   }),
+  'get_client_proxy_policy': () => ({
+    default_action: 'allow',
+    rules: [],
+    model_rewrites: [],
+    enforce_model_permissions: false,
+  }),
+  'set_client_proxy_policy': () => null,
+  'respond_proxy_firewall': () => null,
   'set_client_template': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {

@@ -24,6 +24,7 @@ import { MarketplaceView } from './views/marketplace'
 import { OptimizeOverviewView } from './views/optimize-overview'
 import { MonitorView } from './views/monitor'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
+import { ProxyFirewallApproval } from './components/proxy/ProxyFirewallApproval'
 
 const DebugView = import.meta.env.DEV
   ? lazy(() => import('./views/debug').then(m => ({ default: m.DebugView })))
@@ -394,6 +395,8 @@ function App() {
         onComplete={handleWizardComplete}
         showWelcome={true}
       />
+
+      <ProxyFirewallApproval />
     </>
   )
 }

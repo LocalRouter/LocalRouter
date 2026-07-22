@@ -1710,6 +1710,68 @@ export interface GetClientProxySetupParams {
   clientId: string
 }
 
+/**
+ * Payload of the `proxy-firewall-ask` event: a proxied request awaiting the
+ * user's allow/deny decision.
+ * Rust: src-tauri/src/launcher/proxy.rs - FirewallApprovalRequest
+ */
+export interface FirewallApprovalRequest {
+  request_id: string
+  client_id: string
+  client_name: string
+  model: string | null
+  has_tools: boolean
+  message_count: number
+  preview: string
+}
+
+/** Params for respond_proxy_firewall */
+export interface RespondProxyFirewallParams {
+  requestId: string
+  allow: boolean
+}
+
+/** Firewall action for a rule or the default. Rust: lr-config FirewallAction */
+export type FirewallAction = 'allow' | 'ask' | 'deny'
+
+/** Rust: lr-config FirewallRuleMatch */
+export interface FirewallRuleMatch {
+  model_contains?: string | null
+  content_contains?: string | null
+  has_tools?: boolean | null
+}
+
+/** Rust: lr-config FirewallRule */
+export interface FirewallRule {
+  name: string
+  matcher: FirewallRuleMatch
+  action: FirewallAction
+  enabled: boolean
+}
+
+/** Rust: lr-config ModelRewrite */
+export interface ModelRewrite {
+  from: string
+  to: string
+}
+
+/** Rust: lr-config LlmProxyPolicy */
+export interface LlmProxyPolicy {
+  default_action: FirewallAction
+  rules: FirewallRule[]
+  model_rewrites: ModelRewrite[]
+  enforce_model_permissions: boolean
+}
+
+/** Params for get_client_proxy_policy / set_client_proxy_policy */
+export interface GetClientProxyPolicyParams {
+  clientId: string
+}
+export interface SetClientProxyPolicyParams {
+  clientId: string
+  policy: LlmProxyPolicy
+}
+
 /** Params for set_client_llm_mode */
 export interface SetClientLlmModeParams {
   clientId: string
