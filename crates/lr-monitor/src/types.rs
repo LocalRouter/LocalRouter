@@ -248,6 +248,15 @@ pub enum MonitorEventData {
         #[serde(skip_serializing_if = "Option::is_none")]
         response_body: Option<serde_json::Value>,
 
+        /// Raw (unparsed) request bytes as text, capped. Populated for proxied
+        /// calls so the exact wire payload is inspectable. May be truncated.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_request: Option<String>,
+        /// Raw (unparsed) response bytes as text, capped. For streamed responses
+        /// this is the raw SSE event stream (captures thinking/tool_use deltas).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_response: Option<String>,
+
         // Error field (filled only on error)
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,

@@ -329,6 +329,8 @@ async fn streaming_loop(
                     request_body: req_json,
                     source: lr_monitor::LlmCallSource::Api,
                     protocol: lr_monitor::LlmProtocol::Openai,
+                    raw_request: None,
+                    raw_response: None,
                     transformed_body: None,
                     transformations_applied: None,
                     provider: None,

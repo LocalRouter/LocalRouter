@@ -2528,6 +2528,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_client_llm_mode,
             ui::commands::set_client_mcp_mode,
             ui::commands::get_client_proxy_setup,
+            ui::commands::configure_client_proxy,
             ui::commands::set_client_template,
             ui::commands::get_client_guardrails_config,
             ui::commands::update_client_guardrails_config,

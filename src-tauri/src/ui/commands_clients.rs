@@ -3154,6 +3154,72 @@ pub async fn get_client_proxy_setup(
     }
 }
 
+/// Auto-configure a client's tool for the inspection proxy by writing its
+/// settings file. Currently supports Claude Code (`~/.claude/settings.json`).
+#[tauri::command]
+pub async fn configure_client_proxy(
+    client_id: String,
+    app: tauri::AppHandle,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<LaunchResult, String> {
+    use crate::launcher::backup;
+    use crate::launcher::integrations::claude_code;
+    use tauri::Manager;
+
+    let template_id = config_manager
+        .get()
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .and_then(|c| c.template_id.clone());
+    if template_id.as_deref() != Some("claude-code") {
+        return Err(
+            "Automatic proxy setup is only available for Claude Code. Use the manual instructions."
+                .to_string(),
+        );
+    }
+
+    let secret = client_manager
+        .get_secret(&client_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Client secret not found".to_string())?;
+
+    let proxy = app
+        .try_state::<Arc<crate::launcher::proxy::ProxyService>>()
+        .ok_or_else(|| "Proxy is not available".to_string())?;
+    let ca_cert_path = proxy.ca_cert_path().display().to_string();
+    let proxy_url = proxy
+        .client_proxy_url(&client_id, &secret)
+        .ok_or_else(|| "Proxy is not running".to_string())?;
+
+    // Merge the proxy env block into the existing settings.json (preserving
+    // any other settings the user has), writing atomically with a backup.
+    let path = claude_code::settings_json_path();
+    let existing: serde_json::Value = if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let merged = claude_code::merge_proxy_settings(existing, &proxy_url, &ca_cert_path);
+    let data = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
+    let backup_path = backup::write_with_backup(&path, data.as_bytes())?;
+
+    Ok(LaunchResult {
+        success: true,
+        message: format!("Configured the proxy in {}", path.display()),
+        modified_files: vec![path.to_string_lossy().to_string()],
+        backup_files: backup_path
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
+        terminal_command: None,
+    })
+}
+
 /// Set the template ID for a client
 #[tauri::command]
 pub async fn set_client_template(

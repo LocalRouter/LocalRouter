@@ -17,9 +17,6 @@ fn mcp_config_path() -> std::path::PathBuf {
 
 /// Path to Claude Code's `settings.json` (per the network-config docs), where
 /// the `env` block for the inspection proxy lives.
-// TODO(https-proxy): used by the automated proxy sync writer (follow-up); the
-// manual one-off command path is wired today.
-#[allow(dead_code)]
 pub fn settings_json_path() -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
@@ -51,8 +48,6 @@ pub fn proxy_settings_json(proxy_url: &str, ca_cert_path: &str) -> serde_json::V
 
 /// Merge the proxy `env` keys into an existing (or empty) `settings.json` value,
 /// preserving any other settings/env the user already has.
-// TODO(https-proxy): used by the automated proxy sync writer (follow-up).
-#[allow(dead_code)]
 pub fn merge_proxy_settings(
     mut existing: serde_json::Value,
     proxy_url: &str,

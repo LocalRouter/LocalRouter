@@ -308,6 +308,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       settings_json: JSON.stringify({ env: { HTTPS_PROXY: url, NODE_EXTRA_CA_CERTS: ca } }, null, 2),
     }
   },
+  'configure_client_proxy': () => ({
+    success: true,
+    message: 'Configured the proxy in ~/.claude/settings.json (demo)',
+    modified_files: ['~/.claude/settings.json'],
+    backup_files: [],
+    terminal_command: null,
+  }),
   'set_client_template': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {

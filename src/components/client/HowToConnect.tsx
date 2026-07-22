@@ -689,6 +689,14 @@ function ProxyLlmSetup({
 }) {
   const [info, setInfo] = useState<ProxySetupInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [configuring, setConfiguring] = useState(false)
+  const [autoResult, setAutoResult] = useState<LaunchResult | null>(null)
+
+  const isClaudeCode = template?.id === "claude-code"
+  const [innerTab, setInnerTab] = useState(isClaudeCode ? "auto" : "temporary")
+  useEffect(() => {
+    setInnerTab(isClaudeCode ? "auto" : "temporary")
+  }, [isClaudeCode])
 
   useEffect(() => {
     let cancelled = false
@@ -702,14 +710,31 @@ function ProxyLlmSetup({
     return () => { cancelled = true; l.cleanup() }
   }, [clientUuid])
 
+  const handleAutoConfigure = async () => {
+    try {
+      setConfiguring(true)
+      setAutoResult(null)
+      const res = await invoke<LaunchResult>("configure_client_proxy", { clientId: clientUuid })
+      setAutoResult(res)
+      if (res.success) toast.success("Proxy configured")
+      else toast.error(res.message)
+    } catch (e) {
+      toast.error(`Failed: ${e}`)
+    } finally {
+      setConfiguring(false)
+    }
+  }
+
   if (error) return <p className="text-sm text-destructive">Failed to load proxy setup: {error}</p>
   if (!info) return <p className="text-sm text-muted-foreground">Loading proxy setup…</p>
 
   const binary = template?.binaryNames?.[0]
-  const isClaudeCode = template?.id === "claude-code"
   const oneoff = info.proxy_url
     ? `HTTPS_PROXY=${info.proxy_url} NODE_EXTRA_CA_CERTS=${info.ca_cert_path} ${binary ?? "<your-tool>"}`
     : null
+
+  const innerTabCount = 2 + (isClaudeCode ? 1 : 0)
+  const innerGridCols = innerTabCount === 3 ? "grid-cols-3" : "grid-cols-2"
 
   return (
     <div className="rounded-lg border p-4 space-y-4">
@@ -728,41 +753,93 @@ function ProxyLlmSetup({
         <p className="text-xs text-destructive">The proxy listener is not running.</p>
       )}
 
-      {oneoff && (
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">
-            Run {isClaudeCode ? "Claude Code" : "your tool"} once through the proxy
-          </Label>
-          <CopyableCode value={oneoff} />
-        </div>
-      )}
+      <Tabs value={innerTab} onValueChange={setInnerTab}>
+        <TabsList className={`mb-4 grid w-full ${innerGridCols}`}>
+          {isClaudeCode && (
+            <TabsTrigger value="auto" className="text-xs gap-1">
+              <RefreshCcw className="h-3 w-3" />
+              Auto
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="temporary" className="text-xs gap-1">
+            <Rocket className="h-3 w-3" />
+            Quick Start
+          </TabsTrigger>
+          <TabsTrigger value="manual" className="text-xs gap-1">
+            <BookOpen className="h-3 w-3" />
+            Manual
+          </TabsTrigger>
+        </TabsList>
 
-      <div className="space-y-3">
-        {info.proxy_url && (
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">HTTPS_PROXY</Label>
-            <CopyableCode value={info.proxy_url} />
-          </div>
+        {/* Auto: write the settings file for the user (Claude Code only) */}
+        {isClaudeCode && (
+          <TabsContent value="auto" className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              LocalRouter writes the proxy configuration to{" "}
+              <code className="bg-muted px-1 py-0.5 rounded">~/.claude/settings.json</code>{" "}
+              (<code>HTTPS_PROXY</code> + <code>NODE_EXTRA_CA_CERTS</code>), preserving your other
+              settings. This also covers background agents.
+            </p>
+            <Button size="sm" onClick={handleAutoConfigure} disabled={configuring || !info.running}>
+              {configuring ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Settings2 className="h-3.5 w-3.5 mr-2" />}
+              Configure Claude Code
+            </Button>
+            {autoResult && (
+              <div className="rounded-md border p-2 text-xs space-y-1">
+                <div className="flex items-center gap-1.5">
+                  {autoResult.success
+                    ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+                    : <XCircle className="h-3.5 w-3.5 text-destructive" />}
+                  <span>{autoResult.message}</span>
+                </div>
+                {autoResult.backup_files.length > 0 && (
+                  <p className="text-muted-foreground">Backed up: {autoResult.backup_files.join(", ")}</p>
+                )}
+              </div>
+            )}
+          </TabsContent>
         )}
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">NODE_EXTRA_CA_CERTS (root CA to trust)</Label>
-          <CopyableCode value={info.ca_cert_path} />
-        </div>
-      </div>
 
-      {isClaudeCode && info.settings_json && (
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">
-            Permanent setup — merge into <code>~/.claude/settings.json</code>
-          </Label>
-          <CopyableCode value={info.settings_json} />
-          <p className="text-[11px] text-muted-foreground">
-            The one-off command above covers an interactive session. Background agents
-            (<code>claude --bg</code>, <code>claude agents</code>) only pick these up from
-            settings.json, so use this for persistent setups.
+        {/* Quick Start: one-off CLI command */}
+        <TabsContent value="temporary" className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Run {isClaudeCode ? "Claude Code" : "your tool"} once through the proxy — no files changed:
           </p>
-        </div>
-      )}
+          {oneoff ? (
+            <CopyableCode value={oneoff} />
+          ) : (
+            <p className="text-xs text-destructive">Proxy not running.</p>
+          )}
+          {isClaudeCode && (
+            <p className="text-[11px] text-muted-foreground">
+              This covers an interactive session. For background agents
+              (<code>claude --bg</code>), use Auto or Manual so it lands in settings.json.
+            </p>
+          )}
+        </TabsContent>
+
+        {/* Manual: the parameters */}
+        <TabsContent value="manual" className="space-y-3">
+          {info.proxy_url && (
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">HTTPS_PROXY</Label>
+              <CopyableCode value={info.proxy_url} />
+            </div>
+          )}
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">NODE_EXTRA_CA_CERTS (root CA to trust)</Label>
+            <CopyableCode value={info.ca_cert_path} />
+          </div>
+          {isClaudeCode && info.settings_json && (
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">
+                Or merge into <code>~/.claude/settings.json</code>
+              </Label>
+              <CopyableCode value={info.settings_json} />
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

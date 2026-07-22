@@ -134,6 +134,8 @@ mod tests {
                 request_body: serde_json::json!({}),
                 source: LlmCallSource::Api,
                 protocol: LlmProtocol::Openai,
+                raw_request: None,
+                raw_response: None,
                 transformed_body: None,
                 transformations_applied: None,
                 provider: None,

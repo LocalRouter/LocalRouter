@@ -57,6 +57,17 @@ impl PassiveInterceptor {
             None => (Default::default(), None),
         };
 
+        // Raw wire payloads, capped, so the exact bytes are always inspectable
+        // (this is what "captures everything" for streamed responses).
+        let raw_request = ex
+            .request_body
+            .as_ref()
+            .map(|b| cap_raw(&String::from_utf8_lossy(b)));
+        let raw_response = ex
+            .response_body
+            .as_ref()
+            .map(|b| cap_raw(&String::from_utf8_lossy(b)));
+
         let tool_count = request_json
             .as_ref()
             .and_then(|b| b.get("tools"))
@@ -99,6 +110,8 @@ impl PassiveInterceptor {
             content_preview: resp_meta.content_preview,
             streamed: Some(req_meta.stream),
             response_body: response_json,
+            raw_request,
+            raw_response,
             error: None,
             routing_info: None,
         };
@@ -113,6 +126,22 @@ impl PassiveInterceptor {
             None,
         );
     }
+}
+
+/// Cap on the raw payload stored per event, so the in-memory monitor ring
+/// buffer stays bounded even for large exchanges.
+const RAW_CAP: usize = 256 * 1024;
+
+/// Truncate a raw payload to the cap (on a char boundary), appending a marker.
+fn cap_raw(s: &str) -> String {
+    if s.len() <= RAW_CAP {
+        return s.to_string();
+    }
+    let mut end = RAW_CAP;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n… [truncated {} bytes]", &s[..end], s.len() - end)
 }
 
 #[async_trait]

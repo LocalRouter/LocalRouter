@@ -427,6 +427,8 @@ mod source_tests {
             request_body: serde_json::json!({}),
             source,
             protocol: LlmProtocol::Anthropic,
+            raw_request: None,
+            raw_response: None,
             transformed_body: None,
             transformations_applied: None,
             provider: None,

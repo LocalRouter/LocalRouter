@@ -1,6 +1,5 @@
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
 import { cn } from '@/lib/utils'
@@ -18,6 +17,47 @@ const MARKDOWN_STYLES =
   '[&_h1]:font-bold [&_h1]:text-sm [&_h2]:font-bold [&_h3]:font-semibold [&_h1]:mt-2 [&_h2]:mt-2 [&_h3]:mt-1.5 ' +
   '[&_a]:text-primary [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-2 [&_blockquote]:text-muted-foreground ' +
   '[&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-1.5 [&_td]:border [&_td]:border-border [&_td]:px-1.5'
+
+/** Show a raw text payload (e.g. the exact wire bytes) with a copy button. */
+function RawBlock({ text, label }: { text: string | undefined; label?: string }) {
+  const [copied, setCopied] = useState(false)
+  if (!text) {
+    return <p className="text-xs text-muted-foreground italic">Not captured for this event.</p>
+  }
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => {
+          navigator.clipboard.writeText(text).then(() => {
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1500)
+          })
+        }}
+        title={label ? `Copy ${label}` : 'Copy raw'}
+        className="absolute right-1 top-1 z-10 flex items-center gap-1 rounded border border-border/60 bg-background/80 px-1 text-[10px] text-muted-foreground hover:text-foreground"
+      >
+        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+        {copied ? 'Copied' : label ? `Copy ${label}` : 'Copy'}
+      </button>
+      <pre className="p-2 bg-muted rounded text-[11px] font-mono whitespace-pre-wrap break-all">
+        {text}
+      </pre>
+    </div>
+  )
+}
+
+/** Extract reasoning ("thinking") text from an Anthropic response body. */
+function extractReasoning(responseBody: unknown): string | null {
+  if (!responseBody || typeof responseBody !== 'object') return null
+  const content = (responseBody as Record<string, unknown>).content
+  if (!Array.isArray(content)) return null
+  const parts = (content as Array<Record<string, unknown>>)
+    .filter((b) => b.type === 'thinking' || b.type === 'redacted_thinking')
+    .map((b) => (b.thinking as string) || (b.text as string) || '')
+    .filter(Boolean)
+  return parts.length > 0 ? parts.join('\n') : null
+}
 
 /** Auto-detect the format of a text blob so we can render it appropriately. */
 function detectFormat(text: string): 'json' | 'markdown' | 'text' {
@@ -102,8 +142,9 @@ export function EventDetail({ event }: EventDetailProps) {
   }, [event])
 
   return (
-    <ScrollArea className="h-full">
-      <div className="p-3 space-y-3">
+    <div className="flex h-full flex-col min-h-0">
+      {/* Fixed header (stays put while the detail below scrolls) */}
+      <div className="p-3 pb-2 space-y-2 shrink-0 border-b">
         {/* Header */}
         <div className="flex items-center gap-2 flex-wrap">
           <Badge variant={event.status === 'error' ? 'destructive' : event.status === 'pending' ? 'secondary' : 'default'}>
@@ -137,7 +178,11 @@ export function EventDetail({ event }: EventDetailProps) {
             <span>{event.client_name || event.client_id}</span>
           </div>
         )}
+      </div>
 
+      {/* Scrollable detail area. LLM detail fills the height and scrolls its own
+          content so its tab rows stay fixed; other detail types just scroll. */}
+      <div className="flex-1 min-h-0 overflow-auto p-3">
         {/* Type-specific rendering */}
         {type === 'llm_call' && <LlmCallDetail data={data} />}
         {type === 'mcp_tool_call' && <McpToolCallDetail data={data} />}
@@ -163,7 +208,7 @@ export function EventDetail({ event }: EventDetailProps) {
         {type === 'firewall_decision' && <FirewallDecisionDetail data={data} />}
         {type === 'sse_connection' && <SseConnectionDetail data={data} />}
       </div>
-    </ScrollArea>
+    </div>
   )
 }
 
@@ -400,8 +445,11 @@ function McpResponseTab({ data }: { data: EventData }) {
 }
 
 // Sub-tab styling
-const SUB_TABS_LIST = "h-7 w-full bg-muted p-0.5 sticky top-9 z-10"
+const SUB_TABS_LIST = "h-7 w-full bg-muted p-0.5 shrink-0"
 const SUB_TAB = "text-[11px] h-6 px-2.5"
+// Inner tab panels fill remaining height and scroll their own content, so the
+// tab rows above never scroll out of view (fixes "Full Body hides the tabs").
+const SUB_TAB_CONTENT = "flex-1 min-h-0 overflow-auto data-[state=inactive]:hidden"
 
 // ---- LLM Response Content (sub-tabs: Overview | Content | Tool Calls | Full Body) ----
 
@@ -412,18 +460,22 @@ function LlmResponseContent({ data }: { data: EventData }) {
   const message = firstChoice?.message as Record<string, unknown> | undefined
   const toolCalls = message?.tool_calls as Array<Record<string, unknown>> | undefined
   const hasToolCalls = toolCalls != null && toolCalls.length > 0
-  const reasoningContent = message?.reasoning_content as string | undefined
+  // Reasoning: OpenAI's message.reasoning_content, or Anthropic's `thinking`
+  // content blocks (for the actual Claude Code reasoning the user asked about).
+  const reasoningContent = (message?.reasoning_content as string) || extractReasoning(responseBody) || undefined
   const hasReasoning = reasoningContent != null && reasoningContent.length > 0
+  const rawResponse = data.raw_response as string | undefined
+  const hasRaw = typeof rawResponse === 'string' && rawResponse.length > 0
 
   const hasEmptyResponse = !data.content_preview && !hasToolCalls && !hasReasoning && responseBody != null
-  const defaultSubTab = hasEmptyResponse ? 'empty'
-    : hasReasoning ? 'reasoning'
+  const defaultSubTab = hasReasoning ? 'reasoning'
+    : hasEmptyResponse ? 'empty'
     : hasToolCalls && !data.content_preview ? 'tool_calls'
-    : data.content_preview ? 'content' : 'overview'
+    : data.content_preview ? 'content' : hasRaw ? 'raw' : 'overview'
 
   return (
-    <div className="space-y-2">
-      <table className="w-full text-xs">
+    <div className="flex flex-col h-full min-h-0 gap-2">
+      <table className="w-full text-xs shrink-0">
         <tbody>
           <tr className="border-b border-border/30">
             <td className="text-muted-foreground py-0.5 pr-2 whitespace-nowrap">Provider</td>
@@ -478,7 +530,7 @@ function LlmResponseContent({ data }: { data: EventData }) {
         </tbody>
       </table>
 
-      <Tabs defaultValue={defaultSubTab}>
+      <Tabs defaultValue={defaultSubTab} className="flex-1 min-h-0 flex flex-col">
         <TabsList className={SUB_TABS_LIST}>
           {hasEmptyResponse && (
             <TabsTrigger value="empty" className={SUB_TAB}>Response</TabsTrigger>
@@ -497,10 +549,13 @@ function LlmResponseContent({ data }: { data: EventData }) {
           {responseBody && (
             <TabsTrigger value="full_body" className={SUB_TAB}>Full Body</TabsTrigger>
           )}
+          {hasRaw && (
+            <TabsTrigger value="raw" className={SUB_TAB}>Raw</TabsTrigger>
+          )}
         </TabsList>
 
         {hasEmptyResponse && (
-          <TabsContent value="empty">
+          <TabsContent value="empty" className={SUB_TAB_CONTENT}>
             <div className="p-3 rounded border border-yellow-500/30 bg-yellow-500/5 text-xs text-yellow-700 dark:text-yellow-400">
               The LLM returned no text content.
             </div>
@@ -508,23 +563,23 @@ function LlmResponseContent({ data }: { data: EventData }) {
         )}
 
         {data.content_preview && (
-          <TabsContent value="content">
-            <div className="p-2 bg-muted rounded max-h-[360px] overflow-auto">
+          <TabsContent value="content" className={SUB_TAB_CONTENT}>
+            <div className="p-2 bg-muted rounded">
               <SmartText text={data.content_preview as string} />
             </div>
           </TabsContent>
         )}
 
         {hasReasoning && (
-          <TabsContent value="reasoning">
-            <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-auto">
-              {reasoningContent}
-            </pre>
+          <TabsContent value="reasoning" className={SUB_TAB_CONTENT}>
+            <div className="p-2 bg-muted rounded">
+              <SmartText text={reasoningContent as string} />
+            </div>
           </TabsContent>
         )}
 
         {hasToolCalls && (
-          <TabsContent value="tool_calls">
+          <TabsContent value="tool_calls" className={SUB_TAB_CONTENT}>
             <div className="space-y-1.5">
               {toolCalls.map((tc, i) => {
                 const fn = tc.function as Record<string, unknown> | undefined
@@ -547,8 +602,14 @@ function LlmResponseContent({ data }: { data: EventData }) {
         )}
 
         {responseBody && (
-          <TabsContent value="full_body">
+          <TabsContent value="full_body" className={SUB_TAB_CONTENT}>
             <JsonBlock data={responseBody} label="response body" />
+          </TabsContent>
+        )}
+
+        {hasRaw && (
+          <TabsContent value="raw" className={SUB_TAB_CONTENT}>
+            <RawBlock text={rawResponse} label="raw response" />
           </TabsContent>
         )}
       </Tabs>
@@ -609,15 +670,15 @@ function LlmCallDetail({ data }: { data: EventData }) {
     : params.length > 0 ? 'parameters' : 'body'
 
   return (
-    <Tabs defaultValue="request">
-      <TabsList className="w-full sticky top-0 z-20 bg-background">
+    <Tabs defaultValue="request" className="flex flex-col h-full min-h-0">
+      <TabsList className="w-full shrink-0">
         <TabsTrigger value="request">Request</TabsTrigger>
         <TabsTrigger value="response" disabled={!hasResponse}>Response</TabsTrigger>
         {hasRouting && <TabsTrigger value="routing">Routing</TabsTrigger>}
         <TabsTrigger value="error" disabled={!hasError}>Error</TabsTrigger>
       </TabsList>
 
-      <TabsContent value="request" className="space-y-2">
+      <TabsContent value="request" className="flex-1 min-h-0 flex flex-col gap-2 data-[state=inactive]:hidden">
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Field label="Endpoint" value={data.endpoint as string} />
           <Field label="Model" value={data.model as string} />
@@ -657,7 +718,7 @@ function LlmCallDetail({ data }: { data: EventData }) {
         )}
 
         {activeBody && (
-          <Tabs defaultValue={defaultSubTab} key={showTransformed ? 'transformed' : 'original'}>
+          <Tabs defaultValue={defaultSubTab} key={showTransformed ? 'transformed' : 'original'} className="flex-1 min-h-0 flex flex-col">
             <TabsList className={SUB_TABS_LIST}>
               {messages && messages.length > 0 && (
                 <TabsTrigger value="messages" className={SUB_TAB}>
@@ -677,10 +738,13 @@ function LlmCallDetail({ data }: { data: EventData }) {
               <TabsTrigger value="body" className={SUB_TAB}>
                 Full Body
               </TabsTrigger>
+              <TabsTrigger value="raw" className={SUB_TAB}>
+                Raw
+              </TabsTrigger>
             </TabsList>
 
             {messages && messages.length > 0 && (
-              <TabsContent value="messages">
+              <TabsContent value="messages" className={SUB_TAB_CONTENT}>
                 <div className="space-y-1.5">
                   {messages.map((msg, i) => (
                     <MessageItem key={i} message={msg} />
@@ -690,13 +754,13 @@ function LlmCallDetail({ data }: { data: EventData }) {
             )}
 
             {tools && tools.length > 0 && (
-              <TabsContent value="tools">
-                <McpToolDisplay tools={toolDisplayItems} compact />
+              <TabsContent value="tools" className={SUB_TAB_CONTENT}>
+                <McpToolDisplay tools={toolDisplayItems} compact collapsible />
               </TabsContent>
             )}
 
             {params.length > 0 && (
-              <TabsContent value="parameters">
+              <TabsContent value="parameters" className={SUB_TAB_CONTENT}>
                 <table className="text-xs w-full">
                   <tbody>
                     {params.map(([key, value]) => (
@@ -710,21 +774,25 @@ function LlmCallDetail({ data }: { data: EventData }) {
               </TabsContent>
             )}
 
-            <TabsContent value="body">
+            <TabsContent value="body" className={SUB_TAB_CONTENT}>
               <JsonBlock data={activeBody} label="request body" />
+            </TabsContent>
+
+            <TabsContent value="raw" className={SUB_TAB_CONTENT}>
+              <RawBlock text={data.raw_request as string | undefined} label="raw request" />
             </TabsContent>
           </Tabs>
         )}
       </TabsContent>
 
       {hasResponse && (
-        <TabsContent value="response">
+        <TabsContent value="response" className="flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden">
           <LlmResponseContent data={data} />
         </TabsContent>
       )}
 
       {hasRouting && routingInfo && (
-        <TabsContent value="routing" className="space-y-2">
+        <TabsContent value="routing" className="flex-1 min-h-0 overflow-auto space-y-2 data-[state=inactive]:hidden">
           {routingInfo.routellm_win_rate != null && (
             <div className="grid grid-cols-2 gap-2 text-xs">
               <Field label="RouteLLM Tier" value={routingInfo.routellm_tier || '?'} />

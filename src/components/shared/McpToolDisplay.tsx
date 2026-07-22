@@ -1,4 +1,6 @@
 import { cn } from "@/lib/utils"
+import { ChevronRight } from "lucide-react"
+import { useState } from "react"
 
 /** Normalized tool shape accepted by McpToolDisplay */
 export interface McpToolDisplayItem {
@@ -25,6 +27,8 @@ interface McpToolDisplayProps {
   tools: McpToolDisplayItem[]
   /** Compact mode uses smaller text (default: false) */
   compact?: boolean
+  /** Collapsible items: show only the name until clicked (default: false) */
+  collapsible?: boolean
   className?: string
 }
 
@@ -95,15 +99,41 @@ const TYPE_COLORS: Record<string, string> = {
   prompt: "text-muted-foreground/60",
 }
 
-function ToolItem({ tool, compact }: { tool: McpToolDisplayItem; compact?: boolean }) {
+function ToolItem({
+  tool,
+  compact,
+  collapsible,
+}: {
+  tool: McpToolDisplayItem
+  compact?: boolean
+  collapsible?: boolean
+}) {
   const schema = tool.inputSchema as SchemaProperty | null
   const properties = schema?.properties as Record<string, SchemaProperty> | undefined
   const required = Array.isArray(schema?.required) ? (schema!.required as string[]) : []
   const hasParams = properties && Object.keys(properties).length > 0
+  const hasDetail = Boolean(tool.description) || hasParams
+
+  // Collapsible tools start collapsed and expand on click (name only until then).
+  const [expanded, setExpanded] = useState(false)
+  const open = collapsible ? expanded : true
+  const paramCount = properties ? Object.keys(properties).length : 0
 
   return (
     <div className="rounded-md border border-border/50">
-      <div className="w-full text-left flex items-center gap-2 px-3 py-2">
+      <button
+        type="button"
+        onClick={() => collapsible && hasDetail && setExpanded((e) => !e)}
+        className={cn(
+          "w-full text-left flex items-center gap-2 px-3 py-2",
+          collapsible && hasDetail && "cursor-pointer hover:bg-muted/40",
+        )}
+      >
+        {collapsible && hasDetail && (
+          <ChevronRight
+            className={cn("h-3 w-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
+          />
+        )}
         <code className={cn("font-mono font-medium truncate", compact ? "text-[11px]" : "text-xs")}>
           {tool.name}
         </code>
@@ -112,9 +142,14 @@ function ToolItem({ tool, compact }: { tool: McpToolDisplayItem; compact?: boole
             ({tool.itemType})
           </span>
         )}
-      </div>
+        {collapsible && !open && paramCount > 0 && (
+          <span className="ml-auto text-[9px] text-muted-foreground/60 shrink-0">
+            {paramCount} param{paramCount === 1 ? "" : "s"}
+          </span>
+        )}
+      </button>
 
-      {tool.description && (
+      {open && tool.description && (
         <div className="px-3 pb-2 -mt-1 ml-0">
           <p className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
             {tool.description}
@@ -122,7 +157,7 @@ function ToolItem({ tool, compact }: { tool: McpToolDisplayItem; compact?: boole
         </div>
       )}
 
-      {hasParams && properties && (
+      {open && hasParams && properties && (
         <div className={cn("px-3 pb-3 pt-1 border-t border-border/30")}>
           <p className={cn("font-medium mb-1 text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
             Parameters
@@ -138,7 +173,7 @@ function ToolItem({ tool, compact }: { tool: McpToolDisplayItem; compact?: boole
   )
 }
 
-export function McpToolDisplay({ tools, compact, className }: McpToolDisplayProps) {
+export function McpToolDisplay({ tools, compact, collapsible, className }: McpToolDisplayProps) {
   if (tools.length === 0) {
     return (
       <p className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
@@ -150,7 +185,7 @@ export function McpToolDisplay({ tools, compact, className }: McpToolDisplayProp
   return (
     <div className={cn("space-y-1", className)}>
       {tools.map((tool) => (
-        <ToolItem key={tool.name} tool={tool} compact={compact} />
+        <ToolItem key={tool.name} tool={tool} compact={compact} collapsible={collapsible} />
       ))}
     </div>
   )
