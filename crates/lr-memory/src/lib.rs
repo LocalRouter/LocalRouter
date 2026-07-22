@@ -353,11 +353,9 @@ impl MemoryService {
 
                     // Compute file paths for monitor event
                     let transcript_rel_path =
-                        format!("{}/archive/{}.md", &session.memory_folder, file_stem);
-                    let summary_rel_path = format!(
-                        "{}/archive/{}-summary.md",
-                        &session.memory_folder, file_stem
-                    );
+                        format!("{}/archive/{}.md", session.memory_folder, file_stem);
+                    let summary_rel_path =
+                        format!("{}/archive/{}-summary.md", session.memory_folder, file_stem);
 
                     // Emit monitor event if LLM compaction will happen
                     let monitor_event_id = if model.is_some() {
