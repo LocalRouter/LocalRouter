@@ -51,86 +51,16 @@ impl lr_proxy::interceptor::PricingResolver for CatalogPricing {
     }
 }
 
-/// How long we wait for a user's firewall decision before defaulting to deny.
-const APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// Payload sent to the UI when a request needs interactive approval ("ask").
-#[derive(serde::Serialize, Clone)]
-pub struct FirewallApprovalRequest {
-    pub request_id: String,
-    pub client_id: String,
-    pub client_name: String,
-    pub model: Option<String>,
-    pub has_tools: bool,
-    pub message_count: usize,
-    /// Short preview of the request for the popup.
-    pub preview: String,
-}
-
-/// Manages interactive firewall approvals: emits an event to the UI and awaits
-/// the user's decision (with a timeout that defaults to deny).
-pub struct ProxyApprovalManager {
-    pending:
-        parking_lot::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
-    app: parking_lot::RwLock<Option<tauri::AppHandle>>,
-}
-
-impl Default for ProxyApprovalManager {
-    fn default() -> Self {
-        Self {
-            pending: parking_lot::Mutex::new(std::collections::HashMap::new()),
-            app: parking_lot::RwLock::new(None),
-        }
-    }
-}
-
-impl ProxyApprovalManager {
-    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
-        *self.app.write() = Some(handle);
-    }
-
-    /// The user (or the UI) answers a pending approval.
-    pub fn respond(&self, request_id: &str, allow: bool) {
-        if let Some(tx) = self.pending.lock().remove(request_id) {
-            let _ = tx.send(allow);
-        }
-    }
-
-    /// Ask the UI to approve a request; returns true to allow, false to deny.
-    async fn request(&self, mut payload: FirewallApprovalRequest) -> bool {
-        use tauri::Emitter;
-        let Some(app) = self.app.read().clone() else {
-            // No UI wired — fail closed.
-            return false;
-        };
-        let request_id = uuid::Uuid::new_v4().to_string();
-        payload.request_id = request_id.clone();
-
-        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        self.pending.lock().insert(request_id.clone(), tx);
-
-        if app.emit("proxy-firewall-ask", &payload).is_err() {
-            self.pending.lock().remove(&request_id);
-            return false;
-        }
-
-        match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {
-            Ok(Ok(allow)) => allow,
-            _ => {
-                self.pending.lock().remove(&request_id);
-                false
-            }
-        }
-    }
-}
-
 /// Enforces a proxied client's LLM policy using the *same* configuration a
 /// gateway client uses: the strategy's Model Permissions (allowed-models list +
 /// the Allow/Ask/Off access control) and its rate limits. There is no separate
 /// proxy firewall config — what you set on the LLM tab drives interception.
 struct AppFirewall {
     config_manager: lr_config::ConfigManager,
-    approval: Arc<ProxyApprovalManager>,
+    /// The app's shared firewall — the SAME approval system the MCP gateway/LLM
+    /// path uses. An "ask" opens the real popup *window* (works from the tray)
+    /// and supports editing/rewriting the request, rather than a bespoke dialog.
+    firewall: Arc<lr_mcp::gateway::firewall::FirewallManager>,
     /// Metrics-based rate-limit backend, shared with the gateway path. Proxied
     /// exchanges are already recorded here (keyed by strategy), so the rolling
     /// windows include proxy traffic.
@@ -238,26 +168,44 @@ impl lr_proxy::active::Firewall for AppFirewall {
             return RequestAction::reject_json(429, &format!("Rate limit exceeded ({kind})"));
         }
 
-        // Ask → interactive approval popup; Allow → forward unchanged.
+        // Ask → the shared firewall approval popup (a real window that works from
+        // the tray and lets the user edit the request). Allow → forward unchanged.
         if permission == PermissionState::Ask {
-            let preview = req
-                .body
-                .get("messages")
-                .and_then(|m| m.as_array())
-                .and_then(|a| a.last())
-                .map(|m| m.to_string())
-                .unwrap_or_default();
-            let payload = FirewallApprovalRequest {
-                request_id: String::new(),
-                client_id: req.client_id.clone(),
-                client_name: client.name.clone(),
-                model: req.model.clone(),
-                has_tools: req.has_tools,
-                message_count: req.message_count,
-                preview: preview.chars().take(500).collect(),
-            };
-            if !self.approval.request(payload).await {
-                return RequestAction::reject_json(403, "Denied by user");
+            use lr_mcp::gateway::firewall::FirewallApprovalAction as A;
+            let resp = self
+                .firewall
+                .request_model_approval(
+                    client.id.clone(),
+                    client.name.clone(),
+                    req.model.clone().unwrap_or_default(),
+                    "anthropic".to_string(),
+                    Some(120),
+                    Some(req.body.clone()), // full request → editable in the popup
+                    false,                  // not mcp-via-llm
+                )
+                .await;
+
+            match resp {
+                Ok(r) => match r.action {
+                    A::AllowOnce
+                    | A::AllowSession
+                    | A::Allow1Minute
+                    | A::Allow1Hour
+                    | A::AllowPermanent
+                    | A::AllowCategories => {
+                        // If the user edited the request in the popup, send the
+                        // rewritten body upstream instead of the original.
+                        if let Some(edited) = r.edited_arguments {
+                            if let Ok(bytes) = serde_json::to_vec(&edited) {
+                                return RequestAction::Replace(bytes);
+                            }
+                        }
+                    }
+                    // Any deny/disable action blocks the request.
+                    _ => return RequestAction::reject_json(403, "Denied by user"),
+                },
+                // Timeout / channel error → fail closed.
+                Err(_) => return RequestAction::reject_json(403, "Approval timed out"),
             }
         }
 
@@ -286,7 +234,7 @@ impl ProxyService {
         metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
         client_manager: Arc<lr_clients::ClientManager>,
         config_manager: lr_config::ConfigManager,
-        approval: Arc<ProxyApprovalManager>,
+        firewall_manager: Arc<lr_mcp::gateway::firewall::FirewallManager>,
         host: String,
     ) -> AppResult<Self> {
         let dir = lr_utils::paths::config_dir()?.join("proxy");
@@ -301,7 +249,7 @@ impl ProxyService {
             .with_pricing(Arc::new(CatalogPricing));
         let firewall = Arc::new(AppFirewall {
             config_manager,
-            approval,
+            firewall: firewall_manager,
             metrics: metrics_collector,
         });
         let interceptor = lr_proxy::active::ActiveInterceptor::new(recorder, firewall);

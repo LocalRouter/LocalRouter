@@ -591,17 +591,22 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         .await?;
 
     // HTTPS inspection proxy: shares the server's monitor store; started when
-    // enabled in config or any client is in a proxy LLM mode.
-    let proxy_approval = Arc::new(launcher::proxy::ProxyApprovalManager::default());
+    // enabled in config or any client is in a proxy LLM mode. Its "ask" firewall
+    // reuses the app's shared FirewallManager (same popup window as the gateway).
     let proxy_service: Option<Arc<launcher::proxy::ProxyService>> = {
         let cfg = config_manager.get();
-        match server_manager.get_state().map(|s| s.monitor_store.clone()) {
-            Some(monitor_store) => match launcher::proxy::ProxyService::new(
+        match server_manager.get_state().map(|s| {
+            (
+                s.monitor_store.clone(),
+                s.mcp_gateway.firewall_manager.clone(),
+            )
+        }) {
+            Some((monitor_store, firewall_manager)) => match launcher::proxy::ProxyService::new(
                 monitor_store,
                 metrics_collector.clone(),
                 client_manager.clone(),
                 config_manager.clone(),
-                proxy_approval.clone(),
+                firewall_manager,
                 cfg.proxy.host.clone(),
             ) {
                 Ok(svc) => {
@@ -685,10 +690,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             if let Some(proxy) = proxy_service.clone() {
                 app.manage(proxy);
             }
-            // The firewall approval manager needs the app handle to emit the
-            // "ask" popup event; it is queried by the respond command.
-            proxy_approval.set_app_handle(app.handle().clone());
-            app.manage(proxy_approval.clone());
             app.manage(rate_limiter.clone());
             app.manage(free_tier_manager.clone());
             app.manage(oauth_manager.clone());
@@ -2544,9 +2545,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_client_mcp_mode,
             ui::commands::get_client_proxy_setup,
             ui::commands::configure_client_proxy,
-            ui::commands::respond_proxy_firewall,
-            ui::commands::get_client_proxy_policy,
-            ui::commands::set_client_proxy_policy,
             ui::commands::set_client_template,
             ui::commands::get_client_guardrails_config,
             ui::commands::update_client_guardrails_config,
