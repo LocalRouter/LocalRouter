@@ -75,6 +75,9 @@ impl RequestAction {
 pub struct ObservedExchange {
     /// The client this exchange belongs to.
     pub client_id: String,
+    /// Monitor event id of the pending event opened at request time, so the
+    /// response half updates it (pending → complete) instead of pushing a new one.
+    pub event_id: Option<String>,
     /// The client's routing strategy id (for metrics attribution).
     pub strategy_id: String,
     /// Wall-clock latency of the exchange in milliseconds, once known.
@@ -129,7 +132,17 @@ pub trait ProxyInterceptor: Send + Sync {
         RequestAction::Forward
     }
 
+    /// Called by the transport once the request has been accepted for forwarding
+    /// (firewall allowed it), before the upstream response arrives. Opens a
+    /// pending monitor event and returns its id so [`on_response`](Self::on_response)
+    /// can complete it (pending → complete). Observe-only default records nothing.
+    fn begin(&self, _exchange: &ObservedExchange) -> Option<String> {
+        None
+    }
+
     /// Called with the decrypted (and, for SSE, reconstructed) response at end
-    /// of stream. Used to record the exchange (monitor + metrics).
+    /// of stream. Completes the pending event opened by [`begin`](Self::begin)
+    /// (via `exchange.event_id`), or records the exchange in one push when there
+    /// is none (e.g. a firewall reject).
     async fn on_response(&self, _exchange: &ObservedExchange) {}
 }

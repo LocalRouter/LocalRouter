@@ -202,15 +202,26 @@ async fn proxy_request(
         }
     };
 
+    // The firewall allowed the request through — open a pending monitor event now
+    // so the in-flight call is visible while we wait on the upstream. The id is
+    // threaded into `recorded` so the response half completes it (not a 2nd event).
+    let event_id = ctx.interceptor.begin(&base);
+
     // Establish a fresh upstream TLS connection for this request.
     let upstream = match connect_upstream(&ctx, &host, port).await {
         Ok(u) => u,
-        Err(e) => return bad_gateway(&format!("upstream connect: {e}")),
+        Err(e) => {
+            fail_pending(&ctx, &base, event_id, started);
+            return bad_gateway(&format!("upstream connect: {e}"));
+        }
     };
     let (mut sender, conn) =
         match hyper::client::conn::http1::handshake(TokioIo::new(upstream)).await {
             Ok(pair) => pair,
-            Err(e) => return bad_gateway(&format!("upstream handshake: {e}")),
+            Err(e) => {
+                fail_pending(&ctx, &base, event_id, started);
+                return bad_gateway(&format!("upstream handshake: {e}"));
+            }
         };
     tokio::spawn(async move {
         let _ = conn.await;
@@ -219,7 +230,10 @@ async fn proxy_request(
     let up_req = Request::from_parts(parts, Full::new(forward_bytes));
     let resp = match sender.send_request(up_req).await {
         Ok(r) => r,
-        Err(e) => return bad_gateway(&format!("upstream request: {e}")),
+        Err(e) => {
+            fail_pending(&ctx, &base, event_id, started);
+            return bad_gateway(&format!("upstream request: {e}"));
+        }
     };
 
     let (rparts, rbody) = resp.into_parts();
@@ -233,6 +247,7 @@ async fn proxy_request(
     // On stream end, record the full exchange to the interceptor.
     let interceptor = ctx.interceptor.clone();
     let mut recorded = base;
+    recorded.event_id = event_id;
     recorded.status = Some(status);
     recorded.response_is_sse = is_sse;
     let on_end: Box<dyn FnOnce(Vec<u8>) + Send> = Box::new(move |bytes| {
@@ -260,6 +275,26 @@ async fn connect_upstream(
         .connect(server_name, tcp)
         .await
         .map_err(|e| ProxyError::Tls(format!("upstream TLS: {e}")))
+}
+
+/// Close out a pending monitor event as an upstream failure, so a `begin()`ed
+/// event never stays stuck in Pending when the upstream call errors before any
+/// response arrives. No-op when there was no pending event.
+fn fail_pending(
+    ctx: &Arc<ProxyContext>,
+    base: &ObservedExchange,
+    event_id: Option<String>,
+    started: std::time::Instant,
+) {
+    let Some(id) = event_id else { return };
+    let interceptor = ctx.interceptor.clone();
+    let mut ex = base.clone();
+    ex.event_id = Some(id);
+    ex.status = Some(StatusCode::BAD_GATEWAY.as_u16());
+    ex.latency_ms = Some(started.elapsed().as_millis() as u64);
+    tokio::spawn(async move {
+        interceptor.on_response(&ex).await;
+    });
 }
 
 fn bad_gateway(msg: &str) -> Response<BoxedBody> {

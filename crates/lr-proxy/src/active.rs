@@ -87,9 +87,16 @@ impl ProxyInterceptor for ActiveInterceptor {
         self.firewall.evaluate(&req).await
     }
 
+    fn begin(&self, ex: &ObservedExchange) -> Option<String> {
+        // Open a pending event once the firewall allows the request through.
+        self.recorder.emit_pending(ex)
+    }
+
     async fn on_response(&self, ex: &ObservedExchange) {
-        if anthropic::is_messages_path(&ex.path) {
-            self.recorder.record(ex);
+        match &ex.event_id {
+            Some(id) => self.recorder.complete(id, ex),
+            None if anthropic::is_messages_path(&ex.path) => self.recorder.record(ex),
+            None => {}
         }
     }
 }
