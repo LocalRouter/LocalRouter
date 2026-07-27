@@ -413,7 +413,6 @@ pub async fn clone_client(
         client_mode: source_client.client_mode,
         llm_mode: source_client.llm_mode,
         mcp_mode: source_client.mcp_mode,
-        llm_proxy: source_client.llm_proxy.clone(),
         template_id: source_client.template_id.clone(),
         sync_config: false, // Disabled for clones to avoid conflicts
         guardrails_enabled: None,

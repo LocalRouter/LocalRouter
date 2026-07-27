@@ -62,7 +62,6 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
-        llm_proxy: lr_config::LlmProxyPolicy::default(),
     }
 }
 

@@ -59,7 +59,6 @@ fn test_config() -> AppConfig {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
-                llm_proxy: lr_config::LlmProxyPolicy::default(),
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -102,7 +101,6 @@ fn test_config() -> AppConfig {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
-                llm_proxy: lr_config::LlmProxyPolicy::default(),
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -145,7 +143,6 @@ fn test_config() -> AppConfig {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
-                llm_proxy: lr_config::LlmProxyPolicy::default(),
             },
         ],
         ..Default::default()
