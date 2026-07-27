@@ -271,109 +271,88 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature: Gateway & HTTPS Proxy modes */}
+      {/* Feature: Gateway / Proxy Modes */}
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            {/* Visual: two connection modes */}
-            <div className="relative overflow-x-auto">
-              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 p-6 shadow-2xl min-w-[420px] space-y-6">
-                {/* Gateway row */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Route className="h-4 w-4 text-blue-400" />
-                    <span className="text-blue-400 text-xs font-medium uppercase tracking-wide">Gateway</span>
-                    <span className="ml-auto text-slate-500 text-[10px] font-mono">/v1 · OpenAI-compatible</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[11px]">
-                    <div className="flex-1 rounded-lg bg-white/5 border border-slate-700 px-2.5 py-2 text-center">
-                      <div className="text-white font-medium">Your app</div>
-                      <div className="text-slate-500 text-[10px]">OpenAI SDK</div>
-                    </div>
-                    <ArrowRight className="h-3.5 w-3.5 text-slate-600 shrink-0" />
-                    <div className="flex-1 rounded-lg bg-blue-500/10 border border-blue-500/40 px-2.5 py-2 text-center">
-                      <div className="text-blue-300 font-medium">LocalRouter</div>
-                      <div className="text-slate-500 text-[10px]">route</div>
-                    </div>
-                    <ArrowRight className="h-3.5 w-3.5 text-slate-600 shrink-0" />
-                    <div className="flex-1 rounded-lg bg-white/5 border border-slate-700 px-2.5 py-2 text-center">
-                      <div className="text-white font-medium">Providers</div>
-                      <div className="text-slate-500 text-[10px]">19+</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="border-t border-slate-800" />
-
-                {/* HTTPS Proxy row */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <ShieldCheck className="h-4 w-4 text-amber-400" />
-                    <span className="text-amber-400 text-xs font-medium uppercase tracking-wide">HTTPS Proxy</span>
-                    <span className="ml-auto text-slate-500 text-[10px] font-mono">HTTPS_PROXY · inspect + firewall</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[11px]">
-                    <div className="flex-1 rounded-lg bg-white/5 border border-slate-700 px-2.5 py-2 text-center">
-                      <div className="text-white font-medium">Claude Code · Codex</div>
-                      <div className="text-slate-500 text-[10px]">unchanged tools</div>
-                    </div>
-                    <ArrowRight className="h-3.5 w-3.5 text-slate-600 shrink-0" />
-                    <div className="flex-1 rounded-lg bg-amber-500/10 border border-amber-500/40 px-2.5 py-2 text-center">
-                      <div className="text-amber-300 font-medium">LocalRouter</div>
-                      <div className="text-slate-500 text-[10px]">decrypt · monitor · firewall</div>
-                    </div>
-                    <ArrowRight className="h-3.5 w-3.5 text-slate-600 shrink-0" />
-                    <div className="flex-1 rounded-lg bg-white/5 border border-slate-700 px-2.5 py-2 text-center">
-                      <div className="text-white font-medium">Providers</div>
-                      <div className="text-slate-500 text-[10px]">anthropic · openai</div>
-                    </div>
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">inspect</span>
-                    <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">allow / ask / deny</span>
-                    <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">edit &amp; approve</span>
-                    <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">rate limits</span>
-                    <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">metrics + cost</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
             {/* Text */}
             <div>
               <div className="flex items-center gap-2 mb-4">
                 <Network className="h-5 w-5 text-blue-500" />
-                <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">Connect anything</span>
+                <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">Two ways to connect</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Gateway &amp; HTTPS Proxy
+                Gateway / Proxy Modes
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Point apps at LocalRouter two ways. Use the drop-in <span className="font-medium text-foreground">Gateway</span> for anything that speaks the OpenAI API, or the <span className="font-medium text-foreground">HTTPS Proxy</span> for tools on their own subscriptions — Claude Code, Codex — and inspect or firewall their traffic without changing the tool.
+                Every client connects in one of two modes. <span className="font-medium text-foreground">Gateway</span> gives any OpenAI-compatible app one local endpoint routed across all your providers. <span className="font-medium text-foreground">Proxy</span> sits in front of tools on their own subscriptions — Claude Code, Codex — so you see their traffic without changing how they work.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Server className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Gateway — one OpenAI-compatible endpoint</span>
-                    <p className="text-sm text-muted-foreground">A local <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1</code> API that routes to 19+ providers with a single base URL and key</p>
+                    <span className="font-medium">Gateway mode</span>
+                    <p className="text-sm text-muted-foreground">A drop-in <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1</code> API — one base URL and key, routed to 19+ providers</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Globe className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">HTTPS Proxy — transparent inspection</span>
-                    <p className="text-sm text-muted-foreground">Set <code className="text-xs bg-muted px-1 py-0.5 rounded">HTTPS_PROXY</code> and trust a local CA; Anthropic and OpenAI traffic — including streams — is decrypted, recorded to the Monitor with tokens and cost, then forwarded unchanged</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <ShieldCheck className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Built-in firewall</span>
-                    <p className="text-sm text-muted-foreground">Reuses each client's model permissions: allow, ask for approval (with the option to edit the request before it's sent), or block — plus model allow-lists and rate limits</p>
+                    <span className="font-medium">Proxy mode</span>
+                    <p className="text-sm text-muted-foreground">Set <code className="text-xs bg-muted px-1 py-0.5 rounded">HTTPS_PROXY</code> and the tool keeps its own subscription and provider — every request shows up in the Monitor with tokens and cost, forwarded unchanged</p>
                   </div>
                 </li>
               </ul>
+            </div>
+
+            {/* Visual: two lanes through one hub */}
+            <div className="relative overflow-x-auto">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 p-4 shadow-2xl min-w-[420px]">
+                <svg viewBox="0 0 560 300" className="w-full" role="img" aria-label="Gateway mode routes apps through LocalRouter to many providers; Proxy mode passes tools through LocalRouter to their own provider">
+                  {/* Central hub */}
+                  <rect x="245" y="34" width="70" height="232" rx="14" fill="#1e293b" stroke="#475569" strokeWidth="1.5" />
+                  <text x="280" y="150" transform="rotate(-90 280 150)" textAnchor="middle" fill="#e2e8f0" fontSize="13" fontWeight="600" letterSpacing="1">LocalRouter</text>
+
+                  {/* ---- Gateway lane ---- */}
+                  <text x="20" y="64" fill="#60a5fa" fontSize="10" fontWeight="700" letterSpacing="2">GATEWAY MODE</text>
+                  <text x="20" y="94" fill="#f8fafc" fontSize="13" fontWeight="500">Your app</text>
+                  <text x="20" y="110" fill="#64748b" fontSize="10">any OpenAI SDK</text>
+
+                  {/* app → hub */}
+                  <line x1="128" y1="100" x2="243" y2="100" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
+                  <circle cx="128" cy="100" r="3" fill="#3b82f6" />
+                  {/* hub → fan-out to providers */}
+                  <path d="M317,100 C370,100 390,56 443,56" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <line x1="317" y1="100" x2="443" y2="100" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <path d="M317,100 C370,100 390,144 443,144" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <circle cx="443" cy="56" r="3" fill="#3b82f6" />
+                  <circle cx="443" cy="100" r="3" fill="#3b82f6" />
+                  <circle cx="443" cy="144" r="3" fill="#3b82f6" />
+                  <text x="453" y="60" fill="#94a3b8" fontSize="11">Anthropic</text>
+                  <text x="453" y="104" fill="#94a3b8" fontSize="11">OpenAI</text>
+                  <text x="453" y="148" fill="#94a3b8" fontSize="11">17+ more</text>
+                  <text x="185" y="88" textAnchor="middle" fill="#475569" fontSize="9">one endpoint</text>
+                  <text x="380" y="170" textAnchor="middle" fill="#475569" fontSize="9">routed to the best model</text>
+
+                  {/* ---- Proxy lane ---- */}
+                  <text x="20" y="196" fill="#fbbf24" fontSize="10" fontWeight="700" letterSpacing="2">PROXY MODE</text>
+                  <text x="20" y="226" fill="#f8fafc" fontSize="13" fontWeight="500">Claude Code · Codex</text>
+                  <text x="20" y="242" fill="#64748b" fontSize="10">own subscription</text>
+
+                  {/* tool → hub, straight through, → own provider */}
+                  <line x1="152" y1="232" x2="243" y2="232" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                  <circle cx="152" cy="232" r="3" fill="#f59e0b" />
+                  <line x1="247" y1="232" x2="313" y2="232" stroke="#f59e0b" strokeWidth="2" strokeDasharray="3 4" opacity="0.9" />
+                  <line x1="317" y1="232" x2="443" y2="232" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                  <circle cx="443" cy="232" r="3" fill="#f59e0b" />
+                  {/* inspection lens on the pass-through */}
+                  <circle cx="280" cy="232" r="9" fill="#0f172a" stroke="#f59e0b" strokeWidth="1.5" />
+                  <circle cx="280" cy="232" r="3" fill="#fbbf24" />
+                  <text x="453" y="228" fill="#94a3b8" fontSize="11">same provider,</text>
+                  <text x="453" y="243" fill="#94a3b8" fontSize="11">same account</text>
+                  <text x="322" y="260" fill="#475569" fontSize="9">observed · forwarded unchanged</text>
+                </svg>
+              </div>
             </div>
           </div>
         </div>
