@@ -314,8 +314,8 @@ export default function Home() {
                   </div>
                   <div className="flex items-center gap-2 text-[11px]">
                     <div className="flex-1 rounded-lg bg-white/5 border border-slate-700 px-2.5 py-2 text-center">
-                      <div className="text-white font-medium">Claude Code</div>
-                      <div className="text-slate-500 text-[10px]">unchanged tool</div>
+                      <div className="text-white font-medium">Claude Code · Codex</div>
+                      <div className="text-slate-500 text-[10px]">unchanged tools</div>
                     </div>
                     <ArrowRight className="h-3.5 w-3.5 text-slate-600 shrink-0" />
                     <div className="flex-1 rounded-lg bg-amber-500/10 border border-amber-500/40 px-2.5 py-2 text-center">
@@ -324,14 +324,15 @@ export default function Home() {
                     </div>
                     <ArrowRight className="h-3.5 w-3.5 text-slate-600 shrink-0" />
                     <div className="flex-1 rounded-lg bg-white/5 border border-slate-700 px-2.5 py-2 text-center">
-                      <div className="text-white font-medium">Provider</div>
-                      <div className="text-slate-500 text-[10px]">api.anthropic.com</div>
+                      <div className="text-white font-medium">Providers</div>
+                      <div className="text-slate-500 text-[10px]">anthropic · openai</div>
                     </div>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">inspect</span>
                     <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">allow / ask / deny</span>
-                    <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">model rewrite</span>
+                    <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">edit &amp; approve</span>
+                    <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">rate limits</span>
                     <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[9px]">metrics + cost</span>
                   </div>
                 </div>
@@ -348,7 +349,7 @@ export default function Home() {
                 Gateway &amp; HTTPS Proxy
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Point apps at LocalRouter two ways. Use the drop-in <span className="font-medium text-foreground">Gateway</span> for anything that speaks the OpenAI API, or the <span className="font-medium text-foreground">HTTPS Proxy</span> for tools you can't reconfigure — like Claude Code — and inspect or firewall their traffic without changing the tool.
+                Point apps at LocalRouter two ways. Use the drop-in <span className="font-medium text-foreground">Gateway</span> for anything that speaks the OpenAI API, or the <span className="font-medium text-foreground">HTTPS Proxy</span> for tools on their own subscriptions — Claude Code, Codex — and inspect or firewall their traffic without changing the tool.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
@@ -362,14 +363,14 @@ export default function Home() {
                   <Globe className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
                     <span className="font-medium">HTTPS Proxy — transparent inspection</span>
-                    <p className="text-sm text-muted-foreground">Set <code className="text-xs bg-muted px-1 py-0.5 rounded">HTTPS_PROXY</code> and trust a local CA; traffic is decrypted, recorded to the Monitor with tokens and cost, then forwarded unchanged</p>
+                    <p className="text-sm text-muted-foreground">Set <code className="text-xs bg-muted px-1 py-0.5 rounded">HTTPS_PROXY</code> and trust a local CA; Anthropic and OpenAI traffic — including streams — is decrypted, recorded to the Monitor with tokens and cost, then forwarded unchanged</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <ShieldCheck className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
                     <span className="font-medium">Built-in firewall</span>
-                    <p className="text-sm text-muted-foreground">Per-client rules to allow, ask for approval, or deny requests — plus model allow-lists and forced model rewrites</p>
+                    <p className="text-sm text-muted-foreground">Reuses each client's model permissions: allow, ask for approval (with the option to edit the request before it's sent), or block — plus model allow-lists and rate limits</p>
                   </div>
                 </li>
               </ul>
