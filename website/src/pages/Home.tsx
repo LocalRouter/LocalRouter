@@ -271,7 +271,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature: Gateway / Proxy Modes */}
+      {/* Feature: Gateway / HTTPS Proxy */}
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
@@ -282,23 +282,23 @@ export default function Home() {
                 <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">Two ways to connect</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Gateway / Proxy Modes
+                Gateway / HTTPS Proxy
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Every client connects in one of two modes. <span className="font-medium text-foreground">Gateway</span> gives any OpenAI-compatible app one local endpoint routed across all your providers. <span className="font-medium text-foreground">Proxy</span> sits in front of tools on their own subscriptions — Claude Code, Codex — so you see their traffic without changing how they work.
+                Every client connects one of two ways. <span className="font-medium text-foreground">Gateway</span> gives any OpenAI-compatible app one local endpoint routed across all your providers. <span className="font-medium text-foreground">Proxy</span> sits in front of tools on their own subscriptions — Claude Code, Codex — so you see their traffic without changing how they work.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Server className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Gateway mode</span>
+                    <span className="font-medium">Gateway</span>
                     <p className="text-sm text-muted-foreground">A drop-in <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1</code> API — one base URL and key, routed to 19+ providers</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Globe className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Proxy mode</span>
+                    <span className="font-medium">HTTPS Proxy</span>
                     <p className="text-sm text-muted-foreground">Set <code className="text-xs bg-muted px-1 py-0.5 rounded">HTTPS_PROXY</code> and the tool keeps its own subscription and provider — every request shows up in the Monitor with tokens and cost, forwarded unchanged</p>
                   </div>
                 </li>
@@ -308,13 +308,13 @@ export default function Home() {
             {/* Visual: two lanes through one hub */}
             <div className="relative overflow-x-auto">
               <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 p-4 shadow-2xl min-w-[420px]">
-                <svg viewBox="0 0 560 300" className="w-full" role="img" aria-label="Gateway mode routes apps through LocalRouter to many providers; Proxy mode passes tools through LocalRouter to their own provider">
+                <svg viewBox="0 0 560 300" className="w-full" role="img" aria-label="Gateway routes apps through LocalRouter to many providers; the HTTPS Proxy passes tools through LocalRouter to their own provider">
                   {/* Central hub */}
                   <rect x="245" y="34" width="70" height="232" rx="14" fill="#1e293b" stroke="#475569" strokeWidth="1.5" />
                   <text x="280" y="150" transform="rotate(-90 280 150)" textAnchor="middle" fill="#e2e8f0" fontSize="13" fontWeight="600" letterSpacing="1">LocalRouter</text>
 
                   {/* ---- Gateway lane ---- */}
-                  <text x="20" y="64" fill="#60a5fa" fontSize="10" fontWeight="700" letterSpacing="2">GATEWAY MODE</text>
+                  <text x="20" y="64" fill="#60a5fa" fontSize="10" fontWeight="700" letterSpacing="2">GATEWAY</text>
                   <text x="20" y="94" fill="#f8fafc" fontSize="13" fontWeight="500">Your app</text>
                   <text x="20" y="110" fill="#64748b" fontSize="10">any OpenAI SDK</text>
 
@@ -335,7 +335,7 @@ export default function Home() {
                   <text x="380" y="170" textAnchor="middle" fill="#475569" fontSize="9">routed to the best model</text>
 
                   {/* ---- Proxy lane ---- */}
-                  <text x="20" y="196" fill="#fbbf24" fontSize="10" fontWeight="700" letterSpacing="2">PROXY MODE</text>
+                  <text x="20" y="196" fill="#fbbf24" fontSize="10" fontWeight="700" letterSpacing="2">HTTPS PROXY</text>
                   <text x="20" y="226" fill="#f8fafc" fontSize="13" fontWeight="500">Claude Code · Codex</text>
                   <text x="20" y="242" fill="#64748b" fontSize="10">own subscription</text>
 
