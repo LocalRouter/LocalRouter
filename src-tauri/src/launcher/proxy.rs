@@ -61,6 +61,10 @@ struct AppFirewall {
     /// path uses. An "ask" opens the real popup *window* (works from the tray)
     /// and supports editing/rewriting the request, rather than a bespoke dialog.
     firewall: Arc<lr_mcp::gateway::firewall::FirewallManager>,
+    /// Time-based model approvals ("Allow 1 Minute"/"Allow 1 Hour" from the
+    /// popup), shared with the gateway so a bypass granted there also
+    /// suppresses proxy asks — and vice versa.
+    model_approvals: Arc<lr_server::state::ModelApprovalTracker>,
     /// Metrics-based rate-limit backend, shared with the gateway path. Proxied
     /// exchanges are already recorded here (keyed by strategy), so the rolling
     /// windows include proxy traffic.
@@ -170,7 +174,24 @@ impl lr_proxy::active::Firewall for AppFirewall {
 
         // Ask → the shared firewall approval popup (a real window that works from
         // the tray and lets the user edit the request). Allow → forward unchanged.
-        if permission == PermissionState::Ask {
+        // Grants made from the popup suppress subsequent asks: a still-valid
+        // time-based approval ("Allow 1 Minute"/"Allow 1 Hour") or an explicit
+        // per-model Allow ("Allow Permanent" writes one into the strategy's
+        // model_permissions), same as the gateway path.
+        let has_time_bypass = req.model.as_deref().is_some_and(|m| {
+            self.model_approvals
+                .has_valid_approval(&client.id, "anthropic", m)
+        });
+        let has_explicit_allow = req.model.as_deref().is_some_and(|m| {
+            matches!(
+                strategy
+                    .model_permissions
+                    .models
+                    .get(&format!("anthropic__{m}")),
+                Some(PermissionState::Allow)
+            )
+        });
+        if permission == PermissionState::Ask && !has_time_bypass && !has_explicit_allow {
             use lr_mcp::gateway::firewall::FirewallApprovalAction as A;
             let resp = self
                 .firewall
@@ -235,6 +256,7 @@ impl ProxyService {
         client_manager: Arc<lr_clients::ClientManager>,
         config_manager: lr_config::ConfigManager,
         firewall_manager: Arc<lr_mcp::gateway::firewall::FirewallManager>,
+        model_approvals: Arc<lr_server::state::ModelApprovalTracker>,
         host: String,
     ) -> AppResult<Self> {
         let dir = lr_utils::paths::config_dir()?.join("proxy");
@@ -250,6 +272,7 @@ impl ProxyService {
         let firewall = Arc::new(AppFirewall {
             config_manager,
             firewall: firewall_manager,
+            model_approvals,
             metrics: metrics_collector,
         });
         let interceptor = lr_proxy::active::ActiveInterceptor::new(recorder, firewall);

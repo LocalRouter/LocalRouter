@@ -584,13 +584,15 @@ pub(crate) async fn check_model_firewall_permission(
     // Use unified check_needs_approval
     use lr_mcp::gateway::access_control::{FirewallCheckContext, FirewallCheckResult};
 
+    let has_time_based_approval = state
+        .model_approval_tracker
+        .has_valid_approval(&client.id, &provider, &model_id);
+
     let ctx = FirewallCheckContext::Model {
         permissions: &strategy_model_permissions,
         provider: &provider,
         model_id: &model_id,
-        has_time_based_approval: state
-            .model_approval_tracker
-            .has_valid_approval(&client.id, &provider, &model_id),
+        has_time_based_approval,
     };
 
     // Override resolution with strategy-level auto_config.permission (Ask forces popup)
@@ -598,8 +600,17 @@ pub(crate) async fn check_model_firewall_permission(
     let result = {
         let mut r = access_control::check_needs_approval(&ctx);
 
-        // Strategy permission "Ask" overrides Allow → Ask for all models
-        if r == FirewallCheckResult::Allow {
+        // Strategy permission "Ask" overrides Allow → Ask for all models —
+        // except grants made from the popup itself: an explicit per-model Allow
+        // ("Allow Permanent") or a still-valid time-based approval
+        // ("Allow 1 Minute"/"Allow 1 Hour"). Without this carve-out those
+        // popup buttons would be no-ops and every request would re-ask.
+        let has_explicit_model_allow = strategy_model_permissions
+            .models
+            .get(&format!("{provider}__{model_id}"))
+            .is_some_and(|s| matches!(s, lr_config::PermissionState::Allow));
+        if r == FirewallCheckResult::Allow && !has_explicit_model_allow && !has_time_based_approval
+        {
             if let Some(ref sp) = strategy_permission {
                 if sp.requires_approval() {
                     tracing::info!(

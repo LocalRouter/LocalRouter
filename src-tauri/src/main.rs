@@ -599,30 +599,34 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             (
                 s.monitor_store.clone(),
                 s.mcp_gateway.firewall_manager.clone(),
+                s.model_approval_tracker.clone(),
             )
         }) {
-            Some((monitor_store, firewall_manager)) => match launcher::proxy::ProxyService::new(
-                monitor_store,
-                metrics_collector.clone(),
-                client_manager.clone(),
-                config_manager.clone(),
-                firewall_manager,
-                cfg.proxy.host.clone(),
-            ) {
-                Ok(svc) => {
-                    // The listener is a cheap loopback socket that is idle until a
-                    // client actually proxies through it, so we always start it —
-                    // that way selecting a proxy mode in the UI just works.
-                    if let Err(e) = svc.start(cfg.proxy.port).await {
-                        tracing::warn!("failed to start inspection proxy: {e}");
+            Some((monitor_store, firewall_manager, model_approvals)) => {
+                match launcher::proxy::ProxyService::new(
+                    monitor_store,
+                    metrics_collector.clone(),
+                    client_manager.clone(),
+                    config_manager.clone(),
+                    firewall_manager,
+                    model_approvals,
+                    cfg.proxy.host.clone(),
+                ) {
+                    Ok(svc) => {
+                        // The listener is a cheap loopback socket that is idle until a
+                        // client actually proxies through it, so we always start it —
+                        // that way selecting a proxy mode in the UI just works.
+                        if let Err(e) = svc.start(cfg.proxy.port).await {
+                            tracing::warn!("failed to start inspection proxy: {e}");
+                        }
+                        Some(Arc::new(svc))
                     }
-                    Some(Arc::new(svc))
+                    Err(e) => {
+                        tracing::warn!("failed to init inspection proxy: {e}");
+                        None
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("failed to init inspection proxy: {e}");
-                    None
-                }
-            },
+            }
             None => None,
         }
     };
