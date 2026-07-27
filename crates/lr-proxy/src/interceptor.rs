@@ -109,11 +109,11 @@ pub struct TokenUsage {
     pub reasoning: u64,
 }
 
-/// Resolves the USD cost of a call from its model + token usage. Implemented by
-/// the app against the model catalog; kept as a trait so `lr-proxy` doesn't
-/// depend on the catalog/provider crates.
+/// Resolves the USD cost of a call from its provider + model + token usage.
+/// Implemented by the app against the model catalog; kept as a trait so
+/// `lr-proxy` doesn't depend on the catalog/provider crates.
 pub trait PricingResolver: Send + Sync {
-    fn cost_usd(&self, model: &str, usage: TokenUsage) -> Option<f64>;
+    fn cost_usd(&self, provider: &str, model: &str, usage: TokenUsage) -> Option<f64>;
 }
 
 /// Hooks the transport calls at each stage of an intercepted connection.

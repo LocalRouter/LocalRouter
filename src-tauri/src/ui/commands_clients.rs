@@ -3102,11 +3102,17 @@ pub struct ProxySetupInfo {
     pub running: bool,
     /// `HTTPS_PROXY` URL with embedded Basic auth (None if not running).
     pub proxy_url: Option<String>,
-    /// Path to the root CA the client must trust (`NODE_EXTRA_CA_CERTS`).
+    /// Path to the root CA the client must trust.
     pub ca_cert_path: String,
-    /// One-off terminal command to launch Claude Code through the proxy.
+    /// The env var this client's tool reads for a custom root CA
+    /// (`NODE_EXTRA_CA_CERTS` for Claude Code, `CODEX_CA_CERTIFICATE` for
+    /// Codex, `SSL_CERT_FILE` otherwise).
+    pub ca_env_var: String,
+    /// One-off terminal command to launch the tool through the proxy
+    /// (template-specific; None if the proxy isn't running).
     pub oneoff_command: Option<String>,
-    /// `settings.json` fragment (pretty JSON) for permanent setup.
+    /// `settings.json` fragment (pretty JSON) for permanent setup
+    /// (Claude Code only).
     pub settings_json: Option<String>,
 }
 
@@ -3117,30 +3123,58 @@ pub async fn get_client_proxy_setup(
     client_id: String,
     app: tauri::AppHandle,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<ProxySetupInfo, String> {
-    use crate::launcher::integrations::claude_code;
+    use crate::launcher::integrations::{claude_code, codex};
     use tauri::Manager;
 
     let secret = client_manager
         .get_secret(&client_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Client secret not found".to_string())?;
+    let template_id = config_manager
+        .get()
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .and_then(|c| c.template_id.clone());
 
     match app.try_state::<Arc<crate::launcher::proxy::ProxyService>>() {
         Some(proxy) => {
             let ca_cert_path = proxy.ca_cert_path().display().to_string();
             let proxy_url = proxy.client_proxy_url(&client_id, &secret);
-            let oneoff_command = proxy_url
-                .as_ref()
-                .map(|u| claude_code::proxy_oneoff_command(u, &ca_cert_path));
-            let settings_json = proxy_url.as_ref().map(|u| {
-                serde_json::to_string_pretty(&claude_code::proxy_settings_json(u, &ca_cert_path))
-                    .unwrap_or_default()
-            });
+            // Per-tool CA env var + launch command; settings.json only exists
+            // for Claude Code (Codex has no env block in config.toml).
+            let (ca_env_var, oneoff_command, settings_json) = match template_id.as_deref() {
+                Some("codex") => (
+                    codex::PROXY_CA_ENV_VAR.to_string(),
+                    proxy_url
+                        .as_ref()
+                        .map(|u| codex::proxy_oneoff_command(u, &ca_cert_path)),
+                    None,
+                ),
+                Some("claude-code") => (
+                    "NODE_EXTRA_CA_CERTS".to_string(),
+                    proxy_url
+                        .as_ref()
+                        .map(|u| claude_code::proxy_oneoff_command(u, &ca_cert_path)),
+                    proxy_url.as_ref().map(|u| {
+                        serde_json::to_string_pretty(&claude_code::proxy_settings_json(
+                            u,
+                            &ca_cert_path,
+                        ))
+                        .unwrap_or_default()
+                    }),
+                ),
+                // Generic/custom tools: SSL_CERT_FILE is the widest-supported
+                // CA override; no tool-specific command or settings file.
+                _ => ("SSL_CERT_FILE".to_string(), None, None),
+            };
             Ok(ProxySetupInfo {
                 running: proxy.is_running(),
                 proxy_url,
                 ca_cert_path,
+                ca_env_var,
                 oneoff_command,
                 settings_json,
             })
@@ -3149,6 +3183,7 @@ pub async fn get_client_proxy_setup(
             running: false,
             proxy_url: None,
             ca_cert_path: String::new(),
+            ca_env_var: "SSL_CERT_FILE".to_string(),
             oneoff_command: None,
             settings_json: None,
         }),

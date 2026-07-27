@@ -10,17 +10,19 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::anthropic;
 use crate::interceptor::{
     ClientCtx, ConnectDecision, ObservedExchange, ProxyInterceptor, RequestAction,
 };
 use crate::passive::PassiveInterceptor;
+use crate::wire;
 
 /// A parsed proxied request handed to the firewall for a decision.
 pub struct FirewallRequest {
     pub client_id: String,
     pub host: String,
     pub path: String,
+    /// Catalog/metrics provider name derived from the host ("anthropic", "openai").
+    pub provider: String,
     /// Requested model, if present in the body.
     pub model: Option<String>,
     pub has_tools: bool,
@@ -64,21 +66,22 @@ impl ProxyInterceptor for ActiveInterceptor {
     }
 
     async fn on_request(&self, ex: &ObservedExchange) -> RequestAction {
-        // Only the Anthropic Messages endpoint is subject to the firewall;
-        // anything else (auth preflights, etc.) passes through untouched.
-        if !anthropic::is_messages_path(&ex.path) {
+        // Only recognized LLM API calls are subject to the firewall; anything
+        // else (auth preflights, etc.) passes through untouched.
+        let Some(format) = wire::detect(&ex.path) else {
             return RequestAction::Forward;
-        }
+        };
         let body: Value = ex
             .request_body
             .as_ref()
             .and_then(|b| serde_json::from_slice(b).ok())
             .unwrap_or(Value::Null);
-        let meta = anthropic::parse_request(&body);
+        let meta = wire::parse_request(format, &body);
         let req = FirewallRequest {
             client_id: ex.client_id.clone(),
             host: ex.host.clone(),
             path: ex.path.clone(),
+            provider: wire::provider_for_host(&ex.host).to_string(),
             model: meta.model,
             has_tools: meta.has_tools,
             message_count: meta.message_count,
@@ -95,8 +98,8 @@ impl ProxyInterceptor for ActiveInterceptor {
     async fn on_response(&self, ex: &ObservedExchange) {
         match &ex.event_id {
             Some(id) => self.recorder.complete(id, ex),
-            None if anthropic::is_messages_path(&ex.path) => self.recorder.record(ex),
-            None => {}
+            // `record` ignores paths that aren't recognized LLM calls.
+            None => self.recorder.record(ex),
         }
     }
 }

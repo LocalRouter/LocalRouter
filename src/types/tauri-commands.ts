@@ -1697,11 +1697,13 @@ export interface ProxySetupInfo {
   running: boolean
   /** HTTPS_PROXY URL with embedded Basic auth (null if not running). */
   proxy_url: string | null
-  /** Path to the root CA the client must trust (NODE_EXTRA_CA_CERTS). */
+  /** Path to the root CA the client must trust. */
   ca_cert_path: string
-  /** One-off terminal command to launch Claude Code through the proxy. */
+  /** The env var this client's tool reads for a custom root CA (NODE_EXTRA_CA_CERTS / CODEX_CA_CERTIFICATE / SSL_CERT_FILE). */
+  ca_env_var: string
+  /** One-off terminal command to launch the tool through the proxy (template-specific). */
   oneoff_command: string | null
-  /** settings.json fragment (pretty JSON) for permanent setup. */
+  /** settings.json fragment (pretty JSON) for permanent setup (Claude Code only). */
   settings_json: string | null
 }
 

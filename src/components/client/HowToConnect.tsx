@@ -728,10 +728,13 @@ function ProxyLlmSetup({
   if (error) return <p className="text-sm text-destructive">Failed to load proxy setup: {error}</p>
   if (!info) return <p className="text-sm text-muted-foreground">Loading proxy setup…</p>
 
+  // Backend builds the tool-specific command (Claude Code, Codex); fall back to
+  // a generic env-var launch for custom tools.
   const binary = template?.binaryNames?.[0]
-  const oneoff = info.proxy_url
-    ? `HTTPS_PROXY=${info.proxy_url} NODE_EXTRA_CA_CERTS=${info.ca_cert_path} ${binary ?? "<your-tool>"}`
-    : null
+  const oneoff = info.oneoff_command
+    ?? (info.proxy_url
+      ? `HTTPS_PROXY=${info.proxy_url} ${info.ca_env_var}=${info.ca_cert_path} ${binary ?? "<your-tool>"}`
+      : null)
 
   const innerTabCount = 2 + (isClaudeCode ? 1 : 0)
   const innerGridCols = innerTabCount === 3 ? "grid-cols-3" : "grid-cols-2"
@@ -803,7 +806,7 @@ function ProxyLlmSetup({
         {/* Quick Start: one-off CLI command */}
         <TabsContent value="temporary" className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            Run {isClaudeCode ? "Claude Code" : "your tool"} once through the proxy — no files changed:
+            Run {template?.name ?? "your tool"} once through the proxy — no files changed:
           </p>
           {oneoff ? (
             <CopyableCode value={oneoff} />
@@ -827,7 +830,7 @@ function ProxyLlmSetup({
             </div>
           )}
           <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">NODE_EXTRA_CA_CERTS (root CA to trust)</Label>
+            <Label className="text-xs text-muted-foreground">{info.ca_env_var} (root CA to trust)</Label>
             <CopyableCode value={info.ca_cert_path} />
           </div>
           {isClaudeCode && info.settings_json && (

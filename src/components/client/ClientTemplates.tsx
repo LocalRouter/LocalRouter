@@ -131,6 +131,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     docsUrl: 'https://developers.openai.com/codex/config-reference/',
     supportsMcp: true,
     supportsLlm: true,
+    supportsProxy: true,
     binaryNames: ['codex'],
   },
   {

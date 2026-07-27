@@ -40,8 +40,13 @@ impl ClientResolver for AppClientResolver {
 struct CatalogPricing;
 
 impl lr_proxy::interceptor::PricingResolver for CatalogPricing {
-    fn cost_usd(&self, model: &str, usage: lr_proxy::interceptor::TokenUsage) -> Option<f64> {
-        let m = lr_catalog::find_model("anthropic", model)?;
+    fn cost_usd(
+        &self,
+        provider: &str,
+        model: &str,
+        usage: lr_proxy::interceptor::TokenUsage,
+    ) -> Option<f64> {
+        let m = lr_catalog::find_model(provider, model)?;
         Some(m.pricing.calculate_cost_with_cache(
             usage.input as u32,
             usage.output as u32,
@@ -159,7 +164,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
         // strategies permit every model, so this never fires.)
         if let Some(model) = &req.model {
             let bare = model.rsplit('/').next().unwrap_or(model);
-            if !strategy.is_model_allowed("anthropic", bare) {
+            if !strategy.is_model_allowed(&req.provider, bare) {
                 return RequestAction::reject_json(
                     403,
                     &format!("Model '{model}' is not permitted for this client"),
@@ -180,14 +185,14 @@ impl lr_proxy::active::Firewall for AppFirewall {
         // model_permissions), same as the gateway path.
         let has_time_bypass = req.model.as_deref().is_some_and(|m| {
             self.model_approvals
-                .has_valid_approval(&client.id, "anthropic", m)
+                .has_valid_approval(&client.id, &req.provider, m)
         });
         let has_explicit_allow = req.model.as_deref().is_some_and(|m| {
             matches!(
                 strategy
                     .model_permissions
                     .models
-                    .get(&format!("anthropic__{m}")),
+                    .get(&format!("{}__{m}", req.provider)),
                 Some(PermissionState::Allow)
             )
         });
@@ -199,7 +204,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
                     client.id.clone(),
                     client.name.clone(),
                     req.model.clone().unwrap_or_default(),
-                    "anthropic".to_string(),
+                    req.provider.clone(),
                     Some(120),
                     Some(req.body.clone()), // full request → editable in the popup
                     false,                  // not mcp-via-llm

@@ -24,11 +24,13 @@ pub mod cert;
 pub mod error;
 pub mod interceptor;
 pub mod manager;
+pub mod openai;
 pub mod passive;
 pub mod resolver;
 pub mod tap;
 pub mod tls;
 pub mod transport;
+pub mod wire;
 
 pub use error::ProxyError;
 pub use manager::ProxyManager;
@@ -36,7 +38,7 @@ pub use manager::ProxyManager;
 /// Hosts the proxy will MITM (decrypt + inspect). Everything else is tunneled
 /// blindly. Kept deliberately narrow: only LLM API endpoints belong here, never
 /// auth/identity hosts such as `claude.ai`.
-pub const MITM_HOST_ALLOWLIST: &[&str] = &["api.anthropic.com"];
+pub const MITM_HOST_ALLOWLIST: &[&str] = &["api.anthropic.com", "api.openai.com", "chatgpt.com"];
 
 /// Whether `host` (no port) should be intercepted rather than blind-tunneled.
 ///

@@ -304,6 +304,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       running: true,
       proxy_url: url,
       ca_cert_path: ca,
+      ca_env_var: 'NODE_EXTRA_CA_CERTS',
       oneoff_command: `HTTPS_PROXY=${url} NODE_EXTRA_CA_CERTS=${ca} claude`,
       settings_json: JSON.stringify({ env: { HTTPS_PROXY: url, NODE_EXTRA_CA_CERTS: ca } }, null, 2),
     }

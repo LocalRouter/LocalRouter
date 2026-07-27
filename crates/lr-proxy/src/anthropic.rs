@@ -6,37 +6,10 @@
 
 use serde_json::Value;
 
+use crate::wire::{RequestMeta, ResponseMeta};
+
 /// The maximum content-preview length we keep for the monitor UI.
 const CONTENT_PREVIEW_LIMIT: usize = 2000;
-
-/// Request-side metadata extracted from an Anthropic Messages request body.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct AnthropicRequestMeta {
-    pub model: Option<String>,
-    pub stream: bool,
-    pub message_count: usize,
-    pub has_tools: bool,
-}
-
-/// Response-side metadata extracted from an Anthropic Messages response
-/// (either a single JSON object or a reconstructed SSE stream).
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct AnthropicResponseMeta {
-    pub message_id: Option<String>,
-    pub model: Option<String>,
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    /// Tokens written to the prompt cache (billed ~1.25x input on Anthropic).
-    pub cache_creation_tokens: Option<u64>,
-    /// Tokens read from the prompt cache (billed ~0.1x input on Anthropic).
-    pub cache_read_tokens: Option<u64>,
-    /// Extended-thinking output tokens (`output_tokens_details.thinking_tokens`).
-    pub reasoning_tokens: Option<u64>,
-    pub stop_reason: Option<String>,
-    pub content_preview: Option<String>,
-    /// Concatenated `thinking` text (the model's reasoning).
-    pub reasoning_preview: Option<String>,
-}
 
 fn usage_u64(usage: Option<&Value>, key: &str) -> Option<u64> {
     usage.and_then(|u| u.get(key)).and_then(Value::as_u64)
@@ -50,8 +23,8 @@ pub fn is_messages_path(path: &str) -> bool {
 }
 
 /// Extract request metadata from a parsed Anthropic Messages request body.
-pub fn parse_request(body: &Value) -> AnthropicRequestMeta {
-    AnthropicRequestMeta {
+pub fn parse_request(body: &Value) -> RequestMeta {
+    RequestMeta {
         model: body
             .get("model")
             .and_then(Value::as_str)
@@ -70,10 +43,10 @@ pub fn parse_request(body: &Value) -> AnthropicRequestMeta {
 }
 
 /// Extract response metadata from a single (non-streaming) Anthropic response.
-pub fn parse_response(body: &Value) -> AnthropicResponseMeta {
+pub fn parse_response(body: &Value) -> ResponseMeta {
     let usage = body.get("usage");
     let content = body.get("content");
-    AnthropicResponseMeta {
+    ResponseMeta {
         message_id: body.get("id").and_then(Value::as_str).map(str::to_string),
         model: body
             .get("model")
@@ -121,7 +94,7 @@ fn extract_block_text(content: Option<&Value>, block_type: &str) -> Option<Strin
 /// Walks the `event:`/`data:` pairs, assembling content blocks by index
 /// (text / thinking / tool_use) so the full response — including reasoning and
 /// tool calls — is captured just like a non-streaming response.
-pub fn reconstruct_sse(raw: &str) -> (AnthropicResponseMeta, Value) {
+pub fn reconstruct_sse(raw: &str) -> (ResponseMeta, Value) {
     // Per-index accumulators: (type, text/thinking buffer, tool name, tool id, partial json).
     #[derive(Default)]
     struct Block {
@@ -141,7 +114,7 @@ pub fn reconstruct_sse(raw: &str) -> (AnthropicResponseMeta, Value) {
     let mut blocks: Vec<Block> = Vec::new();
     let mut message = serde_json::Map::new();
     let mut usage = serde_json::Map::new();
-    let mut meta = AnthropicResponseMeta::default();
+    let mut meta = ResponseMeta::default();
 
     for line in raw.lines() {
         let Some(data) = line.trim_start().strip_prefix("data:") else {

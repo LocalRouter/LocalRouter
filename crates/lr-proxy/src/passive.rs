@@ -13,11 +13,11 @@ use lr_monitor::{
 };
 use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
 
-use crate::anthropic;
 use crate::interceptor::{
     ClientCtx, ConnectDecision, ObservedExchange, PricingResolver, ProxyInterceptor, RequestAction,
     TokenUsage,
 };
+use crate::wire::{self, RequestMeta, ResponseMeta, WireFormat};
 
 /// Passive interceptor: MITM allow-listed LLM hosts, record what it sees, and
 /// forward everything unchanged.
@@ -53,9 +53,10 @@ impl PassiveInterceptor {
 
     /// Parse the request half into the pieces a monitor event needs.
     fn request_parts(
+        format: WireFormat,
         ex: &ObservedExchange,
     ) -> (
-        anthropic::AnthropicRequestMeta,
+        RequestMeta,
         Option<serde_json::Value>,
         Option<String>,
         usize,
@@ -66,7 +67,7 @@ impl PassiveInterceptor {
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
         let req_meta = request_json
             .as_ref()
-            .map(anthropic::parse_request)
+            .map(|b| wire::parse_request(format, b))
             .unwrap_or_default();
         // Raw wire payload, capped, so the exact bytes are always inspectable.
         let raw_request = ex
@@ -85,25 +86,22 @@ impl PassiveInterceptor {
     /// Parse the response half (single JSON object, or a reconstructed SSE
     /// stream) into the pieces a monitor event needs.
     fn response_parts(
+        format: WireFormat,
         ex: &ObservedExchange,
-    ) -> (
-        anthropic::AnthropicResponseMeta,
-        Option<serde_json::Value>,
-        Option<String>,
-    ) {
+    ) -> (ResponseMeta, Option<serde_json::Value>, Option<String>) {
         // For SSE we reconstruct a full message body so it's captured like a
         // plain one.
         let (resp_meta, response_json) = match &ex.response_body {
             Some(bytes) if ex.response_is_sse => {
                 let raw = String::from_utf8_lossy(bytes);
-                let (meta, body) = anthropic::reconstruct_sse(&raw);
+                let (meta, body) = wire::reconstruct_sse(format, &raw);
                 (meta, Some(body))
             }
             Some(bytes) => {
                 let json = serde_json::from_slice::<serde_json::Value>(bytes).ok();
                 let meta = json
                     .as_ref()
-                    .map(anthropic::parse_response)
+                    .map(|b| wire::parse_response(format, b))
                     .unwrap_or_default();
                 (meta, json)
             }
@@ -122,8 +120,8 @@ impl PassiveInterceptor {
     fn finalize(
         &self,
         ex: &ObservedExchange,
-        req_meta: &anthropic::AnthropicRequestMeta,
-        resp_meta: &anthropic::AnthropicResponseMeta,
+        req_meta: &RequestMeta,
+        resp_meta: &ResponseMeta,
     ) -> (String, Option<f64>, Option<u64>, EventStatus) {
         let total_tokens = match (resp_meta.input_tokens, resp_meta.output_tokens) {
             (Some(i), Some(o)) => Some(i + o),
@@ -134,6 +132,7 @@ impl PassiveInterceptor {
             .clone()
             .or_else(|| resp_meta.model.clone())
             .unwrap_or_default();
+        let provider = wire::provider_for_host(&ex.host);
 
         // Cost from the catalog, including cache-write/cache-read/reasoning tokens.
         let usage = TokenUsage {
@@ -146,7 +145,7 @@ impl PassiveInterceptor {
         let cost_usd = self
             .pricing
             .as_ref()
-            .and_then(|p| p.cost_usd(&model, usage));
+            .and_then(|p| p.cost_usd(provider, &model, usage));
 
         let status = match ex.status {
             Some(code) if code >= 400 => EventStatus::Error,
@@ -158,7 +157,7 @@ impl PassiveInterceptor {
             if status == EventStatus::Complete {
                 metrics.record_success(&RequestMetrics {
                     api_key_name: &ex.client_id,
-                    provider: "anthropic",
+                    provider,
                     model: &model,
                     strategy_id: &ex.strategy_id,
                     input_tokens: usage.input,
@@ -169,7 +168,7 @@ impl PassiveInterceptor {
             } else {
                 metrics.record_failure(
                     &ex.client_id,
-                    "anthropic",
+                    provider,
                     &model,
                     &ex.strategy_id,
                     ex.latency_ms.unwrap_or(0),
@@ -183,12 +182,10 @@ impl PassiveInterceptor {
     /// Open a Pending monitor event at request time so the exchange is visible
     /// while the upstream call is in flight. Returns the event id, which the
     /// transport threads back so [`complete`](Self::complete) fills in the
-    /// response half. Only Anthropic Messages calls are recorded.
+    /// response half. Only recognized LLM API calls are recorded.
     pub(crate) fn emit_pending(&self, ex: &ObservedExchange) -> Option<String> {
-        if !anthropic::is_messages_path(&ex.path) {
-            return None;
-        }
-        let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(ex);
+        let format = wire::detect(&ex.path)?;
+        let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(format, ex);
         let model = req_meta.model.clone().unwrap_or_default();
 
         let data = MonitorEventData::LlmCall {
@@ -200,7 +197,7 @@ impl PassiveInterceptor {
             tool_count,
             request_body: request_json.unwrap_or(serde_json::Value::Null),
             source: LlmCallSource::Proxy,
-            protocol: LlmProtocol::Anthropic,
+            protocol: protocol_for(format),
             transformed_body: None,
             transformations_applied: None,
             provider: Some(ex.host.clone()),
@@ -235,8 +232,11 @@ impl PassiveInterceptor {
     /// Fill in the response half of a previously-opened Pending event
     /// (pending → complete/error), recording cost + metrics.
     pub(crate) fn complete(&self, event_id: &str, ex: &ObservedExchange) {
-        let (req_meta, _request_json, _raw_request, _tool_count) = Self::request_parts(ex);
-        let (resp_meta, response_json, raw_response) = Self::response_parts(ex);
+        let Some(format) = wire::detect(&ex.path) else {
+            return;
+        };
+        let (req_meta, _request_json, _raw_request, _tool_count) = Self::request_parts(format, ex);
+        let (resp_meta, response_json, raw_response) = Self::response_parts(format, ex);
         let (model, cost_usd, total_tokens, status) = self.finalize(ex, &req_meta, &resp_meta);
 
         self.monitor.update(event_id, |event| {
@@ -278,8 +278,11 @@ impl PassiveInterceptor {
     /// Used when there is no pre-opened pending event (e.g. a firewall reject
     /// synthesizes its response without ever contacting the upstream).
     pub(crate) fn record(&self, ex: &ObservedExchange) {
-        let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(ex);
-        let (resp_meta, response_json, raw_response) = Self::response_parts(ex);
+        let Some(format) = wire::detect(&ex.path) else {
+            return;
+        };
+        let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(format, ex);
+        let (resp_meta, response_json, raw_response) = Self::response_parts(format, ex);
         let (model, cost_usd, total_tokens, status) = self.finalize(ex, &req_meta, &resp_meta);
 
         let data = MonitorEventData::LlmCall {
@@ -291,7 +294,7 @@ impl PassiveInterceptor {
             tool_count,
             request_body: request_json.unwrap_or(serde_json::Value::Null),
             source: LlmCallSource::Proxy,
-            protocol: LlmProtocol::Anthropic,
+            protocol: protocol_for(format),
             transformed_body: None,
             transformations_applied: None,
             provider: Some(ex.host.clone()),
@@ -321,6 +324,14 @@ impl PassiveInterceptor {
             status,
             ex.latency_ms,
         );
+    }
+}
+
+/// Monitor protocol marker for a wire format.
+fn protocol_for(format: WireFormat) -> LlmProtocol {
+    match format {
+        WireFormat::AnthropicMessages => LlmProtocol::Anthropic,
+        WireFormat::OpenAiChat | WireFormat::OpenAiResponses => LlmProtocol::Openai,
     }
 }
 
@@ -370,8 +381,8 @@ impl ProxyInterceptor for PassiveInterceptor {
             // Complete the pending event opened in `begin`.
             Some(id) => self.complete(id, exchange),
             // No pending event (e.g. a firewall reject) — record in one push.
-            None if anthropic::is_messages_path(&exchange.path) => self.record(exchange),
-            None => {}
+            // (`record` itself ignores paths that aren't recognized LLM calls.)
+            None => self.record(exchange),
         }
     }
 }

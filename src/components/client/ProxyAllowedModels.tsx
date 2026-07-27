@@ -26,13 +26,20 @@ interface ModelPerms {
   models: Record<string, PermissionState>
 }
 
-const PROVIDER_KEY = "anthropic__"
+// The proxy intercepts these providers' hosts; model_permissions keys are
+// provider-scoped (`provider__model`), so a typed model id is written under
+// each provider — a bare id like `claude-…` or `gpt-…` is unambiguous anyway.
+const PROVIDER_KEYS = ["anthropic__", "openai__"]
 
-/** Model ids currently whitelisted (allow-state entries, provider prefix stripped). */
+/** Model ids currently whitelisted (allow-state entries, provider prefix stripped, deduped). */
 function toList(perms: ModelPerms): string[] {
-  return Object.entries(perms.models)
+  const names = Object.entries(perms.models)
     .filter(([, state]) => state === "allow")
-    .map(([key]) => (key.startsWith(PROVIDER_KEY) ? key.slice(PROVIDER_KEY.length) : key))
+    .map(([key]) => {
+      const prefix = PROVIDER_KEYS.find((p) => key.startsWith(p))
+      return prefix ? key.slice(prefix.length) : key
+    })
+  return [...new Set(names)]
 }
 
 /** Turn a newline-separated textarea into a `model_permissions` whitelist. */
@@ -40,7 +47,8 @@ function fromText(text: string): ModelPerms {
   const models: Record<string, PermissionState> = {}
   for (const raw of text.split("\n")) {
     const name = raw.trim()
-    if (name) models[`${PROVIDER_KEY}${name}`] = "allow"
+    if (!name) continue
+    for (const prefix of PROVIDER_KEYS) models[`${prefix}${name}`] = "allow"
   }
   return { global: "off", providers: {}, models }
 }

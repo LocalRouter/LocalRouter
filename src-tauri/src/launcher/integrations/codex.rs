@@ -12,6 +12,17 @@ use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 
 pub struct CodexIntegration;
 
+/// Environment variable Codex reads for a custom root CA (its dedicated
+/// `CODEX_CA_CERTIFICATE`, with `SSL_CERT_FILE` as codex's own fallback).
+pub const PROXY_CA_ENV_VAR: &str = "CODEX_CA_CERTIFICATE";
+
+/// One-off terminal command to launch Codex through the inspection proxy.
+/// Codex's HTTP client honors `HTTPS_PROXY` (with embedded Basic auth) and
+/// trusts our root CA via `CODEX_CA_CERTIFICATE`.
+pub fn proxy_oneoff_command(proxy_url: &str, ca_cert_path: &str) -> String {
+    format!("HTTPS_PROXY={proxy_url} {PROXY_CA_ENV_VAR}={ca_cert_path} codex")
+}
+
 /// Path to Codex global config file
 fn config_path() -> std::path::PathBuf {
     dirs::home_dir()

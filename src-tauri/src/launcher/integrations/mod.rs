@@ -5,7 +5,7 @@
 
 mod aider;
 pub mod claude_code;
-mod codex;
+pub mod codex;
 mod cursor;
 mod droid;
 mod goose;
