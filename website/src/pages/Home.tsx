@@ -271,7 +271,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature: Gateway / HTTPS Proxy */}
+      {/* Feature: LLM Gateway / HTTPS Proxy */}
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
@@ -282,16 +282,16 @@ export default function Home() {
                 <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">Two ways to connect</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Gateway / HTTPS Proxy
+                LLM Gateway / HTTPS Proxy
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Every client connects one of two ways. <span className="font-medium text-foreground">Gateway</span> gives any OpenAI-compatible app one local endpoint routed across all your providers. <span className="font-medium text-foreground">Proxy</span> sits in front of tools on their own subscriptions — Claude Code, Codex — so you see their traffic without changing how they work.
+                Every client connects one of two ways. <span className="font-medium text-foreground">LLM Gateway</span> gives any OpenAI-compatible app one local endpoint routed across all your providers. <span className="font-medium text-foreground">Proxy</span> sits in front of tools on their own subscriptions — Claude Code, Codex — so you see their traffic without changing how they work.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Server className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Gateway</span>
+                    <span className="font-medium">LLM Gateway</span>
                     <p className="text-sm text-muted-foreground">A drop-in <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1</code> API — one base URL and key, routed to 19+ providers</p>
                   </div>
                 </li>
@@ -308,23 +308,26 @@ export default function Home() {
             {/* Visual: two lanes through one hub */}
             <div className="relative overflow-x-auto">
               <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 p-4 shadow-2xl min-w-[420px]">
-                <svg viewBox="0 0 560 300" className="w-full" role="img" aria-label="Gateway routes apps through LocalRouter to many providers; the HTTPS Proxy passes tools through LocalRouter to their own provider">
-                  {/* Central hub */}
-                  <rect x="245" y="34" width="70" height="232" rx="14" fill="#1e293b" stroke="#475569" strokeWidth="1.5" />
-                  <text x="280" y="150" transform="rotate(-90 280 150)" textAnchor="middle" fill="#e2e8f0" fontSize="13" fontWeight="600" letterSpacing="1">LocalRouter</text>
+                <svg viewBox="0 0 560 300" className="w-full" role="img" aria-label="The LLM Gateway routes apps through LocalRouter's router to many providers; the HTTPS Proxy passes tools through LocalRouter's proxy to their own provider">
+                  {/* Central hub: LocalRouter, containing a router and a proxy */}
+                  <rect x="235" y="34" width="90" height="232" rx="14" fill="#1e293b" stroke="#475569" strokeWidth="1.5" />
+                  <text x="280" y="56" textAnchor="middle" fill="#e2e8f0" fontSize="11" fontWeight="600" letterSpacing="0.5">LocalRouter</text>
 
-                  {/* ---- Gateway lane ---- */}
-                  <text x="20" y="64" fill="#60a5fa" fontSize="10" fontWeight="700" letterSpacing="2">GATEWAY</text>
+                  {/* ---- LLM Gateway lane ---- */}
+                  <text x="20" y="64" fill="#60a5fa" fontSize="10" fontWeight="700" letterSpacing="2">LLM GATEWAY</text>
                   <text x="20" y="94" fill="#f8fafc" fontSize="13" fontWeight="500">Your app</text>
                   <text x="20" y="110" fill="#64748b" fontSize="10">any OpenAI SDK</text>
 
-                  {/* app → hub */}
-                  <line x1="128" y1="100" x2="243" y2="100" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
+                  {/* app → router */}
+                  <line x1="128" y1="100" x2="244" y2="100" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
                   <circle cx="128" cy="100" r="3" fill="#3b82f6" />
-                  {/* hub → fan-out to providers */}
-                  <path d="M317,100 C370,100 390,56 443,56" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
-                  <line x1="317" y1="100" x2="443" y2="100" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
-                  <path d="M317,100 C370,100 390,144 443,144" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  {/* router chip inside the hub */}
+                  <rect x="246" y="87" width="68" height="26" rx="13" fill="#172554" stroke="#3b82f6" strokeWidth="1.5" />
+                  <text x="280" y="104" textAnchor="middle" fill="#93c5fd" fontSize="11" fontWeight="600">Router</text>
+                  {/* router → fan-out to providers */}
+                  <path d="M316,100 C370,100 390,56 443,56" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <line x1="316" y1="100" x2="443" y2="100" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <path d="M316,100 C370,100 390,144 443,144" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
                   <circle cx="443" cy="56" r="3" fill="#3b82f6" />
                   <circle cx="443" cy="100" r="3" fill="#3b82f6" />
                   <circle cx="443" cy="144" r="3" fill="#3b82f6" />
@@ -332,25 +335,24 @@ export default function Home() {
                   <text x="453" y="104" fill="#94a3b8" fontSize="11">OpenAI</text>
                   <text x="453" y="148" fill="#94a3b8" fontSize="11">17+ more</text>
                   <text x="185" y="88" textAnchor="middle" fill="#475569" fontSize="9">one endpoint</text>
-                  <text x="380" y="170" textAnchor="middle" fill="#475569" fontSize="9">routed to the best model</text>
+                  <text x="395" y="170" textAnchor="middle" fill="#475569" fontSize="9">routed to the best model</text>
 
-                  {/* ---- Proxy lane ---- */}
+                  {/* ---- HTTPS Proxy lane ---- */}
                   <text x="20" y="196" fill="#fbbf24" fontSize="10" fontWeight="700" letterSpacing="2">HTTPS PROXY</text>
                   <text x="20" y="226" fill="#f8fafc" fontSize="13" fontWeight="500">Claude Code · Codex</text>
                   <text x="20" y="242" fill="#64748b" fontSize="10">own subscription</text>
 
-                  {/* tool → hub, straight through, → own provider */}
-                  <line x1="152" y1="232" x2="243" y2="232" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                  {/* tool → proxy → straight on to its own provider */}
+                  <line x1="152" y1="232" x2="244" y2="232" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
                   <circle cx="152" cy="232" r="3" fill="#f59e0b" />
-                  <line x1="247" y1="232" x2="313" y2="232" stroke="#f59e0b" strokeWidth="2" strokeDasharray="3 4" opacity="0.9" />
-                  <line x1="317" y1="232" x2="443" y2="232" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                  {/* proxy chip inside the hub */}
+                  <rect x="246" y="219" width="68" height="26" rx="13" fill="#451a03" stroke="#f59e0b" strokeWidth="1.5" />
+                  <text x="280" y="236" textAnchor="middle" fill="#fcd34d" fontSize="11" fontWeight="600">Proxy</text>
+                  <line x1="316" y1="232" x2="443" y2="232" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
                   <circle cx="443" cy="232" r="3" fill="#f59e0b" />
-                  {/* inspection lens on the pass-through */}
-                  <circle cx="280" cy="232" r="9" fill="#0f172a" stroke="#f59e0b" strokeWidth="1.5" />
-                  <circle cx="280" cy="232" r="3" fill="#fbbf24" />
                   <text x="453" y="228" fill="#94a3b8" fontSize="11">same provider,</text>
                   <text x="453" y="243" fill="#94a3b8" fontSize="11">same account</text>
-                  <text x="322" y="260" fill="#475569" fontSize="9">observed · forwarded unchanged</text>
+                  <text x="330" y="260" fill="#475569" fontSize="9">observed · forwarded unchanged</text>
                 </svg>
               </div>
             </div>
