@@ -285,7 +285,7 @@ export default function Home() {
                 Via Gateway / HTTPS Proxy
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Connect clients either via the <span className="font-medium text-foreground">Gateway</span> — an explicit OpenAI-compatible endpoint that routes every request across your providers — or through the <span className="font-medium text-foreground">HTTPS Proxy</span>, a transparent pass-through that leaves tools like Claude Code and Codex on their own provider and subscription, adding observability and optional request rewriting.
+                Connect clients either via the <span className="font-medium text-foreground">Gateway</span> — an explicit OpenAI-compatible endpoint that routes every request across your providers — or through the <span className="font-medium text-foreground">HTTPS Proxy</span>, a transparent pass-through that leaves tools like Claude Code and Codex on their own provider and subscription, retaining observability and optional request rewriting.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
