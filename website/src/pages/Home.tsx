@@ -271,7 +271,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature: LLM Gateway / HTTPS Proxy */}
+      {/* Feature: Via Gateway / HTTPS Proxy */}
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
@@ -282,26 +282,26 @@ export default function Home() {
                 <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">Two ways to connect</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                LLM Gateway / HTTPS Proxy
+                Via Gateway / HTTPS Proxy
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Connect clients either through the <span className="font-medium text-foreground">LLM Gateway</span> — an explicit OpenAI-compatible endpoint that routes every request across your providers — or through the <span className="font-medium text-foreground">HTTPS Proxy</span>, a transparent pass-through that leaves tools like Claude Code and Codex on their own provider and subscription, adding observability and optional request rewriting.
+                Connect clients either via the <span className="font-medium text-foreground">Gateway</span> — an explicit OpenAI-compatible endpoint that routes every request across your providers — or through the <span className="font-medium text-foreground">HTTPS Proxy</span>, a transparent pass-through that leaves tools like Claude Code and Codex on their own provider and subscription, adding observability and optional request rewriting.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Server className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">LLM Gateway</span>
+                    <span className="font-medium">Via Gateway</span>
                     <p className="text-sm text-muted-foreground">A drop-in <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1</code> API — one base URL and key, routed to 19+ providers</p>
-                    <code className="mt-1.5 block w-fit rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"><span className="text-blue-500">ANTHROPIC_BASE_URL</span>=http://localhost:3625 claude</code>
+                    <code className="mt-1.5 block w-fit rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"><span className="text-blue-500">ANTHROPIC_BASE_URL</span>=http://localhost:3625 <span className="text-foreground font-semibold">claude</span></code>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Globe className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">HTTPS Proxy</span>
+                    <span className="font-medium">Via HTTPS Proxy</span>
                     <p className="text-sm text-muted-foreground">The tool keeps its own subscription and provider — every request shows up in the Monitor with tokens and cost, forwarded unchanged</p>
-                    <code className="mt-1.5 block w-fit rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"><span className="text-amber-500">HTTPS_PROXY</span>=http://localhost:3626 claude</code>
+                    <code className="mt-1.5 block w-fit rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"><span className="text-amber-500">HTTPS_PROXY</span>=http://localhost:3626 <span className="text-foreground font-semibold">claude</span></code>
                   </div>
                 </li>
               </ul>
@@ -310,51 +310,53 @@ export default function Home() {
             {/* Visual: two lanes through one hub */}
             <div className="relative overflow-x-auto">
               <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 p-4 shadow-2xl min-w-[420px]">
-                <svg viewBox="0 0 560 300" className="w-full" role="img" aria-label="The LLM Gateway routes apps through LocalRouter's router to many providers; the HTTPS Proxy passes tools through LocalRouter's proxy to their own provider">
-                  {/* Central hub: LocalRouter, containing a router and a proxy */}
+                <svg viewBox="0 0 560 300" className="w-full" role="img" aria-label="One app connects to LocalRouter either through the LLM Gateway option, routed to many providers, or through the HTTPS Proxy option, passed through to its own provider">
+                  {/* One app, two alternative paths */}
+                  <rect x="24" y="138" width="152" height="54" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
+                  <text x="100" y="161" textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="500">Claude Code · Codex</text>
+                  <text x="100" y="177" textAnchor="middle" fill="#64748b" fontSize="10">or any OpenAI app</text>
+
+                  {/* app → gateway option / app → proxy option */}
+                  <path d="M176,156 C214,150 212,100 233,100" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
+                  <path d="M176,174 C214,180 212,232 233,232" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+
+                  {/* LocalRouter hub with the two options, divided */}
                   <rect x="235" y="34" width="90" height="232" rx="14" fill="#1e293b" stroke="#475569" strokeWidth="1.5" />
                   <text x="280" y="56" textAnchor="middle" fill="#e2e8f0" fontSize="11" fontWeight="600" letterSpacing="0.5">LocalRouter</text>
 
-                  {/* ---- LLM Gateway lane ---- */}
-                  <text x="20" y="64" fill="#60a5fa" fontSize="10" fontWeight="700" letterSpacing="2">LLM GATEWAY</text>
-                  <text x="20" y="94" fill="#f8fafc" fontSize="13" fontWeight="500">Your app</text>
-                  <text x="20" y="110" fill="#64748b" fontSize="10">any OpenAI SDK</text>
+                  {/* Option 1: LLM Gateway */}
+                  <text x="280" y="82" textAnchor="middle" fill="#60a5fa" fontSize="9" fontWeight="700" letterSpacing="1.5">GATEWAY</text>
+                  <rect x="246" y="90" width="68" height="26" rx="13" fill="#172554" stroke="#3b82f6" strokeWidth="1.5" />
+                  <text x="280" y="107" textAnchor="middle" fill="#93c5fd" fontSize="11" fontWeight="600">Router</text>
 
-                  {/* app → router */}
-                  <line x1="128" y1="100" x2="244" y2="100" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
-                  <circle cx="128" cy="100" r="3" fill="#3b82f6" />
-                  {/* router chip inside the hub */}
-                  <rect x="246" y="87" width="68" height="26" rx="13" fill="#172554" stroke="#3b82f6" strokeWidth="1.5" />
-                  <text x="280" y="104" textAnchor="middle" fill="#93c5fd" fontSize="11" fontWeight="600">Router</text>
-                  {/* router → fan-out to providers */}
-                  <path d="M316,100 C370,100 390,56 443,56" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
-                  <line x1="316" y1="100" x2="443" y2="100" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
-                  <path d="M316,100 C370,100 390,144 443,144" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  {/* divider between the two options */}
+                  <line x1="245" y1="164" x2="315" y2="164" stroke="#475569" strokeWidth="1" strokeDasharray="4 4" />
+                  <rect x="268" y="155" width="24" height="18" rx="9" fill="#1e293b" />
+                  <text x="280" y="168" textAnchor="middle" fill="#64748b" fontSize="9" fontWeight="600">or</text>
+
+                  {/* Option 2: HTTPS Proxy */}
+                  <text x="280" y="200" textAnchor="middle" fill="#fbbf24" fontSize="9" fontWeight="700" letterSpacing="1.5">HTTPS PROXY</text>
+                  <rect x="246" y="208" width="68" height="26" rx="13" fill="#451a03" stroke="#f59e0b" strokeWidth="1.5" />
+                  <text x="280" y="225" textAnchor="middle" fill="#fcd34d" fontSize="11" fontWeight="600">Proxy</text>
+
+                  {/* Gateway: routed across providers (lane y=103) */}
+                  <path d="M316,103 C370,103 390,56 443,56" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <line x1="316" y1="103" x2="443" y2="103" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <path d="M316,103 C370,103 390,148 443,148" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
                   <circle cx="443" cy="56" r="3" fill="#3b82f6" />
-                  <circle cx="443" cy="100" r="3" fill="#3b82f6" />
-                  <circle cx="443" cy="144" r="3" fill="#3b82f6" />
+                  <circle cx="443" cy="103" r="3" fill="#3b82f6" />
+                  <circle cx="443" cy="148" r="3" fill="#3b82f6" />
                   <text x="453" y="60" fill="#94a3b8" fontSize="11">Anthropic</text>
-                  <text x="453" y="104" fill="#94a3b8" fontSize="11">OpenAI</text>
-                  <text x="453" y="148" fill="#94a3b8" fontSize="11">17+ more</text>
-                  <text x="185" y="88" textAnchor="middle" fill="#475569" fontSize="9">one endpoint</text>
-                  <text x="395" y="170" textAnchor="middle" fill="#475569" fontSize="9">routed to the best model</text>
+                  <text x="453" y="107" fill="#94a3b8" fontSize="11">OpenAI</text>
+                  <text x="453" y="152" fill="#94a3b8" fontSize="11">17+ more</text>
+                  <text x="395" y="173" textAnchor="middle" fill="#475569" fontSize="9">routed to the best model</text>
 
-                  {/* ---- HTTPS Proxy lane ---- */}
-                  <text x="20" y="196" fill="#fbbf24" fontSize="10" fontWeight="700" letterSpacing="2">HTTPS PROXY</text>
-                  <text x="20" y="226" fill="#f8fafc" fontSize="13" fontWeight="500">Claude Code · Codex</text>
-                  <text x="20" y="242" fill="#64748b" fontSize="10">own subscription</text>
-
-                  {/* tool → proxy → straight on to its own provider */}
-                  <line x1="152" y1="232" x2="244" y2="232" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
-                  <circle cx="152" cy="232" r="3" fill="#f59e0b" />
-                  {/* proxy chip inside the hub */}
-                  <rect x="246" y="219" width="68" height="26" rx="13" fill="#451a03" stroke="#f59e0b" strokeWidth="1.5" />
-                  <text x="280" y="236" textAnchor="middle" fill="#fcd34d" fontSize="11" fontWeight="600">Proxy</text>
-                  <line x1="316" y1="232" x2="443" y2="232" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
-                  <circle cx="443" cy="232" r="3" fill="#f59e0b" />
-                  <text x="453" y="228" fill="#94a3b8" fontSize="11">same provider,</text>
-                  <text x="453" y="243" fill="#94a3b8" fontSize="11">same account</text>
-                  <text x="330" y="260" fill="#475569" fontSize="9">observed · forwarded unchanged</text>
+                  {/* Proxy: straight through to the app's own provider (lane y=221) */}
+                  <line x1="316" y1="221" x2="443" y2="221" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                  <circle cx="443" cy="221" r="3" fill="#f59e0b" />
+                  <text x="453" y="217" fill="#94a3b8" fontSize="11">same provider,</text>
+                  <text x="453" y="232" fill="#94a3b8" fontSize="11">same account</text>
+                  <text x="330" y="249" fill="#475569" fontSize="9">observed · forwarded unchanged</text>
                 </svg>
               </div>
             </div>
