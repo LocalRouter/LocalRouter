@@ -1,19 +1,24 @@
 //! HTTPS inspection proxy for LocalRouter.
 //!
-//! Lets tools that honor `HTTPS_PROXY` (e.g. Claude Code) route their LLM
-//! traffic through LocalRouter, which terminates TLS with a trusted root CA,
-//! **passively inspects** the request/response for the monitor, and forwards
-//! the bytes unchanged to the real upstream. The client's own credentials flow
-//! straight through — LocalRouter neither re-issues nor stores them.
+//! Lets tools that honor `HTTPS_PROXY` (e.g. Claude Code, Codex) route their
+//! LLM traffic through LocalRouter, which terminates TLS with a trusted root
+//! CA, **passively inspects** the request/response for the monitor, and
+//! forwards the bytes unchanged to the real upstream. The client's own
+//! credentials flow straight through — LocalRouter neither re-issues nor
+//! stores them. Both HTTP (plain + SSE) and WebSocket transports are
+//! inspected; see [`websocket`].
 //!
 //! Only allow-listed LLM API hosts are intercepted; everything else (auth,
 //! telemetry, arbitrary HTTPS) is blind-tunneled without decryption.
 //!
 //! ## Module map
 //! - [`cert`] — root CA + on-demand leaf certificate minting.
-//! - [`anthropic`] — parse the Anthropic Messages wire format for monitoring.
+//! - [`wire`] — wire-format dispatch + shared SSE event parsing.
+//! - [`anthropic`] / [`openai`] — per-format request/response parsing.
 //! - [`interceptor`] — the observe/rewrite seam ([`interceptor::ProxyInterceptor`]).
 //! - [`passive`] — the v1 inspect-only interceptor that records to the monitor.
+//! - [`websocket`] — frame codec + message-aware relay for upgraded
+//!   connections (Codex's Responses-over-websocket transport).
 //!
 //! The live MITM data-path (CONNECT handling, TLS terminate/re-originate,
 //! streaming tap) and the [`ProxyManager`] lifecycle build on these pieces.
@@ -30,6 +35,7 @@ pub mod resolver;
 pub mod tap;
 pub mod tls;
 pub mod transport;
+pub mod websocket;
 pub mod wire;
 
 pub use error::ProxyError;

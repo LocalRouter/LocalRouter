@@ -22,6 +22,7 @@ use crate::interceptor::{
 };
 use crate::resolver::ClientResolver;
 use crate::tls::TlsFactory;
+use crate::{websocket, wire};
 
 /// Cap on the bytes captured per request/response for monitoring (1 MiB).
 const MAX_CAPTURE: usize = 1024 * 1024;
@@ -128,6 +129,7 @@ async fn mitm(
 
     hyper::server::conn::http1::Builder::new()
         .serve_connection(TokioIo::new(client_tls), service)
+        .with_upgrades()
         .await
         .map_err(|e| ProxyError::Tls(format!("client HTTP/1.1 serve: {e}")))?;
     Ok(())
@@ -137,7 +139,7 @@ type BoxedBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Erro
 
 /// Handle one decrypted request: forward it upstream verbatim, tee the response.
 async fn proxy_request(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     ctx: Arc<ProxyContext>,
     host: Arc<String>,
     port: u16,
@@ -151,6 +153,19 @@ async fn proxy_request(
         .path_and_query()
         .map(|p| p.as_str().to_string())
         .unwrap_or_else(|| "/".to_string());
+
+    // A websocket upgrade (e.g. Codex's Responses transport). Grab the
+    // client-side upgrade handle now — the upgraded byte stream only becomes
+    // usable after we've returned the upstream's 101 to the client.
+    let is_ws_upgrade = req
+        .headers()
+        .get(hyper::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.split(',')
+                .any(|p| p.trim().eq_ignore_ascii_case("websocket"))
+        });
+    let client_upgrade = is_ws_upgrade.then(|| hyper::upgrade::on(&mut req));
 
     // Buffer the (small) request body so we can both forward and inspect it.
     let (mut parts, body) = req.into_parts();
@@ -167,6 +182,15 @@ async fn proxy_request(
     // hyper sets Content-Length from the forwarded body; drop the client's so a
     // rewritten (or re-framed) request never carries a stale length.
     parts.headers.remove(hyper::header::CONTENT_LENGTH);
+    if is_ws_upgrade {
+        // Refuse websocket extension negotiation (permessage-deflate) — the
+        // websocket analog of the Accept-Encoding strip above, so every frame
+        // payload stays parseable plaintext. Clients fall back to
+        // uncompressed frames per RFC 6455.
+        parts
+            .headers
+            .remove(hyper::header::SEC_WEBSOCKET_EXTENSIONS);
+    }
 
     // Base exchange (request half); response fields filled at stream end.
     let base = ObservedExchange {
@@ -180,7 +204,16 @@ async fn proxy_request(
     };
 
     // Firewall: forward, rewrite, or reject. (Passive returns Forward.)
-    let forward_bytes: Bytes = match ctx.interceptor.on_request(&base).await {
+    // A websocket upgrade carries no LLM request — the firewall evaluates each
+    // websocket message inside the connection instead (see websocket::WsSession),
+    // so don't ask it to judge the empty upgrade body (Ask-mode would pop a
+    // model-less approval dialog).
+    let action = if is_ws_upgrade {
+        RequestAction::Forward
+    } else {
+        ctx.interceptor.on_request(&base).await
+    };
+    let forward_bytes: Bytes = match action {
         RequestAction::Forward => req_bytes,
         RequestAction::Replace(new_body) => Bytes::from(new_body),
         RequestAction::Reject {
@@ -205,7 +238,13 @@ async fn proxy_request(
     // The firewall allowed the request through — open a pending monitor event now
     // so the in-flight call is visible while we wait on the upstream. The id is
     // threaded into `recorded` so the response half completes it (not a 2nd event).
-    let event_id = ctx.interceptor.begin(&base);
+    // Websocket upgrades don't get an HTTP-level event: the relay opens one
+    // monitor event per request/response cycle inside the connection instead.
+    let event_id = if is_ws_upgrade {
+        None
+    } else {
+        ctx.interceptor.begin(&base)
+    };
 
     // Establish a fresh upstream TLS connection for this request.
     let upstream = match connect_upstream(&ctx, &host, port).await {
@@ -224,17 +263,50 @@ async fn proxy_request(
             }
         };
     tokio::spawn(async move {
-        let _ = conn.await;
+        // `with_upgrades` lets the driver hand the connection over after a 101.
+        let _ = conn.with_upgrades().await;
     });
 
     let up_req = Request::from_parts(parts, Full::new(forward_bytes));
-    let resp = match sender.send_request(up_req).await {
+    let mut resp = match sender.send_request(up_req).await {
         Ok(r) => r,
         Err(e) => {
             fail_pending(&ctx, &base, event_id, started);
             return bad_gateway(&format!("upstream request: {e}"));
         }
     };
+
+    // Completed websocket handshake: relay the upgraded byte streams (with
+    // per-message firewall + capture on recognized LLM paths) and answer the
+    // client with the upstream's 101 verbatim. A refused upgrade (non-101)
+    // falls through to the normal response path below.
+    if is_ws_upgrade && resp.status() == StatusCode::SWITCHING_PROTOCOLS {
+        let upstream_upgrade = hyper::upgrade::on(&mut resp);
+        let client_upgrade = client_upgrade.expect("present for websocket upgrades");
+        let session = wire::detect(&base.path).map(|format| {
+            Arc::new(websocket::WsSession::new(
+                ctx.interceptor.clone(),
+                format,
+                base,
+            ))
+        });
+        tokio::spawn(async move {
+            let (client_io, upstream_io) = match tokio::try_join!(client_upgrade, upstream_upgrade)
+            {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::warn!("websocket upgrade failed: {e}");
+                    return;
+                }
+            };
+            websocket::relay(TokioIo::new(client_io), TokioIo::new(upstream_io), session).await;
+        });
+        let (rparts, _rbody) = resp.into_parts();
+        let empty = Full::new(Bytes::new())
+            .map_err(|e: Infallible| match e {})
+            .boxed_unsync();
+        return Response::from_parts(rparts, empty);
+    }
 
     let (rparts, rbody) = resp.into_parts();
     let status = rparts.status.as_u16();

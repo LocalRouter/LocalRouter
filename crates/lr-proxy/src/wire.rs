@@ -77,6 +77,84 @@ pub fn provider_for_host(host: &str) -> &'static str {
     }
 }
 
+/// Split a raw SSE stream into its JSON `data:` payloads, shared by every
+/// wire format so resilience fixes land in one place.
+///
+/// Spec-correct where it matters for robustness: tolerates CRLF line endings
+/// and leading whitespace, accumulates multi-line `data:` fields into one
+/// payload, ignores `event:`/`id:`/`retry:` fields and comments, and skips
+/// `[DONE]` markers and payloads that aren't valid JSON (e.g. a final line
+/// truncated by the capture cap).
+pub fn sse_json_events(raw: &str) -> Vec<Value> {
+    fn flush(data: &mut String, events: &mut Vec<Value>) {
+        let payload = std::mem::take(data);
+        let payload = payload.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            return;
+        }
+        if let Ok(json) = serde_json::from_str::<Value>(payload) {
+            events.push(json);
+        }
+    }
+
+    let mut events = Vec::new();
+    let mut data = String::new();
+    for line in raw.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line).trim_start();
+        if line.is_empty() {
+            flush(&mut data, &mut events);
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+        }
+    }
+    flush(&mut data, &mut events);
+    events
+}
+
+/// True when a stream event marks the end of one request/response cycle.
+/// Used by the websocket relay, where one connection carries many cycles and
+/// there is no HTTP response boundary to lean on.
+pub fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
+    let kind = event
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match format {
+        WireFormat::AnthropicMessages => matches!(kind, "message_stop" | "error"),
+        WireFormat::OpenAiResponses => matches!(
+            kind,
+            "response.completed" | "response.failed" | "response.incomplete" | "error"
+        ),
+        // Chat Completions has no websocket transport; cycles close on
+        // connection end instead.
+        WireFormat::OpenAiChat => false,
+    }
+}
+
+/// HTTP-ish status for a monitor event closed by a terminal stream event:
+/// success terminals map to 200, error terminals carry their own status when
+/// the event includes one (Codex wraps upstream HTTP errors that way).
+pub fn terminal_status(_format: WireFormat, event: &Value) -> u16 {
+    let kind = event
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match kind {
+        "response.completed" | "response.incomplete" | "message_stop" => 200,
+        _ => event
+            .get("status")
+            .or_else(|| event.get("status_code"))
+            .and_then(Value::as_u64)
+            .and_then(|s| u16::try_from(s).ok())
+            .unwrap_or(502),
+    }
+}
+
 /// Extract request metadata from a parsed request body.
 pub fn parse_request(format: WireFormat, body: &Value) -> RequestMeta {
     match format {
@@ -123,6 +201,50 @@ mod tests {
         );
         assert_eq!(detect("/v1/models"), None);
         assert_eq!(detect("/api/auth/session"), None);
+    }
+
+    #[test]
+    fn sse_splitter_handles_crlf_multiline_and_noise() {
+        let raw = concat!(
+            ": comment\r\n",
+            "event: message_start\r\n",
+            "data: {\"a\":\r\n",
+            "data:  1}\r\n",
+            "\r\n",
+            "data: not-json\n",
+            "\n",
+            "data: [DONE]\n",
+            "\n",
+            "data: {\"b\":2}\n",
+        );
+        let events = sse_json_events(raw);
+        assert_eq!(events.len(), 2);
+        // Multi-line data fields join with a newline per the SSE spec.
+        assert_eq!(events[0]["a"], 1);
+        // A final event without a trailing blank line still flushes.
+        assert_eq!(events[1]["b"], 2);
+    }
+
+    #[test]
+    fn terminal_events_per_format() {
+        use serde_json::json;
+        let done = json!({"type": "response.completed"});
+        let failed = json!({"type": "response.failed"});
+        let err = json!({"type": "error", "status": 429});
+        assert!(is_terminal_event(WireFormat::OpenAiResponses, &done));
+        assert!(is_terminal_event(WireFormat::OpenAiResponses, &failed));
+        assert!(is_terminal_event(WireFormat::OpenAiResponses, &err));
+        assert!(!is_terminal_event(
+            WireFormat::OpenAiResponses,
+            &json!({"type": "response.output_text.delta"})
+        ));
+        assert!(is_terminal_event(
+            WireFormat::AnthropicMessages,
+            &json!({"type": "message_stop"})
+        ));
+        assert_eq!(terminal_status(WireFormat::OpenAiResponses, &done), 200);
+        assert_eq!(terminal_status(WireFormat::OpenAiResponses, &err), 429);
+        assert_eq!(terminal_status(WireFormat::OpenAiResponses, &failed), 502);
     }
 
     #[test]

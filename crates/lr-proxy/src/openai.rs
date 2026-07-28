@@ -98,18 +98,7 @@ pub fn reconstruct_chat_sse(raw: &str) -> (ResponseMeta, Value) {
     // Tool calls accumulate by index: (id, name, arguments-json).
     let mut tools: Vec<(Option<String>, String, String)> = Vec::new();
 
-    for line in raw.lines() {
-        let Some(data) = line.trim_start().strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data.is_empty() || data == "[DONE]" {
-            continue;
-        }
-        let Ok(json) = serde_json::from_str::<Value>(data) else {
-            continue;
-        };
-
+    for json in crate::wire::sse_json_events(raw) {
         if meta.message_id.is_none() {
             meta.message_id = str_field(Some(&json), "id");
         }
@@ -293,17 +282,7 @@ pub fn reconstruct_responses_sse(raw: &str) -> (ResponseMeta, Value) {
     let mut reasoning = String::new();
     let mut meta = ResponseMeta::default();
 
-    for line in raw.lines() {
-        let Some(data) = line.trim_start().strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data.is_empty() || data == "[DONE]" {
-            continue;
-        }
-        let Ok(json) = serde_json::from_str::<Value>(data) else {
-            continue;
-        };
+    for json in crate::wire::sse_json_events(raw) {
         match json.get("type").and_then(Value::as_str) {
             Some("response.created") => {
                 let r = json.get("response");

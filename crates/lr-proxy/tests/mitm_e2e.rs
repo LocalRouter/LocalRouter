@@ -299,6 +299,259 @@ async fn non_streaming_exchange_is_faithful_and_recorded() {
     assert_eq!(recorded, 1, "expected the exchange to be recorded once");
 }
 
+/// Spawn a TLS upstream that accepts a websocket upgrade on any path, reads
+/// one client message, and answers with `response.created` + a full
+/// `response.completed` — the Codex Responses-over-websocket shape.
+/// `seen_ext` records the `Sec-WebSocket-Extensions` header the upstream saw
+/// (the proxy must strip it so no compression is ever negotiated).
+async fn spawn_ws_upstream(
+    ca: &TestCa,
+    seen_ext: std::sync::Arc<std::sync::Mutex<Option<Option<String>>>>,
+) -> (u16, tokio::task::JoinHandle<()>) {
+    use lr_proxy::websocket::{encode_frame, FrameDecoder, WsMessage};
+
+    let (leaf, key) = make_leaf(ca, HOST);
+    let mut cfg = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![leaf], key)
+        .unwrap();
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let acceptor = TlsAcceptor::from(Arc::new(cfg));
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((tcp, _)) = listener.accept().await else {
+                break;
+            };
+            let acceptor = acceptor.clone();
+            let seen_ext = seen_ext.clone();
+            tokio::spawn(async move {
+                let Ok(tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let svc = service_fn(move |mut req: Request<Incoming>| {
+                    let seen_ext = seen_ext.clone();
+                    *seen_ext.lock().unwrap() = Some(
+                        req.headers()
+                            .get("sec-websocket-extensions")
+                            .map(|v| v.to_str().unwrap_or("").to_string()),
+                    );
+                    let on_upgrade = hyper::upgrade::on(&mut req);
+                    tokio::spawn(async move {
+                        let Ok(upgraded) = on_upgrade.await else {
+                            return;
+                        };
+                        let mut io = TokioIo::new(upgraded);
+                        let mut decoder = FrameDecoder::new();
+                        let mut buf = [0u8; 8192];
+                        // Wait for the client's request message.
+                        'outer: loop {
+                            let Ok(n) = io.read(&mut buf).await else {
+                                return;
+                            };
+                            if n == 0 {
+                                return;
+                            }
+                            for msg in decoder.push(&buf[..n]) {
+                                if matches!(msg, WsMessage::Text(_)) {
+                                    break 'outer;
+                                }
+                            }
+                        }
+                        // Answer with created + completed (unmasked: server→client).
+                        let created = r#"{"type":"response.created","response":{"id":"resp_ws","model":"gpt-5.5"}}"#;
+                        let completed = r#"{"type":"response.completed","response":{"id":"resp_ws","model":"gpt-5.5","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong-ws"}]}],"usage":{"input_tokens":21,"output_tokens":5}}}"#;
+                        let mut frames = encode_frame(&WsMessage::Text(created.into()), false);
+                        frames.extend(encode_frame(&WsMessage::Text(completed.into()), false));
+                        let _ = io.write_all(&frames).await;
+                    });
+                    async move {
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(101)
+                                .header("connection", "Upgrade")
+                                .header("upgrade", "websocket")
+                                .header("sec-websocket-accept", "test-accept")
+                                .body(Full::new(Bytes::new()))
+                                .unwrap(),
+                        )
+                    }
+                });
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(tls), svc)
+                    .with_upgrades()
+                    .await
+                    .ok();
+            });
+        }
+    });
+    (port, handle)
+}
+
+/// Drive a Codex-style websocket exchange through the proxy end-to-end:
+/// CONNECT → forged-leaf TLS → HTTP upgrade → masked request frame →
+/// server frames teed back verbatim → one monitor event per cycle.
+#[tokio::test]
+async fn websocket_exchange_is_relayed_and_recorded() {
+    use lr_proxy::websocket::{encode_frame, FrameDecoder, WsMessage};
+
+    tls::ensure_crypto_provider();
+
+    let up_ca = make_ca();
+    let seen_ext = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (up_port, _up) = spawn_ws_upstream(&up_ca, seen_ext.clone()).await;
+
+    let mut up_roots = RootCertStore::empty();
+    up_roots.add(up_ca.ca_der.clone()).unwrap();
+
+    let dir = std::env::temp_dir().join(format!(
+        "lr-proxy-ws-e2e-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let ca = Arc::new(CertAuthority::load_or_create(&dir).unwrap());
+    let proxy_ca_pem = ca.ca_pem().to_string();
+
+    let store = Arc::new(MonitorEventStore::new(64));
+    let interceptor = Arc::new(ForceMitm(PassiveInterceptor::new(store.clone())));
+    let resolver = Arc::new(StaticResolver {
+        client_id: CLIENT_ID.to_string(),
+        secret: SECRET.to_string(),
+        proxy_enabled: true,
+    });
+
+    let manager = ProxyManager::with_upstream_roots(ca, interceptor, resolver, up_roots).unwrap();
+    let proxy_listener = ProxyManager::bind("127.0.0.1", 0).await.unwrap();
+    let proxy_port = proxy_listener.local_addr().unwrap().port();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        manager
+            .serve(proxy_listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    // CONNECT through the proxy, then TLS with the proxy's forged leaf.
+    let mut stream = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+    use base64::Engine;
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("{CLIENT_ID}:{SECRET}"));
+    let connect = format!(
+        "CONNECT {HOST}:{up_port} HTTP/1.1\r\nHost: {HOST}:{up_port}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
+    );
+    stream.write_all(connect.as_bytes()).await.unwrap();
+    let resp = read_connect_response(&mut stream).await;
+    assert!(resp.contains("200"), "CONNECT failed: {resp}");
+
+    let mut cc = ClientConfig::builder()
+        .with_root_certificates(client_root_store(&proxy_ca_pem))
+        .with_no_client_auth();
+    cc.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let connector = TlsConnector::from(Arc::new(cc));
+    let server_name = ServerName::try_from(HOST).unwrap();
+    let mut tls = connector.connect(server_name, stream).await.unwrap();
+
+    // Raw HTTP upgrade request (what tungstenite sends), with a compression
+    // extension the proxy must strip before forwarding.
+    let upgrade = format!(
+        "GET /backend-api/codex/responses HTTP/1.1\r\n\
+         Host: {HOST}:{up_port}\r\n\
+         Connection: Upgrade\r\n\
+         Upgrade: websocket\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n"
+    );
+    tls.write_all(upgrade.as_bytes()).await.unwrap();
+
+    // Read the 101 response head.
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    loop {
+        let n = tls.read(&mut b).await.unwrap();
+        assert!(n != 0, "proxy closed before upgrade response");
+        head.push(b[0]);
+        if head.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    let head = String::from_utf8_lossy(&head).to_string();
+    assert!(
+        head.starts_with("HTTP/1.1 101"),
+        "expected 101, got: {head}"
+    );
+    assert!(
+        head.to_ascii_lowercase().contains("sec-websocket-accept"),
+        "upstream's accept header must pass through: {head}"
+    );
+
+    // Send the request message (masked, as clients must).
+    let request = r#"{"type":"response.create","model":"gpt-5.5","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"ping"}]}]}"#;
+    tls.write_all(&encode_frame(&WsMessage::Text(request.into()), true))
+        .await
+        .unwrap();
+
+    // Read both server messages back through the proxy.
+    let mut decoder = FrameDecoder::new();
+    let mut messages = Vec::new();
+    let mut buf = [0u8; 8192];
+    while messages.len() < 2 {
+        let n = tls.read(&mut buf).await.unwrap();
+        assert!(n != 0, "connection closed before both events arrived");
+        messages.extend(decoder.push(&buf[..n]));
+    }
+    let WsMessage::Text(last) = &messages[1] else {
+        panic!("expected text frame");
+    };
+    assert!(last.contains("response.completed"));
+    assert!(last.contains("pong-ws"));
+
+    // Close the websocket; the relay then finalizes the cycle event.
+    drop(tls);
+    let mut recorded = 0;
+    for _ in 0..50 {
+        recorded = store.list(0, 10, None).total;
+        if recorded > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(recorded, 1, "expected one monitor event for the ws cycle");
+    let summary = &store.list(0, 10, None).events[0];
+    let event = store.get(&summary.id).unwrap();
+    assert_eq!(event.status, lr_monitor::EventStatus::Complete);
+    let lr_monitor::MonitorEventData::LlmCall {
+        model,
+        input_tokens,
+        output_tokens,
+        status_code,
+        content_preview,
+        ..
+    } = &event.data
+    else {
+        panic!("expected LlmCall event");
+    };
+    assert_eq!(model, "gpt-5.5");
+    assert_eq!(*input_tokens, Some(21));
+    assert_eq!(*output_tokens, Some(5));
+    assert_eq!(*status_code, Some(200));
+    assert_eq!(content_preview.as_deref(), Some("pong-ws"));
+
+    // The proxy must have stripped the compression extension offer.
+    assert_eq!(
+        *seen_ext.lock().unwrap(),
+        Some(None),
+        "proxy should strip Sec-WebSocket-Extensions so frames stay plaintext"
+    );
+
+    let _ = shutdown_tx.send(());
+}
+
 #[tokio::test]
 async fn streaming_sse_exchange_is_faithful_and_recorded() {
     let (status, body, recorded) = run_case(true).await;

@@ -116,17 +116,7 @@ pub fn reconstruct_sse(raw: &str) -> (ResponseMeta, Value) {
     let mut usage = serde_json::Map::new();
     let mut meta = ResponseMeta::default();
 
-    for line in raw.lines() {
-        let Some(data) = line.trim_start().strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data.is_empty() || data == "[DONE]" {
-            continue;
-        }
-        let Ok(json) = serde_json::from_str::<Value>(data) else {
-            continue;
-        };
+    for json in crate::wire::sse_json_events(raw) {
         let idx = json.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
 
         match json.get("type").and_then(Value::as_str) {
