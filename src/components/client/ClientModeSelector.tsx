@@ -93,13 +93,13 @@ const LLM_OPTIONS: ModeOption<LlmMode>[] = [
   {
     value: "gateway",
     label: "Gateway",
-    description: "LocalRouter routes LLM requests through its native API",
+    description: "OpenAI-compatible endpoint: Chat Completions, Responses, and Completions (legacy)",
     Icon: ArrowIcon,
   },
   {
     value: "proxy",
     label: "HTTPS Proxy",
-    description: "Inspect traffic in the monitor and apply the firewall — allow/ask/deny, model rules, transforms",
+    description: "LocalRouter acts as the client's HTTPS proxy",
     Icon: InspectIcon,
   },
 ]
@@ -223,10 +223,10 @@ function ModeOptionButton<T extends string>({
           {option.label}
           {option.experimentalKey && EXPERIMENTAL[option.experimentalKey] && <ExperimentalBadge />}
         </p>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          {option.description}
-          {!allowed && reason && ` (${reason})`}
-        </p>
+        <p className="text-xs text-muted-foreground mt-0.5">{option.description}</p>
+        {!allowed && reason && (
+          <p className="text-xs font-medium text-amber-600 dark:text-amber-500 mt-0.5">{reason}</p>
+        )}
       </div>
     </button>
   )
