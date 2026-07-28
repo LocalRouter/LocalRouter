@@ -110,17 +110,19 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
             const category = getCategory(event.event_type)
             const config = categoryConfig[category] ?? categoryConfig.llm
             const Icon = config.icon
+            const isSelected = selectedId === event.id
 
             return (
               <tr
                 key={event.id}
                 onClick={() => onSelect(event.id)}
+                aria-selected={isSelected}
                 className={cn(
-                  'cursor-pointer hover:bg-accent/50 transition-colors border-b border-border/50',
-                  selectedId === event.id && 'bg-accent'
+                  'cursor-pointer transition-colors border-b border-border/50',
+                  isSelected ? 'bg-primary/10 hover:bg-primary/15' : 'hover:bg-accent/50'
                 )}
               >
-                <td className="px-2 py-1">
+                <td className={cn('px-2 py-1 border-l-2', isSelected ? 'border-l-primary' : 'border-l-transparent')}>
                   <StatusBadge status={event.status} />
                 </td>
                 <td className="px-2 py-1 font-mono text-muted-foreground whitespace-nowrap" title={formatTime(event.timestamp).full}>
