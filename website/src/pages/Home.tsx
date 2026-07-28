@@ -293,13 +293,15 @@ export default function Home() {
                   <div>
                     <span className="font-medium">LLM Gateway</span>
                     <p className="text-sm text-muted-foreground">A drop-in <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1</code> API — one base URL and key, routed to 19+ providers</p>
+                    <code className="mt-1.5 block w-fit rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"><span className="text-blue-500">ANTHROPIC_BASE_URL</span>=http://localhost:3625 claude</code>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Globe className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
                     <span className="font-medium">HTTPS Proxy</span>
-                    <p className="text-sm text-muted-foreground">Set <code className="text-xs bg-muted px-1 py-0.5 rounded">HTTPS_PROXY</code> and the tool keeps its own subscription and provider — every request shows up in the Monitor with tokens and cost, forwarded unchanged</p>
+                    <p className="text-sm text-muted-foreground">The tool keeps its own subscription and provider — every request shows up in the Monitor with tokens and cost, forwarded unchanged</p>
+                    <code className="mt-1.5 block w-fit rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"><span className="text-amber-500">HTTPS_PROXY</span>=http://localhost:3626 claude</code>
                   </div>
                 </li>
               </ul>
