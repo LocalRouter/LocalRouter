@@ -285,7 +285,7 @@ export default function Home() {
                 LLM Gateway / HTTPS Proxy
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Every client connects one of two ways. <span className="font-medium text-foreground">LLM Gateway</span> gives any OpenAI-compatible app one local endpoint routed across all your providers. <span className="font-medium text-foreground">Proxy</span> sits in front of tools on their own subscriptions — Claude Code, Codex — so you see their traffic without changing how they work.
+                Connect clients either through the <span className="font-medium text-foreground">LLM Gateway</span> — an explicit OpenAI-compatible endpoint that routes every request across your providers — or through the <span className="font-medium text-foreground">HTTPS Proxy</span>, a transparent pass-through that leaves tools like Claude Code and Codex on their own provider and subscription, adding observability and optional request rewriting.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
