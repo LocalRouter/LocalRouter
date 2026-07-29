@@ -74,6 +74,9 @@ struct AppFirewall {
     /// exchanges are already recorded here (keyed by strategy), so the rolling
     /// windows include proxy traffic.
     metrics: Arc<lr_monitoring::metrics::MetricsCollector>,
+    /// Server state, used to run the *same* secret scan the gateway runs
+    /// (scanner, per-client action, monitor events, approval popup).
+    state: lr_server::state::AppState,
 }
 
 /// Replicates the gateway's metrics-based strategy rate-limit check
@@ -177,6 +180,24 @@ impl lr_proxy::active::Firewall for AppFirewall {
             return RequestAction::reject_json(429, &format!("Rate limit exceeded ({kind})"));
         }
 
+        // Outbound secret scan — the same check, config, monitor events, and
+        // approval popup as the gateway path. Runs before the model-approval
+        // ask below so a leaked secret is still caught when the model itself is
+        // already approved. `req.body` is the provider-native request (Anthropic
+        // Messages or OpenAI Responses, including a websocket `response.create`
+        // message); the shared text extractor understands all of them.
+        if let lr_server::routes::pipeline::SecretScanOutcome::Deny(message) =
+            lr_server::routes::pipeline::scan_request_for_secrets(
+                &self.state,
+                &req.client_id,
+                req.model.as_deref().unwrap_or_default(),
+                &req.body,
+            )
+            .await
+        {
+            return RequestAction::reject_json(403, &message);
+        }
+
         // Ask → the shared firewall approval popup (a real window that works from
         // the tray and lets the user edit the request). Allow → forward unchanged.
         // Grants made from the popup suppress subsequent asks: a still-valid
@@ -262,6 +283,7 @@ impl ProxyService {
         config_manager: lr_config::ConfigManager,
         firewall_manager: Arc<lr_mcp::gateway::firewall::FirewallManager>,
         model_approvals: Arc<lr_server::state::ModelApprovalTracker>,
+        state: lr_server::state::AppState,
         host: String,
     ) -> AppResult<Self> {
         let dir = lr_utils::paths::config_dir()?.join("proxy");
@@ -279,6 +301,7 @@ impl ProxyService {
             firewall: firewall_manager,
             model_approvals,
             metrics: metrics_collector,
+            state,
         });
         let interceptor = lr_proxy::active::ActiveInterceptor::new(recorder, firewall);
         Ok(Self {

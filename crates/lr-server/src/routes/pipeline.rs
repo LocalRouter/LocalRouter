@@ -1256,8 +1256,37 @@ pub(crate) async fn run_secret_scan_check(
     let Some(client_ctx) = client_ctx else {
         return Ok(());
     };
+    let body = serde_json::to_value(request).unwrap_or_default();
+    match scan_request_for_secrets(state, &client_ctx.client_id, &request.model, &body).await {
+        SecretScanOutcome::Allow => Ok(()),
+        SecretScanOutcome::Deny(message) => Err(ApiErrorResponse::forbidden(message)),
+    }
+}
+
+/// Whether a scanned request may proceed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretScanOutcome {
+    /// No secrets found, action is Notify/Off, or the user approved.
+    Allow,
+    /// The request must not reach the provider; carries the client-facing reason.
+    Deny(String),
+}
+
+/// Scan one outbound request body for leaked secrets and apply the configured
+/// action. Format-agnostic: it takes the raw request JSON, so the gateway
+/// (OpenAI chat shape) and the HTTPS/WebSocket proxy (Anthropic Messages or
+/// OpenAI Responses shape) share one implementation — including the monitor
+/// events, the approval popup, and the per-client action override.
+///
+/// Regex + entropy is sub-millisecond, so this runs synchronously inline.
+pub async fn scan_request_for_secrets(
+    state: &AppState,
+    client_id: &str,
+    model: &str,
+    body: &serde_json::Value,
+) -> SecretScanOutcome {
     let config = state.config_manager.get();
-    let client = state.client_manager.get_client(&client_ctx.client_id);
+    let client = state.client_manager.get_client(client_id);
 
     // Resolve effective action: per-client override > global
     let effective_action = client
@@ -1266,19 +1295,19 @@ pub(crate) async fn run_secret_scan_check(
         .unwrap_or(&config.secret_scanning.action);
 
     if *effective_action == lr_config::SecretScanAction::Off {
-        return Ok(());
+        return SecretScanOutcome::Allow;
     }
 
     // Check time-based bypass (unless monitor intercept overrides)
     if state
         .secret_scan_approval_tracker
-        .has_valid_bypass(&client_ctx.client_id)
+        .has_valid_bypass(client_id)
         && !state.mcp_gateway.firewall_manager.should_intercept(
-            &client_ctx.client_id,
+            client_id,
             lr_mcp::gateway::firewall::InterceptCategory::SecretScan,
         )
     {
-        return Ok(());
+        return SecretScanOutcome::Allow;
     }
 
     // Check if scanner is initialized and has rules
@@ -1288,15 +1317,19 @@ pub(crate) async fn run_secret_scan_check(
         guard.as_ref().cloned()
     };
     let Some(scanner) = scanner else {
-        return Ok(());
+        return SecretScanOutcome::Allow;
     };
     if !scanner.has_rules() {
-        return Ok(());
+        return SecretScanOutcome::Allow;
     }
 
-    // Extract text from request using guardrails text extractor
-    let request_json = serde_json::to_value(request).unwrap_or_default();
-    let guardrail_texts = lr_guardrails::text_extractor::extract_request_text(&request_json);
+    // Extract text from request using guardrails text extractor. It recognizes
+    // every request shape we inspect (chat messages, Responses input,
+    // Anthropic system blocks), so no format handling is needed here.
+    let guardrail_texts = lr_guardrails::text_extractor::extract_request_text(body);
+    if guardrail_texts.is_empty() {
+        return SecretScanOutcome::Allow;
+    }
 
     // Convert to secret scanner's ExtractedText type
     let texts: Vec<lr_secret_scanner::ExtractedText> = guardrail_texts
@@ -1316,9 +1349,12 @@ pub(crate) async fn run_secret_scan_check(
     } else {
         0
     };
+    let client_ctx = ClientAuthContext {
+        client_id: client_id.to_string(),
+    };
     let secret_scan_event_id = super::monitor_helpers::emit_secret_scan(
         state,
-        Some(client_ctx),
+        Some(&client_ctx),
         None,
         scan_text_preview,
         rules_count,
@@ -1337,13 +1373,13 @@ pub(crate) async fn run_secret_scan_check(
             "pass",
             scan_latency,
         );
-        return Ok(());
+        return SecretScanOutcome::Allow;
     }
 
     tracing::info!(
         "Secret scan found {} potential secrets in request from client {}",
         result.findings.len(),
-        client_ctx.client_id
+        client_id
     );
 
     let findings_json = serde_json::to_value(&result.findings).unwrap_or(serde_json::json!([]));
@@ -1363,12 +1399,12 @@ pub(crate) async fn run_secret_scan_check(
             let payload =
                 serde_json::to_string(&result.findings).unwrap_or_else(|_| "[]".to_string());
             state.emit_event("secret-scan-notify", &payload);
-            Ok(())
+            SecretScanOutcome::Allow
         }
         lr_config::SecretScanAction::Ask => {
-            handle_secret_scan_approval(state, client_ctx, request, result).await
+            handle_secret_scan_approval(state, &client_ctx, model, result).await
         }
-        lr_config::SecretScanAction::Off => Ok(()),
+        lr_config::SecretScanAction::Off => SecretScanOutcome::Allow,
     }
 }
 
@@ -1378,9 +1414,9 @@ pub(crate) async fn run_secret_scan_check(
 pub(crate) async fn handle_secret_scan_approval(
     state: &AppState,
     client_ctx: &ClientAuthContext,
-    request: &ChatCompletionRequest,
+    model: &str,
     result: lr_secret_scanner::ScanResult,
-) -> ApiResult<()> {
+) -> SecretScanOutcome {
     use lr_mcp::gateway::firewall::{
         FirewallApprovalAction, SecretFindingSummary, SecretScanApprovalDetails,
     };
@@ -1418,20 +1454,31 @@ pub(crate) async fn handle_secret_scan_approval(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let response = state
+    let response = match state
         .mcp_gateway
         .firewall_manager
         .request_secret_scan_approval(
             client_ctx.client_id.clone(),
             client_name,
-            request.model.clone(),
+            model.to_string(),
             details,
             preview,
         )
         .await
-        .map_err(|e| {
-            ApiErrorResponse::internal_error(format!("Secret scan approval failed: {}", e))
-        })?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // Fail closed: if the approval popup can't be shown, a request
+            // carrying a detected secret must not silently go out.
+            tracing::error!(
+                "Secret scan approval failed for {}: {e}",
+                client_ctx.client_id
+            );
+            return SecretScanOutcome::Deny(
+                "Request blocked: secret scan approval could not be completed".to_string(),
+            );
+        }
+    };
 
     let action_str = format!("{:?}", response.action);
     super::monitor_helpers::emit_firewall_decision(
@@ -1439,7 +1486,7 @@ pub(crate) async fn handle_secret_scan_approval(
         Some(client_ctx),
         None,
         "secret_scan",
-        &request.model,
+        model,
         &action_str,
         None,
     );
@@ -1454,16 +1501,16 @@ pub(crate) async fn handle_secret_scan_approval(
                 "Secret scan: request approved for client {}",
                 client_ctx.client_id
             );
-            Ok(())
+            SecretScanOutcome::Allow
         }
         _ => {
             tracing::warn!(
                 "Secret scan: request denied for client {}",
                 client_ctx.client_id
             );
-            Err(ApiErrorResponse::forbidden(
-                "Request blocked: potential secrets detected in outbound request",
-            ))
+            SecretScanOutcome::Deny(
+                "Request blocked: potential secrets detected in outbound request".to_string(),
+            )
         }
     }
 }
@@ -2025,6 +2072,109 @@ pub(crate) async fn run_turn_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Compose the extractor + engine exactly as `scan_request_for_secrets`
+    /// does, so we can assert on real request bodies without an `AppState`.
+    fn findings_for(body: &serde_json::Value) -> Vec<lr_secret_scanner::SecretFinding> {
+        let engine =
+            lr_secret_scanner::SecretScanEngine::new(&lr_secret_scanner::SecretScanEngineConfig {
+                entropy_threshold: 3.0,
+                allowlist: vec![],
+                scan_system_messages: false,
+            })
+            .expect("engine builds");
+        let texts: Vec<lr_secret_scanner::ExtractedText> =
+            lr_guardrails::text_extractor::extract_request_text(body)
+                .iter()
+                .enumerate()
+                .map(|(i, t)| lr_secret_scanner::ExtractedText {
+                    label: t.label.clone(),
+                    text: t.text.clone(),
+                    message_index: i,
+                })
+                .collect();
+        engine.scan(&texts).findings
+    }
+
+    /// The reported bug: an AWS key sent through the proxy by Codex (OpenAI
+    /// Responses shape) produced no findings, because extraction only knew
+    /// about `messages[]`.
+    #[test]
+    fn scans_openai_responses_body_from_proxy() {
+        let findings = findings_for(&serde_json::json!({
+            "model": "gpt-5.5",
+            "instructions": "You are Codex.",
+            "input": [{
+                "role": "user",
+                "content": [{"type": "input_text",
+                             "text": "Is this my AWS key AKIAIOSFODNN7EXAMPLE"}]
+            }]
+        }));
+        assert_eq!(findings.len(), 1, "expected the AWS key to be detected");
+        assert_eq!(findings[0].rule_id, "aws-access-key-id");
+    }
+
+    /// The same body as a websocket `response.create` message, which the proxy
+    /// firewalls per-message.
+    #[test]
+    fn scans_websocket_response_create_message() {
+        let findings = findings_for(&serde_json::json!({
+            "type": "response.create",
+            "model": "gpt-5.5",
+            "input": [{
+                "role": "user",
+                "content": [{"type": "input_text",
+                             "text": "Is this my AWS key AKIAIOSFODNN7EXAMPLE"}]
+            }]
+        }));
+        assert_eq!(findings.len(), 1, "websocket messages must be scanned too");
+    }
+
+    /// Claude Code over the proxy speaks Anthropic Messages.
+    #[test]
+    fn scans_anthropic_messages_body_from_proxy() {
+        let findings = findings_for(&serde_json::json!({
+            "model": "claude-fable-5",
+            "system": "You are Claude.",
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text",
+                             "text": "Is this my AWS key AKIAIOSFODNN7EXAMPLE"}]
+            }]
+        }));
+        assert_eq!(findings.len(), 1, "expected the AWS key to be detected");
+    }
+
+    /// A secret in the system prompt is skipped by default, in every format —
+    /// system prompts are full of tool docs that trip entropy rules.
+    #[test]
+    fn skips_system_prompts_across_formats() {
+        assert!(findings_for(&serde_json::json!({
+            "instructions": "Use key AKIAIOSFODNN7EXAMPLE",
+        }))
+        .is_empty());
+        assert!(findings_for(&serde_json::json!({
+            "system": "Use key AKIAIOSFODNN7EXAMPLE",
+        }))
+        .is_empty());
+        assert!(findings_for(&serde_json::json!({
+            "messages": [{"role": "system", "content": "Use key AKIAIOSFODNN7EXAMPLE"}],
+        }))
+        .is_empty());
+    }
+
+    /// Clean traffic must not trip the scanner in any format.
+    #[test]
+    fn clean_bodies_produce_no_findings() {
+        assert!(findings_for(&serde_json::json!({
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}]
+        }))
+        .is_empty());
+        assert!(findings_for(&serde_json::json!({
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .is_empty());
+    }
 
     #[test]
     fn pipeline_caps_chat_enables_everything() {

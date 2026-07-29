@@ -600,9 +600,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 s.monitor_store.clone(),
                 s.mcp_gateway.firewall_manager.clone(),
                 s.model_approval_tracker.clone(),
+                s,
             )
         }) {
-            Some((monitor_store, firewall_manager, model_approvals)) => {
+            Some((monitor_store, firewall_manager, model_approvals, app_state)) => {
                 match launcher::proxy::ProxyService::new(
                     monitor_store,
                     metrics_collector.clone(),
@@ -610,6 +611,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     config_manager.clone(),
                     firewall_manager,
                     model_approvals,
+                    app_state,
                     cfg.proxy.host.clone(),
                 ) {
                     Ok(svc) => {
