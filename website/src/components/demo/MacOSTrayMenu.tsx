@@ -59,6 +59,7 @@ const MAX_TRAY_ITEMS = 10
 function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
   const showLlm = client.llm_mode === 'gateway'
   const showMcp = client.mcp_mode !== 'off'
+  const isProxy = client.llm_mode === 'proxy'
 
   return (
     <div className="py-1">
@@ -70,21 +71,46 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
         label={client.enabled ? '● Enabled' : '○ Disabled'}
       />
 
-      {/* Copy actions */}
-      <MenuItem
-        icon={<Copy className="w-3 h-3" />}
-        label="Copy Client ID (OAuth)"
-        onClick={() => {
-          navigator.clipboard.writeText(client.client_id)
-        }}
-      />
-      <MenuItem
-        icon={<Copy className="w-3 h-3" />}
-        label="Copy API Key / Client Secret"
-        onClick={() => {
-          navigator.clipboard.writeText('demo-api-key-' + client.id)
-        }}
-      />
+      {/* Copy actions — proxy-mode clients get proxy connection details
+          instead of the raw id/secret (kept only if MCP also enabled) */}
+      {isProxy && (
+        <>
+          <MenuItem
+            icon={<Copy className="w-3 h-3" />}
+            label="Copy Proxy URL (HTTPS_PROXY)"
+            onClick={() => {
+              navigator.clipboard.writeText(
+                `http://${client.client_id}:demo-api-key-${client.id}@127.0.0.1:3626`
+              )
+            }}
+          />
+          <MenuItem
+            icon={<Copy className="w-3 h-3" />}
+            label="Copy CA Cert Path"
+            onClick={() => {
+              navigator.clipboard.writeText('~/.localrouter/proxy/root-ca.pem')
+            }}
+          />
+        </>
+      )}
+      {(!isProxy || showMcp) && (
+        <>
+          <MenuItem
+            icon={<Copy className="w-3 h-3" />}
+            label="Copy Client ID (OAuth)"
+            onClick={() => {
+              navigator.clipboard.writeText(client.client_id)
+            }}
+          />
+          <MenuItem
+            icon={<Copy className="w-3 h-3" />}
+            label="Copy API Key / Client Secret"
+            onClick={() => {
+              navigator.clipboard.writeText('demo-api-key-' + client.id)
+            }}
+          />
+        </>
+      )}
 
       <MenuItem
         icon={<Settings className="w-3 h-3" />}

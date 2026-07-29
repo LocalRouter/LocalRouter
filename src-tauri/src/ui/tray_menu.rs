@@ -172,14 +172,46 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                 client_submenu = client_submenu
                     .text(format!("toggle_client_enabled_{}", client.id), toggle_label);
 
-                client_submenu = client_submenu.text(
-                    format!("copy_client_id_{}", client.id),
-                    format!("{ICON_PAD}⧉{ICON_PAD} Copy Client ID (OAuth)"),
-                );
-                client_submenu = client_submenu.text(
-                    format!("copy_client_secret_{}", client.id),
-                    format!("{ICON_PAD}⧉{ICON_PAD} Copy API Key / Client Secret (Bearer, OAuth)"),
-                );
+                // LLM tray items are model toggles — only meaningful for the
+                // native gateway (proxy clients don't select models here).
+                let show_llm = client.llm_gateway_enabled();
+                let show_mcp = !matches!(client.mcp_mode, McpMode::Off);
+                let is_proxy = client.llm_proxy_enabled();
+
+                if is_proxy {
+                    // HTTPS-proxy clients connect via HTTPS_PROXY (credentials
+                    // are embedded in the URL) and must trust the root CA, so
+                    // offer those instead of the raw id/secret.
+                    client_submenu = client_submenu.text(
+                        format!("copy_proxy_url_{}", client.id),
+                        format!("{ICON_PAD}⧉{ICON_PAD} Copy Proxy URL (HTTPS_PROXY)"),
+                    );
+                    client_submenu = client_submenu.text(
+                        format!("copy_proxy_ca_{}", client.id),
+                        format!("{ICON_PAD}⧉{ICON_PAD} Copy CA Cert Path"),
+                    );
+                    if matches!(
+                        client.template_id.as_deref(),
+                        Some("claude-code") | Some("codex")
+                    ) {
+                        client_submenu = client_submenu.text(
+                            format!("copy_proxy_cmd_{}", client.id),
+                            format!("{ICON_PAD}⧉{ICON_PAD} Copy Launch Command"),
+                        );
+                    }
+                }
+                if !is_proxy || show_mcp {
+                    client_submenu = client_submenu.text(
+                        format!("copy_client_id_{}", client.id),
+                        format!("{ICON_PAD}⧉{ICON_PAD} Copy Client ID (OAuth)"),
+                    );
+                    client_submenu = client_submenu.text(
+                        format!("copy_client_secret_{}", client.id),
+                        format!(
+                            "{ICON_PAD}⧉{ICON_PAD} Copy API Key / Client Secret (Bearer, OAuth)"
+                        ),
+                    );
+                }
 
                 client_submenu = client_submenu.text(
                     format!("open_client_settings_{}", client.id),
@@ -187,11 +219,6 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                 );
 
                 client_submenu = client_submenu.separator();
-
-                // LLM tray items are model toggles — only meaningful for the
-                // native gateway (proxy clients don't select models here).
-                let show_llm = client.llm_gateway_enabled();
-                let show_mcp = !matches!(client.mcp_mode, McpMode::Off);
 
                 // === Quick toggles section (hidden for McpOnly) ===
                 if show_llm {
@@ -944,6 +971,113 @@ pub(crate) async fn handle_copy_mcp_bearer<R: Runtime>(
     }
 
     info!("Bearer token copied to clipboard for client: {}", client_id);
+
+    Ok(())
+}
+
+/// Handle copying the HTTPS inspection-proxy URL (with embedded Basic auth)
+/// for a proxy-mode client.
+pub(crate) async fn handle_copy_proxy_url<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+) -> tauri::Result<()> {
+    info!("Copying proxy URL for client: {}", client_id);
+
+    let proxy = app
+        .try_state::<Arc<crate::launcher::proxy::ProxyService>>()
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Proxy service not available")))?;
+
+    let client_manager = app.state::<Arc<ClientManager>>();
+    let secret = client_manager
+        .get_secret(client_id)
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Client secret not found")))?;
+
+    let url = proxy
+        .client_proxy_url(client_id, &secret)
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Proxy is not running")))?;
+
+    if let Err(e) = copy_to_clipboard(&url) {
+        error!("Failed to copy proxy URL to clipboard: {}", e);
+        return Err(tauri::Error::Anyhow(e));
+    }
+
+    info!("Proxy URL copied to clipboard for client: {}", client_id);
+
+    Ok(())
+}
+
+/// Handle copying the path to the proxy root CA certificate the client's tool
+/// must trust.
+pub(crate) async fn handle_copy_proxy_ca_path<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+) -> tauri::Result<()> {
+    info!("Copying proxy CA cert path for client: {}", client_id);
+
+    let proxy = app
+        .try_state::<Arc<crate::launcher::proxy::ProxyService>>()
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Proxy service not available")))?;
+
+    let path = proxy.ca_cert_path().display().to_string();
+
+    if let Err(e) = copy_to_clipboard(&path) {
+        error!("Failed to copy CA cert path to clipboard: {}", e);
+        return Err(tauri::Error::Anyhow(e));
+    }
+
+    info!("Proxy CA cert path copied to clipboard: {}", path);
+
+    Ok(())
+}
+
+/// Handle copying the one-off launch command that starts the client's tool
+/// through the inspection proxy (Claude Code / Codex templates).
+pub(crate) async fn handle_copy_proxy_command<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+) -> tauri::Result<()> {
+    use crate::launcher::integrations::{claude_code, codex};
+
+    info!("Copying proxy launch command for client: {}", client_id);
+
+    let proxy = app
+        .try_state::<Arc<crate::launcher::proxy::ProxyService>>()
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Proxy service not available")))?;
+
+    let client_manager = app.state::<Arc<ClientManager>>();
+    let secret = client_manager
+        .get_secret(client_id)
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Client secret not found")))?;
+
+    let url = proxy
+        .client_proxy_url(client_id, &secret)
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Proxy is not running")))?;
+    let ca_cert_path = proxy.ca_cert_path().display().to_string();
+
+    let template_id = app
+        .state::<ConfigManager>()
+        .get()
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .and_then(|c| c.template_id.clone());
+
+    let command = match template_id.as_deref() {
+        Some("codex") => codex::proxy_oneoff_command(&url, &ca_cert_path),
+        _ => claude_code::proxy_oneoff_command(&url, &ca_cert_path),
+    };
+
+    if let Err(e) = copy_to_clipboard(&command) {
+        error!("Failed to copy proxy launch command to clipboard: {}", e);
+        return Err(tauri::Error::Anyhow(e));
+    }
+
+    info!(
+        "Proxy launch command copied to clipboard for client: {}",
+        client_id
+    );
 
     Ok(())
 }

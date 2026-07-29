@@ -6,7 +6,8 @@
 
 use crate::ui::tray_menu::{
     build_tray_menu, copy_to_clipboard, handle_add_mcp_to_client, handle_copy_mcp_bearer,
-    handle_copy_mcp_url, handle_copy_url, handle_create_and_copy_api_key,
+    handle_copy_mcp_url, handle_copy_proxy_ca_path, handle_copy_proxy_command,
+    handle_copy_proxy_url, handle_copy_url, handle_create_and_copy_api_key,
     handle_open_client_settings, handle_prioritized_list, handle_toggle_catalog_compression,
     handle_toggle_client_enabled, handle_toggle_coding_agent_access, handle_toggle_free_tier,
     handle_toggle_mcp_access, handle_toggle_rate_limit, handle_toggle_skill_access,
@@ -456,6 +457,41 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                         tauri::async_runtime::spawn(async move {
                             if let Err(e) = handle_copy_mcp_bearer(&app_clone, &client_id).await {
                                 error!("Failed to copy client secret: {}", e);
+                            }
+                        });
+                    }
+                    // Handle copy proxy URL: copy_proxy_url_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("copy_proxy_url_") {
+                        info!("Copy proxy URL requested: {}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = handle_copy_proxy_url(&app_clone, &client_id).await {
+                                error!("Failed to copy proxy URL: {}", e);
+                            }
+                        });
+                    }
+                    // Handle copy proxy CA cert path: copy_proxy_ca_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("copy_proxy_ca_") {
+                        info!("Copy proxy CA cert path requested: {}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = handle_copy_proxy_ca_path(&app_clone, &client_id).await
+                            {
+                                error!("Failed to copy proxy CA cert path: {}", e);
+                            }
+                        });
+                    }
+                    // Handle copy proxy launch command: copy_proxy_cmd_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("copy_proxy_cmd_") {
+                        info!("Copy proxy launch command requested: {}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = handle_copy_proxy_command(&app_clone, &client_id).await
+                            {
+                                error!("Failed to copy proxy launch command: {}", e);
                             }
                         });
                     }
