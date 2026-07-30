@@ -468,16 +468,38 @@ export function FirewallApprovalCard({
         )}
       </div>
 
-      {/* Notify-only: informational popup, single Dismiss button */}
+      {/* Notify-only: informational popup — Dismiss, with escalation options.
+          The dropdown reuses the Ask actions: allow_1_hour = 1-hour scan
+          bypass for this client, deny_always = per-client action set to Off. */}
       {isNotifyOnly ? (
         <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
-          <Button
-            className="flex-1 h-10 font-bold"
-            onClick={onDismiss}
-            disabled={!onDismiss || submitting}
-          >
-            Dismiss
-          </Button>
+          <div className="flex flex-1">
+            <Button
+              className="flex-1 h-10 rounded-r-none font-bold"
+              onClick={onDismiss}
+              disabled={!onDismiss || submitting}
+            >
+              Dismiss
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  className="h-10 px-2 rounded-l-none border-l border-background/30"
+                  disabled={!onAction || submitting}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => onAction?.("allow_1_hour")}>
+                  Dismiss for 1 Hour
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAction?.("deny_always")}>
+                  Ignore Secrets for Client
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       ) : (
       <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
