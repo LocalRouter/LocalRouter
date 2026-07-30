@@ -8,10 +8,10 @@
  * and template-specific setup instructions.
  */
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen, AlertTriangle } from "lucide-react"
+import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen, AlertTriangle, Info, ShieldCheck } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { Button } from "@/components/ui/Button"
@@ -34,7 +34,7 @@ import type { ClientTemplate } from "./ClientTemplates"
 import ServiceIcon from "@/components/ServiceIcon"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
-import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams, ProxySetupInfo, GetClientProxySetupParams } from "@/types/tauri-commands"
+import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams, ProxySetupInfo, GetClientProxySetupParams, ConfigureClientProxyParams, UnconfigureClientProxyParams, CaTrustStatus } from "@/types/tauri-commands"
 
 interface ServerConfig {
   host: string
@@ -690,34 +690,50 @@ function ProxyLlmSetup({
   const [info, setInfo] = useState<ProxySetupInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [configuring, setConfiguring] = useState(false)
+  const [removing, setRemoving] = useState(false)
   const [autoResult, setAutoResult] = useState<LaunchResult | null>(null)
+  const [caTrust, setCaTrust] = useState<CaTrustStatus | null>(null)
+  const [trusting, setTrusting] = useState(false)
 
-  const isClaudeCode = template?.id === "claude-code"
-  const isCodex = template?.id === "codex"
-  // Templates whose config file LocalRouter can write for the user.
-  const supportsAuto = isClaudeCode || isCodex
-  const [innerTab, setInnerTab] = useState(supportsAuto ? "auto" : "temporary")
+  // Which tools LocalRouter can configure, and their caveats, are decided by
+  // the backend plan (src-tauri/src/launcher/proxy_setup.rs) — not duplicated
+  // here, so the two can't drift.
+  const supportsAuto = info?.supports_auto ?? false
+  const [innerTab, setInnerTab] = useState("temporary")
   useEffect(() => {
     setInnerTab(supportsAuto ? "auto" : "temporary")
   }, [supportsAuto])
 
+  const loadTrust = useCallback(() => {
+    invoke<CaTrustStatus>("get_proxy_ca_trust_status")
+      .then(setCaTrust)
+      .catch(() => setCaTrust(null))
+  }, [])
+
   useEffect(() => {
     let cancelled = false
+    // Drop the previous client's plan and result banner before loading the
+    // new one, so a "Configured …" message can't appear under a client it
+    // didn't apply to.
+    setInfo(null)
+    setError(null)
+    setAutoResult(null)
     const load = () => {
       invoke<ProxySetupInfo>("get_client_proxy_setup", { clientId: clientUuid } satisfies GetClientProxySetupParams)
         .then((data) => { if (!cancelled) { setInfo(data); setError(null) } })
         .catch((e) => { if (!cancelled) setError(String(e)) })
     }
     load()
+    loadTrust()
     const l = listenSafe("clients-changed", load)
     return () => { cancelled = true; l.cleanup() }
-  }, [clientUuid])
+  }, [clientUuid, loadTrust])
 
   const handleAutoConfigure = async () => {
     try {
       setConfiguring(true)
       setAutoResult(null)
-      const res = await invoke<LaunchResult>("configure_client_proxy", { clientId: clientUuid })
+      const res = await invoke<LaunchResult>("configure_client_proxy", { clientId: clientUuid } satisfies ConfigureClientProxyParams)
       setAutoResult(res)
       if (res.success) toast.success("Proxy configured")
       else toast.error(res.message)
@@ -728,19 +744,50 @@ function ProxyLlmSetup({
     }
   }
 
+  const handleRemoveConfig = async () => {
+    try {
+      setRemoving(true)
+      setAutoResult(null)
+      const res = await invoke<LaunchResult>("unconfigure_client_proxy", { clientId: clientUuid } satisfies UnconfigureClientProxyParams)
+      setAutoResult(res)
+      if (res.success) toast.success("Proxy configuration removed")
+      else toast.error(res.message)
+    } catch (e) {
+      toast.error(`Failed: ${e}`)
+    } finally {
+      setRemoving(false)
+    }
+  }
+
+  const handleTrustCa = async (trust: boolean) => {
+    try {
+      setTrusting(true)
+      const msg = await invoke<string>(trust ? "trust_proxy_ca" : "untrust_proxy_ca")
+      toast.success(msg)
+      loadTrust()
+    } catch (e) {
+      toast.error(String(e))
+    } finally {
+      setTrusting(false)
+    }
+  }
+
   if (error) return <p className="text-sm text-destructive">Failed to load proxy setup: {error}</p>
   if (!info) return <p className="text-sm text-muted-foreground">Loading proxy setup…</p>
 
-  // Backend builds the tool-specific command (Claude Code, Codex); fall back to
-  // a generic env-var launch for custom tools.
+  // The backend builds the tool-specific command where one exists. The generic
+  // fallback is only valid when the tool actually reads a CA env var — tools
+  // that trust the OS store report null, and splicing that in would produce a
+  // command that isn't a valid shell assignment.
   const binary = template?.binaryNames?.[0]
   const oneoff = info.oneoff_command
-    ?? (info.proxy_url
+    ?? (info.proxy_url && info.ca_env_var
       ? `HTTPS_PROXY=${info.proxy_url} ${info.ca_env_var}=${info.ca_cert_path} ${binary ?? "<your-tool>"}`
       : null)
 
   const innerTabCount = 2 + (supportsAuto ? 1 : 0)
   const innerGridCols = innerTabCount === 3 ? "grid-cols-3" : "grid-cols-2"
+  const toolName = template?.name ?? "your tool"
 
   return (
     <div className="rounded-lg border p-4 space-y-4">
@@ -757,6 +804,59 @@ function ProxyLlmSetup({
 
       {!info.running && (
         <p className="text-xs text-destructive">The proxy listener is not running.</p>
+      )}
+
+      {/* Caveats for this specific tool, straight from the backend plan. */}
+      {info.notes.length > 0 && (
+        <ul className="space-y-1.5 text-xs text-muted-foreground">
+          {info.notes.map((note, i) => (
+            <li key={i} className="flex gap-1.5">
+              <Info className="h-3.5 w-3.5 shrink-0 mt-px text-muted-foreground" />
+              <span>{note}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Tools with no CA setting of their own need the root CA in the OS
+          trust store. That is a consequential change, so it is its own
+          deliberate action rather than part of Configure. */}
+      {info.requires_system_ca && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5 space-y-2">
+          <p className="text-xs">
+            <span className="font-medium">{toolName} has no certificate setting</span> — it trusts
+            whatever your operating system trusts. LocalRouter&apos;s root CA has to be added there
+            for interception to work.
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            A trusted root certificate can vouch for any website, so only do this on a machine you
+            control. You can undo it here at any time.
+          </p>
+          {caTrust?.can_manage ? (
+            <div className="flex items-center gap-2">
+              {caTrust.state === "trusted" ? (
+                <>
+                  <span className="text-xs flex items-center gap-1 text-green-600 dark:text-green-500">
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Trusted
+                  </span>
+                  <Button size="sm" variant="outline" onClick={() => handleTrustCa(false)} disabled={trusting}>
+                    {trusting && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}
+                    Remove trust
+                  </Button>
+                </>
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => handleTrustCa(true)} disabled={trusting}>
+                  {trusting ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5 mr-2" />}
+                  Trust LocalRouter&apos;s CA
+                </Button>
+              )}
+            </div>
+          ) : (
+            caTrust?.manual_instructions && (
+              <p className="text-[11px] text-muted-foreground">{caTrust.manual_instructions}</p>
+            )
+          )}
+        </div>
       )}
 
       <Tabs value={innerTab} onValueChange={setInnerTab}>
@@ -777,28 +877,33 @@ function ProxyLlmSetup({
           </TabsTrigger>
         </TabsList>
 
-        {/* Auto: write the tool's config file for the user (Claude Code / Codex) */}
+        {/* Auto: LocalRouter writes the tool's own config file. */}
         {supportsAuto && (
           <TabsContent value="auto" className="space-y-3">
             <p className="text-xs text-muted-foreground">
               LocalRouter writes the proxy configuration to{" "}
-              <code className="bg-muted px-1 py-0.5 rounded">
-                {info.settings_file ?? (isCodex ? "~/.codex/.env" : "~/.claude/settings.json")}
-              </code>{" "}
-              (<code>HTTPS_PROXY</code> +{" "}
-              <code>{isCodex ? "SSL_CERT_FILE" : "NODE_EXTRA_CA_CERTS"}</code>), preserving your
-              other settings.{isClaudeCode && " This also covers background agents."}
+              <code className="bg-muted px-1 py-0.5 rounded">{info.settings_file}</code>, preserving
+              your other settings and saving a backup first.
+              {info.restart_hint && ` ${info.restart_hint}`}
             </p>
-            <Button size="sm" onClick={handleAutoConfigure} disabled={configuring || !info.running}>
-              {configuring ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Settings2 className="h-3.5 w-3.5 mr-2" />}
-              Configure {template?.name ?? "Tool"}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={handleAutoConfigure} disabled={configuring || removing || !info.running}>
+                {configuring ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Settings2 className="h-3.5 w-3.5 mr-2" />}
+                Configure {toolName}
+              </Button>
+              {info.supports_undo && (
+                <Button size="sm" variant="outline" onClick={handleRemoveConfig} disabled={configuring || removing}>
+                  {removing && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}
+                  Remove
+                </Button>
+              )}
+            </div>
             {autoResult && (
               <div className="rounded-md border p-2 text-xs space-y-1">
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-start gap-1.5">
                   {autoResult.success
-                    ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
-                    : <XCircle className="h-3.5 w-3.5 text-destructive" />}
+                    ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-px text-green-500" />
+                    : <XCircle className="h-3.5 w-3.5 shrink-0 mt-px text-destructive" />}
                   <span>{autoResult.message}</span>
                 </div>
                 {autoResult.backup_files.length > 0 && (
@@ -812,17 +917,21 @@ function ProxyLlmSetup({
         {/* Quick Start: one-off CLI command */}
         <TabsContent value="temporary" className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            Run {template?.name ?? "your tool"} once through the proxy — no files changed:
+            Run {toolName} once through the proxy — no files changed:
           </p>
           {oneoff ? (
             <CopyableCode value={oneoff} />
           ) : (
-            <p className="text-xs text-destructive">Proxy not running.</p>
+            <p className="text-xs text-destructive">
+              {info.running
+                ? `${toolName} has no launch-time proxy option — use the Auto or Manual tab.`
+                : "Proxy not running."}
+            </p>
           )}
-          {isClaudeCode && (
+          {supportsAuto && (
             <p className="text-[11px] text-muted-foreground">
-              This covers an interactive session. For background agents
-              (<code>claude --bg</code>), use Auto or Manual so it lands in settings.json.
+              This covers a single session. Use Auto or Manual to make it permanent (and to cover
+              background agents).
             </p>
           )}
         </TabsContent>
@@ -836,7 +945,11 @@ function ProxyLlmSetup({
             </div>
           )}
           <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">{info.ca_env_var} (root CA to trust)</Label>
+            <Label className="text-xs text-muted-foreground">
+              {info.ca_env_var
+                ? `${info.ca_env_var} (root CA to trust)`
+                : "Root CA to trust (via your system trust store)"}
+            </Label>
             <CopyableCode value={info.ca_cert_path} />
           </div>
           {info.settings_json && info.settings_file && (

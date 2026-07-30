@@ -82,10 +82,19 @@ export interface ClientTemplate {
   supportsMcp: boolean
   supportsLlm: boolean
   /**
-   * Whether this client can use the HTTPS inspection proxy. True only for tools
-   * that (a) talk to an intercepted provider (currently Anthropic) and (b) can
-   * trust the proxy's root CA via `NODE_EXTRA_CA_CERTS` — i.e. Claude Code and
-   * the generic/custom client. Undefined = not supported.
+   * Whether this client can use the HTTPS inspection proxy. True for tools that
+   * (a) send LLM traffic directly to a host the proxy intercepts
+   * (api.anthropic.com, api.openai.com, chatgpt.com) and (b) can be made to
+   * trust the proxy's root CA — via a CA env var, or via the OS trust store
+   * for tools that expose no CA setting (see `proxyRequiresSystemCa`).
+   *
+   * Tools whose inference runs on a vendor backend (Cursor, Amp, JetBrains AI
+   * subscription) are deliberately left off: no traffic ever reaches an
+   * intercepted host. Undefined = not supported.
+   *
+   * Per-template mechanisms and caveats live in the backend
+   * (`src-tauri/src/launcher/proxy_setup.rs`); the research behind each
+   * decision is in `plan/2026-07-29-HTTPS_PROXY_CLIENT_AUTOCONFIG_RESEARCH.md`.
    */
   supportsProxy?: boolean
   binaryNames?: string[]
@@ -148,6 +157,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     ],
     docsUrl: 'https://aider.chat',
     supportsMcp: false,
+    supportsProxy: true,
     supportsLlm: true,
     binaryNames: ['aider'],
   },
@@ -190,6 +200,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     },
     docsUrl: 'https://opencode.ai',
     supportsMcp: true,
+    supportsProxy: true,
     supportsLlm: true,
     binaryNames: ['opencode'],
   },
@@ -233,6 +244,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     manualInstructions: 'Alternatively, in Goose Desktop: Settings > Configure Provider > add an OpenAI-compatible provider with the base URL and API key above.',
     docsUrl: 'https://block.github.io/goose',
     supportsMcp: true,
+    supportsProxy: true,
     supportsLlm: true,
     binaryNames: ['goose'],
   },
@@ -277,6 +289,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     mcpNote: 'Requires the MCPorter skill to be installed in OpenClaw. Install it from clawhub.ai/steipete/mcporter.',
     docsUrl: 'https://docs.openclaw.ai',
     supportsMcp: true,
+    supportsProxy: true,
     supportsLlm: true,
     // Audit: only 'openclaw' is documented; 'clawdbot' not found in public docs.
     // See: https://docs.openclaw.ai/cli/models
@@ -295,6 +308,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     manualInstructions: 'In Cline settings: set API Provider to "OpenAI Compatible", set Base URL to {{BASE_URL}}, and enter your client secret as the API key.',
     docsUrl: 'https://docs.cline.bot',
     supportsMcp: false,
+    supportsProxy: true,
     supportsLlm: true,
   },
   {
@@ -308,6 +322,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     manualInstructions: 'In Roo Code settings: set API Provider to "OpenAI Compatible", set Base URL to {{BASE_URL}}, and enter your client secret as the API key.',
     docsUrl: 'https://github.com/RooVetGit/Roo-Code',
     supportsMcp: false,
+    supportsProxy: true,
     supportsLlm: true,
   },
   {
@@ -321,6 +336,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     manualInstructions: 'In Continue settings, add an OpenAI-compatible provider with base URL {{BASE_URL}} and API key set to your client secret.',
     docsUrl: 'https://docs.continue.dev',
     supportsMcp: false,
+    supportsProxy: true,
     supportsLlm: true,
   },
 
@@ -359,6 +375,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     manualInstructions: 'In Zed: click the star icon > Configure > LLM Providers > add an OpenAI-compatible provider with host URL {{BASE_URL}} and your client secret as the API key.',
     docsUrl: 'https://zed.dev',
     supportsMcp: false,
+    supportsProxy: true,
     supportsLlm: true,
     binaryNames: ['zed'],
   },

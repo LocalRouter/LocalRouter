@@ -40,47 +40,6 @@ pub fn proxy_env_fragment(proxy_url: &str, ca_cert_path: &str) -> String {
     format!("HTTPS_PROXY={proxy_url}\nSSL_CERT_FILE={ca_cert_path}\n")
 }
 
-/// Merge the proxy keys into an existing (or empty) `.env` file body,
-/// preserving any other lines/comments the user already has. Existing
-/// `HTTPS_PROXY` / `SSL_CERT_FILE` assignments are replaced in place;
-/// missing ones are appended.
-pub fn merge_proxy_env(existing: &str, proxy_url: &str, ca_cert_path: &str) -> String {
-    let updates = [("HTTPS_PROXY", proxy_url), ("SSL_CERT_FILE", ca_cert_path)];
-
-    let mut lines: Vec<String> = existing.lines().map(|l| l.to_string()).collect();
-    for (key, value) in updates {
-        let assignment = format!("{key}={value}");
-        // Match `KEY=`, with optional leading whitespace and `export `.
-        let is_key_line = |line: &str| {
-            line.trim_start()
-                .strip_prefix("export ")
-                .unwrap_or(line.trim_start())
-                .starts_with(&format!("{key}="))
-        };
-        // Replace the first assignment and drop any later duplicates —
-        // dotenv gives the last line precedence, so a stale duplicate
-        // below ours would silently win.
-        let mut found = false;
-        lines.retain_mut(|line| {
-            if is_key_line(line) {
-                if found {
-                    return false;
-                }
-                *line = assignment.clone();
-                found = true;
-            }
-            true
-        });
-        if !found {
-            lines.push(assignment);
-        }
-    }
-
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
-}
-
 /// Path to Codex global config file
 fn config_path() -> std::path::PathBuf {
     dirs::home_dir()
@@ -264,38 +223,26 @@ mod tests {
         assert!(!frag.contains("CODEX_"));
     }
 
+    /// The keys the proxy plan writes for Codex, exercised through the same
+    /// shared dotenv merge the apply path uses.
+    fn merge(existing: &str, url: &str, ca: &str) -> String {
+        super::super::dotenv::merge_env(existing, &[("HTTPS_PROXY", url), ("SSL_CERT_FILE", ca)])
+    }
+
     #[test]
     fn merge_into_empty_creates_both_keys() {
-        let merged = merge_proxy_env("", "http://p", "/ca.pem");
-        assert_eq!(merged, "HTTPS_PROXY=http://p\nSSL_CERT_FILE=/ca.pem\n");
+        assert_eq!(
+            merge("", "http://p", "/ca.pem"),
+            "HTTPS_PROXY=http://p\nSSL_CERT_FILE=/ca.pem\n"
+        );
     }
 
     #[test]
     fn merge_preserves_other_lines_and_comments() {
         let existing = "# my env\nOPENAI_API_KEY=sk-123\n\nHTTPS_PROXY=http://old\n";
-        let merged = merge_proxy_env(existing, "http://new", "/ca.pem");
         assert_eq!(
-            merged,
+            merge(existing, "http://new", "/ca.pem"),
             "# my env\nOPENAI_API_KEY=sk-123\n\nHTTPS_PROXY=http://new\nSSL_CERT_FILE=/ca.pem\n"
-        );
-    }
-
-    #[test]
-    fn merge_replaces_export_prefixed_assignment() {
-        let existing = "export SSL_CERT_FILE=/old.pem\n";
-        let merged = merge_proxy_env(existing, "http://p", "/new.pem");
-        assert_eq!(merged, "SSL_CERT_FILE=/new.pem\nHTTPS_PROXY=http://p\n");
-    }
-
-    #[test]
-    fn merge_drops_duplicate_assignments() {
-        // dotenv gives the last line precedence — a stale duplicate below the
-        // rewritten one must not survive.
-        let existing = "HTTPS_PROXY=http://a\nFOO=bar\nHTTPS_PROXY=http://b\n";
-        let merged = merge_proxy_env(existing, "http://new", "/ca.pem");
-        assert_eq!(
-            merged,
-            "HTTPS_PROXY=http://new\nFOO=bar\nSSL_CERT_FILE=/ca.pem\n"
         );
     }
 }

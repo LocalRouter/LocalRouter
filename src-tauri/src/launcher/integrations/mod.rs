@@ -3,14 +3,19 @@
 //! Each integration knows how to detect, configure, and launch a specific app
 //! to connect to LocalRouter.
 
-mod aider;
+pub mod aider;
 pub mod claude_code;
 pub mod codex;
+pub mod continue_dev;
 mod cursor;
+pub mod dotenv;
 mod droid;
-mod goose;
-mod openclaw;
-mod opencode;
+pub mod goose;
+pub mod jsonc;
+pub mod openclaw;
+pub mod opencode;
+pub mod vscode;
+pub mod zed;
 
 use super::AppIntegration;
 use std::path::PathBuf;

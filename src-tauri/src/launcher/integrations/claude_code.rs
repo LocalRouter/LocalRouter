@@ -65,6 +65,25 @@ pub fn merge_proxy_settings(
     existing
 }
 
+/// Remove the proxy keys from `settings.json` (undo), leaving any other `env`
+/// entries and settings in place and dropping an `env` block that becomes
+/// empty.
+pub fn remove_proxy_settings(mut existing: serde_json::Value) -> serde_json::Value {
+    let Some(obj) = existing.as_object_mut() else {
+        return existing;
+    };
+    let mut env_now_empty = false;
+    if let Some(env_obj) = obj.get_mut("env").and_then(|e| e.as_object_mut()) {
+        env_obj.remove("HTTPS_PROXY");
+        env_obj.remove("NODE_EXTRA_CA_CERTS");
+        env_now_empty = env_obj.is_empty();
+    }
+    if env_now_empty {
+        obj.remove("env");
+    }
+    existing
+}
+
 impl AppIntegration for ClaudeCodeIntegration {
     fn name(&self) -> &str {
         "Claude Code"
@@ -276,5 +295,26 @@ mod tests {
     fn merge_into_empty_creates_env() {
         let merged = merge_proxy_settings(serde_json::json!(null), "http://p", "/ca.pem");
         assert_eq!(merged["env"]["HTTPS_PROXY"], "http://p");
+    }
+
+    #[test]
+    fn remove_keeps_other_settings_and_env_vars() {
+        let existing = serde_json::json!({
+            "theme": "dark",
+            "env": { "FOO": "bar" }
+        });
+        let applied = merge_proxy_settings(existing, "http://p", "/ca.pem");
+        let undone = remove_proxy_settings(applied);
+        assert_eq!(undone["theme"], "dark");
+        assert_eq!(undone["env"]["FOO"], "bar");
+        assert!(undone["env"].get("HTTPS_PROXY").is_none());
+        assert!(undone["env"].get("NODE_EXTRA_CA_CERTS").is_none());
+    }
+
+    #[test]
+    fn remove_drops_an_env_block_it_emptied() {
+        let applied = merge_proxy_settings(serde_json::json!({}), "http://p", "/ca.pem");
+        let undone = remove_proxy_settings(applied);
+        assert!(undone.get("env").is_none());
     }
 }

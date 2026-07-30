@@ -8,8 +8,11 @@
 //! - **Permanent Config**: Modify app config files to always route through LocalRouter.
 
 pub mod backup;
+pub mod ca_bundle;
+pub mod ca_trust;
 pub mod integrations;
 pub mod proxy;
+pub mod proxy_setup;
 
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 

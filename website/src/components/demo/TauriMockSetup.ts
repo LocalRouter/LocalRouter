@@ -308,8 +308,28 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       oneoff_command: `HTTPS_PROXY=${url} NODE_EXTRA_CA_CERTS=${ca} claude`,
       settings_json: JSON.stringify({ env: { HTTPS_PROXY: url, NODE_EXTRA_CA_CERTS: ca } }, null, 2),
       settings_file: '~/.claude/settings.json',
+      supports_auto: true,
+      supports_undo: true,
+      requires_system_ca: false,
+      notes: [],
+      restart_hint: 'Restart Claude Code (this also covers background agents).',
     }
   },
+  'get_proxy_ca_trust_status': () => ({
+    state: 'not_trusted',
+    can_manage: true,
+    ca_cert_path: '~/.localrouter/proxy/root-ca.pem',
+    manual_instructions: null,
+  }),
+  'trust_proxy_ca': () => "LocalRouter's root CA is now trusted in your login keychain (demo).",
+  'untrust_proxy_ca': () => "LocalRouter's root CA is no longer trusted (demo).",
+  'unconfigure_client_proxy': () => ({
+    success: true,
+    message: 'Removed the proxy configuration from ~/.claude/settings.json (demo)',
+    modified_files: ['~/.claude/settings.json'],
+    backup_files: [],
+    terminal_command: null,
+  }),
   'configure_client_proxy': () => ({
     success: true,
     message: 'Configured the proxy in ~/.claude/settings.json (demo)',

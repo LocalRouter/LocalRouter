@@ -1699,18 +1699,56 @@ export interface ProxySetupInfo {
   proxy_url: string | null
   /** Path to the root CA the client must trust. */
   ca_cert_path: string
-  /** The env var this client's tool reads for a custom root CA (NODE_EXTRA_CA_CERTS / CODEX_CA_CERTIFICATE / SSL_CERT_FILE). */
-  ca_env_var: string
+  /** The env var this tool reads for a custom root CA, or null when it has none and uses the OS trust store. Never splice null into a shell command. */
+  ca_env_var: string | null
   /** One-off terminal command to launch the tool through the proxy (template-specific). */
   oneoff_command: string | null
-  /** Config-file fragment for permanent setup: pretty JSON for Claude Code's settings.json, dotenv lines for Codex's ~/.codex/.env. */
+  /** Config-file fragment for permanent setup, in that file's own format (JSON, dotenv, YAML, or generated plugin source). */
   settings_json: string | null
   /** Display path of the file automatic/permanent setup writes (null for templates without automatic setup). */
   settings_file: string | null
+  /** Whether LocalRouter can write that file itself for this template. */
+  supports_auto: boolean
+  /** Whether LocalRouter can remove the configuration it wrote. */
+  supports_undo: boolean
+  /** The root CA must also be trusted in the OS store (tools with no CA setting). */
+  requires_system_ca: boolean
+  /** Caveats the user should read before applying this setup. */
+  notes: string[]
+  /** What to do for the change to take effect. */
+  restart_hint: string | null
+}
+
+/**
+ * Trust state of the proxy root CA in the OS trust store.
+ * Rust: src-tauri/src/launcher/ca_trust.rs - TrustState enum
+ */
+export type CaTrustState = 'trusted' | 'not_trusted' | 'unknown'
+
+/**
+ * Rust: src-tauri/src/launcher/ca_trust.rs - CaTrustStatus struct
+ */
+export interface CaTrustStatus {
+  state: CaTrustState
+  /** Whether LocalRouter can add/remove the trust itself on this platform. */
+  can_manage: boolean
+  ca_cert_path: string
+  /** Manual steps, for platforms LocalRouter can't manage automatically. */
+  manual_instructions: string | null
 }
 
 /** Params for get_client_proxy_setup */
 export interface GetClientProxySetupParams {
+  clientId: string
+}
+
+/** Params for configure_client_proxy */
+export interface ConfigureClientProxyParams {
+  clientId: string
+}
+
+/** Params for unconfigure_client_proxy */
+export interface UnconfigureClientProxyParams {
   clientId: string
 }
 

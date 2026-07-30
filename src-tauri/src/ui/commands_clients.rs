@@ -3137,22 +3137,35 @@ pub struct ProxySetupInfo {
     /// Path to the root CA the client must trust.
     pub ca_cert_path: String,
     /// The env var this client's tool reads for a custom root CA
-    /// (`NODE_EXTRA_CA_CERTS` for Claude Code, `CODEX_CA_CERTIFICATE` for
-    /// Codex, `SSL_CERT_FILE` otherwise).
-    pub ca_env_var: String,
+    /// (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, …). `None` for tools that have
+    /// no such variable and validate against the OS trust store instead — do
+    /// not build a shell assignment out of this.
+    pub ca_env_var: Option<String>,
     /// One-off terminal command to launch the tool through the proxy
-    /// (template-specific; None if the proxy isn't running).
+    /// (template-specific; None if the proxy isn't running or the tool has no
+    /// launch-time configuration).
     pub oneoff_command: Option<String>,
-    /// Config-file fragment for permanent setup: pretty JSON for Claude Code's
-    /// `settings.json`, dotenv lines for Codex's `~/.codex/.env`.
+    /// Config-file fragment for permanent setup, in that file's own format
+    /// (JSON, dotenv lines, YAML, or a generated plugin source).
     pub settings_json: Option<String>,
     /// Display path of the file automatic/permanent setup writes
     /// (None for templates without automatic setup).
     pub settings_file: Option<String>,
+    /// Whether LocalRouter can write that file itself for this template.
+    pub supports_auto: bool,
+    /// Whether LocalRouter can remove the configuration it wrote.
+    pub supports_undo: bool,
+    /// The root CA must also be trusted in the OS store (tools whose TLS stack
+    /// exposes no CA setting).
+    pub requires_system_ca: bool,
+    /// Caveats the user should read before applying this setup.
+    pub notes: Vec<String>,
+    /// What to do for the change to take effect.
+    pub restart_hint: Option<String>,
 }
 
-/// Return the proxy setup instructions for a client (proxy URL, CA path, and a
-/// ready-to-run Claude Code one-off command).
+/// Return the proxy setup instructions for a client: connection details plus
+/// the template-specific plan (launch command, config fragment, caveats).
 #[tauri::command]
 pub async fn get_client_proxy_setup(
     client_id: String,
@@ -3160,7 +3173,7 @@ pub async fn get_client_proxy_setup(
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<ProxySetupInfo, String> {
-    use crate::launcher::integrations::{claude_code, codex};
+    use crate::launcher::proxy_setup;
     use tauri::Manager;
 
     let secret = client_manager
@@ -3178,59 +3191,48 @@ pub async fn get_client_proxy_setup(
         Some(proxy) => {
             let ca_cert_path = proxy.ca_cert_path().display().to_string();
             let proxy_url = proxy.client_proxy_url(&client_id, &secret);
-            // Per-tool CA env var, launch command, and permanent-config
-            // fragment. Claude Code reads an `env` block in settings.json;
-            // Codex loads `~/.codex/.env` at startup (which is why its
-            // fragment uses SSL_CERT_FILE — codex filters CODEX_-prefixed
-            // keys out of that file).
-            let (ca_env_var, oneoff_command, settings_json, settings_file) =
-                match template_id.as_deref() {
-                    Some("codex") => (
-                        codex::PROXY_CA_ENV_VAR.to_string(),
-                        proxy_url
-                            .as_ref()
-                            .map(|u| codex::proxy_oneoff_command(u, &ca_cert_path)),
-                        proxy_url
-                            .as_ref()
-                            .map(|u| codex::proxy_env_fragment(u, &ca_cert_path)),
-                        Some(codex::env_file_path().display().to_string()),
-                    ),
-                    Some("claude-code") => (
-                        "NODE_EXTRA_CA_CERTS".to_string(),
-                        proxy_url
-                            .as_ref()
-                            .map(|u| claude_code::proxy_oneoff_command(u, &ca_cert_path)),
-                        proxy_url.as_ref().map(|u| {
-                            serde_json::to_string_pretty(&claude_code::proxy_settings_json(
-                                u,
-                                &ca_cert_path,
-                            ))
-                            .unwrap_or_default()
-                        }),
-                        Some(claude_code::settings_json_path().display().to_string()),
-                    ),
-                    // Generic/custom tools: SSL_CERT_FILE is the widest-supported
-                    // CA override; no tool-specific command or settings file.
-                    _ => ("SSL_CERT_FILE".to_string(), None, None, None),
-                };
+            // Aider's instructions reference the combined CA bundle by path, so
+            // materialize it before rendering them — otherwise someone
+            // following the manual steps would point Aider at a file that does
+            // not exist yet. Cheap once it's been built; a failure here only
+            // means the instructions render without the bundle in place.
+            if template_id.as_deref() == Some("aider") {
+                if let Err(e) = crate::launcher::ca_bundle::ensure_combined_bundle(
+                    std::path::Path::new(&ca_cert_path),
+                ) {
+                    tracing::warn!("Could not prepare the combined CA bundle for Aider: {e}");
+                }
+            }
+            let plan =
+                proxy_setup::plan_for(template_id.as_deref(), proxy_url.as_deref(), &ca_cert_path);
             Ok(ProxySetupInfo {
                 running: proxy.is_running(),
                 proxy_url,
                 ca_cert_path,
-                ca_env_var,
-                oneoff_command,
-                settings_json,
-                settings_file,
+                ca_env_var: plan.ca_env_var.map(|v| v.to_string()),
+                oneoff_command: plan.oneoff_command.clone(),
+                settings_json: plan.fragment.clone(),
+                settings_file: plan.file.as_ref().map(|p| p.display().to_string()),
+                supports_auto: plan.supports_auto(),
+                supports_undo: plan.supports_undo(),
+                requires_system_ca: plan.requires_system_ca,
+                notes: plan.notes.clone(),
+                restart_hint: plan.restart_hint.clone(),
             })
         }
         None => Ok(ProxySetupInfo {
             running: false,
             proxy_url: None,
             ca_cert_path: String::new(),
-            ca_env_var: "SSL_CERT_FILE".to_string(),
+            ca_env_var: Some("SSL_CERT_FILE".to_string()),
             oneoff_command: None,
             settings_json: None,
             settings_file: None,
+            supports_auto: false,
+            supports_undo: false,
+            requires_system_ca: false,
+            notes: vec![],
+            restart_hint: None,
         }),
     }
 }
@@ -3245,8 +3247,7 @@ pub async fn configure_client_proxy(
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<LaunchResult, String> {
-    use crate::launcher::backup;
-    use crate::launcher::integrations::{claude_code, codex};
+    use crate::launcher::proxy_setup;
     use tauri::Manager;
 
     let template_id = config_manager
@@ -3255,12 +3256,6 @@ pub async fn configure_client_proxy(
         .iter()
         .find(|c| c.id == client_id)
         .and_then(|c| c.template_id.clone());
-    if !matches!(template_id.as_deref(), Some("claude-code") | Some("codex")) {
-        return Err(
-            "Automatic proxy setup is only available for Claude Code and Codex. Use the manual instructions."
-                .to_string(),
-        );
-    }
 
     let secret = client_manager
         .get_secret(&client_id)
@@ -3275,47 +3270,89 @@ pub async fn configure_client_proxy(
         .client_proxy_url(&client_id, &secret)
         .ok_or_else(|| "Proxy is not running".to_string())?;
 
-    // Merge the proxy config into the tool's existing file (preserving
-    // whatever else the user has), writing atomically with a backup.
-    let (path, data) = if template_id.as_deref() == Some("codex") {
-        // Codex: HTTPS_PROXY + SSL_CERT_FILE in ~/.codex/.env, which codex
-        // exports into its environment at startup.
-        let path = codex::env_file_path();
-        let existing = if path.exists() {
-            std::fs::read_to_string(&path)
-                .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?
-        } else {
-            String::new()
-        };
-        let merged = codex::merge_proxy_env(&existing, &proxy_url, &ca_cert_path);
-        (path, merged)
-    } else {
-        // Claude Code: env block in ~/.claude/settings.json.
-        let path = claude_code::settings_json_path();
-        let existing: serde_json::Value = if path.exists() {
-            std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_else(|| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-        let merged = claude_code::merge_proxy_settings(existing, &proxy_url, &ca_cert_path);
-        let data = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
-        (path, data)
-    };
-    let backup_path = backup::write_with_backup(&path, data.as_bytes())?;
+    // Aider's Python stack replaces its trust store when SSL_CERT_FILE is set,
+    // so it needs a combined bundle materialized before the config points at
+    // it. Doing this here (rather than in the plan) keeps plan building pure.
+    if template_id.as_deref() == Some("aider") {
+        crate::launcher::ca_bundle::ensure_combined_bundle(std::path::Path::new(&ca_cert_path))?;
+    }
 
-    Ok(LaunchResult {
-        success: true,
-        message: format!("Configured the proxy in {}", path.display()),
-        modified_files: vec![path.to_string_lossy().to_string()],
-        backup_files: backup_path
-            .iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect(),
-        terminal_command: None,
-    })
+    let plan = proxy_setup::plan_for(template_id.as_deref(), Some(&proxy_url), &ca_cert_path);
+    proxy_setup::apply(&plan)
+}
+
+/// Remove the proxy configuration LocalRouter wrote for a client's tool.
+#[tauri::command]
+pub async fn unconfigure_client_proxy(
+    client_id: String,
+    app: tauri::AppHandle,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<LaunchResult, String> {
+    use crate::launcher::proxy_setup;
+    use tauri::Manager;
+
+    let template_id = config_manager
+        .get()
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .and_then(|c| c.template_id.clone());
+
+    let ca_cert_path = app
+        .try_state::<Arc<crate::launcher::proxy::ProxyService>>()
+        .map(|p| p.ca_cert_path().display().to_string())
+        .unwrap_or_default();
+
+    // Undo does not need a running proxy — the config may well be why the
+    // user's tool is broken.
+    let plan = proxy_setup::plan_for(template_id.as_deref(), None, &ca_cert_path);
+    proxy_setup::unapply(&plan)
+}
+
+/// Current trust state of the proxy's root CA in the OS trust store.
+#[tauri::command]
+pub async fn get_proxy_ca_trust_status(
+    app: tauri::AppHandle,
+) -> Result<crate::launcher::ca_trust::CaTrustStatus, String> {
+    use tauri::Manager;
+
+    let proxy = app
+        .try_state::<Arc<crate::launcher::proxy::ProxyService>>()
+        .ok_or_else(|| "Proxy is not available".to_string())?;
+    Ok(crate::launcher::ca_trust::status(&proxy.ca_cert_path()))
+}
+
+/// Trust the proxy's root CA in the current user's trust store.
+///
+/// Only ever called from an explicit, separately-confirmed user action — a
+/// trusted root CA can vouch for any host, so this is never bundled into
+/// applying a client's proxy config.
+#[tauri::command]
+pub async fn trust_proxy_ca(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+
+    let proxy = app
+        .try_state::<Arc<crate::launcher::proxy::ProxyService>>()
+        .ok_or_else(|| "Proxy is not available".to_string())?;
+    let path = proxy.ca_cert_path();
+    tracing::info!(
+        "Trusting proxy root CA at {} (user keychain)",
+        path.display()
+    );
+    crate::launcher::ca_trust::trust(&path)
+}
+
+/// Remove the proxy root CA from the current user's trust store.
+#[tauri::command]
+pub async fn untrust_proxy_ca(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+
+    let proxy = app
+        .try_state::<Arc<crate::launcher::proxy::ProxyService>>()
+        .ok_or_else(|| "Proxy is not available".to_string())?;
+    let path = proxy.ca_cert_path();
+    tracing::info!("Removing trust for proxy root CA at {}", path.display());
+    crate::launcher::ca_trust::untrust(&path)
 }
 
 /// Set the template ID for a client

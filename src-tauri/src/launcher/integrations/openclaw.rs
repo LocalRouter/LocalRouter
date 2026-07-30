@@ -19,6 +19,37 @@ fn config_path() -> PathBuf {
         .join("openclaw.json")
 }
 
+/// Environment variable OpenClaw reads for an extra root CA. Node semantics:
+/// **additive** to the bundled Mozilla roots, and OpenClaw's own network-proxy
+/// docs name this var for exactly the TLS-inspection case.
+pub const PROXY_CA_ENV_VAR: &str = "NODE_EXTRA_CA_CERTS";
+
+/// OpenClaw's global env file (`$OPENCLAW_STATE_DIR/.env`, default
+/// `~/.openclaw/.env`). This is the documented durable place for proxy
+/// settings: the gateway loads it, and `openclaw gateway install` bakes it
+/// into the launchd/systemd service definition.
+pub fn env_file_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".openclaw")
+        .join(".env")
+}
+
+/// Keys we own in that file.
+pub fn proxy_env_keys() -> [&'static str; 2] {
+    ["HTTPS_PROXY", PROXY_CA_ENV_VAR]
+}
+
+/// One-off terminal command to launch OpenClaw through the inspection proxy.
+pub fn proxy_oneoff_command(proxy_url: &str, ca_cert_path: &str) -> String {
+    format!("HTTPS_PROXY={proxy_url} {PROXY_CA_ENV_VAR}={ca_cert_path} openclaw")
+}
+
+/// The `.env` fragment that configures the proxy permanently.
+pub fn proxy_env_fragment(proxy_url: &str, ca_cert_path: &str) -> String {
+    format!("HTTPS_PROXY={proxy_url}\n{PROXY_CA_ENV_VAR}={ca_cert_path}\n")
+}
+
 fn mcporter_config_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
@@ -303,5 +334,38 @@ impl OpenClawIntegration {
             backup_files: all_backup_files,
             terminal_command: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_env_fragment_uses_additive_node_ca_var() {
+        let frag = proxy_env_fragment("http://p", "/ca.pem");
+        assert_eq!(frag, "HTTPS_PROXY=http://p\nNODE_EXTRA_CA_CERTS=/ca.pem\n");
+    }
+
+    #[test]
+    fn merge_preserves_existing_env_entries() {
+        let existing = "# openclaw\nOPENCLAW_TOKEN=abc\n";
+        let merged = super::super::dotenv::merge_env(
+            existing,
+            &[("HTTPS_PROXY", "http://p"), (PROXY_CA_ENV_VAR, "/ca.pem")],
+        );
+        assert_eq!(
+            merged,
+            "# openclaw\nOPENCLAW_TOKEN=abc\nHTTPS_PROXY=http://p\nNODE_EXTRA_CA_CERTS=/ca.pem\n"
+        );
+    }
+
+    #[test]
+    fn oneoff_command_carries_both_vars() {
+        let cmd = proxy_oneoff_command("http://p", "/ca.pem");
+        assert_eq!(
+            cmd,
+            "HTTPS_PROXY=http://p NODE_EXTRA_CA_CERTS=/ca.pem openclaw"
+        );
     }
 }
