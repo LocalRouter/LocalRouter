@@ -23,6 +23,64 @@ pub fn proxy_oneoff_command(proxy_url: &str, ca_cert_path: &str) -> String {
     format!("HTTPS_PROXY={proxy_url} {PROXY_CA_ENV_VAR}={ca_cert_path} codex")
 }
 
+/// Path to Codex's dotenv file. Codex loads `~/.codex/.env` at startup
+/// (codex-rs `arg0::load_dotenv`) and exports every key into its process
+/// environment — except keys prefixed `CODEX_`, which it filters out. That is
+/// why permanent setup uses `SSL_CERT_FILE` (codex's documented custom-CA
+/// fallback, applied on top of system roots) instead of `CODEX_CA_CERTIFICATE`.
+pub fn env_file_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".codex")
+        .join(".env")
+}
+
+/// The `.env` fragment that configures the proxy permanently.
+pub fn proxy_env_fragment(proxy_url: &str, ca_cert_path: &str) -> String {
+    format!("HTTPS_PROXY={proxy_url}\nSSL_CERT_FILE={ca_cert_path}\n")
+}
+
+/// Merge the proxy keys into an existing (or empty) `.env` file body,
+/// preserving any other lines/comments the user already has. Existing
+/// `HTTPS_PROXY` / `SSL_CERT_FILE` assignments are replaced in place;
+/// missing ones are appended.
+pub fn merge_proxy_env(existing: &str, proxy_url: &str, ca_cert_path: &str) -> String {
+    let updates = [("HTTPS_PROXY", proxy_url), ("SSL_CERT_FILE", ca_cert_path)];
+
+    let mut lines: Vec<String> = existing.lines().map(|l| l.to_string()).collect();
+    for (key, value) in updates {
+        let assignment = format!("{key}={value}");
+        // Match `KEY=`, with optional leading whitespace and `export `.
+        let is_key_line = |line: &str| {
+            line.trim_start()
+                .strip_prefix("export ")
+                .unwrap_or(line.trim_start())
+                .starts_with(&format!("{key}="))
+        };
+        // Replace the first assignment and drop any later duplicates —
+        // dotenv gives the last line precedence, so a stale duplicate
+        // below ours would silently win.
+        let mut found = false;
+        lines.retain_mut(|line| {
+            if is_key_line(line) {
+                if found {
+                    return false;
+                }
+                *line = assignment.clone();
+                found = true;
+            }
+            true
+        });
+        if !found {
+            lines.push(assignment);
+        }
+    }
+
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
 /// Path to Codex global config file
 fn config_path() -> std::path::PathBuf {
     dirs::home_dir()
@@ -181,5 +239,63 @@ impl AppIntegration for CodexIntegration {
             });
         }
         self.configure_permanent(&ctx.base_url, &ctx.client_secret, &ctx.client_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_proxy_oneoff_command() {
+        let cmd = proxy_oneoff_command("http://cid:sec@127.0.0.1:3626", "/ca/root-ca.pem");
+        assert_eq!(
+            cmd,
+            "HTTPS_PROXY=http://cid:sec@127.0.0.1:3626 CODEX_CA_CERTIFICATE=/ca/root-ca.pem codex"
+        );
+    }
+
+    #[test]
+    fn env_fragment_uses_ssl_cert_file() {
+        // Codex filters CODEX_-prefixed keys out of ~/.codex/.env, so the
+        // permanent fragment must use the SSL_CERT_FILE fallback.
+        let frag = proxy_env_fragment("http://p", "/ca.pem");
+        assert_eq!(frag, "HTTPS_PROXY=http://p\nSSL_CERT_FILE=/ca.pem\n");
+        assert!(!frag.contains("CODEX_"));
+    }
+
+    #[test]
+    fn merge_into_empty_creates_both_keys() {
+        let merged = merge_proxy_env("", "http://p", "/ca.pem");
+        assert_eq!(merged, "HTTPS_PROXY=http://p\nSSL_CERT_FILE=/ca.pem\n");
+    }
+
+    #[test]
+    fn merge_preserves_other_lines_and_comments() {
+        let existing = "# my env\nOPENAI_API_KEY=sk-123\n\nHTTPS_PROXY=http://old\n";
+        let merged = merge_proxy_env(existing, "http://new", "/ca.pem");
+        assert_eq!(
+            merged,
+            "# my env\nOPENAI_API_KEY=sk-123\n\nHTTPS_PROXY=http://new\nSSL_CERT_FILE=/ca.pem\n"
+        );
+    }
+
+    #[test]
+    fn merge_replaces_export_prefixed_assignment() {
+        let existing = "export SSL_CERT_FILE=/old.pem\n";
+        let merged = merge_proxy_env(existing, "http://p", "/new.pem");
+        assert_eq!(merged, "SSL_CERT_FILE=/new.pem\nHTTPS_PROXY=http://p\n");
+    }
+
+    #[test]
+    fn merge_drops_duplicate_assignments() {
+        // dotenv gives the last line precedence — a stale duplicate below the
+        // rewritten one must not survive.
+        let existing = "HTTPS_PROXY=http://a\nFOO=bar\nHTTPS_PROXY=http://b\n";
+        let merged = merge_proxy_env(existing, "http://new", "/ca.pem");
+        assert_eq!(
+            merged,
+            "HTTPS_PROXY=http://new\nFOO=bar\nSSL_CERT_FILE=/ca.pem\n"
+        );
     }
 }

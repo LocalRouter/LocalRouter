@@ -3110,9 +3110,12 @@ pub struct ProxySetupInfo {
     /// One-off terminal command to launch the tool through the proxy
     /// (template-specific; None if the proxy isn't running).
     pub oneoff_command: Option<String>,
-    /// `settings.json` fragment (pretty JSON) for permanent setup
-    /// (Claude Code only).
+    /// Config-file fragment for permanent setup: pretty JSON for Claude Code's
+    /// `settings.json`, dotenv lines for Codex's `~/.codex/.env`.
     pub settings_json: Option<String>,
+    /// Display path of the file automatic/permanent setup writes
+    /// (None for templates without automatic setup).
+    pub settings_file: Option<String>,
 }
 
 /// Return the proxy setup instructions for a client (proxy URL, CA path, and a
@@ -3142,33 +3145,41 @@ pub async fn get_client_proxy_setup(
         Some(proxy) => {
             let ca_cert_path = proxy.ca_cert_path().display().to_string();
             let proxy_url = proxy.client_proxy_url(&client_id, &secret);
-            // Per-tool CA env var + launch command; settings.json only exists
-            // for Claude Code (Codex has no env block in config.toml).
-            let (ca_env_var, oneoff_command, settings_json) = match template_id.as_deref() {
-                Some("codex") => (
-                    codex::PROXY_CA_ENV_VAR.to_string(),
-                    proxy_url
-                        .as_ref()
-                        .map(|u| codex::proxy_oneoff_command(u, &ca_cert_path)),
-                    None,
-                ),
-                Some("claude-code") => (
-                    "NODE_EXTRA_CA_CERTS".to_string(),
-                    proxy_url
-                        .as_ref()
-                        .map(|u| claude_code::proxy_oneoff_command(u, &ca_cert_path)),
-                    proxy_url.as_ref().map(|u| {
-                        serde_json::to_string_pretty(&claude_code::proxy_settings_json(
-                            u,
-                            &ca_cert_path,
-                        ))
-                        .unwrap_or_default()
-                    }),
-                ),
-                // Generic/custom tools: SSL_CERT_FILE is the widest-supported
-                // CA override; no tool-specific command or settings file.
-                _ => ("SSL_CERT_FILE".to_string(), None, None),
-            };
+            // Per-tool CA env var, launch command, and permanent-config
+            // fragment. Claude Code reads an `env` block in settings.json;
+            // Codex loads `~/.codex/.env` at startup (which is why its
+            // fragment uses SSL_CERT_FILE — codex filters CODEX_-prefixed
+            // keys out of that file).
+            let (ca_env_var, oneoff_command, settings_json, settings_file) =
+                match template_id.as_deref() {
+                    Some("codex") => (
+                        codex::PROXY_CA_ENV_VAR.to_string(),
+                        proxy_url
+                            .as_ref()
+                            .map(|u| codex::proxy_oneoff_command(u, &ca_cert_path)),
+                        proxy_url
+                            .as_ref()
+                            .map(|u| codex::proxy_env_fragment(u, &ca_cert_path)),
+                        Some(codex::env_file_path().display().to_string()),
+                    ),
+                    Some("claude-code") => (
+                        "NODE_EXTRA_CA_CERTS".to_string(),
+                        proxy_url
+                            .as_ref()
+                            .map(|u| claude_code::proxy_oneoff_command(u, &ca_cert_path)),
+                        proxy_url.as_ref().map(|u| {
+                            serde_json::to_string_pretty(&claude_code::proxy_settings_json(
+                                u,
+                                &ca_cert_path,
+                            ))
+                            .unwrap_or_default()
+                        }),
+                        Some(claude_code::settings_json_path().display().to_string()),
+                    ),
+                    // Generic/custom tools: SSL_CERT_FILE is the widest-supported
+                    // CA override; no tool-specific command or settings file.
+                    _ => ("SSL_CERT_FILE".to_string(), None, None, None),
+                };
             Ok(ProxySetupInfo {
                 running: proxy.is_running(),
                 proxy_url,
@@ -3176,6 +3187,7 @@ pub async fn get_client_proxy_setup(
                 ca_env_var,
                 oneoff_command,
                 settings_json,
+                settings_file,
             })
         }
         None => Ok(ProxySetupInfo {
@@ -3185,12 +3197,14 @@ pub async fn get_client_proxy_setup(
             ca_env_var: "SSL_CERT_FILE".to_string(),
             oneoff_command: None,
             settings_json: None,
+            settings_file: None,
         }),
     }
 }
 
 /// Auto-configure a client's tool for the inspection proxy by writing its
-/// settings file. Currently supports Claude Code (`~/.claude/settings.json`).
+/// settings file. Supports Claude Code (`~/.claude/settings.json`) and
+/// Codex (`~/.codex/.env`).
 #[tauri::command]
 pub async fn configure_client_proxy(
     client_id: String,
@@ -3199,7 +3213,7 @@ pub async fn configure_client_proxy(
     config_manager: State<'_, ConfigManager>,
 ) -> Result<LaunchResult, String> {
     use crate::launcher::backup;
-    use crate::launcher::integrations::claude_code;
+    use crate::launcher::integrations::{claude_code, codex};
     use tauri::Manager;
 
     let template_id = config_manager
@@ -3208,9 +3222,9 @@ pub async fn configure_client_proxy(
         .iter()
         .find(|c| c.id == client_id)
         .and_then(|c| c.template_id.clone());
-    if template_id.as_deref() != Some("claude-code") {
+    if !matches!(template_id.as_deref(), Some("claude-code") | Some("codex")) {
         return Err(
-            "Automatic proxy setup is only available for Claude Code. Use the manual instructions."
+            "Automatic proxy setup is only available for Claude Code and Codex. Use the manual instructions."
                 .to_string(),
         );
     }
@@ -3228,19 +3242,35 @@ pub async fn configure_client_proxy(
         .client_proxy_url(&client_id, &secret)
         .ok_or_else(|| "Proxy is not running".to_string())?;
 
-    // Merge the proxy env block into the existing settings.json (preserving
-    // any other settings the user has), writing atomically with a backup.
-    let path = claude_code::settings_json_path();
-    let existing: serde_json::Value = if path.exists() {
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
+    // Merge the proxy config into the tool's existing file (preserving
+    // whatever else the user has), writing atomically with a backup.
+    let (path, data) = if template_id.as_deref() == Some("codex") {
+        // Codex: HTTPS_PROXY + SSL_CERT_FILE in ~/.codex/.env, which codex
+        // exports into its environment at startup.
+        let path = codex::env_file_path();
+        let existing = if path.exists() {
+            std::fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?
+        } else {
+            String::new()
+        };
+        let merged = codex::merge_proxy_env(&existing, &proxy_url, &ca_cert_path);
+        (path, merged)
     } else {
-        serde_json::json!({})
+        // Claude Code: env block in ~/.claude/settings.json.
+        let path = claude_code::settings_json_path();
+        let existing: serde_json::Value = if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+        let merged = claude_code::merge_proxy_settings(existing, &proxy_url, &ca_cert_path);
+        let data = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
+        (path, data)
     };
-    let merged = claude_code::merge_proxy_settings(existing, &proxy_url, &ca_cert_path);
-    let data = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
     let backup_path = backup::write_with_backup(&path, data.as_bytes())?;
 
     Ok(LaunchResult {

@@ -1703,8 +1703,10 @@ export interface ProxySetupInfo {
   ca_env_var: string
   /** One-off terminal command to launch the tool through the proxy (template-specific). */
   oneoff_command: string | null
-  /** settings.json fragment (pretty JSON) for permanent setup (Claude Code only). */
+  /** Config-file fragment for permanent setup: pretty JSON for Claude Code's settings.json, dotenv lines for Codex's ~/.codex/.env. */
   settings_json: string | null
+  /** Display path of the file automatic/permanent setup writes (null for templates without automatic setup). */
+  settings_file: string | null
 }
 
 /** Params for get_client_proxy_setup */

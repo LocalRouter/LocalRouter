@@ -693,10 +693,13 @@ function ProxyLlmSetup({
   const [autoResult, setAutoResult] = useState<LaunchResult | null>(null)
 
   const isClaudeCode = template?.id === "claude-code"
-  const [innerTab, setInnerTab] = useState(isClaudeCode ? "auto" : "temporary")
+  const isCodex = template?.id === "codex"
+  // Templates whose config file LocalRouter can write for the user.
+  const supportsAuto = isClaudeCode || isCodex
+  const [innerTab, setInnerTab] = useState(supportsAuto ? "auto" : "temporary")
   useEffect(() => {
-    setInnerTab(isClaudeCode ? "auto" : "temporary")
-  }, [isClaudeCode])
+    setInnerTab(supportsAuto ? "auto" : "temporary")
+  }, [supportsAuto])
 
   useEffect(() => {
     let cancelled = false
@@ -736,7 +739,7 @@ function ProxyLlmSetup({
       ? `HTTPS_PROXY=${info.proxy_url} ${info.ca_env_var}=${info.ca_cert_path} ${binary ?? "<your-tool>"}`
       : null)
 
-  const innerTabCount = 2 + (isClaudeCode ? 1 : 0)
+  const innerTabCount = 2 + (supportsAuto ? 1 : 0)
   const innerGridCols = innerTabCount === 3 ? "grid-cols-3" : "grid-cols-2"
 
   return (
@@ -758,7 +761,7 @@ function ProxyLlmSetup({
 
       <Tabs value={innerTab} onValueChange={setInnerTab}>
         <TabsList className={`mb-4 grid w-full ${innerGridCols}`}>
-          {isClaudeCode && (
+          {supportsAuto && (
             <TabsTrigger value="auto" className="text-xs gap-1">
               <RefreshCcw className="h-3 w-3" />
               Auto
@@ -774,18 +777,21 @@ function ProxyLlmSetup({
           </TabsTrigger>
         </TabsList>
 
-        {/* Auto: write the settings file for the user (Claude Code only) */}
-        {isClaudeCode && (
+        {/* Auto: write the tool's config file for the user (Claude Code / Codex) */}
+        {supportsAuto && (
           <TabsContent value="auto" className="space-y-3">
             <p className="text-xs text-muted-foreground">
               LocalRouter writes the proxy configuration to{" "}
-              <code className="bg-muted px-1 py-0.5 rounded">~/.claude/settings.json</code>{" "}
-              (<code>HTTPS_PROXY</code> + <code>NODE_EXTRA_CA_CERTS</code>), preserving your other
-              settings. This also covers background agents.
+              <code className="bg-muted px-1 py-0.5 rounded">
+                {info.settings_file ?? (isCodex ? "~/.codex/.env" : "~/.claude/settings.json")}
+              </code>{" "}
+              (<code>HTTPS_PROXY</code> +{" "}
+              <code>{isCodex ? "SSL_CERT_FILE" : "NODE_EXTRA_CA_CERTS"}</code>), preserving your
+              other settings.{isClaudeCode && " This also covers background agents."}
             </p>
             <Button size="sm" onClick={handleAutoConfigure} disabled={configuring || !info.running}>
               {configuring ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Settings2 className="h-3.5 w-3.5 mr-2" />}
-              Configure Claude Code
+              Configure {template?.name ?? "Tool"}
             </Button>
             {autoResult && (
               <div className="rounded-md border p-2 text-xs space-y-1">
@@ -833,10 +839,10 @@ function ProxyLlmSetup({
             <Label className="text-xs text-muted-foreground">{info.ca_env_var} (root CA to trust)</Label>
             <CopyableCode value={info.ca_cert_path} />
           </div>
-          {isClaudeCode && info.settings_json && (
+          {info.settings_json && info.settings_file && (
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">
-                Or merge into <code>~/.claude/settings.json</code>
+                Or merge into <code>{info.settings_file}</code>
               </Label>
               <CopyableCode value={info.settings_json} />
             </div>
