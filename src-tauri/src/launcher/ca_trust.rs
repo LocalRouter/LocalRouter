@@ -23,7 +23,12 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustState {
+    // Trusted/NotTrusted are only constructed on macOS (the one platform whose
+    // trust store we can query), but they are part of the serialized contract
+    // with the frontend on every platform.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Trusted,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     NotTrusted,
     /// We can't determine it (no CA generated yet, or unsupported platform).
     Unknown,
