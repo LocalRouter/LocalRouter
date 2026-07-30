@@ -27,6 +27,7 @@ interface ApprovalDetails {
   is_auto_router_request?: boolean
   is_mcp_via_llm_request?: boolean
   is_secret_scan_request?: boolean
+  is_notify_only?: boolean
   guardrail_details?: {
     verdicts: SafetyVerdict[]
     actions_required: CategoryActionRequired[]
@@ -193,6 +194,33 @@ export function FirewallApproval() {
 
     loadDetails()
   }, [])
+
+  // Notify-only popups: dismiss the backend session when the window is
+  // closed via the title bar, so it doesn't linger in the pending list.
+  // Hold the close until the dismiss lands (a fire-and-forget invoke can be
+  // dropped mid-teardown), then destroy — which skips this handler.
+  useEffect(() => {
+    if (!details?.is_notify_only) return
+    const win = getCurrentWebviewWindow()
+    const unlistenPromise = win.onCloseRequested(async (event) => {
+      if (submittingRef.current) return // Dismiss button already cleaned up
+      event.preventDefault()
+      submittingRef.current = true
+      try {
+        await invoke("dismiss_firewall_notification", { requestId: details.request_id })
+      } catch {
+        // session already gone — nothing to clean up
+      }
+      try {
+        await win.destroy()
+      } catch {
+        win.close().catch(() => {}) // re-entry guarded by submittingRef
+      }
+    })
+    return () => {
+      unlistenPromise.then(fn => { try { fn() } catch {} }).catch(() => {})
+    }
+  }, [details])
 
   // Start button delay when the window gains focus (not on mount)
   // This prevents accidental clicks when popups appear suddenly.
@@ -426,6 +454,22 @@ export function FirewallApproval() {
       obj.tools = mcpTools
     }
     return obj
+  }
+
+  const handleDismiss = async () => {
+    if (!details || submittingRef.current) return
+    submittingRef.current = true
+    setSubmitting(true)
+    try {
+      await invoke("dismiss_firewall_notification", { requestId: details.request_id })
+    } catch (err) {
+      console.error("Failed to dismiss notification:", err)
+    }
+    try {
+      await getCurrentWebviewWindow().close()
+    } catch {
+      // window close failed — nothing else to do
+    }
   }
 
   const handleAction = async (action: ApprovalAction) => {
@@ -823,6 +867,7 @@ export function FirewallApproval() {
           isFreeTierFallback={details.is_free_tier_fallback}
           isAutoRouterRequest={details.is_auto_router_request}
           isSecretScanRequest={details.is_secret_scan_request}
+          isNotifyOnly={details.is_notify_only}
           guardrailVerdicts={details.guardrail_details?.verdicts}
           guardrailDirection={details.guardrail_details?.scan_direction}
           guardrailActions={details.guardrail_details?.actions_required}
@@ -831,6 +876,7 @@ export function FirewallApproval() {
           secretScanDurationMs={details.secret_scan_details?.scan_duration_ms}
           marketplaceListing={marketplaceListing}
           onAction={buttonsReady ? handleAction : undefined}
+          onDismiss={buttonsReady ? handleDismiss : undefined}
           onEdit={enterEditMode}
           submitting={submitting}
         />

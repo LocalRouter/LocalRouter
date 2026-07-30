@@ -145,6 +145,10 @@ pub struct FirewallApprovalSession {
     /// Whether this is a secret scan request
     pub is_secret_scan_request: bool,
 
+    /// Whether this is a non-blocking notification (no response expected;
+    /// the request was already allowed through — popup is informational)
+    pub is_notify_only: bool,
+
     /// Guardrail-specific details (matches, severity, etc.)
     pub guardrail_details: Option<GuardrailApprovalDetails>,
 
@@ -190,6 +194,9 @@ pub struct PendingApprovalInfo {
     /// Whether this is a secret scan request
     #[serde(default)]
     pub is_secret_scan_request: bool,
+    /// Whether this is a non-blocking notification (informational popup)
+    #[serde(default)]
+    pub is_notify_only: bool,
     /// Guardrail-specific details
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guardrail_details: Option<GuardrailApprovalDetails>,
@@ -462,6 +469,92 @@ impl FirewallManager {
         .await
     }
 
+    /// Post a non-blocking secret-scan notification popup (Notify action).
+    ///
+    /// Creates a notify-only session (no response channel) and broadcasts the
+    /// same `firewall/approvalRequired` notification the Ask path uses, so the
+    /// existing standalone popup window opens — but the request has already
+    /// been allowed through and nothing waits on a response. The popup's
+    /// Dismiss (or expiry via `cleanup_expired`) removes the session.
+    ///
+    /// Deduped per client: while a notify popup is pending for a client, new
+    /// findings from that client do not open additional windows.
+    pub fn notify_secret_scan(
+        &self,
+        client_id: String,
+        client_name: String,
+        model_name: String,
+        secret_scan_details: SecretScanApprovalDetails,
+        arguments_preview: String,
+    ) {
+        let already_pending = self
+            .pending
+            .iter()
+            .any(|e| e.value().is_notify_only && e.value().client_id == client_id);
+        if already_pending {
+            debug!(
+                "Secret-scan notify popup already pending for client {}, not opening another",
+                client_id
+            );
+            return;
+        }
+
+        let request_id = Uuid::new_v4().to_string();
+        let session = FirewallApprovalSession {
+            request_id: request_id.clone(),
+            client_id: client_id.clone(),
+            client_name: client_name.clone(),
+            tool_name: model_name.clone(),
+            server_name: "Secret Scan".to_string(),
+            arguments_preview: arguments_preview.clone(),
+            full_arguments: None,
+            response_sender: None,
+            created_at: Instant::now(),
+            timeout_seconds: self.default_timeout_secs,
+            is_model_request: false,
+            is_guardrail_request: false,
+            is_free_tier_fallback: false,
+            is_auto_router_request: false,
+            is_mcp_via_llm_request: false,
+            is_secret_scan_request: true,
+            is_notify_only: true,
+            guardrail_details: None,
+            secret_scan_details: Some(secret_scan_details),
+        };
+        self.pending.insert(request_id.clone(), session);
+
+        info!(
+            "Secret-scan notification {} created: client={}, model={}",
+            request_id, client_id, model_name
+        );
+
+        if let Some(broadcast) = &self.notification_broadcast {
+            let notification = JsonRpcNotification {
+                jsonrpc: "2.0".to_string(),
+                method: "firewall/approvalRequired".to_string(),
+                params: Some(json!({
+                    "request_id": request_id,
+                    "client_id": client_id,
+                    "client_name": client_name,
+                    "tool_name": model_name,
+                    "server_name": "Secret Scan",
+                    "arguments_preview": arguments_preview,
+                    "timeout_seconds": self.default_timeout_secs,
+                    "is_model_request": false,
+                    "is_guardrail_request": false,
+                    "is_free_tier_fallback": false,
+                    "is_auto_router_request": false,
+                    "is_mcp_via_llm_request": false,
+                    "is_secret_scan_request": true,
+                    "is_notify_only": true,
+                })),
+            };
+            if let Err(e) = broadcast.send(("_firewall".to_string(), notification)) {
+                debug!("Failed to broadcast secret-scan notification: {}", e);
+            }
+        }
+    }
+
     /// Internal approval request handler
     async fn request_approval_internal(
         &self,
@@ -516,6 +609,7 @@ impl FirewallManager {
             is_auto_router_request,
             is_mcp_via_llm_request,
             is_secret_scan_request,
+            is_notify_only: false,
             guardrail_details,
             secret_scan_details,
         };
@@ -547,6 +641,7 @@ impl FirewallManager {
                     "is_auto_router_request": is_auto_router_request,
                     "is_mcp_via_llm_request": is_mcp_via_llm_request,
                     "is_secret_scan_request": is_secret_scan_request,
+                    "is_notify_only": false,
                 })),
             };
 
@@ -673,6 +768,7 @@ impl FirewallManager {
                     is_auto_router_request: session.is_auto_router_request,
                     is_mcp_via_llm_request: session.is_mcp_via_llm_request,
                     is_secret_scan_request: session.is_secret_scan_request,
+                    is_notify_only: session.is_notify_only,
                     guardrail_details: session.guardrail_details.clone(),
                     secret_scan_details: session.secret_scan_details.clone(),
                 }
@@ -804,6 +900,124 @@ mod tests {
         assert_eq!(manager.default_timeout_secs, 60);
     }
 
+    fn scan_details() -> SecretScanApprovalDetails {
+        SecretScanApprovalDetails {
+            findings: vec![SecretFindingSummary {
+                rule_id: "aws-access-key-id".to_string(),
+                rule_description: "AWS Access Key ID".to_string(),
+                category: "Cloud Provider".to_string(),
+                matched_text: "AKIA**********MPLE".to_string(),
+                entropy: 3.42,
+            }],
+            scan_duration_ms: 1,
+        }
+    }
+
+    /// Notify popups are non-blocking sessions: created immediately, flagged
+    /// notify-only, deduped per client, and removed by dismissal.
+    #[test]
+    fn test_notify_secret_scan_session_lifecycle() {
+        let manager = FirewallManager::new(120);
+
+        manager.notify_secret_scan(
+            "client-1".to_string(),
+            "Client One".to_string(),
+            "gpt-4o".to_string(),
+            scan_details(),
+            "[Cloud Provider] AWS Access Key ID (entropy: 3.42)".to_string(),
+        );
+        assert_eq!(manager.pending_count(), 1);
+        let info = &manager.list_pending()[0];
+        assert!(info.is_notify_only);
+        assert!(info.is_secret_scan_request);
+        assert_eq!(info.server_name, "Secret Scan");
+
+        // Same client while one is pending: deduped, no second window
+        manager.notify_secret_scan(
+            "client-1".to_string(),
+            "Client One".to_string(),
+            "gpt-4o".to_string(),
+            scan_details(),
+            "preview".to_string(),
+        );
+        assert_eq!(manager.pending_count(), 1);
+
+        // Different client: gets its own notification
+        manager.notify_secret_scan(
+            "client-2".to_string(),
+            "Client Two".to_string(),
+            "claude-sonnet-5".to_string(),
+            scan_details(),
+            "preview".to_string(),
+        );
+        assert_eq!(manager.pending_count(), 2);
+
+        // Dismiss (cancel) removes the session; the client can then notify again
+        let id = manager
+            .list_pending()
+            .iter()
+            .find(|p| p.client_id == "client-1")
+            .unwrap()
+            .request_id
+            .clone();
+        manager.cancel_request(&id).unwrap();
+        assert_eq!(manager.pending_count(), 1);
+
+        manager.notify_secret_scan(
+            "client-1".to_string(),
+            "Client One".to_string(),
+            "gpt-4o".to_string(),
+            scan_details(),
+            "preview".to_string(),
+        );
+        assert_eq!(manager.pending_count(), 2);
+    }
+
+    /// A pending Ask approval for a client must not suppress its notify popup
+    /// (dedupe only considers notify-only sessions).
+    #[tokio::test]
+    async fn test_notify_not_deduped_against_ask_sessions() {
+        let manager = FirewallManager::new(120);
+
+        let manager_clone = manager.clone();
+        let handle = tokio::spawn(async move {
+            manager_clone
+                .request_secret_scan_approval(
+                    "client-1".to_string(),
+                    "Client One".to_string(),
+                    "gpt-4o".to_string(),
+                    scan_details(),
+                    "preview".to_string(),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(manager.pending_count(), 1);
+
+        manager.notify_secret_scan(
+            "client-1".to_string(),
+            "Client One".to_string(),
+            "gpt-4o".to_string(),
+            scan_details(),
+            "preview".to_string(),
+        );
+        assert_eq!(manager.pending_count(), 2);
+
+        // Resolve the Ask session so the spawned task finishes
+        let ask_id = manager
+            .list_pending()
+            .iter()
+            .find(|p| !p.is_notify_only)
+            .unwrap()
+            .request_id
+            .clone();
+        manager
+            .submit_response(&ask_id, FirewallApprovalAction::Deny, None)
+            .unwrap();
+        let response = handle.await.unwrap().unwrap();
+        assert_eq!(response.action, FirewallApprovalAction::Deny);
+    }
+
     #[test]
     fn test_session_expiry() {
         let session = FirewallApprovalSession {
@@ -823,6 +1037,7 @@ mod tests {
             is_auto_router_request: false,
             is_mcp_via_llm_request: false,
             is_secret_scan_request: false,
+            is_notify_only: false,
             guardrail_details: None,
             secret_scan_details: None,
         };
@@ -848,6 +1063,7 @@ mod tests {
             is_auto_router_request: false,
             is_mcp_via_llm_request: false,
             is_secret_scan_request: false,
+            is_notify_only: false,
             guardrail_details: None,
             secret_scan_details: None,
         };

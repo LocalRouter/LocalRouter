@@ -2486,6 +2486,11 @@ export interface GetFirewallApprovalDetailsParams {
   requestId: string
 }
 
+/** Params for dismiss_firewall_notification (notify-only popups) */
+export interface DismissFirewallNotificationParams {
+  requestId: string
+}
+
 /** Params for get_firewall_full_arguments */
 export interface GetFirewallFullArgumentsParams {
   requestId: string

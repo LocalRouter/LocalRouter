@@ -80,7 +80,14 @@ export function parseArguments(jsonStr: string): { key: string; value: string }[
 }
 
 /** Get header icon, title, and description for a request type */
-export function getHeaderContent(requestType: RequestType) {
+export function getHeaderContent(requestType: RequestType, notifyOnly?: boolean) {
+  if (requestType === "secret_scan" && notifyOnly) {
+    return {
+      icon: <FEATURES.secretScanning.icon className={`h-5 w-5 ${FEATURES.secretScanning.color}`} />,
+      title: "Secrets Detected",
+      description: "Potential secrets were sent in an outbound request (Notify mode — not blocked)",
+    }
+  }
   switch (requestType) {
     case "marketplace":
       return {
@@ -134,8 +141,8 @@ export function getHeaderContent(requestType: RequestType) {
 }
 
 /** Header section - exported for reuse in edit mode */
-export function FirewallApprovalHeader({ requestType }: { requestType: RequestType }) {
-  const header = getHeaderContent(requestType)
+export function FirewallApprovalHeader({ requestType, notifyOnly }: { requestType: RequestType; notifyOnly?: boolean }) {
+  const header = getHeaderContent(requestType, notifyOnly)
   return (
     <div className="mb-3 flex-shrink-0">
       <div className="flex items-center gap-2 mb-0.5">
@@ -169,6 +176,8 @@ export interface FirewallApprovalCardProps {
   isFreeTierFallback?: boolean
   isAutoRouterRequest?: boolean
   isSecretScanRequest?: boolean
+  /** Non-blocking notification: request already allowed, show Dismiss only */
+  isNotifyOnly?: boolean
   secretScanFindings?: SecretFindingSummary[]
   secretScanDurationMs?: number
   guardrailVerdicts?: SafetyVerdict[]
@@ -179,6 +188,8 @@ export interface FirewallApprovalCardProps {
   marketplaceListing?: MarketplaceListingInfo | null
   /** If not provided, all buttons are disabled (demo mode) */
   onAction?: (action: ApprovalAction) => void
+  /** Dismiss handler for notify-only popups */
+  onDismiss?: () => void
   onEdit?: () => void
   submitting?: boolean
   className?: string
@@ -210,6 +221,7 @@ export function FirewallApprovalCard({
   isFreeTierFallback,
   isAutoRouterRequest,
   isSecretScanRequest,
+  isNotifyOnly,
   secretScanFindings,
   secretScanDurationMs,
   guardrailVerdicts,
@@ -218,6 +230,7 @@ export function FirewallApprovalCard({
   guardrailFlaggedText,
   marketplaceListing,
   onAction,
+  onDismiss,
   onEdit,
   submitting = false,
   className,
@@ -238,7 +251,7 @@ export function FirewallApprovalCard({
   return (
     <div className={className}>
       {/* Header */}
-      <FirewallApprovalHeader requestType={requestType} />
+      <FirewallApprovalHeader requestType={requestType} notifyOnly={isNotifyOnly} />
 
       {/* Details Grid */}
       <div className="flex-1 overflow-auto">
@@ -455,7 +468,18 @@ export function FirewallApprovalCard({
         )}
       </div>
 
-      {/* Action Buttons */}
+      {/* Notify-only: informational popup, single Dismiss button */}
+      {isNotifyOnly ? (
+        <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
+          <Button
+            className="flex-1 h-10 font-bold"
+            onClick={onDismiss}
+            disabled={!onDismiss || submitting}
+          >
+            Dismiss
+          </Button>
+        </div>
+      ) : (
       <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
         {/* Split button: Deny (main) + dropdown */}
         <div className="flex flex-1">
@@ -577,6 +601,7 @@ export function FirewallApprovalCard({
           </DropdownMenu>
         </div>
       </div>
+      )}
     </div>
   )
 }

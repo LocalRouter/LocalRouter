@@ -3088,6 +3088,8 @@ pub enum DebugFirewallType {
     Guardrail,
     /// Secret scan approval (secrets detected in outbound request)
     SecretScan,
+    /// Secret scan notification (Notify action — informational, request allowed)
+    SecretScanNotify,
 }
 
 /// Trigger a fake firewall approval popup immediately.
@@ -3162,7 +3164,7 @@ pub async fn debug_trigger_firewall_popup(
                 false,
                 false,
             ),
-            DebugFirewallType::SecretScan => (
+            DebugFirewallType::SecretScan | DebugFirewallType::SecretScanNotify => (
                 "claude-3-5-sonnet".to_string(),
                 "Secret Scan".to_string(),
                 "[Cloud Provider] AWS Access Key ID (entropy: 3.42)\n[Version Control] GitHub Personal Access Token (entropy: 4.12)".to_string(),
@@ -3185,7 +3187,11 @@ pub async fn debug_trigger_firewall_popup(
     }
 
     let is_guardrail = popup_type == DebugFirewallType::Guardrail;
-    let is_secret_scan = popup_type == DebugFirewallType::SecretScan;
+    let is_secret_scan = matches!(
+        popup_type,
+        DebugFirewallType::SecretScan | DebugFirewallType::SecretScanNotify
+    );
+    let is_notify_only = popup_type == DebugFirewallType::SecretScanNotify;
     let guardrail_details = if is_guardrail {
         Some(lr_mcp::gateway::firewall::GuardrailApprovalDetails {
             verdicts: vec![serde_json::json!({
@@ -3312,7 +3318,7 @@ pub async fn debug_trigger_firewall_popup(
                 false,
                 false,
             ),
-            DebugFirewallType::SecretScan => (
+            DebugFirewallType::SecretScan | DebugFirewallType::SecretScanNotify => (
                 "gpt-4o".to_string(),
                 "Secret Scan".to_string(),
                 "[Database] PostgreSQL Connection URI (entropy: 3.85)".to_string(),
@@ -3392,6 +3398,7 @@ pub async fn debug_trigger_firewall_popup(
             is_guardrail_request: debug_session.is_guardrail_request,
             is_free_tier_fallback: debug_session.is_free_tier_fallback,
             is_secret_scan_request: debug_session.is_secret_scan_request,
+            is_notify_only,
             guardrail_details: debug_session.guardrail_details,
             secret_scan_details: debug_session.secret_scan_details,
         };
@@ -3410,7 +3417,11 @@ pub async fn debug_trigger_firewall_popup(
             format!("firewall-approval-{}", request_id),
             tauri::WebviewUrl::App("index.html".into()),
         )
-        .title("Approval Required")
+        .title(if is_notify_only {
+            "Secret Scan"
+        } else {
+            "Approval Required"
+        })
         .inner_size(400.0, 320.0)
         .center()
         .visible(false)

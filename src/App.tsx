@@ -175,27 +175,6 @@ function App() {
         }
       }),
 
-      // Subscribe to secret scan notifications (action = Notify). The request
-      // is allowed through, so the toast is the only user-facing signal.
-      listenSafe<string>('secret-scan-notify', (event) => {
-        try {
-          const findings = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload
-          const count = Array.isArray(findings) ? findings.length : 0
-          const kinds = Array.isArray(findings)
-            ? [...new Set(findings.map((f: any) => f?.rule_description).filter(Boolean))]
-            : []
-          const detail = kinds.length > 0 ? `: ${kinds.slice(0, 3).join(', ')}` : ''
-          toast.warning(
-            `Secret scan: ${count} potential secret${count !== 1 ? 's' : ''} sent${detail}`,
-            { duration: 8000 },
-          )
-        } catch {
-          toast.warning('Secret scan: potential secret detected in an outbound request', {
-            duration: 8000,
-          })
-        }
-      }),
-
       // Subscribe to check-for-updates event from background timer
       // This must be in App.tsx (not UpdatesTab) so periodic checks work
       // even when the Updates tab isn't open

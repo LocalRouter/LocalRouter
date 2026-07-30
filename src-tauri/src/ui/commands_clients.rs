@@ -1899,6 +1899,14 @@ pub(crate) fn reevaluate_pending_approvals(
             continue;
         };
 
+        // Secret-scan sessions (Ask popups and notify-only notifications) are
+        // not derived from client permissions — no config change can resolve
+        // them, and the fallback MCP-tool context below would misread their
+        // "Secret Scan" server name as a real MCP server.
+        if info.is_secret_scan_request || info.is_notify_only {
+            continue;
+        }
+
         let ctx = if info.is_auto_router_request {
             let strategy = config
                 .strategies
@@ -2390,6 +2398,31 @@ pub async fn get_firewall_approval_details(
 ) -> Result<Option<lr_mcp::gateway::firewall::PendingApprovalInfo>, String> {
     let pending = state.mcp_gateway.firewall_manager.list_pending();
     Ok(pending.into_iter().find(|p| p.request_id == request_id))
+}
+
+/// Dismiss a notify-only firewall notification popup.
+///
+/// Removes the pending session without submitting an approval response —
+/// notify-only sessions have no waiting request. Idempotent: dismissing an
+/// already-removed or expired session is not an error.
+#[tauri::command]
+pub async fn dismiss_firewall_notification(
+    app: tauri::AppHandle,
+    request_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    if state
+        .mcp_gateway
+        .firewall_manager
+        .cancel_request(&request_id)
+        .is_ok()
+    {
+        tracing::info!("Dismissed firewall notification {}", request_id);
+    }
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::warn!("Failed to rebuild tray menu after dismiss: {}", e);
+    }
+    Ok(())
 }
 
 /// Get full arguments for a pending firewall approval request (for edit mode)
@@ -3882,6 +3915,7 @@ mod tests {
             is_auto_router_request: false,
             is_mcp_via_llm_request: false,
             is_secret_scan_request: false,
+            is_notify_only: false,
             guardrail_details: None,
             secret_scan_details: None,
         }

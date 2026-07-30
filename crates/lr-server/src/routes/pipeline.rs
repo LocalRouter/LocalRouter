@@ -1395,10 +1395,21 @@ pub async fn scan_request_for_secrets(
 
     match effective_action {
         lr_config::SecretScanAction::Notify => {
-            // Emit event to UI, allow request to proceed
-            let payload =
-                serde_json::to_string(&result.findings).unwrap_or_else(|_| "[]".to_string());
-            state.emit_event("secret-scan-notify", &payload);
+            // Open the standalone secret-scan popup in notify-only mode (the
+            // same window the Ask action uses, so it shows even when the main
+            // window is closed). Non-blocking: the request proceeds regardless.
+            let client_name = client
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| client_id.to_string());
+            let (details, preview) = secret_scan_popup_content(&result);
+            state.mcp_gateway.firewall_manager.notify_secret_scan(
+                client_id.to_string(),
+                client_name,
+                model.to_string(),
+                details,
+                preview,
+            );
             SecretScanOutcome::Allow
         }
         lr_config::SecretScanAction::Ask => {
@@ -1408,24 +1419,13 @@ pub async fn scan_request_for_secrets(
     }
 }
 
-/// Handle a secret scan detection that requires user approval (Ask action).
-///
-/// Blocks the request and shows a popup via the FirewallManager.
-pub(crate) async fn handle_secret_scan_approval(
-    state: &AppState,
-    client_ctx: &ClientAuthContext,
-    model: &str,
-    result: lr_secret_scanner::ScanResult,
-) -> SecretScanOutcome {
-    use lr_mcp::gateway::firewall::{
-        FirewallApprovalAction, SecretFindingSummary, SecretScanApprovalDetails,
-    };
-
-    let client = state.client_manager.get_client(&client_ctx.client_id);
-    let client_name = client
-        .as_ref()
-        .map(|c| c.name.clone())
-        .unwrap_or_else(|| client_ctx.client_id.clone());
+/// Build the popup payload — structured findings plus the human-readable
+/// preview lines — from a scan result. Shared by the Ask (approval) and
+/// Notify (informational) popup paths.
+fn secret_scan_popup_content(
+    result: &lr_secret_scanner::ScanResult,
+) -> (lr_mcp::gateway::firewall::SecretScanApprovalDetails, String) {
+    use lr_mcp::gateway::firewall::{SecretFindingSummary, SecretScanApprovalDetails};
 
     let details = SecretScanApprovalDetails {
         findings: result
@@ -1453,6 +1453,28 @@ pub(crate) async fn handle_secret_scan_approval(
         })
         .collect::<Vec<_>>()
         .join("\n");
+
+    (details, preview)
+}
+
+/// Handle a secret scan detection that requires user approval (Ask action).
+///
+/// Blocks the request and shows a popup via the FirewallManager.
+pub(crate) async fn handle_secret_scan_approval(
+    state: &AppState,
+    client_ctx: &ClientAuthContext,
+    model: &str,
+    result: lr_secret_scanner::ScanResult,
+) -> SecretScanOutcome {
+    use lr_mcp::gateway::firewall::FirewallApprovalAction;
+
+    let client = state.client_manager.get_client(&client_ctx.client_id);
+    let client_name = client
+        .as_ref()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| client_ctx.client_id.clone());
+
+    let (details, preview) = secret_scan_popup_content(&result);
 
     let response = match state
         .mcp_gateway

@@ -1490,6 +1490,15 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     continue;
                                 }
 
+                                // Notify-only popups are informational (request
+                                // already allowed) — same window, different title
+                                let is_notify_only = notification
+                                    .params
+                                    .as_ref()
+                                    .and_then(|p| p.get("is_notify_only"))
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+
                                 tracing::info!(
                                     "Opening firewall approval popup for request {}",
                                     request_id
@@ -1516,7 +1525,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     format!("firewall-approval-{}", request_id),
                                     tauri::WebviewUrl::App("index.html".into()),
                                 )
-                                .title("Approval Required")
+                                .title(if is_notify_only {
+                                    "Secret Scan"
+                                } else {
+                                    "Approval Required"
+                                })
                                 .inner_size(400.0, 320.0)
                                 .center()
                                 .visible(true)
@@ -2563,6 +2576,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::sync_client_config,
             // Firewall approval commands
             ui::commands::submit_firewall_approval,
+            ui::commands::dismiss_firewall_notification,
             ui::commands::list_pending_firewall_approvals,
             ui::commands::get_firewall_approval_details,
             ui::commands::get_firewall_full_arguments,
