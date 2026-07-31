@@ -211,6 +211,7 @@ impl RegexEngine {
                         rule_entropy_threshold: rule.entropy_threshold,
                         message_index: text.message_index,
                         matched_text: display_text,
+                        raw_text: matched.to_string(),
                         entropy,
                     });
                 }
@@ -295,6 +296,28 @@ mod tests {
         assert!(
             !findings.iter().any(|f| f.rule_id == "aws-access-key-id"),
             "Allowlisted key should not be detected"
+        );
+    }
+
+    /// Findings carry the plaintext for the popup's reveal button, but it must
+    /// never serialize — findings are persisted into monitor events.
+    #[test]
+    fn test_raw_text_captured_but_not_serialized() {
+        let engine = RegexEngine::new(3.0, &[]).unwrap();
+        let texts = make_text("my key is AKIAIOSFODNN7EXAMPLE");
+        let findings = engine.scan(&texts, None);
+        let finding = findings
+            .iter()
+            .find(|f| f.rule_id == "aws-access-key-id")
+            .expect("AWS key detected");
+
+        assert_eq!(finding.raw_text, "AKIAIOSFODNN7EXAMPLE");
+        assert_ne!(finding.matched_text, finding.raw_text, "preview is masked");
+
+        let json = serde_json::to_string(finding).unwrap();
+        assert!(
+            !json.contains("AKIAIOSFODNN7EXAMPLE"),
+            "serialized finding leaked the plaintext secret: {json}"
         );
     }
 

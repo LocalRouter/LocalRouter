@@ -72,6 +72,15 @@ pub struct SecretFinding {
     pub message_index: usize,
     /// Truncated preview of matched text (~40 chars)
     pub matched_text: String,
+    /// The unmasked secret, for on-demand reveal in the approval popup.
+    ///
+    /// `#[serde(skip)]` is load-bearing: findings are serialized into monitor
+    /// events that persist to disk, and returned by the scan-test command.
+    /// The plaintext must never travel through any of those paths — it lives
+    /// only in the in-memory pending approval session, and reaches the UI
+    /// solely through the explicit reveal command.
+    #[serde(skip)]
+    pub raw_text: String,
     /// Calculated Shannon entropy of the matched text
     pub entropy: f32,
 }

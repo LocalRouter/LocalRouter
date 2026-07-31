@@ -1436,6 +1436,7 @@ fn secret_scan_popup_content(
                 rule_description: f.rule_description.clone(),
                 category: f.category.clone(),
                 matched_text: f.matched_text.clone(),
+                raw_text: f.raw_text.clone(),
                 entropy: f.entropy,
             })
             .collect(),

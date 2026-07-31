@@ -78,6 +78,12 @@ pub struct SecretFindingSummary {
     pub category: String,
     /// Truncated preview of matched text
     pub matched_text: String,
+    /// The unmasked secret. Never serialized (`#[serde(skip)]`) — it stays in
+    /// this in-memory session and is handed to the popup only when the user
+    /// explicitly asks to reveal it, so it cannot ride along in the approval
+    /// details the UI fetches on load.
+    #[serde(skip)]
+    pub raw_text: String,
     pub entropy: f32,
 }
 
@@ -776,6 +782,22 @@ impl FirewallManager {
             .collect()
     }
 
+    /// Reveal the unmasked secret behind one finding of a pending secret-scan
+    /// session. Returns `None` if the session is gone (dismissed, answered, or
+    /// expired) or the index is out of range — the plaintext is only reachable
+    /// while its popup is open.
+    pub fn reveal_secret_match(&self, request_id: &str, finding_index: usize) -> Option<String> {
+        let session = self.pending.get(request_id)?;
+        let raw = session
+            .secret_scan_details
+            .as_ref()?
+            .findings
+            .get(finding_index)?
+            .raw_text
+            .clone();
+        (!raw.is_empty()).then_some(raw)
+    }
+
     /// Insert a pre-built pending approval session (for debug/testing)
     pub fn insert_pending(&self, request_id: String, session: FirewallApprovalSession) {
         self.pending.insert(request_id, session);
@@ -907,6 +929,7 @@ mod tests {
                 rule_description: "AWS Access Key ID".to_string(),
                 category: "Cloud Provider".to_string(),
                 matched_text: "AKIA**********MPLE".to_string(),
+                raw_text: "AKIAIOSFODNN7EXAMPLE".to_string(),
                 entropy: 3.42,
             }],
             scan_duration_ms: 1,
@@ -971,6 +994,45 @@ mod tests {
             "preview".to_string(),
         );
         assert_eq!(manager.pending_count(), 2);
+    }
+
+    /// Reveal hands back the plaintext only while the session is pending, and
+    /// only for a real finding index.
+    #[test]
+    fn test_reveal_secret_match() {
+        let manager = FirewallManager::new(120);
+        manager.notify_secret_scan(
+            "client-1".to_string(),
+            "Client One".to_string(),
+            "gpt-4o".to_string(),
+            scan_details(),
+            "preview".to_string(),
+        );
+        let id = manager.list_pending()[0].request_id.clone();
+
+        assert_eq!(
+            manager.reveal_secret_match(&id, 0).as_deref(),
+            Some("AKIAIOSFODNN7EXAMPLE")
+        );
+        assert!(manager.reveal_secret_match(&id, 7).is_none());
+        assert!(manager.reveal_secret_match("no-such-request", 0).is_none());
+
+        // Once dismissed, the plaintext is unreachable
+        manager.cancel_request(&id).unwrap();
+        assert!(manager.reveal_secret_match(&id, 0).is_none());
+    }
+
+    /// The plaintext must not ride along in anything serialized to the UI,
+    /// the monitor store, or the logs.
+    #[test]
+    fn test_raw_secret_never_serialized() {
+        let details = scan_details();
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(
+            !json.contains("AKIAIOSFODNN7EXAMPLE"),
+            "serialized approval details leaked the plaintext secret: {json}"
+        );
+        assert!(json.contains("AKIA**********MPLE"), "mask should survive");
     }
 
     /// A pending Ask approval for a client must not suppress its notify popup

@@ -2400,6 +2400,26 @@ pub async fn get_firewall_approval_details(
     Ok(pending.into_iter().find(|p| p.request_id == request_id))
 }
 
+/// Reveal the unmasked secret behind one finding of a pending secret-scan
+/// popup, in response to an explicit click on that finding's reveal button.
+///
+/// The plaintext exists only in the in-memory approval session — it is never
+/// serialized into the approval details the popup loads, the monitor events,
+/// or the logs — so this command is the sole path from that session to the UI,
+/// and it stops working the moment the popup is answered or dismissed.
+#[tauri::command]
+pub async fn reveal_secret_scan_match(
+    request_id: String,
+    finding_index: usize,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<String, String> {
+    state
+        .mcp_gateway
+        .firewall_manager
+        .reveal_secret_match(&request_id, finding_index)
+        .ok_or_else(|| "This secret is no longer available".to_string())
+}
+
 /// Dismiss a notify-only firewall notification popup.
 ///
 /// Removes the pending session without submitting an approval response —

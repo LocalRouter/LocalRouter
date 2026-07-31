@@ -5,7 +5,8 @@
  *
  * Keep this component free of Tauri-specific imports so the website can use it.
  */
-import { ChevronDown, Pencil } from "lucide-react"
+import { useState } from "react"
+import { ChevronDown, Pencil, Eye, EyeOff } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import {
   DropdownMenu,
@@ -190,6 +191,11 @@ export interface FirewallApprovalCardProps {
   onAction?: (action: ApprovalAction) => void
   /** Dismiss handler for notify-only popups */
   onDismiss?: () => void
+  /**
+   * Fetch the unmasked secret for a finding, on explicit user request.
+   * Returns null when it is no longer available. Omitted (demo) = no reveal.
+   */
+  onReveal?: (findingIndex: number) => Promise<string | null>
   onEdit?: () => void
   submitting?: boolean
   className?: string
@@ -231,10 +237,42 @@ export function FirewallApprovalCard({
   marketplaceListing,
   onAction,
   onDismiss,
+  onReveal,
   onEdit,
   submitting = false,
   className,
 }: FirewallApprovalCardProps) {
+  // Revealed plaintext per finding index; absent = still masked.
+  const [revealed, setRevealed] = useState<Record<number, string>>({})
+  const [revealError, setRevealError] = useState<Record<number, string>>({})
+
+  const toggleReveal = async (index: number) => {
+    if (revealed[index] !== undefined) {
+      setRevealed((prev) => {
+        const next = { ...prev }
+        delete next[index]
+        return next
+      })
+      return
+    }
+    if (!onReveal) return
+    try {
+      const value = await onReveal(index)
+      if (value === null) {
+        setRevealError((prev) => ({ ...prev, [index]: "No longer available" }))
+        return
+      }
+      setRevealError((prev) => {
+        const next = { ...prev }
+        delete next[index]
+        return next
+      })
+      setRevealed((prev) => ({ ...prev, [index]: value }))
+    } catch {
+      setRevealError((prev) => ({ ...prev, [index]: "No longer available" }))
+    }
+  }
+
   const requestType = getRequestType({
     server_name: serverName,
     tool_name: toolName,
@@ -455,9 +493,33 @@ export function FirewallApprovalCard({
                     {finding.category.replace(/_/g, " ")}
                   </span>
                 </div>
-                <div className="font-mono text-[10px] bg-background/50 rounded px-1 py-0.5 truncate" title={finding.matched_text}>
-                  {finding.matched_text}
+                <div className="flex items-start gap-1">
+                  <div
+                    className={`font-mono text-[10px] bg-background/50 rounded px-1 py-0.5 flex-1 min-w-0 ${
+                      revealed[i] !== undefined ? "break-all select-all" : "truncate"
+                    }`}
+                    title={revealed[i] ?? finding.matched_text}
+                  >
+                    {revealed[i] ?? finding.matched_text}
+                  </div>
+                  {onReveal && (
+                    <button
+                      className="text-muted-foreground hover:text-foreground p-0.5 flex-shrink-0"
+                      onClick={() => toggleReveal(i)}
+                      title={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
+                      aria-label={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
+                    >
+                      {revealed[i] !== undefined ? (
+                        <EyeOff className="h-3 w-3" />
+                      ) : (
+                        <Eye className="h-3 w-3" />
+                      )}
+                    </button>
+                  )}
                 </div>
+                {revealError[i] && (
+                  <div className="text-[10px] text-destructive">{revealError[i]}</div>
+                )}
                 <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                   <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
                   <span className="ml-auto font-mono">{finding.rule_id}</span>

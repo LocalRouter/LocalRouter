@@ -3338,6 +3338,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return null
   },
   'dismiss_firewall_notification': () => null,
+  'reveal_secret_scan_match': () => 'AKIAIOSFODNN7EXAMPLE',
   'debug_trigger_firewall_popup': (args: Record<string, unknown>) => {
     const count = args?.sendMultiple ? 3 : 1
     toast.info(`Firewall popup triggered (demo, ${count} popup${count > 1 ? 's' : ''})`)

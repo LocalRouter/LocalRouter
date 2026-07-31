@@ -2529,6 +2529,12 @@ export interface DismissFirewallNotificationParams {
   requestId: string
 }
 
+/** Params for reveal_secret_scan_match (reveal button in the secret-scan popup) */
+export interface RevealSecretScanMatchParams {
+  requestId: string
+  findingIndex: number
+}
+
 /** Params for get_firewall_full_arguments */
 export interface GetFirewallFullArgumentsParams {
   requestId: string

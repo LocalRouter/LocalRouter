@@ -472,6 +472,20 @@ export function FirewallApproval() {
     }
   }
 
+  /** Fetch one finding's plaintext on demand (reveal button in the card). */
+  const handleReveal = async (findingIndex: number): Promise<string | null> => {
+    if (!details) return null
+    try {
+      return await invoke<string>("reveal_secret_scan_match", {
+        requestId: details.request_id,
+        findingIndex,
+      })
+    } catch {
+      // Session answered, dismissed, or expired — the secret is gone with it
+      return null
+    }
+  }
+
   const handleAction = async (action: ApprovalAction) => {
     // Guard with ref to prevent double-invocation from Radix dropdown click-through.
     // When a dropdown item is clicked, the portal is removed on pointerup, causing
@@ -877,6 +891,7 @@ export function FirewallApproval() {
           marketplaceListing={marketplaceListing}
           onAction={buttonsReady ? handleAction : undefined}
           onDismiss={buttonsReady ? handleDismiss : undefined}
+          onReveal={details.is_secret_scan_request ? handleReveal : undefined}
           onEdit={enterEditMode}
           submitting={submitting}
         />

@@ -3225,6 +3225,7 @@ pub async fn debug_trigger_firewall_popup(
                     rule_description: "AWS Access Key ID".to_string(),
                     category: "Cloud Provider".to_string(),
                     matched_text: "AKIA**********MPLE".to_string(),
+                    raw_text: "AKIAIOSFODNN7EXAMPLE".to_string(),
                     entropy: 3.42,
                 },
                 lr_mcp::gateway::firewall::SecretFindingSummary {
@@ -3232,6 +3233,7 @@ pub async fn debug_trigger_firewall_popup(
                     rule_description: "GitHub Personal Access Token".to_string(),
                     category: "Version Control".to_string(),
                     matched_text: "ghp_AB********************ghij".to_string(),
+                    raw_text: "ghp_ABcdefghijklmnopqrstuvwxyz012345ghij".to_string(),
                     entropy: 4.12,
                 },
             ],
@@ -3354,6 +3356,7 @@ pub async fn debug_trigger_firewall_popup(
                     rule_description: "PostgreSQL Connection URI".to_string(),
                     category: "Database".to_string(),
                     matched_text: "postg...( 45 chars)...5432".to_string(),
+                    raw_text: "postgres://demo:hunter2@db.example.com:5432".to_string(),
                     entropy: 3.85,
                 }],
                 scan_duration_ms: 0,

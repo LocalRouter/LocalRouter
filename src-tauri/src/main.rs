@@ -2581,6 +2581,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Firewall approval commands
             ui::commands::submit_firewall_approval,
             ui::commands::dismiss_firewall_notification,
+            ui::commands::reveal_secret_scan_match,
             ui::commands::list_pending_firewall_approvals,
             ui::commands::get_firewall_approval_details,
             ui::commands::get_firewall_full_arguments,
