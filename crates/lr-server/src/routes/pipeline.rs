@@ -1361,16 +1361,56 @@ pub async fn scan_request_for_secrets(
     );
 
     let scan_start = std::time::Instant::now();
-    let result = scanner.scan(&texts);
+    let mut result = scanner.scan(&texts);
+
+    // Drop findings the user has permanently ignored for this client. Done
+    // here rather than in the engine so the check stays out of the scanner's
+    // hot path and only runs when something actually matched.
+    let dismissed_count = if result.findings.is_empty() {
+        0
+    } else {
+        let before = result.findings.len();
+        let scanning = client.as_ref().map(|c| &c.secret_scanning);
+        let salt = scanning.and_then(|s| s.dismiss_salt.as_deref());
+        let digests: Vec<lr_secret_scanner::dismissal::DismissedDigest<'_>> = scanning
+            .map(|s| {
+                s.dismissed_secrets
+                    .iter()
+                    .map(|d| lr_secret_scanner::dismissal::DismissedDigest {
+                        hash: &d.hash,
+                        iterations: d.iterations,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !digests.is_empty() {
+            result.findings.retain(|f| {
+                !state
+                    .secret_dismissal_cache
+                    .is_dismissed(client_id, salt, &digests, &f.raw_text)
+            });
+        }
+        before - result.findings.len()
+    };
+
     let scan_latency = scan_start.elapsed().as_millis() as u64;
 
     if result.findings.is_empty() {
+        if dismissed_count > 0 {
+            tracing::debug!(
+                "Secret scan: {dismissed_count} finding(s) ignored by client {client_id}'s dismissed-secret list"
+            );
+        }
         super::monitor_helpers::complete_secret_scan(
             state,
             &secret_scan_event_id,
             0,
             serde_json::json!([]),
-            "pass",
+            if dismissed_count > 0 {
+                "dismissed"
+            } else {
+                "pass"
+            },
             scan_latency,
         );
         return SecretScanOutcome::Allow;
@@ -2117,6 +2157,53 @@ mod tests {
                 })
                 .collect();
         engine.scan(&texts).findings
+    }
+
+    /// A value the user permanently ignored is filtered out of the scan
+    /// result, while everything else in the same request still fires — the
+    /// filtering step `scan_request_for_secrets` applies before deciding.
+    #[test]
+    fn dismissed_values_are_filtered_but_others_still_fire() {
+        let body = serde_json::json!({
+            "model": "gpt-5.5",
+            "messages": [{
+                "role": "user",
+                "content": "aws key AKIAIOSFODNN7EXAMPLE and token ghp_ABcdefghijklmnopqrstuvwxyz0123456789"
+            }]
+        });
+        let findings = findings_for(&body);
+        assert!(
+            findings.len() >= 2,
+            "expected both secrets to be detected, got {findings:?}"
+        );
+
+        // Dismiss just the AWS key, exactly as the popup's ignore button does.
+        let aws = findings
+            .iter()
+            .find(|f| f.rule_id == "aws-access-key-id")
+            .expect("AWS key detected");
+        let salt = lr_secret_scanner::new_salt().unwrap();
+        let hashes = vec![lr_secret_scanner::hash_secret(&aws.raw_text, &salt, 10).unwrap()];
+        let digests: Vec<_> = hashes
+            .iter()
+            .map(|h| lr_secret_scanner::dismissal::DismissedDigest {
+                hash: h,
+                iterations: 10,
+            })
+            .collect();
+
+        let cache = lr_secret_scanner::dismissal::DismissalCache::new();
+        let mut remaining = findings.clone();
+        remaining.retain(|f| !cache.is_dismissed("client-1", Some(&salt), &digests, &f.raw_text));
+
+        assert!(
+            !remaining.iter().any(|f| f.rule_id == "aws-access-key-id"),
+            "the dismissed AWS key must not be reported again"
+        );
+        assert!(
+            remaining.iter().any(|f| f.rule_id != "aws-access-key-id"),
+            "other secrets in the same request must still be flagged"
+        );
     }
 
     /// The reported bug: an AWS key sent through the proxy by Codex (OpenAI

@@ -848,6 +848,12 @@ pub struct AppState {
     /// Secret scanning engine (swappable at runtime)
     pub secret_scanner: Arc<RwLock<Option<Arc<lr_secret_scanner::SecretScanEngine>>>>,
 
+    /// Memoized "has the user permanently ignored this secret?" verdicts.
+    /// The digest KDF is deliberately slow, and a dismissed secret recurs on
+    /// every later request carrying it, so verdicts must not be recomputed
+    /// per request.
+    pub secret_dismissal_cache: Arc<lr_secret_scanner::dismissal::DismissalCache>,
+
     /// Safety engine for LLM-based content inspection (swappable at runtime)
     pub safety_engine: Arc<RwLock<Option<Arc<lr_guardrails::SafetyEngine>>>>,
 
@@ -961,6 +967,7 @@ impl AppState {
             auto_router_approval_tracker: Arc::new(AutoRouterApprovalTracker::new()),
             secret_scan_approval_tracker: Arc::new(SecretScanApprovalTracker::new()),
             secret_scanner: Arc::new(RwLock::new(None)),
+            secret_dismissal_cache: Arc::new(lr_secret_scanner::dismissal::DismissalCache::new()),
             safety_engine: Arc::new(RwLock::new(None)),
             compression_service: Arc::new(RwLock::new(None)),
             memory_service: Arc::new(RwLock::new(None)),

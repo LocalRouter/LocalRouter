@@ -6,7 +6,7 @@
  * Keep this component free of Tauri-specific imports so the website can use it.
  */
 import { useState } from "react"
-import { ChevronDown, Pencil, Eye, EyeOff } from "lucide-react"
+import { ChevronDown, Pencil, Eye, EyeOff, BellOff } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import {
   DropdownMenu,
@@ -196,6 +196,13 @@ export interface FirewallApprovalCardProps {
    * Returns null when it is no longer available. Omitted (demo) = no reveal.
    */
   onReveal?: (findingIndex: number) => Promise<string | null>
+  /**
+   * Permanently stop flagging one finding's value for this client. Stores a
+   * salted hash, never the value. Omitted (demo) = the option is not offered.
+   */
+  onIgnorePermanently?: (findingIndex: number) => Promise<void>
+  /** Every finding has been permanently ignored — nothing left to decide. */
+  onAllFindingsIgnored?: () => void
   onEdit?: () => void
   submitting?: boolean
   className?: string
@@ -238,6 +245,8 @@ export function FirewallApprovalCard({
   onAction,
   onDismiss,
   onReveal,
+  onIgnorePermanently,
+  onAllFindingsIgnored,
   onEdit,
   submitting = false,
   className,
@@ -245,6 +254,42 @@ export function FirewallApprovalCard({
   // Revealed plaintext per finding index; absent = still masked.
   const [revealed, setRevealed] = useState<Record<number, string>>({})
   const [revealError, setRevealError] = useState<Record<number, string>>({})
+  // Findings the user has permanently ignored during this popup.
+  const [ignored, setIgnored] = useState<Record<number, boolean>>({})
+  const [ignoreError, setIgnoreError] = useState<Record<number, string>>({})
+  const [ignoring, setIgnoring] = useState<number | null>(null)
+
+  const ignorePermanently = async (index: number) => {
+    if (!onIgnorePermanently || ignoring !== null) return
+    setIgnoring(index)
+    try {
+      await onIgnorePermanently(index)
+      setIgnoreError((prev) => {
+        const next = { ...prev }
+        delete next[index]
+        return next
+      })
+      let ignoredCount = 0
+      setIgnored((prev) => {
+        const next = { ...prev, [index]: true }
+        ignoredCount = Object.keys(next).length
+        return next
+      })
+      // Nothing left to decide once every finding is ignored — let the parent
+      // resolve the popup rather than making the user click again.
+      const total = secretScanFindings?.length ?? 0
+      if (total > 0 && ignoredCount >= total) {
+        onAllFindingsIgnored?.()
+      }
+    } catch (err) {
+      setIgnoreError((prev) => ({
+        ...prev,
+        [index]: typeof err === "string" ? err : "Could not save this exception",
+      }))
+    } finally {
+      setIgnoring(null)
+    }
+  }
 
   const toggleReveal = async (index: number) => {
     if (revealed[index] !== undefined) {
@@ -524,6 +569,32 @@ export function FirewallApprovalCard({
                   <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
                   <span className="ml-auto font-mono">{finding.rule_id}</span>
                 </div>
+                {onIgnorePermanently && (
+                  ignored[i] ? (
+                    <div className="flex items-center gap-1 text-[10px] text-emerald-600 pt-0.5">
+                      <BellOff className="h-3 w-3 flex-shrink-0" />
+                      <span>
+                        Never flagged again for {clientName}. Undo in this client's
+                        Secret Scanning settings.
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      className="w-full flex items-center justify-center gap-1 mt-1 px-2 py-1 rounded text-[10px] font-medium border border-border text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-50"
+                      onClick={() => ignorePermanently(i)}
+                      disabled={ignoring !== null || submitting}
+                      title={`Stores a salted hash of this value — never the value itself — so it is never flagged again for ${clientName}. Reversible in that client's Secret Scanning settings.`}
+                    >
+                      <BellOff className="h-3 w-3 flex-shrink-0" />
+                      {ignoring === i
+                        ? "Saving…"
+                        : `Never flag this value again for ${clientName}`}
+                    </button>
+                  )
+                )}
+                {ignoreError[i] && (
+                  <div className="text-[10px] text-destructive">{ignoreError[i]}</div>
+                )}
               </div>
             ))}
           </div>

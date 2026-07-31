@@ -5,12 +5,14 @@
 //! pipeline: keyword pre-filter -> regex matching -> entropy filtering ->
 //! optional ML verification.
 
+pub mod dismissal;
 pub mod engine;
 pub mod entropy;
 pub mod patterns;
 pub mod regex_engine;
 pub mod types;
 
+pub use dismissal::{hash_secret, new_salt, verify_secret, DEFAULT_ITERATIONS};
 pub use engine::{SecretScanEngine, SecretScanEngineConfig};
 pub use regex_engine::RuleMetadata;
 pub use types::{ExtractedText, ScanResult, SecretFinding, SecretScanAction};

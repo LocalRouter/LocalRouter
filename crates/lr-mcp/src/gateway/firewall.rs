@@ -798,6 +798,24 @@ impl FirewallManager {
         (!raw.is_empty()).then_some(raw)
     }
 
+    /// The client and one finding of a pending secret-scan session, for
+    /// building a permanent exception. Carries the plaintext (the returned
+    /// clone includes `raw_text`), so callers must hash it, never store it.
+    pub fn secret_finding_at(
+        &self,
+        request_id: &str,
+        finding_index: usize,
+    ) -> Option<(String, SecretFindingSummary)> {
+        let session = self.pending.get(request_id)?;
+        let finding = session
+            .secret_scan_details
+            .as_ref()?
+            .findings
+            .get(finding_index)?
+            .clone();
+        (!finding.raw_text.is_empty()).then_some((session.client_id.clone(), finding))
+    }
+
     /// Insert a pre-built pending approval session (for debug/testing)
     pub fn insert_pending(&self, request_id: String, session: FirewallApprovalSession) {
         self.pending.insert(request_id, session);
@@ -1020,6 +1038,30 @@ mod tests {
         // Once dismissed, the plaintext is unreachable
         manager.cancel_request(&id).unwrap();
         assert!(manager.reveal_secret_match(&id, 0).is_none());
+    }
+
+    /// Building a permanent exception needs the owning client plus the
+    /// finding's plaintext, and only while the popup is still open.
+    #[test]
+    fn test_secret_finding_at() {
+        let manager = FirewallManager::new(120);
+        manager.notify_secret_scan(
+            "client-1".to_string(),
+            "Client One".to_string(),
+            "gpt-4o".to_string(),
+            scan_details(),
+            "preview".to_string(),
+        );
+        let id = manager.list_pending()[0].request_id.clone();
+
+        let (client_id, finding) = manager.secret_finding_at(&id, 0).expect("finding present");
+        assert_eq!(client_id, "client-1");
+        assert_eq!(finding.raw_text, "AKIAIOSFODNN7EXAMPLE");
+        assert_eq!(finding.rule_id, "aws-access-key-id");
+
+        assert!(manager.secret_finding_at(&id, 9).is_none());
+        manager.cancel_request(&id).unwrap();
+        assert!(manager.secret_finding_at(&id, 0).is_none());
     }
 
     /// The plaintext must not ride along in anything serialized to the UI,

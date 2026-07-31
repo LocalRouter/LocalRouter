@@ -2420,6 +2420,152 @@ pub async fn reveal_secret_scan_match(
         .ok_or_else(|| "This secret is no longer available".to_string())
 }
 
+/// Permanently stop flagging one specific value for the client that sent it.
+///
+/// The secret is read from the live approval session, hashed, and only the
+/// salted digest is written to config — the value itself never lands on disk.
+/// Because the digest is salted per client, the same value stays flagged for
+/// every other client.
+#[tauri::command]
+pub async fn ignore_secret_permanently(
+    request_id: String,
+    finding_index: usize,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let (client_id, finding) = state
+        .mcp_gateway
+        .firewall_manager
+        .secret_finding_at(&request_id, finding_index)
+        .ok_or_else(|| "This secret is no longer available".to_string())?;
+
+    // Settle the salt in its own atomic step, before hashing. Two popups can
+    // be open at once; if both minted a salt and wrote it with their digest,
+    // the second would invalidate the first's entry. Nothing rotates the salt
+    // once set, so after this the value is stable for the append below.
+    let fresh_salt = lr_secret_scanner::new_salt()?;
+    let mut salt = None;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                let s = client
+                    .secret_scanning
+                    .dismiss_salt
+                    .get_or_insert_with(|| fresh_salt.clone());
+                salt = Some(s.clone());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let salt = salt.ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    // The KDF is intentionally slow — keep it off the async runtime's threads.
+    let iterations = lr_secret_scanner::DEFAULT_ITERATIONS;
+    let hash = {
+        let salt = salt.clone();
+        let secret = finding.raw_text.clone();
+        tokio::task::spawn_blocking(move || {
+            lr_secret_scanner::hash_secret(&secret, &salt, iterations)
+        })
+        .await
+        .map_err(|e| format!("Hashing failed: {e}"))??
+    };
+
+    let entry = lr_config::DismissedSecret {
+        id: uuid::Uuid::new_v4().to_string(),
+        hash,
+        iterations,
+        rule_id: finding.rule_id.clone(),
+        rule_description: finding.rule_description.clone(),
+        hint: finding.matched_text.clone(),
+        dismissed_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                found = true;
+                // Same salt + same value = same digest, so this also dedupes
+                // repeat dismissals of one secret.
+                if !client
+                    .secret_scanning
+                    .dismissed_secrets
+                    .iter()
+                    .any(|d| d.hash == entry.hash)
+                {
+                    client.secret_scanning.dismissed_secrets.push(entry.clone());
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    state.secret_dismissal_cache.invalidate(&client_id);
+
+    tracing::info!(
+        "Secret scan: permanently ignoring a {} match for client {}",
+        finding.rule_id,
+        client_id
+    );
+    let _ = app.emit("clients-changed", ());
+    Ok(())
+}
+
+/// List the secrets permanently ignored for a client (digests, never values).
+#[tauri::command]
+pub async fn list_client_dismissed_secrets(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<Vec<lr_config::DismissedSecret>, String> {
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+    Ok(client.secret_scanning.dismissed_secrets.clone())
+}
+
+/// Remove one dismissed-secret exception, or all of them when `entry_id` is
+/// None. The value starts being flagged again on the next request.
+#[tauri::command]
+pub async fn remove_client_dismissed_secret(
+    client_id: String,
+    entry_id: Option<String>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                found = true;
+                match &entry_id {
+                    Some(id) => client
+                        .secret_scanning
+                        .dismissed_secrets
+                        .retain(|d| &d.id != id),
+                    None => client.secret_scanning.dismissed_secrets.clear(),
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    state.secret_dismissal_cache.invalidate(&client_id);
+
+    let _ = app.emit("clients-changed", ());
+    Ok(())
+}
+
 /// Dismiss a notify-only firewall notification popup.
 ///
 /// Removes the pending session without submitting an approval response —
@@ -3863,7 +4009,16 @@ pub async fn update_client_secret_scanning_config(
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                // Dismissed secrets are managed by their own commands. This
+                // one replaces the struct wholesale from a UI payload that
+                // only carries `action`, so carry them over explicitly —
+                // otherwise flipping the action would silently drop every
+                // exception the user has accumulated.
+                let salt = client.secret_scanning.dismiss_salt.clone();
+                let dismissed = std::mem::take(&mut client.secret_scanning.dismissed_secrets);
                 client.secret_scanning = new_config.clone();
+                client.secret_scanning.dismiss_salt = salt;
+                client.secret_scanning.dismissed_secrets = dismissed;
                 found = true;
             }
         })

@@ -2557,6 +2557,41 @@ pub struct ClientSecretScanningConfig {
     /// Override action for this client (None = inherit global)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<SecretScanAction>,
+
+    /// Random salt (base64) for this client's dismissed-secret digests.
+    /// Generated on the first dismissal; absent until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismiss_salt: Option<String>,
+
+    /// Secrets the user has permanently ignored for this client.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dismissed_secrets: Vec<DismissedSecret>,
+}
+
+/// A secret permanently ignored for one client.
+///
+/// The secret itself is never written here — only a salted PBKDF2 digest (see
+/// `lr_secret_scanner::dismissal`), so the config file cannot give a reader
+/// back the credential. `hint` is the same masked preview already shown in the
+/// approval popup and recorded in monitor events, kept so the user can tell
+/// entries apart when reviewing or resetting them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DismissedSecret {
+    /// Stable identifier, used to remove a single entry.
+    pub id: String,
+    /// Base64 PBKDF2-HMAC-SHA256 digest of the secret.
+    pub hash: String,
+    /// Iterations used for this entry, so the cost can be raised later without
+    /// invalidating digests written by older versions.
+    pub iterations: u32,
+    /// Rule that matched, for display.
+    pub rule_id: String,
+    /// Human-readable rule description, for display.
+    pub rule_description: String,
+    /// Masked preview of the value (e.g. `AKIA**********MPLE`).
+    pub hint: String,
+    /// RFC3339 timestamp of when it was dismissed.
+    pub dismissed_at: String,
 }
 
 // ============================================================================
@@ -4064,6 +4099,55 @@ fn default_sidebar_expanded() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Configs written before dismissed secrets existed must still load.
+    #[test]
+    fn client_secret_scanning_config_without_dismissals_deserializes() {
+        let cfg: ClientSecretScanningConfig = serde_yaml::from_str("action: ask").unwrap();
+        assert_eq!(cfg.action, Some(SecretScanAction::Ask));
+        assert!(cfg.dismiss_salt.is_none());
+        assert!(cfg.dismissed_secrets.is_empty());
+
+        // ...as must a completely empty one
+        let empty: ClientSecretScanningConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(empty.dismissed_secrets.is_empty());
+    }
+
+    /// Dismissals survive a save/load cycle, and the serialized form carries a
+    /// digest and a mask — never anything that reconstructs the secret.
+    #[test]
+    fn dismissed_secrets_round_trip_without_the_plaintext() {
+        let cfg = ClientSecretScanningConfig {
+            action: Some(SecretScanAction::Notify),
+            dismiss_salt: Some("c2FsdHNhbHRzYWx0c2E=".to_string()),
+            dismissed_secrets: vec![DismissedSecret {
+                id: "entry-1".to_string(),
+                hash: "ZGlnZXN0".to_string(),
+                iterations: 600_000,
+                rule_id: "generic-password-assignment".to_string(),
+                rule_description: "Generic Password Assignment".to_string(),
+                hint: "your_m*********word".to_string(),
+                dismissed_at: "2026-07-31T00:00:00Z".to_string(),
+            }],
+        };
+
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        assert!(
+            !yaml.contains("your_mysql_password"),
+            "serialized config must not contain the secret: {yaml}"
+        );
+
+        let parsed: ClientSecretScanningConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, cfg);
+    }
+
+    /// An empty exception list must not write noise into every client's config.
+    #[test]
+    fn empty_dismissals_are_omitted_from_serialization() {
+        let yaml = serde_yaml::to_string(&ClientSecretScanningConfig::default()).unwrap();
+        assert!(!yaml.contains("dismissed_secrets"), "got: {yaml}");
+        assert!(!yaml.contains("dismiss_salt"), "got: {yaml}");
+    }
 
     #[test]
     fn test_default_config() {

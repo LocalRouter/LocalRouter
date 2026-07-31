@@ -5730,8 +5730,10 @@ name = "lr-secret-scanner"
 version = "0.0.132"
 dependencies = [
  "aho-corasick",
+ "base64 0.22.1",
  "lr-types",
  "regex",
+ "ring",
  "serde",
  "serde_json",
  "tokio",

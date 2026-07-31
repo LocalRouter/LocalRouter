@@ -175,6 +175,13 @@ export function FirewallApproval() {
           const height = Math.min(580, 320 + verdictCount * 60 + (hasFlaggedText ? 80 : 0))
           await win.setSize(new LogicalSize(440, height))
           await win.center()
+        } else if (result.is_secret_scan_request) {
+          // Each finding carries rule, value + reveal, entropy, and the
+          // permanent-ignore control — the default 320px clips even one.
+          const findingCount = result.secret_scan_details?.findings?.length || 1
+          const height = Math.min(600, 300 + findingCount * 110)
+          await win.setSize(new LogicalSize(440, height))
+          await win.center()
         }
         await win.show()
         await win.setFocus()
@@ -483,6 +490,27 @@ export function FirewallApproval() {
     } catch {
       // Session answered, dismissed, or expired — the secret is gone with it
       return null
+    }
+  }
+
+  /** Permanently stop flagging one finding's value for this client. */
+  const handleIgnorePermanently = async (findingIndex: number): Promise<void> => {
+    if (!details) return
+    await invoke("ignore_secret_permanently", {
+      requestId: details.request_id,
+      findingIndex,
+    })
+  }
+
+  /**
+   * Every finding is now ignored, so there is nothing to approve: let the
+   * request through (Ask) or just close the informational popup (Notify).
+   */
+  const handleAllFindingsIgnored = () => {
+    if (details?.is_notify_only) {
+      handleDismiss()
+    } else {
+      handleAction("allow_once")
     }
   }
 
@@ -892,6 +920,10 @@ export function FirewallApproval() {
           onAction={buttonsReady ? handleAction : undefined}
           onDismiss={buttonsReady ? handleDismiss : undefined}
           onReveal={details.is_secret_scan_request ? handleReveal : undefined}
+          onIgnorePermanently={
+            details.is_secret_scan_request ? handleIgnorePermanently : undefined
+          }
+          onAllFindingsIgnored={handleAllFindingsIgnored}
           onEdit={enterEditMode}
           submitting={submitting}
         />

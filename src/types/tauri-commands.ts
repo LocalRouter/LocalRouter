@@ -3226,6 +3226,25 @@ export interface ClientSecretScanningConfig {
   action: SecretScanAction | null
 }
 
+/**
+ * A secret permanently ignored for one client.
+ * Rust: crates/lr-config/src/types.rs - DismissedSecret struct
+ *
+ * Only a salted digest is stored — the secret itself is never persisted, so
+ * there is no field here that can give it back.
+ */
+export interface DismissedSecret {
+  id: string
+  hash: string
+  iterations: number
+  rule_id: string
+  rule_description: string
+  /** Masked preview (e.g. `AKIA**********MPLE`), to tell entries apart */
+  hint: string
+  /** RFC3339 timestamp */
+  dismissed_at: string
+}
+
 /** Summary of a single secret finding (for approval popup) */
 export interface SecretFindingSummary {
   rule_id: string
@@ -3287,6 +3306,23 @@ export interface GetClientSecretScanningConfigParams {
 export interface UpdateClientSecretScanningConfigParams {
   clientId: string
   configJson: string
+}
+
+/** Params for ignore_secret_permanently (from the secret-scan popup) */
+export interface IgnoreSecretPermanentlyParams {
+  requestId: string
+  findingIndex: number
+}
+
+/** Params for list_client_dismissed_secrets */
+export interface ListClientDismissedSecretsParams {
+  clientId: string
+}
+
+/** Params for remove_client_dismissed_secret (entryId omitted = clear all) */
+export interface RemoveClientDismissedSecretParams {
+  clientId: string
+  entryId?: string | null
 }
 
 /** Params for test_secret_scan */

@@ -3339,6 +3339,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'dismiss_firewall_notification': () => null,
   'reveal_secret_scan_match': () => 'AKIAIOSFODNN7EXAMPLE',
+  'ignore_secret_permanently': () => null,
+  'list_client_dismissed_secrets': () => [
+    {
+      id: 'demo-dismissed-1',
+      hash: 'ZGVtby1kaWdlc3Q=',
+      iterations: 600000,
+      rule_id: 'generic-password-assignment',
+      rule_description: 'Generic Password Assignment',
+      hint: 'your_m*********word',
+      dismissed_at: '2026-07-30T12:00:00Z',
+    },
+  ],
+  'remove_client_dismissed_secret': () => null,
   'debug_trigger_firewall_popup': (args: Record<string, unknown>) => {
     const count = args?.sendMultiple ? 3 : 1
     toast.info(`Firewall popup triggered (demo, ${count} popup${count > 1 ? 's' : ''})`)
