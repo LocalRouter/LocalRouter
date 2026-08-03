@@ -2183,7 +2183,7 @@ mod tests {
             .find(|f| f.rule_id == "aws-access-key-id")
             .expect("AWS key detected");
         let salt = lr_secret_scanner::new_salt().unwrap();
-        let hashes = vec![lr_secret_scanner::hash_secret(&aws.raw_text, &salt, 10).unwrap()];
+        let hashes = [lr_secret_scanner::hash_secret(&aws.raw_text, &salt, 10).unwrap()];
         let digests: Vec<_> = hashes
             .iter()
             .map(|h| lr_secret_scanner::dismissal::DismissedDigest {
