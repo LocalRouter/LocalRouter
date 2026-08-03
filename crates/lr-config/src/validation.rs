@@ -363,12 +363,27 @@ fn validate_mcp_servers(servers: &[McpServerConfig]) -> AppResult<()> {
                     )));
                 }
             }
-            McpTransportConfig::Stdio { command, .. } => {
+            McpTransportConfig::Stdio { command, cwd, .. } => {
                 if command.trim().is_empty() {
                     return Err(AppError::Config(format!(
                         "MCP server '{}': command cannot be empty",
                         server.id
                     )));
+                }
+                // A relative working directory would resolve against LocalRouter's
+                // own CWD (`/` on a GUI launch), which is exactly the ambiguity the
+                // setting exists to remove — require an absolute path or `~`.
+                if let Some(dir) = cwd {
+                    let trimmed = dir.trim();
+                    if !trimmed.is_empty()
+                        && !trimmed.starts_with('~')
+                        && !std::path::Path::new(trimmed).is_absolute()
+                    {
+                        return Err(AppError::Config(format!(
+                            "MCP server '{}': working directory must be an absolute path or start with '~' (got '{}')",
+                            server.id, trimmed
+                        )));
+                    }
                 }
             }
         }
@@ -432,6 +447,42 @@ mod tests {
     fn test_validate_default_config() {
         let config = AppConfig::default();
         assert!(validate_config(&config).is_ok());
+    }
+
+    fn stdio_server_with_cwd(cwd: Option<&str>) -> McpServerConfig {
+        McpServerConfig::new(
+            "Test".to_string(),
+            crate::McpTransportType::Stdio,
+            McpTransportConfig::Stdio {
+                command: "echo".to_string(),
+                args: vec![],
+                env: std::collections::HashMap::new(),
+                cwd: cwd.map(|s| s.to_string()),
+            },
+        )
+    }
+
+    /// A relative working directory would resolve against LocalRouter's own CWD
+    /// (`/` on a GUI launch) — exactly the ambiguity the setting removes.
+    #[test]
+    fn test_validate_mcp_stdio_rejects_relative_cwd() {
+        let err = validate_mcp_servers(&[stdio_server_with_cwd(Some("./data"))]).unwrap_err();
+        assert!(
+            err.to_string().contains("absolute path"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_mcp_stdio_accepts_absolute_and_tilde_and_unset_cwd() {
+        assert!(validate_mcp_servers(&[stdio_server_with_cwd(None)]).is_ok());
+        assert!(validate_mcp_servers(&[stdio_server_with_cwd(Some(""))]).is_ok());
+        assert!(validate_mcp_servers(&[stdio_server_with_cwd(Some("~/code/app"))]).is_ok());
+        #[cfg(unix)]
+        assert!(validate_mcp_servers(&[stdio_server_with_cwd(Some("/opt/app"))]).is_ok());
+        #[cfg(windows)]
+        assert!(validate_mcp_servers(&[stdio_server_with_cwd(Some(r"C:\app"))]).is_ok());
     }
 
     #[test]

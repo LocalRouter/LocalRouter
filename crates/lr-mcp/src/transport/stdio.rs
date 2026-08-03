@@ -84,6 +84,9 @@ impl StdioTransport {
     /// * `args` - Command arguments (e.g., ["-y", "@modelcontextprotocol/server-everything"])
     /// * `env` - Environment variables to set
     ///
+    /// The process inherits LocalRouter's own working directory. Prefer
+    /// [`Self::spawn_in`] for configured servers, which pins an explicit one.
+    ///
     /// # Returns
     /// * The transport instance with the running process
     pub async fn spawn(
@@ -91,20 +94,63 @@ impl StdioTransport {
         args: Vec<String>,
         env: HashMap<String, String>,
     ) -> AppResult<Self> {
-        tracing::debug!("Spawning MCP STDIO process: {} {:?}", command, args);
+        Self::spawn_in(command, args, env, None).await
+    }
+
+    /// Spawn a new MCP server process in an explicit working directory.
+    ///
+    /// `cwd` of `None` inherits LocalRouter's working directory, which on a GUI
+    /// launch is `/` — callers with a config should pass
+    /// `McpTransportConfig::resolve_stdio_cwd()` instead.
+    pub async fn spawn_in(
+        command: String,
+        args: Vec<String>,
+        env: HashMap<String, String>,
+        cwd: Option<std::path::PathBuf>,
+    ) -> AppResult<Self> {
+        tracing::debug!(
+            "Spawning MCP STDIO process: {} {:?} (cwd: {:?})",
+            command,
+            args,
+            cwd
+        );
+
+        // Fail with a directed message rather than the opaque OS error the
+        // spawn would otherwise produce for a missing/!dir working directory.
+        if let Some(dir) = &cwd {
+            if !dir.is_dir() {
+                return Err(AppError::Mcp(format!(
+                    "Working directory for MCP process '{}' is not an existing directory: {}",
+                    command,
+                    dir.display()
+                )));
+            }
+        }
 
         // Spawn the child process
-        let mut child = Command::new(&command)
-            .args(&args)
+        let has_configured_pwd = env.contains_key("PWD");
+        let mut cmd = Command::new(&command);
+        cmd.args(&args)
             .envs(env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null()) // Discard stderr to prevent pipe buffer deadlock
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| {
-                AppError::Mcp(format!("Failed to spawn MCP process '{}': {}", command, e))
-            })?;
+            .kill_on_drop(true);
+        if let Some(dir) = &cwd {
+            cmd.current_dir(dir);
+            // The child inherits our environment, so a stale inherited `PWD`
+            // would disagree with the directory we just set — shells and
+            // scripts read `$PWD` rather than calling getcwd(). An explicitly
+            // configured PWD still wins, as with every other env var.
+            if !has_configured_pwd {
+                if let Some(dir_str) = dir.to_str() {
+                    cmd.env("PWD", dir_str);
+                }
+            }
+        }
+        let mut child = cmd.spawn().map_err(|e| {
+            AppError::Mcp(format!("Failed to spawn MCP process '{}': {}", command, e))
+        })?;
 
         // Take stdin and stdout handles
         let stdin = child
@@ -584,6 +630,81 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             assert!(!transport.is_alive());
         }
+    }
+
+    /// A missing working directory must fail with a message naming the
+    /// directory, not the opaque OS error the raw spawn would produce.
+    #[tokio::test]
+    async fn test_spawn_in_missing_cwd_reports_directory() {
+        let missing = std::path::PathBuf::from("/definitely/not/a/real/directory-12345");
+        let result = StdioTransport::spawn_in(
+            "echo".to_string(),
+            vec!["hi".to_string()],
+            HashMap::new(),
+            Some(missing.clone()),
+        )
+        .await;
+
+        // StdioTransport isn't Debug, so match rather than unwrap_err().
+        let msg = match result {
+            Ok(_) => panic!("spawn should fail for a missing working directory"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("Working directory"),
+            "unexpected error: {}",
+            msg
+        );
+        assert!(
+            msg.contains(&missing.display().to_string()),
+            "error should name the directory: {}",
+            msg
+        );
+    }
+
+    /// The child really is started in the requested directory: it writes its
+    /// own `pwd` to a relative path, which can only land in `cwd`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_spawn_in_uses_requested_cwd() {
+        // Resolve symlinks (/tmp -> /private/tmp on macOS) so the path the
+        // child reports matches the one we asked for.
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("lr-mcp-cwd-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let transport = StdioTransport::spawn_in(
+            "sh".to_string(),
+            // Keep the process alive after writing so the transport stays up.
+            vec!["-c".to_string(), "pwd > where.txt; sleep 30".to_string()],
+            HashMap::new(),
+            Some(dir.clone()),
+        )
+        .await
+        .expect("spawn should succeed");
+
+        // Give the child a moment to write before reading.
+        let marker = dir.join("where.txt");
+        let mut recorded = None;
+        for _ in 0..50 {
+            if let Ok(contents) = std::fs::read_to_string(&marker) {
+                if !contents.trim().is_empty() {
+                    recorded = Some(contents.trim().to_string());
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        transport.kill().await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            recorded.as_deref(),
+            Some(dir.to_str().unwrap()),
+            "child should have run in the requested directory"
+        );
     }
 
     #[tokio::test]

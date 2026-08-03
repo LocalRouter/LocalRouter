@@ -19,6 +19,7 @@ fn test_mcp_server_with_no_auth() -> AppResult<()> {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
             env: HashMap::new(),
+            cwd: None,
         },
     );
 
@@ -56,6 +57,7 @@ fn test_mcp_server_with_env_vars_auth() -> AppResult<()> {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
             env: HashMap::new(),
+            cwd: None,
         },
     );
     config.auth_config = Some(auth_config);
@@ -224,6 +226,7 @@ fn test_mcp_server_auth_config_update() -> AppResult<()> {
             command: "echo".to_string(),
             args: vec![],
             env: HashMap::new(),
+            cwd: None,
         },
     );
 
@@ -317,6 +320,7 @@ fn test_multiple_servers_with_different_auth() -> AppResult<()> {
             command: "echo".to_string(),
             args: vec![],
             env: HashMap::new(),
+            cwd: None,
         },
     );
 
@@ -328,6 +332,7 @@ fn test_multiple_servers_with_different_auth() -> AppResult<()> {
             command: "echo".to_string(),
             args: vec![],
             env: HashMap::new(),
+            cwd: None,
         },
     );
     let mut env_refs = HashMap::new();

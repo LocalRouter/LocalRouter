@@ -265,6 +265,10 @@ pub struct McpInstallConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
 
+    /// For stdio: working directory (defaults to the home directory when unset)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+
     /// Auth type (none, bearer, oauth)
     #[serde(default = "default_auth_none")]
     pub auth_type: String,

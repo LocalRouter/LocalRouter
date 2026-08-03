@@ -51,6 +51,7 @@ pub fn create_mcp_server_config(
                 command: full_command,
                 args: vec![], // deprecated, use command string
                 env: config.env.clone(),
+                cwd: config.cwd.clone(),
             }
         }
         McpTransportType::HttpSse => {
@@ -144,6 +145,7 @@ pub fn generate_default_mcp_config(listing: &McpServerListing) -> McpInstallConf
             args,
             url: None,
             env: pkg.env.clone(),
+            cwd: None,
             auth_type: "none".to_string(),
             bearer_token: None,
         };
@@ -164,6 +166,7 @@ pub fn generate_default_mcp_config(listing: &McpServerListing) -> McpInstallConf
             args: vec![],
             url: Some(remote.url.clone()),
             env: HashMap::new(),
+            cwd: None,
             auth_type: remote.auth.clone().unwrap_or_else(|| "none".to_string()),
             bearer_token: None,
         };
@@ -177,6 +180,7 @@ pub fn generate_default_mcp_config(listing: &McpServerListing) -> McpInstallConf
         args: vec![],
         url: None,
         env: HashMap::new(),
+        cwd: None,
         auth_type: "none".to_string(),
         bearer_token: None,
     }
@@ -224,6 +228,7 @@ mod tests {
             args: vec!["-y".to_string(), "@test/server".to_string()],
             url: None,
             env: HashMap::new(),
+            cwd: None,
             auth_type: "none".to_string(),
             bearer_token: None,
         };
@@ -263,6 +268,7 @@ mod tests {
             args: vec![],
             url: Some("https://example.com/mcp".to_string()),
             env: HashMap::new(),
+            cwd: None,
             auth_type: "bearer".to_string(),
             bearer_token: Some("secret-token".to_string()),
         };

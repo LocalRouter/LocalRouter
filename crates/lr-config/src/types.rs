@@ -3162,6 +3162,18 @@ pub enum McpTransportConfig {
         /// Base environment variables (auth env vars go in McpAuthConfig::EnvVars)
         #[serde(default)]
         env: std::collections::HashMap<String, String>,
+        /// Working directory the subprocess is spawned in.
+        ///
+        /// `None` (the default) means the user's home directory — see
+        /// [`default_mcp_working_dir`]. LocalRouter runs as a background app
+        /// whose own CWD is `/` on a GUI launch, so the inherited directory is
+        /// never meaningful; servers that resolve relative paths, look for
+        /// `.env`/config files, or let `npx` find a local `node_modules` need a
+        /// stable, writable directory instead.
+        ///
+        /// A leading `~` is expanded to the home directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
 
     /// HTTP with Server-Sent Events configuration (new naming)
@@ -3215,7 +3227,9 @@ impl McpTransportConfig {
         String,
     > {
         match self {
-            McpTransportConfig::Stdio { command, args, env } => {
+            McpTransportConfig::Stdio {
+                command, args, env, ..
+            } => {
                 // If legacy args are provided, use them directly
                 if !args.is_empty() {
                     return Ok((command.clone(), args.clone(), env.clone()));
@@ -3236,6 +3250,52 @@ impl McpTransportConfig {
             }
             _ => Err("Not a STDIO transport".to_string()),
         }
+    }
+
+    /// Resolve the working directory a STDIO server should be spawned in.
+    ///
+    /// Returns the configured `cwd` (with a leading `~` expanded) when one is
+    /// set and non-blank, otherwise the default working directory. Returns
+    /// `None` only for non-STDIO transports, or when the home directory cannot
+    /// be determined and no explicit `cwd` was configured — in which case the
+    /// caller should fall back to inheriting.
+    pub fn resolve_stdio_cwd(&self) -> Option<std::path::PathBuf> {
+        match self {
+            McpTransportConfig::Stdio { cwd, .. } => match cwd {
+                Some(dir) if !dir.trim().is_empty() => Some(expand_tilde(dir.trim())),
+                _ => default_mcp_working_dir(),
+            },
+            _ => None,
+        }
+    }
+}
+
+/// Default working directory for STDIO MCP servers: the user's home directory.
+///
+/// Works across platforms — `dirs::home_dir` maps to `$HOME` on macOS/Linux and
+/// the `Known Folder` profile path (`C:\Users\<name>`) on Windows.
+pub fn default_mcp_working_dir() -> Option<std::path::PathBuf> {
+    dirs::home_dir()
+}
+
+/// Expand a leading `~` (alone or followed by a separator) to the home directory.
+///
+/// Any other path — absolute or relative — is returned unchanged.
+pub fn expand_tilde(path: &str) -> std::path::PathBuf {
+    let Some(rest) = path.strip_prefix('~') else {
+        return std::path::PathBuf::from(path);
+    };
+    // Only expand `~` and `~/...` — leave `~user` to the OS (we cannot resolve it).
+    let rest = match rest {
+        "" => "",
+        r if r.starts_with('/') || r.starts_with('\\') => &r[1..],
+        _ => return std::path::PathBuf::from(path),
+    };
+
+    match dirs::home_dir() {
+        Some(home) if rest.is_empty() => home,
+        Some(home) => home.join(rest),
+        None => std::path::PathBuf::from(path),
     }
 }
 
@@ -4099,6 +4159,97 @@ fn default_sidebar_expanded() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stdio_with_cwd(cwd: Option<&str>) -> McpTransportConfig {
+        McpTransportConfig::Stdio {
+            command: "echo".to_string(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            cwd: cwd.map(|s| s.to_string()),
+        }
+    }
+
+    /// Configs written before the `cwd` field existed must still load, and must
+    /// resolve to the default (home) working directory.
+    #[test]
+    fn stdio_config_without_cwd_deserializes_and_defaults_to_home() {
+        let cfg: McpTransportConfig =
+            serde_yaml::from_str("type: stdio\ncommand: npx -y some-server\n").unwrap();
+        match &cfg {
+            McpTransportConfig::Stdio { cwd, .. } => assert!(cwd.is_none()),
+            _ => panic!("expected stdio"),
+        }
+        assert_eq!(cfg.resolve_stdio_cwd(), dirs::home_dir());
+    }
+
+    /// An unset `cwd` is omitted from the serialized form entirely.
+    #[test]
+    fn stdio_config_without_cwd_is_not_serialized() {
+        let yaml = serde_yaml::to_string(&stdio_with_cwd(None)).unwrap();
+        assert!(!yaml.contains("cwd"), "unexpected cwd in: {}", yaml);
+    }
+
+    #[test]
+    fn resolve_stdio_cwd_uses_explicit_directory() {
+        assert_eq!(
+            stdio_with_cwd(Some("/opt/projects/app")).resolve_stdio_cwd(),
+            Some(std::path::PathBuf::from("/opt/projects/app"))
+        );
+    }
+
+    /// Blank / whitespace-only values are treated as "unset", not as a literal
+    /// empty path — a UI that clears the field must fall back to the default.
+    #[test]
+    fn resolve_stdio_cwd_treats_blank_as_default() {
+        assert_eq!(
+            stdio_with_cwd(Some("")).resolve_stdio_cwd(),
+            dirs::home_dir()
+        );
+        assert_eq!(
+            stdio_with_cwd(Some("   ")).resolve_stdio_cwd(),
+            dirs::home_dir()
+        );
+    }
+
+    #[test]
+    fn resolve_stdio_cwd_expands_tilde() {
+        let home = dirs::home_dir().expect("home dir required for this test");
+        assert_eq!(
+            stdio_with_cwd(Some("~")).resolve_stdio_cwd(),
+            Some(home.clone())
+        );
+        assert_eq!(
+            stdio_with_cwd(Some("~/code/app")).resolve_stdio_cwd(),
+            Some(home.join("code/app"))
+        );
+    }
+
+    /// `~user` cannot be resolved without querying the OS user database, so it
+    /// is passed through untouched rather than mangled into `$HOME/user`.
+    #[test]
+    fn expand_tilde_leaves_other_forms_untouched() {
+        assert_eq!(
+            expand_tilde("~someone/code"),
+            std::path::PathBuf::from("~someone/code")
+        );
+        assert_eq!(
+            expand_tilde("/abs/path"),
+            std::path::PathBuf::from("/abs/path")
+        );
+        assert_eq!(
+            expand_tilde("relative"),
+            std::path::PathBuf::from("relative")
+        );
+    }
+
+    #[test]
+    fn resolve_stdio_cwd_is_none_for_non_stdio_transports() {
+        let http = McpTransportConfig::HttpSse {
+            url: "https://example.com/mcp".to_string(),
+            headers: std::collections::HashMap::new(),
+        };
+        assert_eq!(http.resolve_stdio_cwd(), None);
+    }
 
     /// Configs written before dismissed secrets existed must still load.
     #[test]

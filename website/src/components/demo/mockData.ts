@@ -19,6 +19,7 @@ interface McpServer {
     command?: string
     args?: string[]
     env?: Record<string, string>
+    cwd?: string | null
     url?: string
     headers?: Record<string, string>
   }
@@ -510,6 +511,7 @@ export const mockData = {
         command: "npx",
         args: ["-y", "@anthropic/mcp-filesystem"],
         env: {},
+        cwd: "/Users/demo/projects/my-app",
       },
       auth_config: null,
       description: "Read, write, and manage local files",

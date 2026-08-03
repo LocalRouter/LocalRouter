@@ -542,7 +542,7 @@ export interface ModelPricing {
  * Rust: crates/lr-config/src/types.rs - McpTransportConfig enum
  */
 export type McpTransportConfig =
-  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string>; cwd?: string | null }
   | { type: 'http_sse'; url: string }
   | { type: 'websocket'; url: string }
 
@@ -1432,6 +1432,8 @@ export interface McpInstallConfig {
   args?: string[] | null
   url?: string | null
   env?: Record<string, string> | null
+  /** For stdio: working directory. Defaults to the home directory when unset. */
+  cwd?: string | null
 }
 
 /**

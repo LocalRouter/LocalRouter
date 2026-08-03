@@ -76,6 +76,7 @@ fn test_client_mcp_server_access_control() -> AppResult<()> {
             command: "echo".to_string(),
             args: vec![],
             env: HashMap::new(),
+            cwd: None,
         },
     );
     let server1_id = server1.id.clone();
@@ -87,6 +88,7 @@ fn test_client_mcp_server_access_control() -> AppResult<()> {
             command: "echo".to_string(),
             args: vec![],
             env: HashMap::new(),
+            cwd: None,
         },
     );
     let server2_id = server2.id.clone();

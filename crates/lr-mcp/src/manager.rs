@@ -522,8 +522,10 @@ impl McpServerManager {
             tracing::debug!("Applied auth env vars for STDIO server: {}", server_id);
         }
 
-        // Spawn the STDIO transport
-        let transport = StdioTransport::spawn(command, args, env).await?;
+        // Spawn the STDIO transport in the configured working directory
+        // (defaults to the user's home directory).
+        let cwd = config.transport_config.resolve_stdio_cwd();
+        let transport = StdioTransport::spawn_in(command, args, env, cwd).await?;
 
         // Set up notification callback
         let server_id_for_callback = server_id.to_string();
@@ -1149,7 +1151,8 @@ impl McpServerManager {
             tracing::debug!("Applied auth env vars for STDIO server: {}", server_id);
         }
 
-        let transport = StdioTransport::spawn(command, args, env).await?;
+        let cwd = config.transport_config.resolve_stdio_cwd();
+        let transport = StdioTransport::spawn_in(command, args, env, cwd).await?;
         Ok(Arc::new(transport))
     }
 
@@ -1603,9 +1606,11 @@ impl McpServerManager {
                     env.insert(key, value);
                 }
 
-                // Try to spawn the command briefly to verify it can run
+                // Try to spawn the command briefly to verify it can run, in the
+                // same working directory the real server would use
                 // Don't report latency for STDIO - it's not meaningful (not network latency)
-                match Self::try_spawn_command(&command, &args, &env).await {
+                let cwd = config.transport_config.resolve_stdio_cwd();
+                match Self::try_spawn_command(&command, &args, &env, cwd.as_deref()).await {
                     Ok(_) => (HealthStatus::Ready, None, Some("Not started".to_string())),
                     Err(e) => (HealthStatus::Unhealthy, None, Some(e)),
                 }
@@ -1633,9 +1638,19 @@ impl McpServerManager {
         command: &str,
         args: &[String],
         env: &std::collections::HashMap<String, String>,
+        cwd: Option<&std::path::Path>,
     ) -> Result<u64, String> {
         let start = std::time::Instant::now();
         const TIMEOUT_SECS: u64 = 60; // Allow time for npx downloads
+
+        if let Some(dir) = cwd {
+            if !dir.is_dir() {
+                return Err(format!(
+                    "Working directory does not exist: {}",
+                    dir.display()
+                ));
+            }
+        }
 
         // Build the command
         let mut cmd = tokio::process::Command::new(command);
@@ -1644,6 +1659,9 @@ impl McpServerManager {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
 
         // Try to spawn
         let mut child = match cmd.spawn() {
@@ -1996,6 +2014,7 @@ mod tests {
                 command: "echo".to_string(),
                 args: vec![],
                 env: HashMap::new(),
+                cwd: None,
             },
         );
 
@@ -2022,6 +2041,7 @@ mod tests {
                 command: "echo".to_string(),
                 args: vec!["hello".to_string()],
                 env: HashMap::new(),
+                cwd: None,
             },
         );
 
@@ -2045,6 +2065,7 @@ mod tests {
                 command: "this-command-definitely-does-not-exist-12345".to_string(),
                 args: vec![],
                 env: HashMap::new(),
+                cwd: None,
             },
         );
 
@@ -2064,10 +2085,72 @@ mod tests {
             "echo",
             &["test output".to_string()],
             &HashMap::new(),
+            None,
         )
         .await;
 
         assert!(result.is_ok(), "echo should succeed: {:?}", result);
+    }
+
+    /// The readiness check must run in the configured working directory, so a
+    /// server pinned to a directory that no longer exists reports unhealthy
+    /// instead of silently starting somewhere else.
+    #[tokio::test]
+    async fn test_try_spawn_command_rejects_missing_cwd() {
+        let missing = std::path::Path::new("/definitely/not/a/real/directory-12345");
+        let result = McpServerManager::try_spawn_command(
+            "echo",
+            &["hi".to_string()],
+            &HashMap::new(),
+            Some(missing),
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Working directory does not exist"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_try_spawn_command_accepts_existing_cwd() {
+        let dir = std::env::temp_dir();
+        let result = McpServerManager::try_spawn_command(
+            "echo",
+            &["hi".to_string()],
+            &HashMap::new(),
+            Some(dir.as_path()),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "echo in temp dir should succeed: {:?}",
+            result
+        );
+    }
+
+    /// A STDIO server with no configured `cwd` resolves to the home directory
+    /// rather than inheriting LocalRouter's own (which is `/` on a GUI launch).
+    #[test]
+    fn test_stdio_config_defaults_to_home_dir() {
+        let config = McpServerConfig::new(
+            "Test Server".to_string(),
+            McpTransportType::Stdio,
+            McpTransportConfig::Stdio {
+                command: "echo".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+            },
+        );
+
+        assert_eq!(
+            config.transport_config.resolve_stdio_cwd(),
+            lr_config::default_mcp_working_dir()
+        );
     }
 
     #[tokio::test]
@@ -2077,6 +2160,7 @@ mod tests {
             "this-command-definitely-does-not-exist-xyz",
             &[],
             &HashMap::new(),
+            None,
         )
         .await;
 
@@ -2101,6 +2185,7 @@ mod tests {
                 "@modelcontextprotocol/server-everything".to_string(),
             ],
             &HashMap::new(),
+            None,
         )
         .await;
 
@@ -2122,6 +2207,7 @@ mod tests {
                 "@nonexistent/package-that-does-not-exist-12345".to_string(),
             ],
             &HashMap::new(),
+            None,
         )
         .await;
 
@@ -2138,7 +2224,7 @@ mod tests {
         // This simulates stdio MCP servers (like `netget --mcp`) that close
         // when they don't receive an initialize request on stdin.
         // `true` exits with code 0 but produces no output.
-        let result = McpServerManager::try_spawn_command("true", &[], &HashMap::new()).await;
+        let result = McpServerManager::try_spawn_command("true", &[], &HashMap::new(), None).await;
 
         assert!(
             result.is_ok(),
