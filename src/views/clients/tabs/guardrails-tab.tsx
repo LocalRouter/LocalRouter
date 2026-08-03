@@ -99,9 +99,19 @@ export function ClientGuardrailsTab({ client, onUpdate }: ClientGuardrailsTabPro
     }
   }
 
-  // Use per-client actions when overriding, otherwise show global for read-only display
-  const displayActions = guardrailsConfig.category_actions
-    ?? (globalConfig?.category_actions ?? [])
+  // Use per-client actions when overriding, otherwise show global for read-only display.
+  // The per-client list is a *sparse* override: categories it doesn't mention still
+  // inherit the global entry, so merge the two the same way the request pipeline does
+  // (`merge_guardrail_category_actions` in crates/lr-server/src/routes/pipeline.rs).
+  const displayActions = useMemo(() => {
+    const global = globalConfig?.category_actions ?? []
+    const client = guardrailsConfig.category_actions
+    if (!client) return global
+    return [
+      ...global.filter(g => !client.some(c => c.category === g.category)),
+      ...client,
+    ]
+  }, [globalConfig, guardrailsConfig.category_actions])
 
   // Build category tree nodes (grouped by model type), filtered to only enabled models
   const categoryTreeNodes = useMemo((): TreeNode[] => {

@@ -748,7 +748,7 @@ pub(crate) async fn check_model_firewall_permission(
 ///
 /// Merge rule: per-client wins per-category; otherwise fall back to the global entry.
 /// When the per-client list is `None`, the global list is returned unchanged.
-pub(crate) fn merge_guardrail_category_actions(
+pub fn merge_guardrail_category_actions(
     client_overrides: Option<&[lr_config::CategoryActionEntry]>,
     global_actions: &[lr_config::CategoryActionEntry],
 ) -> Vec<lr_config::CategoryActionEntry> {
@@ -764,6 +764,21 @@ pub(crate) fn merge_guardrail_category_actions(
             merged
         }
     }
+}
+
+/// Whether a merged category-action policy can never require an action, making
+/// a safety-model call pointless.
+///
+/// This is true only when the `__global` ("All Categories") fallback is `allow`
+/// *and* no other entry raises a category above it. Without a `__global` entry,
+/// categories that aren't listed keep the engine's default action (`Ask`), so
+/// the scan still has to run.
+pub fn guardrails_allow_everything(actions: &[lr_config::CategoryActionEntry]) -> bool {
+    let has_global_allow = actions
+        .iter()
+        .any(|e| e.category == lr_guardrails::GLOBAL_DEFAULT_CATEGORY && e.action == "allow");
+
+    has_global_allow && actions.iter().all(|e| e.action == "allow")
 }
 
 /// Run guardrails scan on request content using safety engine
@@ -878,31 +893,52 @@ pub(crate) async fn run_guardrails_scan(
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
 ) -> ApiResult<Option<lr_guardrails::SafetyCheckResult>> {
-    // Need client context and safety engine
     let Some(client_ctx) = client_context else {
         return Ok(None);
     };
-    let engine = state.safety_engine.read().clone();
-    let Some(engine) = engine else {
-        return Ok(None);
+    let body = serde_json::to_value(request).unwrap_or_default();
+    Ok(guardrails_scan_request(state, &client_ctx.client_id, &request.model, &body).await)
+}
+
+/// Request-side guardrail scan against a raw request body.
+///
+/// Format-agnostic: it takes the request JSON, so the gateway (OpenAI chat
+/// shape) and the HTTPS/WebSocket proxy (Anthropic Messages or OpenAI Responses
+/// shape) share one implementation — including the monitor events and the
+/// per-client category-action resolution. The shared text extractor understands
+/// all of those shapes.
+///
+/// Returns `None` when the request is clear or guardrails don't apply, and
+/// `Some(result)` with the flagged categories that still need handling.
+pub async fn guardrails_scan_request(
+    state: &AppState,
+    client_id: &str,
+    model: &str,
+    request_json: &serde_json::Value,
+) -> Option<lr_guardrails::SafetyCheckResult> {
+    let client_ctx = ClientAuthContext {
+        client_id: client_id.to_string(),
     };
+    let client_context = Some(&client_ctx);
+
+    let engine = state.safety_engine.read().clone()?;
 
     if !engine.has_models() {
-        return Ok(None);
+        return None;
     }
 
     let config = state.config_manager.get();
     let client = match state.client_manager.get_client(&client_ctx.client_id) {
         Some(c) if c.enabled => c,
-        Some(_) => return Ok(None),
+        Some(_) => return None,
         None => {
             // Client not found (e.g. internal-test) — no guardrails
-            return Ok(None);
+            return None;
         }
     };
 
     if !config.guardrails.scan_requests {
-        return Ok(None);
+        return None;
     }
 
     // Resolve effective category actions: per-client override merged over global default.
@@ -912,7 +948,16 @@ pub(crate) async fn run_guardrails_scan(
     );
 
     if effective_category_actions.is_empty() {
-        return Ok(None);
+        return None;
+    }
+
+    // "GuardRails off" is expressed in the UI as All Categories → Allow (the
+    // `enabled` master toggle is a deserialize-only migration shim). A policy
+    // that resolves every category to Allow can never flag anything, so running
+    // the safety model would burn a full local LLM call whose verdict is
+    // discarded a few lines below. Skip it — no model call, no monitor event.
+    if guardrails_allow_everything(&effective_category_actions) {
+        return None;
     }
 
     // Check for time-based guardrail bypass (unless monitor intercept overrides)
@@ -928,14 +973,12 @@ pub(crate) async fn run_guardrails_scan(
             "Guardrail check skipped: client {} has active bypass",
             client.id
         );
-        return Ok(None);
+        return None;
     }
-
-    let request_json = serde_json::to_value(request).unwrap_or_default();
 
     // Emit guardrail request event
     let model_names: Vec<String> = vec!["guardrails".to_string()];
-    let text_preview = lr_guardrails::text_extractor::extract_request_text(&request_json)
+    let text_preview = lr_guardrails::text_extractor::extract_request_text(request_json)
         .first()
         .map(|t| t.text.clone())
         .unwrap_or_default();
@@ -949,7 +992,7 @@ pub(crate) async fn run_guardrails_scan(
     );
 
     let started = std::time::Instant::now();
-    let result = engine.check_input(&request_json).await;
+    let result = engine.check_input(request_json).await;
     let latency_ms = started.elapsed().as_millis() as u64;
 
     if result.is_safe {
@@ -961,7 +1004,7 @@ pub(crate) async fn run_guardrails_scan(
             "none",
             latency_ms,
         );
-        return Ok(None);
+        return None;
     }
 
     // Apply category action overrides
@@ -983,7 +1026,7 @@ pub(crate) async fn run_guardrails_scan(
             "none",
             latency_ms,
         );
-        return Ok(None);
+        return None;
     }
 
     // Emit flagged guardrail response
@@ -1009,10 +1052,10 @@ pub(crate) async fn run_guardrails_scan(
         "Safety check: {} flagged categories for client {} (model: {})",
         result.actions_required.len(),
         client.id,
-        request.model,
+        model,
     );
 
-    Ok(Some(result))
+    Some(result)
 }
 
 /// Handle guardrail approval popup for detected violations
@@ -1023,7 +1066,38 @@ pub(crate) async fn handle_guardrail_approval(
     result: lr_guardrails::SafetyCheckResult,
     scan_direction: &str,
 ) -> ApiResult<()> {
+    let Some(client_ctx) = client_context else {
+        return Ok(());
+    };
+    let body = serde_json::to_value(request).unwrap_or_default();
+    handle_guardrail_result(
+        state,
+        &client_ctx.client_id,
+        &request.model,
+        &body,
+        result,
+        scan_direction,
+    )
+    .await
+}
+
+/// Apply a flagged [`lr_guardrails::SafetyCheckResult`]: silently block, notify,
+/// or raise the approval popup. Body-shape agnostic, so the gateway and the
+/// HTTPS proxy share one implementation.
+pub async fn handle_guardrail_result(
+    state: &AppState,
+    client_id: &str,
+    model: &str,
+    request_json: &serde_json::Value,
+    result: lr_guardrails::SafetyCheckResult,
+    scan_direction: &str,
+) -> ApiResult<()> {
     use lr_mcp::gateway::firewall::{FirewallApprovalAction, GuardrailApprovalDetails};
+
+    let client_ctx = ClientAuthContext {
+        client_id: client_id.to_string(),
+    };
+    let client_context = Some(&client_ctx);
 
     // If all flagged categories are "block", silently deny without popup
     if result.all_blocked() {
@@ -1040,26 +1114,14 @@ pub(crate) async fn handle_guardrail_approval(
         return Ok(());
     }
 
-    let Some(client_ctx) = client_context else {
-        return Ok(());
-    };
-
     // Use unified check for time-based bypass/denial
     use lr_mcp::gateway::access_control::{FirewallCheckContext, FirewallCheckResult};
 
-    let client = state.client_manager.get_client(&client_ctx.client_id);
-    let client_id = client
-        .as_ref()
-        .map(|c| c.id.as_str())
-        .unwrap_or(&client_ctx.client_id);
+    let client = state.client_manager.get_client(client_id);
 
     let ctx = FirewallCheckContext::Guardrail {
-        has_time_based_bypass: state
-            .guardrail_approval_tracker
-            .has_valid_bypass(&client_ctx.client_id),
-        has_time_based_denial: state
-            .guardrail_denial_tracker
-            .has_valid_denial(&client_ctx.client_id),
+        has_time_based_bypass: state.guardrail_approval_tracker.has_valid_bypass(client_id),
+        has_time_based_denial: state.guardrail_denial_tracker.has_valid_denial(client_id),
         category_actions_empty: client
             .as_ref()
             .map(|c| {
@@ -1121,12 +1183,11 @@ pub(crate) async fn handle_guardrail_approval(
     let client_name = client
         .as_ref()
         .map(|c| c.name.clone())
-        .unwrap_or_else(|| client_ctx.client_id.clone());
+        .unwrap_or_else(|| client_id.to_string());
 
     // Extract the scanned text for display in the approval popup
-    let request_json = serde_json::to_value(request).unwrap_or_default();
     let flagged_text = build_flagged_text_preview(
-        &lr_guardrails::text_extractor::extract_request_text(&request_json),
+        &lr_guardrails::text_extractor::extract_request_text(request_json),
     );
 
     let details = GuardrailApprovalDetails {
@@ -1165,7 +1226,7 @@ pub(crate) async fn handle_guardrail_approval(
         .request_guardrail_approval(
             client_id.to_string(),
             client_name,
-            request.model.clone(),
+            model.to_string(),
             "guardrails".to_string(),
             details,
             preview,
@@ -1181,7 +1242,7 @@ pub(crate) async fn handle_guardrail_approval(
         client_context,
         None,
         "guardrail",
-        &request.model,
+        model,
         &action_str,
         None,
     );
@@ -1207,6 +1268,38 @@ pub(crate) async fn handle_guardrail_approval(
                 "Request blocked by safety check",
             ))
         }
+    }
+}
+
+/// Whether a scanned request may proceed past guardrails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuardrailScanOutcome {
+    /// Nothing flagged, guardrails don't apply, or the user approved.
+    Allow,
+    /// The request must not reach the provider; carries the client-facing reason.
+    Deny(String),
+}
+
+/// Scan one outbound request body against the configured guardrails and apply
+/// the resolved category actions, including the approval popup.
+///
+/// This is the single-call form of [`guardrails_scan_request`] +
+/// [`handle_guardrail_result`], for callers outside the gateway pipeline (the
+/// HTTPS/WebSocket proxy) that just need an allow/deny verdict. Mirrors
+/// [`scan_request_for_secrets`].
+pub async fn scan_request_for_guardrails(
+    state: &AppState,
+    client_id: &str,
+    model: &str,
+    body: &serde_json::Value,
+) -> GuardrailScanOutcome {
+    let Some(result) = guardrails_scan_request(state, client_id, model, body).await else {
+        return GuardrailScanOutcome::Allow;
+    };
+
+    match handle_guardrail_result(state, client_id, model, body, result, "request").await {
+        Ok(()) => GuardrailScanOutcome::Allow,
+        Err(e) => GuardrailScanOutcome::Deny(e.error.error.message),
     }
 }
 
@@ -2362,5 +2455,48 @@ mod tests {
         let merged = merge_guardrail_category_actions(Some(&client), &global);
 
         assert_eq!(merged, vec![entry("__global", "allow")]);
+    }
+
+    // ---- guardrails_allow_everything ----
+
+    #[test]
+    fn all_allow_policy_short_circuits_the_scan() {
+        // The user-reported "GuardRails is off but still runs" config: All
+        // Categories → Allow, plus the UI's per-model-type grouping node.
+        let actions = vec![
+            entry("__global", "allow"),
+            entry("__model:llama_guard", "allow"),
+        ];
+        assert!(guardrails_allow_everything(&actions));
+    }
+
+    #[test]
+    fn specific_block_prevents_the_short_circuit() {
+        let actions = vec![entry("__global", "allow"), entry("hate", "block")];
+        assert!(!guardrails_allow_everything(&actions));
+    }
+
+    #[test]
+    fn model_type_group_block_prevents_the_short_circuit() {
+        // A model-type group set above Allow can still flag, so the scan must run.
+        let actions = vec![
+            entry("__global", "allow"),
+            entry("__model:llama_guard", "ask"),
+        ];
+        assert!(!guardrails_allow_everything(&actions));
+    }
+
+    #[test]
+    fn missing_global_entry_prevents_the_short_circuit() {
+        // Without a `__global` fallback, categories that aren't listed keep the
+        // engine's default action (Ask), so the scan is still meaningful.
+        let actions = vec![entry("hate", "allow"), entry("jailbreak", "allow")];
+        assert!(!guardrails_allow_everything(&actions));
+    }
+
+    #[test]
+    fn global_ask_prevents_the_short_circuit() {
+        let actions = vec![entry("__global", "ask")];
+        assert!(!guardrails_allow_everything(&actions));
     }
 }

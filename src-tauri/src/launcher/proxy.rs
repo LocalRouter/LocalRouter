@@ -36,6 +36,18 @@ impl ClientResolver for AppClientResolver {
     }
 }
 
+/// Resolves client display names for proxy-recorded monitor events, so the
+/// Monitor shows "Claude Code" rather than the client UUID.
+struct AppClientNames {
+    client_manager: Arc<lr_clients::ClientManager>,
+}
+
+impl lr_proxy::interceptor::ClientNameResolver for AppClientNames {
+    fn name_for(&self, client_id: &str) -> Option<String> {
+        self.client_manager.get_client(client_id).map(|c| c.name)
+    }
+}
+
 /// Prices proxied Anthropic calls from the model catalog (sync, static lookup).
 struct CatalogPricing;
 
@@ -198,6 +210,22 @@ impl lr_proxy::active::Firewall for AppFirewall {
             return RequestAction::reject_json(403, &message);
         }
 
+        // GuardRails — same safety models, category actions, monitor events and
+        // approval popup as the gateway path, so a client's configured
+        // guardrails apply whether it connects via the gateway or the proxy.
+        // Skips itself when the resolved policy allows every category.
+        if let lr_server::routes::pipeline::GuardrailScanOutcome::Deny(message) =
+            lr_server::routes::pipeline::scan_request_for_guardrails(
+                &self.state,
+                &req.client_id,
+                req.model.as_deref().unwrap_or_default(),
+                &req.body,
+            )
+            .await
+        {
+            return RequestAction::reject_json(403, &message);
+        }
+
         // Ask → the shared firewall approval popup (a real window that works from
         // the tray and lets the user edit the request). Allow → forward unchanged.
         // Grants made from the popup suppress subsequent asks: a still-valid
@@ -295,7 +323,10 @@ impl ProxyService {
         // interceptor which adds the firewall on top.
         let recorder = PassiveInterceptor::new(monitor_store)
             .with_metrics(metrics_collector.clone())
-            .with_pricing(Arc::new(CatalogPricing));
+            .with_pricing(Arc::new(CatalogPricing))
+            .with_client_names(Arc::new(AppClientNames {
+                client_manager: client_manager.clone(),
+            }));
         let firewall = Arc::new(AppFirewall {
             config_manager,
             firewall: firewall_manager,

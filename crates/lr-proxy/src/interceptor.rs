@@ -116,6 +116,14 @@ pub trait PricingResolver: Send + Sync {
     fn cost_usd(&self, provider: &str, model: &str, usage: TokenUsage) -> Option<f64>;
 }
 
+/// Resolves a client's display name from its id, so monitor events recorded by
+/// the proxy show the same client name as the gateway path instead of a raw
+/// UUID. Implemented by the app against the client manager; kept as a trait so
+/// `lr-proxy` doesn't depend on `lr-clients`.
+pub trait ClientNameResolver: Send + Sync {
+    fn name_for(&self, client_id: &str) -> Option<String>;
+}
+
 /// Hooks the transport calls at each stage of an intercepted connection.
 ///
 /// All methods have observe-only default behavior so a passive implementation

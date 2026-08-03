@@ -2771,6 +2771,8 @@ export interface CategoryActionRequired {
   category: SafetyCategory
   action: "allow" | "notify" | "ask" | "block"
   model_id: string
+  /** Flagging model's type (e.g. "llama_guard"), used to resolve `__model:<type>` overrides */
+  model_type: string
   confidence: number | null
 }
 

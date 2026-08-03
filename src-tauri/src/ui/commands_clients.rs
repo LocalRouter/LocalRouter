@@ -15,6 +15,27 @@ use tauri::{Emitter, State};
 // Unified Client Management Commands
 // ============================================================================
 
+/// The client's effective guardrail category actions: the sparse per-client
+/// override merged over the global defaults. Uses the same merge the request
+/// pipeline uses, so what the UI reports matches what actually runs.
+fn effective_guardrail_actions(
+    client: &lr_config::Client,
+    config: &lr_config::AppConfig,
+) -> Vec<lr_config::CategoryActionEntry> {
+    lr_server::routes::pipeline::merge_guardrail_category_actions(
+        client.guardrails.category_actions.as_deref(),
+        &config.guardrails.category_actions,
+    )
+}
+
+/// Whether guardrails will actually do anything for this client. Mirrors the
+/// pipeline's short-circuit: an all-Allow policy never runs a safety model.
+fn guardrails_active_for(client: &lr_config::Client, config: &lr_config::AppConfig) -> bool {
+    !lr_server::routes::pipeline::guardrails_allow_everything(&effective_guardrail_actions(
+        client, config,
+    ))
+}
+
 /// Client information for display
 ///
 /// NOTE: This struct does NOT contain the client secret. The secret is stored
@@ -109,14 +130,7 @@ pub async fn list_clients(
                 mcp_mode: c.mcp_mode,
                 template_id: c.template_id.clone(),
                 sync_config: c.sync_config,
-                guardrails_active: {
-                    let effective_actions = c
-                        .guardrails
-                        .category_actions
-                        .as_deref()
-                        .unwrap_or(&config.guardrails.category_actions);
-                    effective_actions.iter().any(|a| a.action != "allow")
-                },
+                guardrails_active: guardrails_active_for(&c, &config),
                 json_repair_active: c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
             }
         })
@@ -232,15 +246,7 @@ pub async fn create_client(
         mcp_mode: client.mcp_mode,
         template_id: client.template_id.clone(),
         sync_config: client.sync_config,
-        guardrails_active: {
-            let cfg = config_manager.get();
-            let effective_actions = client
-                .guardrails
-                .category_actions
-                .as_deref()
-                .unwrap_or(&cfg.guardrails.category_actions);
-            effective_actions.iter().any(|a| a.action != "allow")
-        },
+        guardrails_active: guardrails_active_for(&client, &config_manager.get()),
         json_repair_active: {
             let cfg = config_manager.get();
             client
@@ -485,15 +491,7 @@ pub async fn clone_client(
         mcp_mode: new_client.mcp_mode,
         template_id: new_client.template_id.clone(),
         sync_config: false,
-        guardrails_active: {
-            let cfg = config_manager.get();
-            let effective_actions = new_client
-                .guardrails
-                .category_actions
-                .as_deref()
-                .unwrap_or(&cfg.guardrails.category_actions);
-            effective_actions.iter().any(|a| a.action != "allow")
-        },
+        guardrails_active: guardrails_active_for(&new_client, &config_manager.get()),
         json_repair_active: {
             let cfg = config_manager.get();
             new_client
@@ -1289,17 +1287,13 @@ pub async fn get_feature_clients_status(
                     None,
                 ),
                 "guardrails" => {
-                    let effective_actions = c
-                        .guardrails
-                        .category_actions
-                        .as_deref()
-                        .unwrap_or(&config.guardrails.category_actions);
+                    let effective_actions = effective_guardrail_actions(&c, &config);
                     let active_count = effective_actions
                         .iter()
                         .filter(|a| a.action != "allow")
                         .count();
                     (
-                        active_count > 0,
+                        guardrails_active_for(&c, &config),
                         if c.guardrails.category_actions.is_some() {
                             "override"
                         } else {

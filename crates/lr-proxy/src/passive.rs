@@ -14,8 +14,8 @@ use lr_monitor::{
 use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
 
 use crate::interceptor::{
-    ClientCtx, ConnectDecision, ObservedExchange, PricingResolver, ProxyInterceptor, RequestAction,
-    TokenUsage,
+    ClientCtx, ClientNameResolver, ConnectDecision, ObservedExchange, PricingResolver,
+    ProxyInterceptor, RequestAction, TokenUsage,
 };
 use crate::wire::{self, RequestMeta, ResponseMeta, WireFormat};
 
@@ -28,6 +28,8 @@ pub struct PassiveInterceptor {
     metrics: Option<Arc<MetricsCollector>>,
     /// Resolves USD cost from model + token usage (via the catalog).
     pricing: Option<Arc<dyn PricingResolver>>,
+    /// Resolves the client's display name so Monitor shows a name, not a UUID.
+    client_names: Option<Arc<dyn ClientNameResolver>>,
 }
 
 impl PassiveInterceptor {
@@ -36,6 +38,7 @@ impl PassiveInterceptor {
             monitor,
             metrics: None,
             pricing: None,
+            client_names: None,
         }
     }
 
@@ -49,6 +52,17 @@ impl PassiveInterceptor {
     pub fn with_pricing(mut self, pricing: Arc<dyn PricingResolver>) -> Self {
         self.pricing = Some(pricing);
         self
+    }
+
+    /// Attach a client-name resolver so proxied events are attributed by name.
+    pub fn with_client_names(mut self, names: Arc<dyn ClientNameResolver>) -> Self {
+        self.client_names = Some(names);
+        self
+    }
+
+    /// The client's display name for monitor attribution, if resolvable.
+    fn client_name(&self, client_id: &str) -> Option<String> {
+        self.client_names.as_ref()?.name_for(client_id)
     }
 
     /// Parse the request half into the pieces a monitor event needs.
@@ -221,7 +235,7 @@ impl PassiveInterceptor {
         Some(self.monitor.push(
             MonitorEventType::LlmCall,
             Some(ex.client_id.clone()),
-            None,
+            self.client_name(&ex.client_id),
             None,
             data,
             EventStatus::Pending,
@@ -318,7 +332,7 @@ impl PassiveInterceptor {
         self.monitor.push(
             MonitorEventType::LlmCall,
             Some(ex.client_id.clone()),
-            None,
+            self.client_name(&ex.client_id),
             None,
             data,
             status,
@@ -414,6 +428,58 @@ mod tests {
             response_is_sse: false,
             ..Default::default()
         }
+    }
+
+    struct StaticNames;
+
+    impl ClientNameResolver for StaticNames {
+        fn name_for(&self, client_id: &str) -> Option<String> {
+            (client_id == "client-1").then(|| "Claude Code".to_string())
+        }
+    }
+
+    #[test]
+    fn recorded_events_carry_the_client_name() {
+        // Monitor attributes proxy traffic by name, not the raw client UUID.
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone()).with_client_names(Arc::new(StaticNames));
+
+        it.record(&exchange());
+        let pending_id = it.emit_pending(&exchange()).expect("pending event");
+
+        let events = store.list(0, 10, None);
+        assert_eq!(events.events.len(), 2);
+        for e in &events.events {
+            assert_eq!(e.client_name.as_deref(), Some("Claude Code"));
+        }
+        assert!(events.events.iter().any(|e| e.id == pending_id));
+    }
+
+    #[test]
+    fn client_name_is_none_without_a_resolver() {
+        // No resolver attached (tests, and any embedder that doesn't wire one).
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone());
+
+        it.record(&exchange());
+
+        let events = store.list(0, 10, None);
+        assert_eq!(events.events.len(), 1);
+        assert_eq!(events.events[0].client_name, None);
+    }
+
+    #[test]
+    fn unknown_client_id_falls_back_to_no_name() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone()).with_client_names(Arc::new(StaticNames));
+
+        let mut ex = exchange();
+        ex.client_id = "not-a-known-client".to_string();
+        it.record(&ex);
+
+        let events = store.list(0, 10, None);
+        assert_eq!(events.events.len(), 1);
+        assert_eq!(events.events[0].client_name, None);
     }
 
     #[test]

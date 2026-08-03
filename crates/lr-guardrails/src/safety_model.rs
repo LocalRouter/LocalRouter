@@ -242,6 +242,10 @@ pub struct CategoryActionRequired {
     pub action: CategoryAction,
     /// Which model flagged this
     pub model_id: String,
+    /// The flagging model's type (e.g. "llama_guard"), used to resolve the
+    /// `__model:<type>` group level of the category-action tree.
+    #[serde(default)]
+    pub model_type: String,
     /// Confidence score
     pub confidence: Option<f32>,
 }
@@ -285,13 +289,16 @@ impl SafetyCheckResult {
     /// Re-filter actions using merged category overrides.
     ///
     /// Each entry in `overrides` maps a category name (e.g. "violent_crimes") to an action.
-    /// A special entry with category `"__global"` is the fallback default applied to any
-    /// flagged category not listed by name (this matches the "All Categories" UI control).
+    /// Two pseudo-categories mirror the grouping levels of the UI's category tree:
+    /// `"__model:<model_type>"` (e.g. `"__model:llama_guard"`) applies to every category
+    /// reported by a model of that type, and `"__global"` ("All Categories") is the
+    /// outermost fallback.
     ///
-    /// Resolution per flagged category:
+    /// Resolution per flagged category (most specific wins, matching the UI tree):
     ///   1. If a specific entry for that category exists in `overrides`, use its action.
-    ///   2. Else if the `__global` fallback entry exists, use its action.
-    ///   3. Else keep the engine's default action.
+    ///   2. Else if a `__model:<type>` entry matches the flagging model, use its action.
+    ///   3. Else if the `__global` fallback entry exists, use its action.
+    ///   4. Else keep the engine's default action.
     ///
     /// Action semantics:
     ///   - `Allow`  → remove from `actions_required` (silently allow).
@@ -314,10 +321,17 @@ impl SafetyCheckResult {
             // Compare using serde serialization format (snake_case, e.g. "violent_crimes")
             // to match config values. Display format ("Violent Crimes") differs from serde.
             let category_name = category_to_serde_name(&action.category);
+            let model_group = model_type_category(&action.model_type);
             let resolved: Option<&CategoryAction> = overrides
                 .iter()
                 .find(|(cat, _)| *cat == category_name)
                 .map(|(_, a)| a)
+                .or_else(|| {
+                    overrides
+                        .iter()
+                        .find(|(cat, _)| *cat == model_group)
+                        .map(|(_, a)| a)
+                })
                 .or(global_default);
 
             if let Some(override_action) = resolved {
@@ -341,6 +355,16 @@ impl SafetyCheckResult {
 /// Pseudo category-id used by the UI to represent "All Categories" — applies as a
 /// default action for any flagged category that has no specific override entry.
 pub const GLOBAL_DEFAULT_CATEGORY: &str = "__global";
+
+/// Prefix the UI uses for the per-safety-model-type grouping node in the
+/// category tree — it sits between a specific category and
+/// [`GLOBAL_DEFAULT_CATEGORY`] in override precedence.
+pub const MODEL_TYPE_CATEGORY_PREFIX: &str = "__model:";
+
+/// The pseudo category-id for a safety model type (e.g. `"__model:llama_guard"`).
+pub fn model_type_category(model_type: &str) -> String {
+    format!("{MODEL_TYPE_CATEGORY_PREFIX}{model_type}")
+}
 
 /// The SafetyModel trait - implemented by each model (Llama Guard, ShieldGemma, etc.)
 #[async_trait::async_trait]
@@ -386,6 +410,15 @@ mod tests {
     }
 
     fn make_result(actions: Vec<(SafetyCategory, CategoryAction)>) -> SafetyCheckResult {
+        make_result_from("llama_guard", actions)
+    }
+
+    /// Like [`make_result`] but pins the flagging model's type, so the
+    /// `__model:<type>` grouping level can be exercised.
+    fn make_result_from(
+        model_type: &str,
+        actions: Vec<(SafetyCategory, CategoryAction)>,
+    ) -> SafetyCheckResult {
         SafetyCheckResult {
             verdicts: vec![],
             is_safe: false,
@@ -395,6 +428,7 @@ mod tests {
                     category,
                     action,
                     model_id: "test".to_string(),
+                    model_type: model_type.to_string(),
                     confidence: Some(0.9),
                 })
                 .collect(),
@@ -479,6 +513,72 @@ mod tests {
             result.actions_required[0].category,
             SafetyCategory::ViolentCrimes
         );
+        assert_eq!(result.actions_required[0].action, CategoryAction::Block);
+    }
+
+    #[test]
+    fn test_model_type_group_beats_global_default() {
+        // The UI's category tree groups categories under a safety-model-type node
+        // whose action children inherit. That grouping level must sit between a
+        // specific category and `__global` in precedence.
+        let result = make_result_from(
+            "llama_guard",
+            vec![
+                (SafetyCategory::Jailbreak, CategoryAction::Ask),
+                (SafetyCategory::Hate, CategoryAction::Ask),
+            ],
+        );
+
+        let overrides = vec![
+            (GLOBAL_DEFAULT_CATEGORY.to_string(), CategoryAction::Allow),
+            (model_type_category("llama_guard"), CategoryAction::Block),
+        ];
+        let result = result.apply_client_category_overrides(&overrides);
+
+        assert_eq!(result.actions_required.len(), 2);
+        assert!(result
+            .actions_required
+            .iter()
+            .all(|a| matches!(a.action, CategoryAction::Block)));
+    }
+
+    #[test]
+    fn test_model_type_group_only_applies_to_its_own_model_type() {
+        // A `__model:shield_gemma` entry must not affect Llama Guard findings —
+        // they fall through to `__global`.
+        let result = make_result_from(
+            "llama_guard",
+            vec![(SafetyCategory::Jailbreak, CategoryAction::Ask)],
+        );
+
+        let overrides = vec![
+            (GLOBAL_DEFAULT_CATEGORY.to_string(), CategoryAction::Allow),
+            (model_type_category("shield_gemma"), CategoryAction::Block),
+        ];
+        let result = result.apply_client_category_overrides(&overrides);
+
+        assert!(result.actions_required.is_empty());
+        assert!(result.is_safe);
+    }
+
+    #[test]
+    fn test_specific_category_beats_model_type_group() {
+        let result = make_result_from(
+            "llama_guard",
+            vec![
+                (SafetyCategory::Jailbreak, CategoryAction::Ask),
+                (SafetyCategory::Hate, CategoryAction::Ask),
+            ],
+        );
+
+        let overrides = vec![
+            (model_type_category("llama_guard"), CategoryAction::Block),
+            ("jailbreak".to_string(), CategoryAction::Allow),
+        ];
+        let result = result.apply_client_category_overrides(&overrides);
+
+        assert_eq!(result.actions_required.len(), 1);
+        assert_eq!(result.actions_required[0].category, SafetyCategory::Hate);
         assert_eq!(result.actions_required[0].action, CategoryAction::Block);
     }
 

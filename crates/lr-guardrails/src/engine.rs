@@ -406,6 +406,12 @@ impl SafetyEngine {
                     if let Some(model) = models_to_run.get(i) {
                         verdict.model_label = Some(model.display_name().to_string());
                     }
+                    // Carried on each action so per-model-type (`__model:<type>`)
+                    // category overrides can be resolved downstream.
+                    let model_type = models_to_run
+                        .get(i)
+                        .map(|m| m.model_type_id().to_string())
+                        .unwrap_or_default();
                     if verdict.flagged_categories.is_empty() && !verdict.is_safe {
                         // Model says unsafe but didn't specify categories (e.g. Llama Guard
                         // with no parseable S-codes). Generate a generic action.
@@ -413,6 +419,7 @@ impl SafetyEngine {
                             category: SafetyCategory::Custom("unspecified".to_string()),
                             action: CategoryAction::Ask,
                             model_id: verdict.model_id.clone(),
+                            model_type: model_type.clone(),
                             confidence: None,
                         });
                     }
@@ -431,6 +438,7 @@ impl SafetyEngine {
                             category: flagged.category.clone(),
                             action: CategoryAction::Ask,
                             model_id: verdict.model_id.clone(),
+                            model_type: model_type.clone(),
                             confidence: Some(conf),
                         });
                     }
@@ -518,6 +526,7 @@ mod tests {
                 category: SafetyCategory::Hate,
                 action: CategoryAction::Ask,
                 model_id: "test".to_string(),
+                model_type: "llama_guard".to_string(),
                 confidence: Some(0.9),
             }],
             total_duration_ms: 0,
@@ -533,6 +542,7 @@ mod tests {
                 category: SafetyCategory::Profanity,
                 action: CategoryAction::Notify,
                 model_id: "test".to_string(),
+                model_type: "llama_guard".to_string(),
                 confidence: Some(0.8),
             }],
             total_duration_ms: 0,

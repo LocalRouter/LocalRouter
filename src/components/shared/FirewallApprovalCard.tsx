@@ -291,6 +291,31 @@ export function FirewallApprovalCard({
     }
   }
 
+  /// "Ignore this secret" entries for the overflow menus: one per still-flagged
+  /// finding, so a value can be permanently excepted without a separate button.
+  const ignoreMenuItems = () => {
+    if (!onIgnorePermanently || !secretScanFindings?.length) return null
+    const pending = secretScanFindings
+      .map((finding, i) => ({ finding, i }))
+      .filter(({ i }) => !ignored[i])
+    if (pending.length === 0) return null
+    return pending.map(({ finding, i }) => (
+      <DropdownMenuItem
+        key={`ignore-${i}`}
+        onClick={() => ignorePermanently(i)}
+        disabled={ignoring !== null || submitting}
+        title={`Stores a salted hash of this value — never the value itself — so it is never flagged again for ${clientName}. Reversible in that client's Secret Scanning settings.`}
+      >
+        <BellOff className="h-3.5 w-3.5 mr-2 flex-shrink-0" />
+        {ignoring === i
+          ? "Saving…"
+          : pending.length === 1
+            ? "Ignore This Secret"
+            : `Ignore This Secret: ${finding.rule_description}`}
+      </DropdownMenuItem>
+    ))
+  }
+
   const toggleReveal = async (index: number) => {
     if (revealed[index] !== undefined) {
       setRevealed((prev) => {
@@ -569,28 +594,14 @@ export function FirewallApprovalCard({
                   <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
                   <span className="ml-auto font-mono">{finding.rule_id}</span>
                 </div>
-                {onIgnorePermanently && (
-                  ignored[i] ? (
-                    <div className="flex items-center gap-1 text-[10px] text-emerald-600 pt-0.5">
-                      <BellOff className="h-3 w-3 flex-shrink-0" />
-                      <span>
-                        Never flagged again for {clientName}. Undo in this client's
-                        Secret Scanning settings.
-                      </span>
-                    </div>
-                  ) : (
-                    <button
-                      className="w-full flex items-center justify-center gap-1 mt-1 px-2 py-1 rounded text-[10px] font-medium border border-border text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-50"
-                      onClick={() => ignorePermanently(i)}
-                      disabled={ignoring !== null || submitting}
-                      title={`Stores a salted hash of this value — never the value itself — so it is never flagged again for ${clientName}. Reversible in that client's Secret Scanning settings.`}
-                    >
-                      <BellOff className="h-3 w-3 flex-shrink-0" />
-                      {ignoring === i
-                        ? "Saving…"
-                        : `Never flag this value again for ${clientName}`}
-                    </button>
-                  )
+                {onIgnorePermanently && ignored[i] && (
+                  <div className="flex items-center gap-1 text-[10px] text-emerald-600 pt-0.5">
+                    <BellOff className="h-3 w-3 flex-shrink-0" />
+                    <span>
+                      Never flagged again for {clientName}. Undo in this client's
+                      Secret Scanning settings.
+                    </span>
+                  </div>
                 )}
                 {ignoreError[i] && (
                   <div className="text-[10px] text-destructive">{ignoreError[i]}</div>
@@ -624,6 +635,7 @@ export function FirewallApprovalCard({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {ignoreMenuItems()}
                 <DropdownMenuItem onClick={() => onAction?.("allow_1_hour")}>
                   Dismiss for 1 Hour
                 </DropdownMenuItem>
@@ -727,6 +739,7 @@ export function FirewallApprovalCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {isSecretScanRequest && ignoreMenuItems()}
               {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
                 <DropdownMenuItem onClick={() => onAction?.("allow_session")}>
                   Allow for Session
