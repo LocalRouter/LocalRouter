@@ -592,12 +592,6 @@ export function FirewallApprovalCard({
                   <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
                   <span className="ml-auto font-mono">{finding.rule_id}</span>
                 </div>
-                {onIgnorePermanently && ignored[i] && (
-                  <div className="text-[10px] text-emerald-600 pt-0.5">
-                    Never flagged again for {clientName}. Undo in this client's
-                    Secret Scanning settings.
-                  </div>
-                )}
                 {ignoreError[i] && (
                   <div className="text-[10px] text-destructive">{ignoreError[i]}</div>
                 )}
