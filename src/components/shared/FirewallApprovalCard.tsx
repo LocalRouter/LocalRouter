@@ -6,7 +6,7 @@
  * Keep this component free of Tauri-specific imports so the website can use it.
  */
 import { useState } from "react"
-import { ChevronDown, Pencil, Eye, EyeOff, BellOff } from "lucide-react"
+import { ChevronDown, Pencil, Eye, EyeOff } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import {
   DropdownMenu,
@@ -269,16 +269,15 @@ export function FirewallApprovalCard({
         delete next[index]
         return next
       })
-      let ignoredCount = 0
-      setIgnored((prev) => {
-        const next = { ...prev, [index]: true }
-        ignoredCount = Object.keys(next).length
-        return next
-      })
-      // Nothing left to decide once every finding is ignored — let the parent
-      // resolve the popup rather than making the user click again.
+      // Compute the next set here rather than inside the state updater: React
+      // does not promise to run the updater synchronously, so reading a count
+      // out of it leaves this at 0 and the popup never resolves.
+      const nextIgnored = { ...ignored, [index]: true }
+      setIgnored(nextIgnored)
+      // Nothing left to decide once every finding is ignored — resolve the
+      // popup (allow the request / dismiss) instead of making the user click again.
       const total = secretScanFindings?.length ?? 0
-      if (total > 0 && ignoredCount >= total) {
+      if (total > 0 && Object.keys(nextIgnored).length >= total) {
         onAllFindingsIgnored?.()
       }
     } catch (err) {
@@ -306,7 +305,6 @@ export function FirewallApprovalCard({
         disabled={ignoring !== null || submitting}
         title={`Stores a salted hash of this value — never the value itself — so it is never flagged again for ${clientName}. Reversible in that client's Secret Scanning settings.`}
       >
-        <BellOff className="h-3.5 w-3.5 mr-2 flex-shrink-0" />
         {ignoring === i
           ? "Saving…"
           : pending.length === 1
@@ -595,12 +593,9 @@ export function FirewallApprovalCard({
                   <span className="ml-auto font-mono">{finding.rule_id}</span>
                 </div>
                 {onIgnorePermanently && ignored[i] && (
-                  <div className="flex items-center gap-1 text-[10px] text-emerald-600 pt-0.5">
-                    <BellOff className="h-3 w-3 flex-shrink-0" />
-                    <span>
-                      Never flagged again for {clientName}. Undo in this client's
-                      Secret Scanning settings.
-                    </span>
+                  <div className="text-[10px] text-emerald-600 pt-0.5">
+                    Never flagged again for {clientName}. Undo in this client's
+                    Secret Scanning settings.
                   </div>
                 )}
                 {ignoreError[i] && (
