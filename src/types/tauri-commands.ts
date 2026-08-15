@@ -2918,6 +2918,7 @@ export type CodingAgentType =
   | 'copilot'
   | 'droid'
   | 'aider'
+  | 'antigravity'
 
 /**
  * Coding agent permission mode.

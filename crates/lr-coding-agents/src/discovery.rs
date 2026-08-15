@@ -119,9 +119,11 @@ pub(crate) fn discoverer_for(agent: CodingAgentType) -> Box<dyn DiskDiscovery + 
             agent: CodingAgentType::QwenCode,
             namespace: "qwen_sessions",
         }),
-        // Cursor / Droid: CLI-managed state, no documented enumerable
-        // path. Resume by id still works; discovery returns empty.
-        CodingAgentType::Cursor | CodingAgentType::Droid => Box::new(EmptyDiscovery),
+        // Cursor / Droid / Antigravity: CLI-managed state, no documented
+        // enumerable path. Resume by id still works; discovery returns empty.
+        CodingAgentType::Cursor | CodingAgentType::Droid | CodingAgentType::Antigravity => {
+            Box::new(EmptyDiscovery)
+        }
         // Codex / Opencode / Amp: server-side state. Future server-API
         // discovery is possible; out of scope for v1.
         CodingAgentType::Codex | CodingAgentType::Opencode | CodingAgentType::Amp => {

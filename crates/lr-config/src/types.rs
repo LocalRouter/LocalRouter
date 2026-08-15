@@ -1943,6 +1943,7 @@ pub enum CodingAgentType {
     QwenCode,
     Copilot,
     Droid,
+    Antigravity,
 }
 
 impl CodingAgentType {
@@ -1959,6 +1960,7 @@ impl CodingAgentType {
             CodingAgentType::QwenCode => "qwen_code",
             CodingAgentType::Copilot => "copilot",
             CodingAgentType::Droid => "droid",
+            CodingAgentType::Antigravity => "antigravity",
         }
     }
 
@@ -1975,6 +1977,7 @@ impl CodingAgentType {
             CodingAgentType::QwenCode => "Qwen Code",
             CodingAgentType::Copilot => "Copilot",
             CodingAgentType::Droid => "Droid",
+            CodingAgentType::Antigravity => "Antigravity",
         }
     }
 
@@ -1991,6 +1994,7 @@ impl CodingAgentType {
             CodingAgentType::QwenCode => "qwen",
             CodingAgentType::Copilot => "copilot",
             CodingAgentType::Droid => "droid",
+            CodingAgentType::Antigravity => "agy",
         }
     }
 
@@ -1998,7 +2002,7 @@ impl CodingAgentType {
     pub fn description(&self) -> &str {
         match self {
             CodingAgentType::ClaudeCode => "Anthropic's agentic coding tool. Operates directly in your terminal, understanding your codebase and executing commands.",
-            CodingAgentType::GeminiCli => "Google's AI coding assistant for the command line, powered by Gemini models.",
+            CodingAgentType::GeminiCli => "Google's AI coding assistant for the command line, powered by Gemini models. Superseded by Antigravity.",
             CodingAgentType::Codex => "OpenAI's autonomous coding agent that can write, run, and debug code in a sandboxed environment.",
             CodingAgentType::Amp => "Sourcegraph's AI coding agent for multi-step code tasks with full project context.",
             CodingAgentType::Aider => "AI pair programming in your terminal. Works with most LLMs, supports Git integration.",
@@ -2007,6 +2011,7 @@ impl CodingAgentType {
             CodingAgentType::QwenCode => "Alibaba's coding agent powered by Qwen models.",
             CodingAgentType::Copilot => "GitHub Copilot's CLI extension for terminal-based code assistance.",
             CodingAgentType::Droid => "Autonomous coding agent with a focus on full-stack development.",
+            CodingAgentType::Antigravity => "Google's terminal coding agent (`agy`), the successor to Gemini CLI.",
         }
     }
 
@@ -2019,6 +2024,7 @@ impl CodingAgentType {
                 | CodingAgentType::Codex
                 | CodingAgentType::Aider
                 | CodingAgentType::Opencode
+                | CodingAgentType::Antigravity
         )
     }
 
@@ -2058,6 +2064,7 @@ impl CodingAgentType {
             CodingAgentType::QwenCode,
             CodingAgentType::Copilot,
             CodingAgentType::Droid,
+            CodingAgentType::Antigravity,
         ]
     }
 }
@@ -5081,5 +5088,53 @@ sampling_permission: "off"
         assert!(yaml.contains("github_models"));
         let deserialized: ProviderConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(deserialized.provider_type, ProviderType::GitHubModels);
+    }
+
+    #[test]
+    fn antigravity_is_a_listed_agent_with_the_agy_binary() {
+        assert!(CodingAgentType::all().contains(&CodingAgentType::Antigravity));
+        assert_eq!(CodingAgentType::Antigravity.binary_name(), "agy");
+        assert_eq!(CodingAgentType::Antigravity.display_name(), "Antigravity");
+        assert_eq!(CodingAgentType::Antigravity.tool_prefix(), "antigravity");
+        // agy documents a --model flag in headless mode.
+        assert!(CodingAgentType::Antigravity.supports_model_selection());
+    }
+
+    #[test]
+    fn gemini_cli_survives_antigravity_being_added() {
+        // Removing a serde variant silently breaks every existing config that
+        // still names it, so the superseded agent has to stay listed.
+        assert!(CodingAgentType::all().contains(&CodingAgentType::GeminiCli));
+        assert_eq!(
+            serde_json::to_string(&CodingAgentType::GeminiCli).unwrap(),
+            "\"gemini_cli\""
+        );
+    }
+
+    #[test]
+    fn coding_agent_types_have_unique_prefixes_and_binaries() {
+        let mut prefixes = std::collections::HashSet::new();
+        let mut binaries = std::collections::HashSet::new();
+        for agent in CodingAgentType::all() {
+            assert!(
+                prefixes.insert(agent.tool_prefix()),
+                "duplicate tool_prefix: {}",
+                agent.tool_prefix()
+            );
+            assert!(
+                binaries.insert(agent.binary_name()),
+                "duplicate binary_name: {}",
+                agent.binary_name()
+            );
+        }
+    }
+
+    #[test]
+    fn coding_agent_types_round_trip_through_serde() {
+        for agent in CodingAgentType::all() {
+            let json = serde_json::to_string(agent).unwrap();
+            let back: CodingAgentType = serde_json::from_str(&json).unwrap();
+            assert_eq!(*agent, back, "round-trip failed for {json}");
+        }
     }
 }

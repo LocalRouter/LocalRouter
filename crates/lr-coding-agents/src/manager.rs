@@ -1150,6 +1150,33 @@ fn build_executor(
             let executor = deser_executor(json, "Droid")?;
             Ok(CodingAgent::Droid(executor))
         }
+        CodingAgentType::Antigravity => {
+            // `agy` is not in the executors crate. Same approach as Aider
+            // below: the Amp executor is the plain stdin/stdout pipe, so it
+            // can drive any CLI that takes a prompt on stdin. ClaudeCode's
+            // executor would inject its own stream-json flags, which agy
+            // does not accept.
+            let mut additional = vec![
+                // Headless: run one prompt and exit instead of opening the TUI.
+                serde_json::Value::String("--print".into()),
+                serde_json::Value::String("--output-format".into()),
+                serde_json::Value::String("text".into()),
+            ];
+            if is_auto {
+                additional.push(serde_json::Value::String(
+                    "--dangerously-skip-permissions".into(),
+                ));
+            }
+            let mut json = serde_json::json!({
+                "base_command_override": "agy",
+                "additional_params": additional,
+            });
+            if let Some(ref model) = config.model {
+                json["model"] = serde_json::Value::String(model.clone());
+            }
+            let executor = deser_executor(json, "Antigravity")?;
+            Ok(CodingAgent::Amp(executor))
+        }
         CodingAgentType::Aider => {
             // Aider is not in the executors crate — use Amp executor with base command override.
             // Amp is the simplest executor (no control protocol, just stdin/stdout pipe).

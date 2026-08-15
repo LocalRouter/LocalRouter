@@ -994,6 +994,7 @@ export const mockData = {
   codingAgents: [
     { agentType: "claude_code", displayName: "Claude Code", binaryName: "claude", installed: true },
     { agentType: "gemini_cli", displayName: "Gemini CLI", binaryName: "gemini", installed: true },
+    { agentType: "antigravity", displayName: "Antigravity", binaryName: "agy", installed: true },
     { agentType: "codex", displayName: "Codex", binaryName: "codex", installed: false },
     { agentType: "aider", displayName: "Aider", binaryName: "aider", installed: true },
   ],
