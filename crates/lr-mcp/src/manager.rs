@@ -12,7 +12,6 @@ use futures_util::stream::Stream;
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_config::{McpServerConfig, McpTransportConfig, McpTransportType};
 use lr_types::{AppError, AppResult};
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -44,84 +43,14 @@ pub type MonitorEmitFn = Arc<
 pub type MonitorUpdateFn =
     Arc<dyn Fn(&str, Box<dyn FnOnce(&mut lr_monitor::MonitorEvent) + Send>) + Send + Sync>;
 
-/// Cached shell environment for spawning subprocess commands.
-///
-/// On macOS, GUI apps don't inherit the user's shell PATH. This lazily fetches
-/// the PATH from the user's login shell to ensure commands like `npx`, `node`, etc.
-/// can be found when spawning MCP server processes.
-static SHELL_ENV: Lazy<HashMap<String, String>> = Lazy::new(|| {
-    let mut env = HashMap::new();
-
-    // On macOS, get PATH from user's login shell
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(path) = get_shell_path() {
-            tracing::info!("Using shell PATH for MCP processes: {}", path);
-            env.insert("PATH".to_string(), path);
-        } else {
-            tracing::warn!("Failed to get shell PATH, using system default");
-            // Fall back to current process PATH
-            if let Ok(path) = std::env::var("PATH") {
-                env.insert("PATH".to_string(), path);
-            }
-        }
-    }
-
-    // On other platforms, just use the current process environment
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Ok(path) = std::env::var("PATH") {
-            env.insert("PATH".to_string(), path);
-        }
-    }
-
-    env
-});
-
 /// Get a clone of the cached shell environment (PATH resolution for subprocess spawning).
-pub fn shell_env() -> HashMap<String, String> {
-    SHELL_ENV.clone()
-}
-
-/// Get PATH from the user's login shell on macOS.
 ///
-/// This runs the user's default shell in login/interactive mode to source
-/// their profile and get the actual PATH they use in terminals.
-#[cfg(target_os = "macos")]
-fn get_shell_path() -> Option<String> {
-    use std::process::Command;
-
-    // Get user's default shell
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-
-    tracing::debug!("Getting PATH from shell: {}", shell);
-
-    // Run shell in login mode to source profile and echo PATH
-    // -l = login shell (sources profile)
-    // -i = interactive (sources rc files)
-    // -c = run command
-    let output = Command::new(&shell)
-        .args(["-lic", "echo $PATH"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        tracing::warn!(
-            "Failed to get PATH from shell {}: {}",
-            shell,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    if path.is_empty() {
-        tracing::warn!("Empty PATH returned from shell {}", shell);
-        return None;
-    }
-
-    Some(path)
+/// Re-exported from [`lr_utils::binary`], which owns the login-shell PATH
+/// probe. It lives there rather than here so `lr-coding-agents` can use it
+/// too — this crate depends on that one, so the helper cannot live here
+/// without creating a dependency cycle.
+pub fn shell_env() -> HashMap<String, String> {
+    lr_utils::binary::shell_env()
 }
 
 /// Notification handler with unique ID for removal
@@ -486,7 +415,7 @@ impl McpServerManager {
 
         // Build environment: shell env (PATH) -> config env -> auth env
         // Later entries override earlier ones, so user config takes precedence
-        let mut env = SHELL_ENV.clone();
+        let mut env = shell_env();
 
         // Merge config environment variables
         for (key, value) in config_env {
@@ -1119,7 +1048,7 @@ impl McpServerManager {
             .parse_stdio_command()
             .map_err(AppError::Mcp)?;
 
-        let mut env = SHELL_ENV.clone();
+        let mut env = shell_env();
         for (key, value) in config_env {
             env.insert(key, value);
         }
@@ -1601,7 +1530,7 @@ impl McpServerManager {
                     };
 
                 // Build environment: shell env (PATH) -> config env
-                let mut env = SHELL_ENV.clone();
+                let mut env = shell_env();
                 for (key, value) in config_env {
                     env.insert(key, value);
                 }

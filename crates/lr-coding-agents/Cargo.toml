@@ -10,6 +10,7 @@ description = "AI coding agent orchestration for LocalRouter MCP Gateway"
 [dependencies]
 lr-types = { workspace = true }
 lr-config = { workspace = true }
+lr-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

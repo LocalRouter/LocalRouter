@@ -40,6 +40,7 @@ lr-skills = { workspace = true }
 lr-router = { workspace = true }
 lr-marketplace = { workspace = true }
 lr-coding-agents = { workspace = true }
+lr-utils = { workspace = true }
 lr-providers = { workspace = true }
 lr-context = { path = "../lr-context", features = ["vector"] }
 lr-embeddings = { workspace = true }

@@ -20,26 +20,12 @@ pub mod zed;
 use super::AppIntegration;
 use std::path::PathBuf;
 
-/// Locate a binary by name, falling back to the user's login-shell PATH
-/// when the process PATH doesn't include it.
+/// Locate a binary by name the way the user's terminal would.
 ///
-/// macOS `.app` bundles launched from Finder/Dock inherit a stripped PATH
-/// (`/usr/bin:/bin:/usr/sbin:/sbin`) that omits user-installed tools in
-/// `/opt/homebrew/bin`, `~/.cargo/bin`, etc. `lr_mcp::manager::shell_env()`
-/// resolves the real shell PATH (via `$SHELL -lic 'echo $PATH'`, cached);
-/// we use it here so integration detection matches what the user sees in
-/// their terminal.
+/// Thin alias over [`lr_utils::binary::find_binary`], kept so the many
+/// integration modules can keep calling `find_binary(..)` unqualified.
 pub(crate) fn find_binary(name: &str) -> Option<PathBuf> {
-    if let Ok(p) = which::which(name) {
-        return Some(p);
-    }
-    let shell_path = lr_mcp::manager::shell_env().get("PATH")?.clone();
-    // cwd only matters for relative PATH entries; absolute ones like
-    // `/opt/homebrew/bin` resolve regardless. Fall back to root if the
-    // real cwd isn't available (unusual, but possible in sandboxed GUI
-    // contexts).
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    which::which_in(name, Some(&shell_path), cwd).ok()
+    lr_utils::binary::find_binary(name)
 }
 
 /// All known template IDs that have backend integrations

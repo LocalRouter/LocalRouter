@@ -60,19 +60,14 @@ pub struct CodingSessionInfo {
 pub async fn list_coding_agents(
     _config_manager: State<'_, ConfigManager>,
 ) -> Result<Vec<CodingAgentInfo>, String> {
-    let installed = CodingAgentManager::detect_installed_agents();
-
     let agents: Vec<CodingAgentInfo> = CodingAgentType::all()
         .iter()
         .map(|agent_type| {
-            let is_installed = installed.contains(agent_type);
-            let binary_path = if is_installed {
-                which::which(agent_type.binary_name())
-                    .ok()
-                    .map(|p| p.display().to_string())
-            } else {
-                None
-            };
+            // Resolve once and derive `installed` from it, so the badge and
+            // the path shown underneath can never disagree.
+            let resolved = lr_utils::binary::find_binary(agent_type.binary_name());
+            let is_installed = resolved.is_some();
+            let binary_path = resolved.map(|p| p.display().to_string());
             CodingAgentInfo {
                 agent_type: *agent_type,
                 display_name: agent_type.display_name().to_string(),
@@ -127,14 +122,24 @@ pub async fn get_coding_session_detail(
 pub async fn get_coding_agent_version(
     agent_type: CodingAgentType,
 ) -> Result<Option<String>, String> {
-    let binary = agent_type.binary_name();
     let flag = agent_type.version_flag();
 
-    let output = match tokio::process::Command::new(binary)
-        .arg(flag)
-        .output()
-        .await
-    {
+    // Spawn the resolved absolute path, not the bare name: the app's own PATH
+    // may not contain it (see lr_utils::binary). Pass the shell PATH through
+    // too, since these CLIs are usually wrapper scripts that go on to exec
+    // `node`/`python` and need to find those themselves.
+    let binary = match lr_utils::binary::find_binary(agent_type.binary_name()) {
+        Some(path) => path,
+        None => return Ok(None),
+    };
+
+    let mut command = tokio::process::Command::new(&binary);
+    command.arg(flag);
+    if let Some(path) = lr_utils::binary::shell_path() {
+        command.env("PATH", path);
+    }
+
+    let output = match command.output().await {
         Ok(o) => o,
         Err(_) => return Ok(None),
     };

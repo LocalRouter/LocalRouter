@@ -5287,6 +5287,7 @@ dependencies = [
  "executors",
  "lr-config",
  "lr-types",
+ "lr-utils",
  "serde",
  "serde_json",
  "sysinfo",
@@ -5462,6 +5463,7 @@ dependencies = [
  "lr-router",
  "lr-skills",
  "lr-types",
+ "lr-utils",
  "oauth2",
  "once_cell",
  "parking_lot",
@@ -5843,6 +5845,8 @@ dependencies = [
  "dirs 5.0.1",
  "lr-types",
  "ring",
+ "tracing",
+ "which 7.0.3",
 ]
 
 [[package]]

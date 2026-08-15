@@ -133,25 +133,60 @@ impl CodingAgentManager {
         &self.config
     }
 
+    /// Resolve the executable for an agent, honouring a configured override.
+    ///
+    /// A user-set `binary_path` wins outright — it is the escape hatch for
+    /// installs we cannot discover (wrappers, non-standard names). Otherwise
+    /// we search the way the user's terminal does; see
+    /// [`lr_utils::binary::find_binary`] for why the process PATH alone is not
+    /// enough in a GUI app.
+    pub fn resolve_binary(&self, agent_type: CodingAgentType) -> Option<PathBuf> {
+        if let Some(configured) = self
+            .config
+            .agents
+            .iter()
+            .find(|a| a.agent_type == agent_type)
+            .and_then(|a| a.binary_path.as_ref())
+            .filter(|p| !p.trim().is_empty())
+        {
+            let path = PathBuf::from(configured);
+            if path.exists() {
+                return Some(path);
+            }
+            // An override pointing at something that no longer exists is
+            // worth surfacing: silently falling back would make the override
+            // look like it took effect.
+            tracing::warn!(
+                "Configured binary_path for {} does not exist: {configured}",
+                agent_type.display_name()
+            );
+        }
+
+        lr_utils::binary::find_binary(agent_type.binary_name())
+    }
+
     /// Check if an agent type is available (binary installed on system).
     pub fn is_agent_enabled(&self, agent_type: CodingAgentType) -> bool {
-        which::which(agent_type.binary_name()).is_ok()
+        self.resolve_binary(agent_type).is_some()
     }
 
     /// Get all available agent types (installed on system)
     pub fn enabled_agents(&self) -> Vec<CodingAgentType> {
         CodingAgentType::all()
             .iter()
-            .filter(|t| which::which(t.binary_name()).is_ok())
+            .filter(|t| self.is_agent_enabled(**t))
             .copied()
             .collect()
     }
 
     /// Detect which agents are installed on the system
+    ///
+    /// Associated function, so it cannot consult per-agent `binary_path`
+    /// overrides; prefer [`Self::enabled_agents`] when a manager is at hand.
     pub fn detect_installed_agents() -> Vec<CodingAgentType> {
         CodingAgentType::all()
             .iter()
-            .filter(|t| which::which(t.binary_name()).is_ok())
+            .filter(|t| lr_utils::binary::find_binary(t.binary_name()).is_some())
             .copied()
             .collect()
     }
