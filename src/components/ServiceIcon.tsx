@@ -53,6 +53,8 @@ const ICON_MAP: Record<string, string> = {
   'hugging-face': 'huggingface.svg',
   zhipu: 'zhipu.svg',
   digitalocean: 'digitalocean.svg',
+  opencode_zen: 'opencode.png',
+  opencode_go: 'opencode.png',
 
   // OAuth/Subscription Providers
   'github-copilot': 'github.png',
@@ -155,6 +157,8 @@ const EMOJI_MAP: Record<string, string> = {
   'hugging-face': '🤗',
   zhipu: '🇨🇳',
   digitalocean: '🌊',
+  opencode_zen: '📝',
+  opencode_go: '📝',
 
   // OAuth Providers
   'github-copilot': '🐙',

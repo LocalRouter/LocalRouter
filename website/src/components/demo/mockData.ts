@@ -545,7 +545,37 @@ export const mockData = {
       free_tier_long_text: "Depends on the upstream service. Local services run entirely on your machine.",
       free_tier_notes: null,
     },
-  ],
+      {
+      provider_type: "opencode_zen",
+      display_name: "OpenCode Zen",
+      category: "third_party",
+      description: "Models curated and benchmarked by OpenCode for coding agents, billed per request",
+      setup_parameters: [
+        { key: "api_key", param_type: "api_key", required: true, description: "OpenCode API key", sensitive: true },
+      ],
+      default_free_tier: { kind: "none" },
+      free_tier_short_text: "",
+      free_tier_long_text: "Pay per request with no markup.",
+      free_tier_notes: null,
+      docs_url: "https://opencode.ai/docs/zen/",
+      api_key_url: "https://opencode.ai/auth",
+    },
+    {
+      provider_type: "opencode_go",
+      display_name: "OpenCode Go",
+      category: "subscription",
+      description: "OpenCode's flat-rate subscription for capable open-source models",
+      setup_parameters: [
+        { key: "api_key", param_type: "api_key", required: true, description: "OpenCode API key", sensitive: true },
+      ],
+      default_free_tier: { kind: "none" },
+      free_tier_short_text: "",
+      free_tier_long_text: "Flat monthly subscription.",
+      free_tier_notes: null,
+      docs_url: "https://opencode.ai/docs/go/",
+      api_key_url: "https://opencode.ai/auth",
+    },
+],
 
   mcpServers: [
     {

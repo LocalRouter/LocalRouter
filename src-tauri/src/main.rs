@@ -26,8 +26,9 @@ use lr_providers::factory::{
     JanProviderFactory, KlusterAIProviderFactory, LMStudioProviderFactory, LlamaCppProviderFactory,
     Llm7ProviderFactory, LocalAIProviderFactory, MistralProviderFactory, NvidiaNimProviderFactory,
     OllamaProviderFactory, OpenAICodexProviderFactory, OpenAICompatibleProviderFactory,
-    OpenAIProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
-    TogetherAIProviderFactory, XAIProviderFactory, ZhipuProviderFactory,
+    OpenAIProviderFactory, OpenCodeGoProviderFactory, OpenCodeZenProviderFactory,
+    OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
+    XAIProviderFactory, ZhipuProviderFactory,
 };
 use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;
@@ -325,6 +326,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(HuggingFaceProviderFactory));
     provider_registry.register_factory(Arc::new(ZhipuProviderFactory));
     provider_registry.register_factory(Arc::new(DigitalOceanProviderFactory));
+    provider_registry.register_factory(Arc::new(OpenCodeZenProviderFactory));
+    provider_registry.register_factory(Arc::new(OpenCodeGoProviderFactory));
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -397,6 +400,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::HuggingFace => "huggingface",
             config::ProviderType::Zhipu => "zhipu",
             config::ProviderType::DigitalOcean => "digitalocean",
+            config::ProviderType::OpenCodeZen => "opencode_zen",
+            config::ProviderType::OpenCodeGo => "opencode_go",
             config::ProviderType::ChatGPTPlus => "openai-chatgpt-plus",
             config::ProviderType::Custom => "openai_compatible",
         };

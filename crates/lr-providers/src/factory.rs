@@ -2704,6 +2704,151 @@ impl ProviderFactory for OpenAICodexProviderFactory {
     }
 }
 
+/// Factory for OpenCode Zen providers
+///
+/// Zen is OpenCode's pay-per-request catalogue of models curated for coding
+/// agents. It speaks the OpenAI wire format, so it wraps
+/// [`OpenAICompatibleProvider`] against a fixed base URL.
+pub struct OpenCodeZenProviderFactory;
+
+impl ProviderFactory for OpenCodeZenProviderFactory {
+    fn provider_type(&self) -> &str {
+        "opencode_zen"
+    }
+
+    fn display_name(&self) -> &str {
+        "OpenCode Zen"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "Models curated and benchmarked by OpenCode for coding agents, billed per request"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "OpenCode API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "opencode_zen".to_string(),
+            "https://opencode.ai/zen/v1".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://opencode.ai/docs/zen/")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://opencode.ai/auth")
+    }
+}
+
+/// Factory for OpenCode Go providers
+///
+/// Go is the flat-rate subscription tier of the same OpenCode platform, on a
+/// separate endpoint with its own model line-up. The API key is shared with
+/// [`OpenCodeZenProviderFactory`] — one key from opencode.ai/auth works for
+/// both, so a user with a Go subscription pastes the same value here.
+pub struct OpenCodeGoProviderFactory;
+
+impl ProviderFactory for OpenCodeGoProviderFactory {
+    fn provider_type(&self) -> &str {
+        "opencode_go"
+    }
+
+    fn display_name(&self) -> &str {
+        "OpenCode Go"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Subscription
+    }
+
+    fn description(&self) -> &str {
+        "OpenCode's flat-rate subscription for capable open-source models"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "OpenCode API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "opencode_go".to_string(),
+            "https://opencode.ai/zen/go/v1".to_string(),
+            Some(api_key),
+        )))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://opencode.ai/docs/go/")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://opencode.ai/auth")
+    }
+}
+
 // ==================== LOCAL PROVIDER DISCOVERY ====================
 
 /// Discovered local provider information
@@ -3494,6 +3639,8 @@ mod tests {
             Box::new(HuggingFaceProviderFactory),
             Box::new(ZhipuProviderFactory),
             Box::new(DigitalOceanProviderFactory),
+            Box::new(OpenCodeZenProviderFactory),
+            Box::new(OpenCodeGoProviderFactory),
             Box::new(GitHubCopilotProviderFactory),
             Box::new(OpenAICodexProviderFactory),
         ]
@@ -3549,6 +3696,74 @@ mod tests {
                 }
             }
         }
+    }
+
+    // --- OpenCode Zen / Go ---
+
+    #[test]
+    fn test_opencode_zen_metadata() {
+        let factory = OpenCodeZenProviderFactory;
+        assert_eq!(factory.provider_type(), "opencode_zen");
+        assert_eq!(factory.display_name(), "OpenCode Zen");
+        assert_eq!(factory.category(), ProviderCategory::ThirdParty);
+        // No models.dev entry, so pricing/metadata must not be looked up
+        // under a colliding id.
+        assert!(factory.catalog_provider_id().is_none());
+    }
+
+    #[test]
+    fn test_opencode_go_metadata() {
+        let factory = OpenCodeGoProviderFactory;
+        assert_eq!(factory.provider_type(), "opencode_go");
+        assert_eq!(factory.display_name(), "OpenCode Go");
+        // Go is a flat-rate subscription, not per-request billing.
+        assert_eq!(factory.category(), ProviderCategory::Subscription);
+        assert!(factory.catalog_provider_id().is_none());
+    }
+
+    #[test]
+    fn test_opencode_create_success() {
+        for factory in [
+            Box::new(OpenCodeZenProviderFactory) as Box<dyn ProviderFactory>,
+            Box::new(OpenCodeGoProviderFactory),
+        ] {
+            let mut config = HashMap::new();
+            config.insert("api_key".to_string(), "oc-test".to_string());
+            let provider = factory
+                .create("test".to_string(), config)
+                .expect("create should succeed with an api_key");
+            assert_eq!(provider.name(), factory.provider_type());
+        }
+    }
+
+    #[test]
+    fn test_opencode_validate_missing_key() {
+        assert!(OpenCodeZenProviderFactory
+            .validate_config(&HashMap::new())
+            .is_err());
+        assert!(OpenCodeGoProviderFactory
+            .validate_config(&HashMap::new())
+            .is_err());
+    }
+
+    #[test]
+    fn test_opencode_zen_and_go_are_distinct_endpoints() {
+        // Zen and Go share one account and one API key but are served from
+        // different base URLs; pointing both at the same one would silently
+        // bill a Go subscriber per request.
+        assert_ne!(
+            OpenCodeZenProviderFactory.provider_type(),
+            OpenCodeGoProviderFactory.provider_type()
+        );
+        assert_ne!(
+            OpenCodeZenProviderFactory.docs_url(),
+            OpenCodeGoProviderFactory.docs_url()
+        );
+        assert_eq!(
+            OpenCodeZenProviderFactory.api_key_url(),
+            OpenCodeGoProviderFactory.api_key_url(),
+            "one opencode.ai key works for both tiers"
+        );
     }
 
     #[test]

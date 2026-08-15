@@ -509,6 +509,8 @@ fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
         "huggingface" => lr_config::ProviderType::HuggingFace,
         "zhipu" => lr_config::ProviderType::Zhipu,
         "digitalocean" => lr_config::ProviderType::DigitalOcean,
+        "opencode_zen" => lr_config::ProviderType::OpenCodeZen,
+        "opencode_go" => lr_config::ProviderType::OpenCodeGo,
         "openai-chatgpt-plus" => lr_config::ProviderType::ChatGPTPlus,
         "openai_compatible" => lr_config::ProviderType::Custom,
         _ => lr_config::ProviderType::Custom,

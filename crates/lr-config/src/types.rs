@@ -3716,6 +3716,12 @@ pub enum ProviderType {
     /// DigitalOcean Gradient inference (OpenAI-compatible, https://inference.do-ai.run/v1)
     #[serde(rename = "digitalocean")]
     DigitalOcean,
+    /// OpenCode Zen (OpenAI-compatible, https://opencode.ai/zen/v1)
+    #[serde(rename = "opencode_zen")]
+    OpenCodeZen,
+    /// OpenCode Go subscription (OpenAI-compatible, https://opencode.ai/zen/go/v1)
+    #[serde(rename = "opencode_go")]
+    OpenCodeGo,
     /// ChatGPT Plus / Pro subscription (codex_cli OAuth → chatgpt.com/backend-api/codex)
     ///
     /// Distinct from `OpenAI` because it routes to a different
@@ -5037,6 +5043,8 @@ sampling_permission: "off"
             (ProviderType::HuggingFace, "huggingface"),
             (ProviderType::Zhipu, "zhipu"),
             (ProviderType::DigitalOcean, "digitalocean"),
+            (ProviderType::OpenCodeZen, "opencode_zen"),
+            (ProviderType::OpenCodeGo, "opencode_go"),
         ];
         for (variant, expected_str) in &variants {
             // Serialize to JSON string
@@ -5065,6 +5073,8 @@ sampling_permission: "off"
             ProviderType::HuggingFace,
             ProviderType::Zhipu,
             ProviderType::DigitalOcean,
+            ProviderType::OpenCodeZen,
+            ProviderType::OpenCodeGo,
         ];
         for variant in &variants {
             let yaml = serde_yaml::to_string(variant).unwrap();
