@@ -171,6 +171,8 @@ export const mockData = {
       free_tier_short_text: "",
       free_tier_long_text: "No free tier available. All API usage is billed.",
       free_tier_notes: null,
+      docs_url: "https://platform.openai.com/docs",
+      api_key_url: "https://platform.openai.com/api-keys",
     },
     {
       provider_type: "anthropic",
@@ -185,6 +187,8 @@ export const mockData = {
       free_tier_short_text: "",
       free_tier_long_text: "No free tier available. All API usage is billed.",
       free_tier_notes: null,
+      docs_url: "https://docs.anthropic.com",
+      api_key_url: "https://console.anthropic.com/settings/keys",
     },
     {
       provider_type: "ollama",
@@ -198,6 +202,7 @@ export const mockData = {
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
       free_tier_notes: null,
+      docs_url: "https://docs.ollama.com",
     },
     {
       provider_type: "gemini",
@@ -211,6 +216,8 @@ export const mockData = {
       free_tier_short_text: "Free tier: 10 req/min, 20 req/day",
       free_tier_long_text: "Free access within rate limits: 10 req/min, 20 req/day, 250K tokens/min. Router auto-skips when exhausted.\n\nRate limits vary significantly by model: Flash models allow up to 250 RPD while Pro models are limited to 20 RPD. Limits may also vary by region.",
       free_tier_notes: "Rate limits vary significantly by model: Flash models allow up to 250 RPD while Pro models are limited to 20 RPD. Limits may also vary by region.",
+      docs_url: "https://ai.google.dev/gemini-api/docs",
+      api_key_url: "https://aistudio.google.com/apikey",
     },
     {
       provider_type: "groq",
@@ -224,6 +231,8 @@ export const mockData = {
       free_tier_short_text: "Free tier: 30 req/min, 14.4K req/day",
       free_tier_long_text: "Free access within rate limits: 30 req/min, 14.4K req/day, 6K tokens/min, 500K tokens/day. Router auto-skips when exhausted.\n\nRate limits vary by model. Some models (e.g. Llama 3.3 70B) have lower daily limits (1K RPD). Token limits also vary per model.",
       free_tier_notes: "Rate limits vary by model. Some models (e.g. Llama 3.3 70B) have lower daily limits (1K RPD). Token limits also vary per model.",
+      docs_url: "https://console.groq.com/docs",
+      api_key_url: "https://console.groq.com/keys",
     },
     {
       provider_type: "mistral",
@@ -237,6 +246,8 @@ export const mockData = {
       free_tier_short_text: "Free tier: 60 req/min, 500K tokens/min",
       free_tier_long_text: "Free access within rate limits: 60 req/min, 500K tokens/min, 1B tokens/mo. Router auto-skips when exhausted.\n\nFree tier (experiment plan) allows 1 request/second and 1 billion tokens/month. All models are accessible.",
       free_tier_notes: "Free tier (experiment plan) allows 1 request/second and 1 billion tokens/month. All models are accessible.",
+      docs_url: "https://docs.mistral.ai",
+      api_key_url: "https://console.mistral.ai/api-keys",
     },
     {
       provider_type: "openrouter",
@@ -250,6 +261,8 @@ export const mockData = {
       free_tier_short_text: "Free models: 20 req/min",
       free_tier_long_text: "1 free model. Rate-limited to 20 req/min.\n\nFree tier provides access to 25+ free models (model IDs ending in ':free') at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.",
       free_tier_notes: "Free tier provides access to 25+ free models (model IDs ending in ':free') at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.",
+      docs_url: "https://openrouter.ai/docs",
+      api_key_url: "https://openrouter.ai/keys",
     },
     {
       provider_type: "together",
@@ -263,6 +276,8 @@ export const mockData = {
       free_tier_short_text: "Free models: 3 req/min",
       free_tier_long_text: "1 free model. Rate-limited to 3 req/min.\n\nOnly specific models are free (currently Llama 3.3 70B Instruct Turbo Free). Rate limited to 3 RPM on free models.",
       free_tier_notes: "Only specific models are free (currently Llama 3.3 70B Instruct Turbo Free). Rate limited to 3 RPM on free models.",
+      docs_url: "https://docs.together.ai",
+      api_key_url: "https://api.together.ai/settings/api-keys",
     },
     {
       provider_type: "deepinfra",
@@ -276,6 +291,8 @@ export const mockData = {
       free_tier_short_text: "$5/mo free credits",
       free_tier_long_text: "$5 in monthly free credits. Router auto-skips when exhausted.\n\n$5 monthly free credits for inference. Credits reset monthly.",
       free_tier_notes: "$5 monthly free credits for inference. Credits reset monthly.",
+      docs_url: "https://deepinfra.com/docs",
+      api_key_url: "https://deepinfra.com/dash/api_keys",
     },
     {
       provider_type: "perplexity",
@@ -289,6 +306,8 @@ export const mockData = {
       free_tier_short_text: "",
       free_tier_long_text: "No free tier available. All API usage is billed.\n\nNo free API tier. All API usage requires payment.",
       free_tier_notes: "No free API tier. All API usage requires payment.",
+      docs_url: "https://docs.perplexity.ai",
+      api_key_url: "https://www.perplexity.ai/settings/api",
     },
     {
       provider_type: "xai",
@@ -302,6 +321,8 @@ export const mockData = {
       free_tier_short_text: "$25 free credits",
       free_tier_long_text: "$25 in one-time free credits. Router auto-skips when exhausted.\n\n$25 one-time signup credits. No recurring free tier.",
       free_tier_notes: "$25 one-time signup credits. No recurring free tier.",
+      docs_url: "https://docs.x.ai",
+      api_key_url: "https://console.x.ai",
     },
     {
       provider_type: "cerebras",
@@ -315,6 +336,8 @@ export const mockData = {
       free_tier_short_text: "Free tier: 30 req/min, 14.4K req/day",
       free_tier_long_text: "Free access within rate limits: 30 req/min, 14.4K req/day, 60K tokens/min, 1M tokens/day. Router auto-skips when exhausted.\n\nDeveloper tier offers 10x higher limits. Exact free tier limits are not publicly documented and may change.",
       free_tier_notes: "Developer tier offers 10x higher limits. Exact free tier limits are not publicly documented and may change.",
+      docs_url: "https://inference-docs.cerebras.ai",
+      api_key_url: "https://cloud.cerebras.ai/platform/apikeys",
     },
     {
       provider_type: "cohere",
@@ -328,6 +351,8 @@ export const mockData = {
       free_tier_short_text: "Free tier: 20 req/min, 100K tokens/min",
       free_tier_long_text: "Free access within rate limits: 20 req/min, 100K tokens/min, 1K calls/mo. Router auto-skips when exhausted.\n\nTrial API keys are limited to 1,000 API calls/month and 20 RPM. Contact support for production increases.",
       free_tier_notes: "Trial API keys are limited to 1,000 API calls/month and 20 RPM. Contact support for production increases.",
+      docs_url: "https://docs.cohere.com",
+      api_key_url: "https://dashboard.cohere.com/api-keys",
     },
     {
       provider_type: "lmstudio",
@@ -341,6 +366,7 @@ export const mockData = {
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
       free_tier_notes: null,
+      docs_url: "https://lmstudio.ai/docs",
     },
     {
       provider_type: "jan",
@@ -354,6 +380,7 @@ export const mockData = {
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
       free_tier_notes: null,
+      docs_url: "https://jan.ai/docs",
     },
     {
       provider_type: "gpt4all",
@@ -367,6 +394,7 @@ export const mockData = {
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
       free_tier_notes: null,
+      docs_url: "https://docs.gpt4all.io",
     },
     {
       provider_type: "localai",
@@ -380,6 +408,7 @@ export const mockData = {
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
       free_tier_notes: null,
+      docs_url: "https://localai.io/docs/",
     },
     {
       provider_type: "llamacpp",
@@ -393,6 +422,7 @@ export const mockData = {
       free_tier_short_text: "Free — runs locally",
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
       free_tier_notes: null,
+      docs_url: "https://github.com/ggml-org/llama.cpp",
     },
     {
       provider_type: "github_models",
@@ -406,6 +436,8 @@ export const mockData = {
       free_tier_short_text: "Free tier: 10 req/min, 50 req/day",
       free_tier_long_text: "Free access within rate limits: 10 req/min, 50 req/day. Router auto-skips when exhausted.\n\nLimits vary by model tier: Low models get 15 RPM / 150 RPD, High models get 10 RPM / 50 RPD. Uses GitHub Personal Access Token for auth.",
       free_tier_notes: "Limits vary by model tier: Low models get 15 RPM / 150 RPD, High models get 10 RPM / 50 RPD. Uses GitHub Personal Access Token for auth.",
+      docs_url: "https://docs.github.com/en/github-models",
+      api_key_url: "https://github.com/settings/tokens",
     },
     {
       provider_type: "nvidia_nim",
@@ -419,6 +451,8 @@ export const mockData = {
       free_tier_short_text: "Free tier: 40 req/min",
       free_tier_long_text: "Free access within rate limits: 40 req/min. Router auto-skips when exhausted.\n\n40 RPM on free tier. Access to 100+ models including Llama, Mistral, Qwen. Daily limits undocumented.",
       free_tier_notes: "40 RPM on free tier. Access to 100+ models including Llama, Mistral, Qwen. Daily limits undocumented.",
+      docs_url: "https://docs.nvidia.com/nim/",
+      api_key_url: "https://build.nvidia.com",
     },
     {
       provider_type: "cloudflare_ai",
@@ -433,6 +467,8 @@ export const mockData = {
       free_tier_short_text: "Free tier available",
       free_tier_long_text: "Free access within rate limits. Router auto-skips when exhausted.\n\n10,000 neurons/day free allowance. Neuron cost varies by model and input size. Requires Cloudflare account ID in base URL.",
       free_tier_notes: "10,000 neurons/day free allowance. Neuron cost varies by model and input size. Requires Cloudflare account ID in base URL.",
+      docs_url: "https://developers.cloudflare.com/workers-ai/",
+      api_key_url: "https://dash.cloudflare.com/profile/api-tokens",
     },
     {
       provider_type: "llm7",
@@ -446,6 +482,8 @@ export const mockData = {
       free_tier_short_text: "Free tier: 30 req/min",
       free_tier_long_text: "Free access within rate limits: 30 req/min. Router auto-skips when exhausted.\n\n30 RPM without token, 120 RPM with token. Access to DeepSeek R1, Qwen2.5 Coder, and 27+ more models.",
       free_tier_notes: "30 RPM without token, 120 RPM with token. Access to DeepSeek R1, Qwen2.5 Coder, and 27+ more models.",
+      docs_url: "https://llm7.io",
+      api_key_url: "https://token.llm7.io",
     },
     {
       provider_type: "kluster_ai",
@@ -459,6 +497,8 @@ export const mockData = {
       free_tier_short_text: "Free tier: 30 req/min",
       free_tier_long_text: "Free access within rate limits: 30 req/min. Router auto-skips when exhausted.\n\nFree tier limits are undocumented. Supports DeepSeek-R1, Llama 4 Maverick, Qwen3-235B.",
       free_tier_notes: "Free tier limits are undocumented. Supports DeepSeek-R1, Llama 4 Maverick, Qwen3-235B.",
+      docs_url: "https://docs.kluster.ai",
+      api_key_url: "https://platform.kluster.ai/apikeys",
     },
     {
       provider_type: "huggingface",
@@ -472,6 +512,8 @@ export const mockData = {
       free_tier_short_text: "$0.10/mo free credits",
       free_tier_long_text: "$0.10 in monthly free credits. Router auto-skips when exhausted.\n\n$0.10/month free credits for all users. PRO users get $2/month. No markup — provider costs passed through directly. Uses HF User Access Token.",
       free_tier_notes: "$0.10/month free credits for all users. PRO users get $2/month. No markup — provider costs passed through directly. Uses HF User Access Token.",
+      docs_url: "https://huggingface.co/docs",
+      api_key_url: "https://huggingface.co/settings/tokens",
     },
     {
       provider_type: "zhipu",
@@ -485,6 +527,8 @@ export const mockData = {
       free_tier_short_text: "Free tier available",
       free_tier_long_text: "Free access within rate limits. Router auto-skips when exhausted.\n\nFree tier limits are undocumented. Supports GLM-4.7-Flash, GLM-4.5-Flash, GLM-4.6V-Flash. Chinese-language focused provider.",
       free_tier_notes: "Free tier limits are undocumented. Supports GLM-4.7-Flash, GLM-4.5-Flash, GLM-4.6V-Flash. Chinese-language focused provider.",
+      docs_url: "https://docs.bigmodel.cn",
+      api_key_url: "https://bigmodel.cn/usercenter/apikeys",
     },
     {
       provider_type: "openai_compatible",

@@ -116,6 +116,25 @@ pub trait ProviderFactory: Send + Sync {
     fn free_tier_notes(&self) -> Option<&str> {
         None
     }
+
+    /// Link to the provider's official documentation or homepage.
+    ///
+    /// Surfaced in the Add Provider flow so users can read the upstream docs
+    /// without having to search for them. `None` for providers that have no
+    /// meaningful external page (e.g. the generic OpenAI-compatible entry).
+    fn docs_url(&self) -> Option<&str> {
+        None
+    }
+
+    /// Link to the exact page where a user creates or copies their API key.
+    ///
+    /// This is deliberately separate from [`Self::docs_url`]: landing on a
+    /// docs homepage and hunting for the console is the friction this is
+    /// meant to remove, so point at the key page itself. `None` for providers
+    /// that need no key (local models) or where the key is not self-serve.
+    fn api_key_url(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Trait for providers that can be automatically discovered on the local system
@@ -292,6 +311,10 @@ impl ProviderFactory for OllamaProviderFactory {
     fn model_list_source(&self) -> ModelListSource {
         ModelListSource::ApiOnly // Local models, catalog irrelevant
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.ollama.com")
+    }
 }
 
 #[async_trait]
@@ -389,6 +412,14 @@ impl ProviderFactory for OpenAIProviderFactory {
         }
         Ok(())
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://platform.openai.com/docs")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://platform.openai.com/api-keys")
+    }
 }
 
 /// Factory for Anthropic Claude providers
@@ -440,6 +471,14 @@ impl ProviderFactory for AnthropicProviderFactory {
             return Err(AppError::Config("api_key is required".to_string()));
         }
         Ok(())
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.anthropic.com")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://console.anthropic.com/settings/keys")
     }
 }
 
@@ -511,6 +550,14 @@ impl ProviderFactory for GeminiProviderFactory {
 
     fn catalog_provider_id(&self) -> Option<&str> {
         Some("google") // models.dev uses "google" not "gemini"
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://ai.google.dev/gemini-api/docs")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://aistudio.google.com/apikey")
     }
 }
 
@@ -599,6 +646,14 @@ impl ProviderFactory for OpenRouterProviderFactory {
 
     fn catalog_provider_id(&self) -> Option<&str> {
         None // Aggregator, uses name-based matching instead
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://openrouter.ai/docs")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://openrouter.ai/keys")
     }
 }
 
@@ -772,6 +827,14 @@ impl ProviderFactory for GroqProviderFactory {
         }
         Ok(())
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://console.groq.com/docs")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://console.groq.com/keys")
+    }
 }
 
 /// Factory for Mistral providers
@@ -857,6 +920,14 @@ impl ProviderFactory for MistralProviderFactory {
         }
         Ok(())
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.mistral.ai")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://console.mistral.ai/api-keys")
+    }
 }
 
 /// Factory for Cohere providers
@@ -923,6 +994,14 @@ impl ProviderFactory for CohereProviderFactory {
             return Err(AppError::Config("api_key is required".to_string()));
         }
         Ok(())
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.cohere.com")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://dashboard.cohere.com/api-keys")
     }
 }
 
@@ -991,6 +1070,14 @@ impl ProviderFactory for TogetherAIProviderFactory {
     fn catalog_provider_id(&self) -> Option<&str> {
         Some("together") // models.dev uses "together" not "togetherai"
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.together.ai")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://api.together.ai/settings/api-keys")
+    }
 }
 
 /// Factory for Perplexity providers
@@ -1055,6 +1142,14 @@ impl ProviderFactory for PerplexityProviderFactory {
     fn free_tier_notes(&self) -> Option<&str> {
         Some("No free API tier. All API usage requires payment.")
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.perplexity.ai")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://www.perplexity.ai/settings/api")
+    }
 }
 
 /// Factory for DeepInfra providers
@@ -1118,6 +1213,14 @@ impl ProviderFactory for DeepInfraProviderFactory {
             return Err(AppError::Config("api_key is required".to_string()));
         }
         Ok(())
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://deepinfra.com/docs")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://deepinfra.com/dash/api_keys")
     }
 }
 
@@ -1186,6 +1289,14 @@ impl ProviderFactory for CerebrasProviderFactory {
         }
         Ok(())
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://inference-docs.cerebras.ai")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://cloud.cerebras.ai/platform/apikeys")
+    }
 }
 
 /// Factory for xAI providers
@@ -1249,6 +1360,14 @@ impl ProviderFactory for XAIProviderFactory {
             return Err(AppError::Config("api_key is required".to_string()));
         }
         Ok(())
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.x.ai")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://console.x.ai")
     }
 }
 
@@ -1332,6 +1451,10 @@ impl ProviderFactory for LMStudioProviderFactory {
 
     fn model_list_source(&self) -> ModelListSource {
         ModelListSource::ApiOnly // Local models, catalog irrelevant
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://lmstudio.ai/docs")
     }
 }
 
@@ -1433,6 +1556,10 @@ impl ProviderFactory for JanProviderFactory {
     fn model_list_source(&self) -> ModelListSource {
         ModelListSource::ApiOnly
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://jan.ai/docs")
+    }
 }
 
 #[async_trait]
@@ -1532,6 +1659,10 @@ impl ProviderFactory for GPT4AllProviderFactory {
 
     fn model_list_source(&self) -> ModelListSource {
         ModelListSource::ApiOnly
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.gpt4all.io")
     }
 }
 
@@ -1633,6 +1764,10 @@ impl ProviderFactory for LocalAIProviderFactory {
     fn model_list_source(&self) -> ModelListSource {
         ModelListSource::ApiOnly
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://localai.io/docs/")
+    }
 }
 
 #[async_trait]
@@ -1733,6 +1868,10 @@ impl ProviderFactory for LlamaCppProviderFactory {
     fn model_list_source(&self) -> ModelListSource {
         ModelListSource::ApiOnly
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://github.com/ggml-org/llama.cpp")
+    }
 }
 
 #[async_trait]
@@ -1828,6 +1967,14 @@ impl ProviderFactory for GitHubModelsProviderFactory {
     fn catalog_provider_id(&self) -> Option<&str> {
         Some("github-models") // models.dev uses "github-models" not "github_models"
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.github.com/en/github-models")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://github.com/settings/tokens")
+    }
 }
 
 /// Factory for NVIDIA NIM providers
@@ -1902,6 +2049,14 @@ impl ProviderFactory for NvidiaNimProviderFactory {
 
     fn catalog_provider_id(&self) -> Option<&str> {
         Some("nvidia") // models.dev uses "nvidia" not "nvidia_nim"
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.nvidia.com/nim/")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://build.nvidia.com")
     }
 }
 
@@ -2001,6 +2156,14 @@ impl ProviderFactory for CloudflareAIProviderFactory {
     fn catalog_provider_id(&self) -> Option<&str> {
         Some("cloudflare-workers-ai") // models.dev uses "cloudflare-workers-ai"
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://developers.cloudflare.com/workers-ai/")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://dash.cloudflare.com/profile/api-tokens")
+    }
 }
 
 /// Factory for LLM7.io providers
@@ -2070,6 +2233,14 @@ impl ProviderFactory for Llm7ProviderFactory {
 
     fn catalog_provider_id(&self) -> Option<&str> {
         None
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://llm7.io")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://token.llm7.io")
     }
 }
 
@@ -2146,6 +2317,14 @@ impl ProviderFactory for KlusterAIProviderFactory {
     fn catalog_provider_id(&self) -> Option<&str> {
         None
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.kluster.ai")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://platform.kluster.ai/apikeys")
+    }
 }
 
 /// Factory for Hugging Face Inference providers
@@ -2217,6 +2396,14 @@ impl ProviderFactory for HuggingFaceProviderFactory {
 
     fn catalog_provider_id(&self) -> Option<&str> {
         Some("huggingface")
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://huggingface.co/docs")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://huggingface.co/settings/tokens")
     }
 }
 
@@ -2292,6 +2479,14 @@ impl ProviderFactory for ZhipuProviderFactory {
 
     fn catalog_provider_id(&self) -> Option<&str> {
         None
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.bigmodel.cn")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://bigmodel.cn/usercenter/apikeys")
     }
 }
 
@@ -2371,6 +2566,14 @@ impl ProviderFactory for DigitalOceanProviderFactory {
     fn catalog_provider_id(&self) -> Option<&str> {
         Some("digitalocean")
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.digitalocean.com/products/gradient/")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://cloud.digitalocean.com/gen-ai/model-access-keys")
+    }
 }
 
 // ==================== SUBSCRIPTION PROVIDER FACTORIES ====================
@@ -2441,6 +2644,10 @@ impl ProviderFactory for GitHubCopilotProviderFactory {
         // OAuth validation is handled by the OAuth flow
         Ok(())
     }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.github.com/copilot")
+    }
 }
 
 /// Factory for OpenAI ChatGPT Plus (OAuth subscription)
@@ -2490,6 +2697,10 @@ impl ProviderFactory for OpenAICodexProviderFactory {
     fn validate_config(&self, _config: &HashMap<String, String>) -> AppResult<()> {
         // OAuth validation is handled by the OAuth flow
         Ok(())
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://chatgpt.com")
     }
 }
 
@@ -3246,6 +3457,112 @@ mod tests {
                 "{} should use default model list source",
                 factory.provider_type()
             );
+        }
+    }
+
+    // --- Help links (docs / API key) ---
+
+    /// Every factory the app registers, for invariants that must hold across
+    /// all of them. Keep in sync with the `register_factory` calls in
+    /// `src-tauri/src/main.rs`.
+    fn all_factories() -> Vec<Box<dyn ProviderFactory>> {
+        vec![
+            Box::new(OllamaProviderFactory),
+            Box::new(OpenAIProviderFactory),
+            Box::new(AnthropicProviderFactory),
+            Box::new(GeminiProviderFactory),
+            Box::new(OpenRouterProviderFactory),
+            Box::new(OpenAICompatibleProviderFactory),
+            Box::new(GroqProviderFactory),
+            Box::new(MistralProviderFactory),
+            Box::new(CohereProviderFactory),
+            Box::new(TogetherAIProviderFactory),
+            Box::new(PerplexityProviderFactory),
+            Box::new(DeepInfraProviderFactory),
+            Box::new(CerebrasProviderFactory),
+            Box::new(XAIProviderFactory),
+            Box::new(LMStudioProviderFactory),
+            Box::new(JanProviderFactory),
+            Box::new(GPT4AllProviderFactory),
+            Box::new(LocalAIProviderFactory),
+            Box::new(LlamaCppProviderFactory),
+            Box::new(GitHubModelsProviderFactory),
+            Box::new(NvidiaNimProviderFactory),
+            Box::new(CloudflareAIProviderFactory),
+            Box::new(Llm7ProviderFactory),
+            Box::new(KlusterAIProviderFactory),
+            Box::new(HuggingFaceProviderFactory),
+            Box::new(ZhipuProviderFactory),
+            Box::new(DigitalOceanProviderFactory),
+            Box::new(GitHubCopilotProviderFactory),
+            Box::new(OpenAICodexProviderFactory),
+        ]
+    }
+
+    #[test]
+    fn every_provider_links_to_its_docs() {
+        for factory in all_factories() {
+            // The generic OpenAI-compatible entry describes no specific
+            // service, so it has nothing to link to.
+            if factory.provider_type() == "openai_compatible" {
+                assert!(factory.docs_url().is_none());
+                continue;
+            }
+            assert!(
+                factory.docs_url().is_some(),
+                "{} has no docs_url",
+                factory.provider_type()
+            );
+        }
+    }
+
+    #[test]
+    fn providers_that_need_a_key_say_where_to_get_one() {
+        for factory in all_factories() {
+            let needs_key = factory
+                .setup_parameters()
+                .iter()
+                .any(|p| p.required && p.param_type == ParameterType::ApiKey);
+            if needs_key {
+                assert!(
+                    factory.api_key_url().is_some(),
+                    "{} requires an api_key but does not say where to get one",
+                    factory.provider_type()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn help_links_are_https_urls() {
+        for factory in all_factories() {
+            for (label, url) in [
+                ("docs_url", factory.docs_url()),
+                ("api_key_url", factory.api_key_url()),
+            ] {
+                if let Some(url) = url {
+                    assert!(
+                        url.starts_with("https://"),
+                        "{} {label} is not https: {url}",
+                        factory.provider_type()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn local_providers_do_not_ask_for_a_key_page() {
+        // Local runtimes need no credentials; offering a "get your API key"
+        // link would be actively misleading.
+        for factory in all_factories() {
+            if factory.category() == ProviderCategory::Local {
+                assert!(
+                    factory.api_key_url().is_none(),
+                    "{} is local but links to an API key page",
+                    factory.provider_type()
+                );
+            }
         }
     }
 }

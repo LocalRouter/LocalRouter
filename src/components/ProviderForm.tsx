@@ -29,6 +29,8 @@ export interface ProviderType {
   setup_parameters: SetupParameter[]
   free_tier_short_text?: string
   free_tier_long_text?: string
+  docs_url?: string | null
+  api_key_url?: string | null
 }
 
 interface OAuthFlowResult {
@@ -496,6 +498,12 @@ export default function ProviderForm({
           )
         }
 
+        // Point at the provider's key page from the field that needs it —
+        // the moment the user is actually stuck.
+        const keyUrl = providerType.api_key_url
+        const showKeyHelp =
+          param.param_type === 'api_key' && !!keyUrl && isValidHttpUrl(keyUrl)
+
         // Render text/password/number fields with optional visibility toggle
         return (
           <div key={param.key} className="relative">
@@ -519,6 +527,15 @@ export default function ProviderForm({
                 ) : (
                   <EyeIcon className="h-5 w-5" />
                 )}
+              </button>
+            )}
+            {showKeyHelp && (
+              <button
+                type="button"
+                onClick={() => open(keyUrl!)}
+                className="mt-1.5 text-xs text-blue-600 dark:text-blue-400 hover:underline focus:outline-none"
+              >
+                Where do I find my {providerType.display_name} API key?
               </button>
             )}
           </div>

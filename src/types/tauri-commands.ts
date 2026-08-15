@@ -443,6 +443,10 @@ export interface ProviderTypeInfo {
   free_tier_short_text: string
   free_tier_long_text: string
   free_tier_notes: string | null
+  /** Official docs/homepage; null when the provider has no meaningful page */
+  docs_url?: string | null
+  /** Page where the user creates or copies their API key */
+  api_key_url?: string | null
 }
 
 /**

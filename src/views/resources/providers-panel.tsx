@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-shell"
+import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
 import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink } from "lucide-react"
@@ -1833,6 +1834,16 @@ export function ProvidersPanel({
                     <div>
                       <p className="text-sm font-medium">{selectedTypeForCreate.display_name}</p>
                       <p className="text-xs text-muted-foreground">{selectedTypeForCreate.description}</p>
+                      {selectedTypeForCreate.docs_url && isValidHttpUrl(selectedTypeForCreate.docs_url) && (
+                        <button
+                          type="button"
+                          onClick={() => open(selectedTypeForCreate.docs_url!)}
+                          className="mt-0.5 inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline focus:outline-none"
+                        >
+                          Official documentation
+                          <ExternalLink className="h-3 w-3" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}

@@ -272,6 +272,12 @@ pub struct ProviderTypeInfo {
     pub free_tier_long_text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_tier_notes: Option<String>,
+    /// Official documentation / homepage for this provider
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs_url: Option<String>,
+    /// Page where the user creates or copies their API key
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_url: Option<String>,
 }
 
 /// Information about a provider instance (for listing)
@@ -365,6 +371,8 @@ impl ProviderRegistry {
                     free_tier_short_text: short_text,
                     free_tier_long_text: long_text,
                     free_tier_notes: notes,
+                    docs_url: factory.docs_url().map(|s| s.to_string()),
+                    api_key_url: factory.api_key_url().map(|s| s.to_string()),
                 }
             })
             .collect()
