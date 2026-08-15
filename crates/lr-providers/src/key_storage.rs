@@ -32,6 +32,15 @@ fn get_keychain() -> &'static CachedKeychain {
     })
 }
 
+/// Keyring account name holding a provider instance's custom HTTP headers.
+///
+/// Custom headers routinely carry credentials (an Azure-style `api-key:`, a
+/// gateway token), so their values are kept in the keyring next to the API
+/// key instead of the plaintext config file.
+pub fn custom_headers_account(provider_name: &str) -> String {
+    format!("{}:custom_headers", provider_name)
+}
+
 /// Store a provider API key in the system keyring
 ///
 /// # Arguments

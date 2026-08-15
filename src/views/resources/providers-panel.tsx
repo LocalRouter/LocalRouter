@@ -20,6 +20,7 @@ import { Switch } from "@/components/ui/Toggle"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { Input } from "@/components/ui/Input"
+import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Select,
@@ -913,12 +914,37 @@ export function ProvidersPanel({
                                       )
                                     }
 
+                                    const label = `${param.description}${param.required ? "" : " (Optional)"}`
+
+                                    if (param.param_type === "headers") {
+                                      return (
+                                        <div key={param.key}>
+                                          <label className="block text-sm font-medium mb-2">{label}</label>
+                                          {/* Saved on blur, not per keystroke: a
+                                              half-typed line ("X-Api-Vers") is
+                                              rejected by the backend parser, so
+                                              debounced saves would error while
+                                              the user is still typing. */}
+                                          <Textarea
+                                            placeholder={"X-Api-Version: 2024-01-01\nX-Tenant-Id: acme"}
+                                            value={editConfig[param.key] || ""}
+                                            onChange={(e) => setEditConfig({ ...editConfig, [param.key]: e.target.value })}
+                                            onBlur={(e) => handleConfigFieldChange(param.key, e.target.value)}
+                                            rows={3}
+                                            className="font-mono text-xs"
+                                          />
+                                          <p className="text-xs text-muted-foreground mt-1">
+                                            One header per line, in "Name: Value" format
+                                          </p>
+                                        </div>
+                                      )
+                                    }
+
                                     const fieldType = isSensitive && !isVisible
                                       ? "password"
                                       : param.param_type === "number"
                                       ? "number"
                                       : "text"
-                                    const label = `${param.description}${param.required ? "" : " (Optional)"}`
 
                                     return (
                                       <div key={param.key}>

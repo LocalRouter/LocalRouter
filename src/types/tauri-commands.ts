@@ -447,16 +447,24 @@ export interface ProviderTypeInfo {
 
 /**
  * Setup parameter for provider configuration.
- * Rust: crates/lr-providers/src/registry.rs - SetupParameter struct
+ * Rust: crates/lr-providers/src/factory.rs - SetupParameter struct
  */
 export interface SetupParameter {
-  name: string
-  label: string
-  param_type: 'string' | 'password' | 'boolean' | 'number'
+  key: string
+  param_type:
+    | 'api_key'
+    | 'base_url'
+    | 'organization'
+    | 'model'
+    | 'string'
+    | 'number'
+    | 'boolean'
+    | 'headers'
+    | 'oauth'
   required: boolean
+  description: string
   default_value?: string | null
-  placeholder?: string | null
-  help_text?: string | null
+  sensitive: boolean
 }
 
 /**

@@ -486,6 +486,21 @@ export const mockData = {
       free_tier_long_text: "Free access within rate limits. Router auto-skips when exhausted.\n\nFree tier limits are undocumented. Supports GLM-4.7-Flash, GLM-4.5-Flash, GLM-4.6V-Flash. Chinese-language focused provider.",
       free_tier_notes: "Free tier limits are undocumented. Supports GLM-4.7-Flash, GLM-4.5-Flash, GLM-4.6V-Flash. Chinese-language focused provider.",
     },
+    {
+      provider_type: "openai_compatible",
+      display_name: "OpenAI Compatible",
+      category: "generic",
+      description: "Generic OpenAI-compatible API (LocalAI, LM Studio, vLLM, etc.)",
+      setup_parameters: [
+        { key: "base_url", param_type: "base_url", required: true, description: "API base URL (e.g., http://localhost:8080/v1)", sensitive: false },
+        { key: "api_key", param_type: "api_key", required: false, description: "API key (optional, not all services require one)", sensitive: true },
+        { key: "custom_headers", param_type: "headers", required: false, description: "Custom HTTP headers sent with every request, one per line (e.g. X-Api-Version: 2024-01-01)", sensitive: false },
+      ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Depends on the upstream service. Local services run entirely on your machine.",
+      free_tier_notes: null,
+    },
   ],
 
   mcpServers: [

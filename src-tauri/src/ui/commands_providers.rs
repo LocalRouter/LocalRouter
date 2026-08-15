@@ -91,6 +91,92 @@ pub async fn list_providers_with_key_status(
     Ok(result)
 }
 
+/// Config keys never written to the config file — their values live in the
+/// system keyring instead (see `persist_secret_config_values`).
+const KEYCHAIN_ONLY_CONFIG_KEYS: [&str; 2] = ["api_key", "custom_headers"];
+
+/// Move the secret-bearing config values of a provider instance into the
+/// keyring, and return the config to persist on disk (secrets stripped).
+fn persist_secret_config_values(
+    instance_name: &str,
+    config: HashMap<String, String>,
+) -> Result<HashMap<String, String>, String> {
+    // API key: written only when supplied; an omitted/blank key leaves the
+    // stored one untouched.
+    if let Some(api_key) = config.get("api_key") {
+        if !api_key.is_empty() {
+            lr_providers::key_storage::store_provider_key(instance_name, api_key)
+                .map_err(|e| format!("Failed to store API key in keychain: {}", e))?;
+        }
+    }
+
+    // Custom headers routinely carry credentials, so they follow the API key
+    // into the keyring. Clearing the field clears the stored value.
+    let headers_account = lr_providers::key_storage::custom_headers_account(instance_name);
+    match config.get("custom_headers") {
+        Some(headers) if !headers.trim().is_empty() => {
+            lr_providers::key_storage::store_provider_key(&headers_account, headers)
+                .map_err(|e| format!("Failed to store custom headers in keychain: {}", e))?;
+        }
+        Some(_) => {
+            if let Err(e) = lr_providers::key_storage::delete_provider_key(&headers_account) {
+                tracing::warn!(
+                    "Failed to clear custom headers for provider '{}': {}",
+                    instance_name,
+                    e
+                );
+            }
+        }
+        None => {}
+    }
+
+    Ok(config
+        .into_iter()
+        .filter(|(k, _)| !KEYCHAIN_ONLY_CONFIG_KEYS.contains(&k.as_str()))
+        .collect())
+}
+
+/// Move a keyring entry from one account name to another (used on rename)
+fn migrate_secret(from: &str, to: &str, label: &str) {
+    match lr_providers::key_storage::get_provider_key(from) {
+        Ok(Some(value)) => {
+            if let Err(e) = lr_providers::key_storage::store_provider_key(to, &value) {
+                tracing::warn!("Failed to store {} under new name '{}': {}", label, to, e);
+            } else if let Err(e) = lr_providers::key_storage::delete_provider_key(from) {
+                tracing::warn!("Failed to delete old {} for '{}': {}", label, from, e);
+            }
+        }
+        Ok(None) => {} // Nothing stored (e.g. a local provider without a key)
+        Err(e) => {
+            tracing::warn!(
+                "Failed to read {} for '{}' during rename: {}",
+                label,
+                from,
+                e
+            );
+        }
+    }
+}
+
+/// Remove every keyring entry belonging to a provider instance
+fn delete_provider_secrets(instance_name: &str) {
+    if let Err(e) = lr_providers::key_storage::delete_provider_key(instance_name) {
+        tracing::warn!(
+            "Failed to delete API key for provider '{}': {}",
+            instance_name,
+            e
+        );
+    }
+    let headers_account = lr_providers::key_storage::custom_headers_account(instance_name);
+    if let Err(e) = lr_providers::key_storage::delete_provider_key(&headers_account) {
+        tracing::warn!(
+            "Failed to delete custom headers for provider '{}': {}",
+            instance_name,
+            e
+        );
+    }
+}
+
 /// Provider key status information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderKeyStatus {
@@ -152,17 +238,9 @@ pub async fn create_provider_instance(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Extract api_key and store in keychain (not in config file)
-    if let Some(api_key) = config.get("api_key") {
-        if !api_key.is_empty() {
-            lr_providers::key_storage::store_provider_key(&instance_name, api_key)
-                .map_err(|e| format!("Failed to store API key in keychain: {}", e))?;
-        }
-    }
-
-    // Build config for disk persistence WITHOUT api_key
-    let config_for_disk: HashMap<String, String> =
-        config.into_iter().filter(|(k, _)| k != "api_key").collect();
+    // Move secrets (api_key, custom_headers) into the keychain; the rest is
+    // what gets written to the config file.
+    let config_for_disk = persist_secret_config_values(&instance_name, config)?;
 
     // Save to config file for persistence
     config_manager
@@ -241,19 +319,11 @@ pub async fn update_provider_instance(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Update api_key in keychain
-    if let Some(api_key) = config.get("api_key") {
-        if !api_key.is_empty() {
-            lr_providers::key_storage::store_provider_key(&instance_name, api_key)
-                .map_err(|e| format!("Failed to store API key in keychain: {}", e))?;
-        }
-    }
+    // Move secrets (api_key, custom_headers) into the keychain; the rest is
+    // what gets written to the config file.
+    let config_for_disk = persist_secret_config_values(&instance_name, config)?;
 
-    // Build config for disk persistence WITHOUT api_key
-    let config_for_disk: HashMap<String, String> =
-        config.into_iter().filter(|(k, _)| k != "api_key").collect();
-
-    // Update in config file (without api_key)
+    // Update in config file (without secrets)
     config_manager
         .update(|cfg| {
             if let Some(provider) = cfg.providers.iter_mut().find(|p| p.name == instance_name) {
@@ -337,32 +407,13 @@ pub async fn rename_provider_instance(
         let _ = registry.set_provider_enabled(&new_name, false);
     }
 
-    // Migrate keychain entry from old name to new name
-    match lr_providers::key_storage::get_provider_key(&instance_name) {
-        Ok(Some(api_key)) => {
-            if let Err(e) = lr_providers::key_storage::store_provider_key(&new_name, &api_key) {
-                tracing::warn!(
-                    "Failed to store API key under new name '{}': {}",
-                    new_name,
-                    e
-                );
-            } else if let Err(e) = lr_providers::key_storage::delete_provider_key(&instance_name) {
-                tracing::warn!(
-                    "Failed to delete old API key for '{}': {}",
-                    instance_name,
-                    e
-                );
-            }
-        }
-        Ok(None) => {} // No key to migrate (e.g., local provider)
-        Err(e) => {
-            tracing::warn!(
-                "Failed to check API key for '{}' during rename: {}",
-                instance_name,
-                e
-            );
-        }
-    }
+    // Migrate keychain entries from old name to new name
+    migrate_secret(&instance_name, &new_name, "API key");
+    migrate_secret(
+        &lr_providers::key_storage::custom_headers_account(&instance_name),
+        &lr_providers::key_storage::custom_headers_account(&new_name),
+        "custom headers",
+    );
 
     // Update config file
     config_manager
@@ -485,14 +536,8 @@ pub async fn remove_provider_instance(
         .remove_provider(&instance_name)
         .map_err(|e| e.to_string())?;
 
-    // Clean up keychain entry (best-effort)
-    if let Err(e) = lr_providers::key_storage::delete_provider_key(&instance_name) {
-        tracing::warn!(
-            "Failed to delete API key for provider '{}' from keychain: {}",
-            instance_name,
-            e
-        );
-    }
+    // Clean up keychain entries (best-effort)
+    delete_provider_secrets(&instance_name);
 
     // Remove from config file
     config_manager
@@ -582,6 +627,16 @@ pub async fn clone_provider_instance(
         config_map.insert("api_key".to_string(), key.clone());
     }
 
+    // Custom headers live in the keychain too, so carry them over
+    let custom_headers = lr_providers::key_storage::get_provider_key(
+        &lr_providers::key_storage::custom_headers_account(&source.name),
+    )
+    .ok()
+    .flatten();
+    if let Some(ref headers) = custom_headers {
+        config_map.insert("custom_headers".to_string(), headers.clone());
+    }
+
     // Create provider in registry (in-memory)
     registry
         .create_provider(clone_name.clone(), provider_type_str, config_map)
@@ -592,6 +647,15 @@ pub async fn clone_provider_instance(
     if let Some(ref key) = api_key {
         lr_providers::key_storage::store_provider_key(&clone_name, key)
             .map_err(|e| format!("Failed to store API key for clone: {}", e))?;
+    }
+
+    // Store custom headers in keychain under new name
+    if let Some(ref headers) = custom_headers {
+        lr_providers::key_storage::store_provider_key(
+            &lr_providers::key_storage::custom_headers_account(&clone_name),
+            headers,
+        )
+        .map_err(|e| format!("Failed to store custom headers for clone: {}", e))?;
     }
 
     // Save to config file

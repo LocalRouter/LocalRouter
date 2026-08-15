@@ -433,6 +433,25 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             }
         }
 
+        // Inject custom headers from keychain (they may carry credentials, so
+        // they are never written to the config file)
+        if !config_map.contains_key("custom_headers") {
+            let account = lr_providers::key_storage::custom_headers_account(&provider_config.name);
+            match lr_providers::key_storage::get_provider_key(&account) {
+                Ok(Some(headers)) => {
+                    config_map.insert("custom_headers".to_string(), headers);
+                }
+                Ok(None) => {} // No custom headers configured
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to retrieve custom headers for provider '{}' from keychain: {}",
+                        provider_config.name,
+                        e
+                    );
+                }
+            }
+        }
+
         // Create the provider instance
         if let Err(e) = provider_registry
             .create_provider(

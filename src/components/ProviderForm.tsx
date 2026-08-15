@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-shell'
 import { isValidHttpUrl } from '@/utils/url'
 import Button from './ui/Button'
 import Input from './ui/Input'
+import { Textarea } from './ui/textarea'
 import { EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline'
 import type { OAuthCredentialView } from '@/types/tauri-commands'
 import { errorMessage } from '@/utils/errors'
@@ -457,6 +458,25 @@ export default function ProviderForm({
           : 'text'
 
         const label = `${param.description}${param.required ? ' *' : ' (Optional)'}`
+
+        // Multi-line HTTP header list ("Name: Value" per line)
+        if (param.param_type === 'headers') {
+          return (
+            <div key={param.key} className="space-y-2">
+              <label className="text-sm font-medium leading-none">{label}</label>
+              <Textarea
+                placeholder={'X-Api-Version: 2024-01-01\nX-Tenant-Id: acme'}
+                value={config[param.key] || ''}
+                onChange={(e) => handleConfigChange(param.key, e.target.value)}
+                rows={3}
+                className="font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                One header per line, in "Name: Value" format
+              </p>
+            </div>
+          )
+        }
 
         // Handle boolean/checkbox parameters differently
         if (param.param_type === 'boolean') {

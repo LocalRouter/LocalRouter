@@ -216,6 +216,8 @@ pub enum ParameterType {
     Number,
     /// Boolean parameter
     Boolean,
+    /// Multi-line HTTP header list ("Name: Value" per line)
+    Headers,
     /// OAuth authentication (triggers OAuth flow in UI)
     #[serde(rename = "oauth")]
     OAuth,
@@ -639,6 +641,13 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
                 None::<String>,
                 true,
             ),
+            SetupParameter::optional(
+                "custom_headers",
+                ParameterType::Headers,
+                "Custom HTTP headers sent with every request, one per line (e.g. X-Api-Version: 2024-01-01)",
+                None::<String>,
+                false,
+            ),
         ]
     }
 
@@ -656,11 +665,15 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
 
         let api_key = config.get("api_key").cloned();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            instance_name,
-            base_url,
-            api_key,
-        )))
+        let extra_headers = match config.get("custom_headers") {
+            Some(raw) => crate::openai_compatible::parse_custom_headers(raw)?,
+            None => Default::default(),
+        };
+
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(instance_name, base_url, api_key)
+                .with_extra_headers(extra_headers),
+        ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -675,6 +688,11 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
                     "base_url must start with http:// or https://".to_string(),
                 ));
             }
+        }
+
+        // Validate custom headers parse cleanly
+        if let Some(raw) = config.get("custom_headers") {
+            crate::openai_compatible::parse_custom_headers(raw)?;
         }
 
         Ok(())
@@ -2561,6 +2579,67 @@ mod tests {
 
         let json = serde_json::to_string(&ParameterType::BaseUrl).unwrap();
         assert_eq!(json, "\"base_url\"");
+
+        let json = serde_json::to_string(&ParameterType::Headers).unwrap();
+        assert_eq!(json, "\"headers\"");
+    }
+
+    // ==================== OpenAI-compatible custom headers tests ====================
+
+    #[test]
+    fn test_openai_compatible_exposes_custom_headers_param() {
+        let factory = OpenAICompatibleProviderFactory;
+        let param = factory
+            .setup_parameters()
+            .into_iter()
+            .find(|p| p.key == "custom_headers")
+            .expect("custom_headers setup parameter missing");
+        assert_eq!(param.param_type, ParameterType::Headers);
+        assert!(!param.required);
+        assert!(!param.sensitive);
+    }
+
+    #[test]
+    fn test_openai_compatible_create_with_custom_headers() {
+        let factory = OpenAICompatibleProviderFactory;
+        let mut config = HashMap::new();
+        config.insert(
+            "base_url".to_string(),
+            "http://localhost:8080/v1".to_string(),
+        );
+        config.insert(
+            "custom_headers".to_string(),
+            "X-Api-Version: 2024-01-01\nX-Tenant: acme".to_string(),
+        );
+        let provider = factory.create("custom".to_string(), config).unwrap();
+        assert_eq!(provider.name(), "custom");
+    }
+
+    #[test]
+    fn test_openai_compatible_create_rejects_invalid_custom_headers() {
+        let factory = OpenAICompatibleProviderFactory;
+        let mut config = HashMap::new();
+        config.insert(
+            "base_url".to_string(),
+            "http://localhost:8080/v1".to_string(),
+        );
+        config.insert("custom_headers".to_string(), "no-colon-here".to_string());
+        assert!(factory
+            .create("custom".to_string(), config.clone())
+            .is_err());
+        assert!(factory.validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_openai_compatible_validate_accepts_empty_custom_headers() {
+        let factory = OpenAICompatibleProviderFactory;
+        let mut config = HashMap::new();
+        config.insert(
+            "base_url".to_string(),
+            "http://localhost:8080/v1".to_string(),
+        );
+        config.insert("custom_headers".to_string(), String::new());
+        assert!(factory.validate_config(&config).is_ok());
     }
 
     // ==================== Updated defaults tests ====================

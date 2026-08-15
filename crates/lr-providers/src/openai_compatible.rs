@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
 use lr_types::{AppError, AppResult};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
@@ -22,7 +23,38 @@ pub struct OpenAICompatibleProvider {
     name: String,
     api_key: Option<String>,
     base_url: String,
+    extra_headers: HeaderMap,
     client: Client,
+}
+
+/// Parse a `custom_headers` config value into a header map.
+///
+/// Format: one header per line, `Name: Value`. Empty lines are skipped.
+/// Names and values are validated against HTTP header syntax so a typo
+/// fails at provider creation instead of on every request. Repeating a
+/// name emits the header multiple times, as HTTP allows.
+pub fn parse_custom_headers(raw: &str) -> AppResult<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) = line.split_once(':').ok_or_else(|| {
+            AppError::Config(format!(
+                "Invalid custom header '{}': expected 'Name: Value' format",
+                line
+            ))
+        })?;
+        let name = name.trim();
+        let value = value.trim();
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|e| AppError::Config(format!("Invalid header name '{}': {}", name, e)))?;
+        let value = HeaderValue::from_str(value)
+            .map_err(|e| AppError::Config(format!("Invalid value for header '{}': {}", name, e)))?;
+        headers.append(name, value);
+    }
+    Ok(headers)
 }
 
 impl OpenAICompatibleProvider {
@@ -37,13 +69,35 @@ impl OpenAICompatibleProvider {
             name,
             api_key,
             base_url: base_url.trim_end_matches('/').to_string(),
+            extra_headers: HeaderMap::new(),
             client: crate::http_client::default_client(),
         }
+    }
+
+    /// Attach custom HTTP headers sent with every request to this provider
+    pub fn with_extra_headers(mut self, headers: HeaderMap) -> Self {
+        self.extra_headers = headers;
+        self
     }
 
     /// Build authorization header if API key is present
     fn auth_header(&self) -> Option<String> {
         self.api_key.as_ref().map(|key| format!("Bearer {}", key))
+    }
+
+    /// Apply auth + custom headers to an outgoing request.
+    ///
+    /// Custom headers are applied last and `RequestBuilder::headers` replaces
+    /// same-named entries, so a user-supplied `Authorization` (or
+    /// `Content-Type`) wins over the default instead of being sent twice.
+    fn apply_headers(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(auth) = self.auth_header() {
+            request = request.header("Authorization", auth);
+        }
+        if !self.extra_headers.is_empty() {
+            request = request.headers(self.extra_headers.clone());
+        }
+        request
     }
 }
 
@@ -224,11 +278,7 @@ impl ModelProvider for OpenAICompatibleProvider {
         let start = Instant::now();
 
         // Use /models endpoint for health check
-        let mut request = self.client.get(format!("{}/models", self.base_url));
-
-        if let Some(auth) = self.auth_header() {
-            request = request.header("Authorization", auth);
-        }
+        let request = self.apply_headers(self.client.get(format!("{}/models", self.base_url)));
 
         let result = request.send().await;
 
@@ -277,11 +327,7 @@ impl ModelProvider for OpenAICompatibleProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let mut request = self.client.get(format!("{}/models", self.base_url));
-
-        if let Some(auth) = self.auth_header() {
-            request = request.header("Authorization", auth);
-        }
+        let request = self.apply_headers(self.client.get(format!("{}/models", self.base_url)));
 
         let response = request
             .send()
@@ -353,15 +399,12 @@ impl ModelProvider for OpenAICompatibleProvider {
             reasoning_effort: request.reasoning_effort,
         };
 
-        let mut req = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Content-Type", "application/json")
-            .json(&openai_request);
-
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
+        let req = self.apply_headers(
+            self.client
+                .post(format!("{}/chat/completions", self.base_url))
+                .header("Content-Type", "application/json")
+                .json(&openai_request),
+        );
 
         let response = req
             .send()
@@ -449,15 +492,12 @@ impl ModelProvider for OpenAICompatibleProvider {
             reasoning_effort: request.reasoning_effort,
         };
 
-        let mut req = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Content-Type", "application/json")
-            .json(&openai_request);
-
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
+        let req = self.apply_headers(
+            self.client
+                .post(format!("{}/chat/completions", self.base_url))
+                .header("Content-Type", "application/json")
+                .json(&openai_request),
+        );
 
         let response = req
             .send()
@@ -616,15 +656,12 @@ impl ModelProvider for OpenAICompatibleProvider {
             user: request.user,
         };
 
-        let mut http_request = self
-            .client
-            .post(format!("{}/embeddings", self.base_url))
-            .header("Content-Type", "application/json")
-            .json(&openai_request);
-
-        if let Some(auth) = self.auth_header() {
-            http_request = http_request.header("Authorization", auth);
-        }
+        let http_request = self.apply_headers(
+            self.client
+                .post(format!("{}/embeddings", self.base_url))
+                .header("Content-Type", "application/json")
+                .json(&openai_request),
+        );
 
         let response = http_request
             .send()
@@ -774,5 +811,122 @@ mod tests {
     fn test_parse_models_invalid_json_fails() {
         let body = "not json";
         assert!(parse_models_response(body).is_err());
+    }
+
+    #[test]
+    fn test_parse_custom_headers_valid() {
+        let raw = "X-Api-Version: 2024-01-01\nX-Tenant-Id: acme";
+        let headers = parse_custom_headers(raw).unwrap();
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers.get("x-api-version").unwrap(), "2024-01-01");
+        assert_eq!(headers.get("X-Tenant-Id").unwrap(), "acme");
+    }
+
+    #[test]
+    fn test_parse_custom_headers_skips_empty_lines_and_trims() {
+        let raw = "\n  X-Foo :  bar baz  \n\n";
+        let headers = parse_custom_headers(raw).unwrap();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers.get("x-foo").unwrap(), "bar baz");
+    }
+
+    #[test]
+    fn test_parse_custom_headers_value_may_contain_colons() {
+        let raw = "X-Endpoint: https://example.com:8443/path";
+        let headers = parse_custom_headers(raw).unwrap();
+        assert_eq!(
+            headers.get("x-endpoint").unwrap(),
+            "https://example.com:8443/path"
+        );
+    }
+
+    #[test]
+    fn test_parse_custom_headers_repeated_name_kept() {
+        let raw = "X-Multi: one\nX-Multi: two";
+        let headers = parse_custom_headers(raw).unwrap();
+        let values: Vec<_> = headers.get_all("x-multi").iter().collect();
+        assert_eq!(values, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn test_parse_custom_headers_empty_input() {
+        assert!(parse_custom_headers("").unwrap().is_empty());
+        assert!(parse_custom_headers("  \n \n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_custom_headers_missing_colon_fails() {
+        let err = parse_custom_headers("NotAHeader").unwrap_err();
+        assert!(err.to_string().contains("expected 'Name: Value'"));
+    }
+
+    #[test]
+    fn test_parse_custom_headers_invalid_name_fails() {
+        assert!(parse_custom_headers("Bad Name: value").is_err());
+        // Empty name (line starting with ':')
+        assert!(parse_custom_headers(": value").is_err());
+    }
+
+    fn build_headers(provider: &OpenAICompatibleProvider) -> reqwest::header::HeaderMap {
+        provider
+            .apply_headers(provider.client.get("http://localhost:8080/v1/models"))
+            .build()
+            .unwrap()
+            .headers()
+            .clone()
+    }
+
+    #[test]
+    fn test_apply_headers_sends_custom_headers_and_auth() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            Some("test-key".to_string()),
+        )
+        .with_extra_headers(parse_custom_headers("X-Custom: abc").unwrap());
+
+        let headers = build_headers(&provider);
+        assert_eq!(headers.get("X-Custom").unwrap(), "abc");
+        assert_eq!(headers.get("Authorization").unwrap(), "Bearer test-key");
+    }
+
+    #[test]
+    fn test_apply_headers_custom_authorization_takes_precedence() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            Some("test-key".to_string()),
+        )
+        .with_extra_headers(parse_custom_headers("authorization: Custom scheme-token").unwrap());
+
+        let headers = build_headers(&provider);
+        let auth_values: Vec<_> = headers.get_all("authorization").iter().collect();
+        assert_eq!(auth_values.len(), 1);
+        assert_eq!(auth_values[0], "Custom scheme-token");
+    }
+
+    #[test]
+    fn test_apply_headers_repeated_custom_header_sent_twice() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            None,
+        )
+        .with_extra_headers(parse_custom_headers("X-Multi: one\nX-Multi: two").unwrap());
+
+        let headers = build_headers(&provider);
+        let values: Vec<_> = headers.get_all("x-multi").iter().collect();
+        assert_eq!(values, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn test_apply_headers_no_headers_no_key() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            None,
+        );
+        let headers = build_headers(&provider);
+        assert!(headers.get("Authorization").is_none());
     }
 }
