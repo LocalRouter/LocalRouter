@@ -2024,7 +2024,6 @@ impl CodingAgentType {
                 | CodingAgentType::Codex
                 | CodingAgentType::Aider
                 | CodingAgentType::Opencode
-                | CodingAgentType::Antigravity
         )
     }
 
@@ -5106,8 +5105,10 @@ sampling_permission: "off"
         assert_eq!(CodingAgentType::Antigravity.binary_name(), "agy");
         assert_eq!(CodingAgentType::Antigravity.display_name(), "Antigravity");
         assert_eq!(CodingAgentType::Antigravity.tool_prefix(), "antigravity");
-        // agy documents a --model flag in headless mode.
-        assert!(CodingAgentType::Antigravity.supports_model_selection());
+        // agy documents a --model flag, but we cannot pass it until there is
+        // an executor that speaks agy's flags, so the UI must not offer a
+        // model picker that would silently do nothing.
+        assert!(!CodingAgentType::Antigravity.supports_model_selection());
     }
 
     #[test]

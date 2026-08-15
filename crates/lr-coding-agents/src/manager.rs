@@ -1151,31 +1151,26 @@ fn build_executor(
             Ok(CodingAgent::Droid(executor))
         }
         CodingAgentType::Antigravity => {
-            // `agy` is not in the executors crate. Same approach as Aider
-            // below: the Amp executor is the plain stdin/stdout pipe, so it
-            // can drive any CLI that takes a prompt on stdin. ClaudeCode's
-            // executor would inject its own stream-json flags, which agy
-            // does not accept.
-            let mut additional = vec![
-                // Headless: run one prompt and exit instead of opening the TUI.
-                serde_json::Value::String("--print".into()),
-                serde_json::Value::String("--output-format".into()),
-                serde_json::Value::String("text".into()),
-            ];
-            if is_auto {
-                additional.push(serde_json::Value::String(
-                    "--dangerously-skip-permissions".into(),
-                ));
-            }
-            let mut json = serde_json::json!({
-                "base_command_override": "agy",
-                "additional_params": additional,
-            });
-            if let Some(ref model) = config.model {
-                json["model"] = serde_json::Value::String(model.clone());
-            }
-            let executor = deser_executor(json, "Antigravity")?;
-            Ok(CodingAgent::Amp(executor))
+            // Detection and listing work; driving a session does not yet.
+            //
+            // Every executor in the executors crate hard-codes the flags of
+            // the CLI it was written for, and `base_command_override` swaps
+            // only the base command, not those flags (see
+            // CommandBuilder::override_base). Borrowing the Amp executor the
+            // way the Aider arm below does would invoke
+            // `agy --execute --stream-json ...`, which agy rejects.
+            //
+            // Failing loudly here is better than spawning a process that
+            // cannot work: the user gets a message that explains itself
+            // instead of an opaque CLI usage error.
+            Err(CodingAgentError::SpawnFailed {
+                agent: "Antigravity".to_string(),
+                reason: "Antigravity (agy) is detected but running sessions \
+                         through it is not supported yet — it needs an \
+                         executor that speaks agy's own headless flags. \
+                         Use the agy CLI directly for now."
+                    .to_string(),
+            })
         }
         CodingAgentType::Aider => {
             // Aider is not in the executors crate — use Amp executor with base command override.
