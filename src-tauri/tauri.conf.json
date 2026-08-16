@@ -35,7 +35,15 @@
     },
     "linux": {
       "deb": {
-        "depends": []
+        "depends": [],
+        "files": {
+          "/usr/share/localrouter/install-source": "../packaging/linux/install-source-deb"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/localrouter/install-source": "../packaging/linux/install-source-rpm"
+        }
       }
     }
   },

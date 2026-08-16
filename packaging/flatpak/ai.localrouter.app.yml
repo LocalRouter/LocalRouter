@@ -1,0 +1,93 @@
+# Flatpak manifest for LocalRouter.
+#
+# Submitted to Flathub as a PR to flathub/flathub creating the
+# `ai.localrouter.app` repository. The app id matches the localrouter.ai
+# domain, which is what Flathub's ownership check requires.
+#
+# `__VERSION__` / `__SHA256_AMD64__` / `__SHA256_ARM64__` are substituted by
+# scripts/publish-packages.sh.
+#
+# NOTE: `runtime-version` must be a runtime that Flathub still supports at
+# submission time. Verify against https://docs.flatpak.org/en/latest/available-runtimes.html
+# and bump before opening the PR — an EOL runtime is an automatic rejection.
+app-id: ai.localrouter.app
+runtime: org.gnome.Platform
+runtime-version: '48'
+sdk: org.gnome.Sdk
+command: localrouter
+
+finish-args:
+  # Providers are remote HTTP APIs; the local gateway listens on localhost.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+
+  # LocalRouter lives in the system tray — without this the window can only be
+  # reached from the app grid. See tauri-apps/tauri#13599 for the Tauri-side
+  # bug this works around.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.secrets
+
+  # THE IMPORTANT ONE. LocalRouter's core job is proxying to MCP stdio servers
+  # (`npx`, `uvx`) and driving coding agents (`claude`, `aider`) that live on
+  # the host. `crates/lr-utils/src/sandbox.rs` rewrites every spawn to go
+  # through `flatpak-spawn --host`, which needs this name. Without it the MCP
+  # gateway and the coding-agent features are entirely non-functional.
+  #
+  # Flathub reviewers treat this as a sandbox hole and will ask about it. The
+  # answer is the VS Code / GNOME Builder precedent: a developer tool whose
+  # purpose is running the user's toolchain cannot be meaningfully confined.
+  - --talk-name=org.freedesktop.Flatpak
+
+  # Agent configs (~/.claude, ~/.aider.conf.yml) and the user's project
+  # directories, which agents are pointed at.
+  - --filesystem=home
+
+modules:
+  - name: localrouter
+    buildsystem: simple
+    build-commands:
+      # Unpack the released .deb rather than rebuilding: a Tauri build needs
+      # node plus a full npm install, which Flathub's offline builders cannot
+      # do without vendoring the entire npm tree.
+      - ar x localrouter.deb
+      - tar -xf data.tar.gz
+      - install -Dm755 usr/bin/localrouter /app/bin/localrouter
+      - install -Dm644 usr/share/applications/*.desktop
+        /app/share/applications/ai.localrouter.app.desktop
+      - |
+        for size in 32x32 128x128 256x256@2; do
+          src="usr/share/icons/hicolor/${size}/apps/localrouter.png"
+          if [ -f "$src" ]; then
+            install -Dm644 "$src" \
+              "/app/share/icons/hicolor/${size}/apps/ai.localrouter.app.png"
+          fi
+        done
+      - install -Dm644 ai.localrouter.app.metainfo.xml
+        /app/share/metainfo/ai.localrouter.app.metainfo.xml
+      # Marker read by crates/lr-utils/src/install_source.rs. Flatpak is also
+      # detected from /.flatpak-info, so this is belt-and-braces — but it keeps
+      # the reported source correct if the app is ever run with FLATPAK_ID
+      # cleared.
+      - echo flatpak | install -Dm644 /dev/stdin /app/share/localrouter/install-source
+      # Rewrite Exec/Icon to the flatpak app id.
+      - desktop-file-edit --set-key=Exec --set-value='localrouter %U'
+        --set-icon=ai.localrouter.app
+        /app/share/applications/ai.localrouter.app.desktop
+
+    sources:
+      - type: file
+        only-arches: [x86_64]
+        url: https://github.com/LocalRouter/LocalRouter/releases/download/v__VERSION__/LocalRouter___VERSION___amd64.deb
+        sha256: __SHA256_AMD64__
+        dest-filename: localrouter.deb
+      - type: file
+        only-arches: [aarch64]
+        url: https://github.com/LocalRouter/LocalRouter/releases/download/v__VERSION__/LocalRouter___VERSION___arm64.deb
+        sha256: __SHA256_ARM64__
+        dest-filename: localrouter.deb
+      - type: file
+        path: ai.localrouter.app.metainfo.xml

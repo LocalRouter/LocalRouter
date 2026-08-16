@@ -1,0 +1,50 @@
+# Homebrew cask for LocalRouter.
+#
+# Rendered by scripts/publish-packages.sh and pushed to the
+# LocalRouter/homebrew-tap repository as Casks/localrouter.rb.
+#
+# This lives in our own tap rather than Homebrew/homebrew-cask because the
+# upstream repo requires 225 stars / 90 forks / 90 watchers for a
+# self-submitted cask (docs.brew.sh/Acceptable-Casks). Revisit once the
+# project clears that bar.
+#
+# Placeholders: __VERSION__, __SHA256_ARM__, __SHA256_INTEL__
+cask "localrouter" do
+  arch arm: "aarch64", intel: "x64"
+
+  version "__VERSION__"
+  sha256 arm:   "__SHA256_ARM__",
+         intel: "__SHA256_INTEL__"
+
+  url "https://github.com/LocalRouter/LocalRouter/releases/download/v#{version}/LocalRouter_#{version}_#{arch}.dmg",
+      verified: "github.com/LocalRouter/LocalRouter/"
+  name "LocalRouter"
+  desc "Local OpenAI-compatible API gateway with intelligent multi-provider routing"
+  homepage "https://localrouter.ai/"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  # Deliberately NOT `auto_updates true`. The app detects a Homebrew install
+  # (lr-utils/src/install_source.rs) and disables its own updater, so Homebrew
+  # is the single owner of the installed version.
+  depends_on macos: ">= :catalina"
+
+  app "LocalRouter.app"
+
+  uninstall quit:       "ai.localrouter.app",
+            login_item: "LocalRouter"
+
+  # LocalRouter is local-only and stores everything under Application Support.
+  # `zap` is opt-in (`brew uninstall --zap`), so this never deletes a user's
+  # provider keys or config behind their back.
+  zap trash: [
+    "~/Library/Application Support/LocalRouter",
+    "~/Library/Caches/ai.localrouter.app",
+    "~/Library/HTTPStorages/ai.localrouter.app",
+    "~/Library/Preferences/ai.localrouter.app.plist",
+    "~/Library/Saved Application State/ai.localrouter.app.savedState",
+  ]
+end

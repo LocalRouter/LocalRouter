@@ -66,10 +66,16 @@ fn login_shell_path() -> Option<String> {
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
 
+    // Inside a Flatpak sandbox the login shell we can reach is the runtime's,
+    // whose PATH describes the runtime rather than the user's machine. Ask the
+    // host's shell instead — that is the PATH every tool we spawn will see.
+    let invocation = crate::sandbox::host_invocation(&shell, [], None);
+
     // Discard stdin so an interactive profile that tries to read from the
     // terminal gets EOF instead of blocking, and drop stderr so shell noise
     // ("you have mail", instrumentation banners) never reaches the parser.
-    let mut child = Command::new(&shell)
+    let mut child = Command::new(&invocation.program)
+        .args(&invocation.leading_args)
         .args(["-lic", "echo $PATH"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -193,6 +199,13 @@ fn fallback_bin_dirs() -> Vec<PathBuf> {
 /// well-known user-local install directories. Returns the resolved absolute
 /// path, or `None` if the tool genuinely is not installed.
 pub fn find_binary(name: &str) -> Option<PathBuf> {
+    // Inside a Flatpak sandbox none of the checks below mean anything: the
+    // tool lives on the host filesystem, which we cannot stat. Ask the host to
+    // resolve it and trust its answer.
+    if crate::sandbox::current().needs_host_proxy() {
+        return find_binary_on_host(name);
+    }
+
     if let Ok(path) = which::which(name) {
         return Some(path);
     }
@@ -215,6 +228,73 @@ pub fn find_binary(name: &str) -> Option<PathBuf> {
         }
     }
 
+    None
+}
+
+/// Resolve an executable using the *host's* login shell, for Flatpak.
+///
+/// Returns the host-side absolute path. It is deliberately not validated
+/// against our own filesystem — the whole point is that the path exists out
+/// there and not in here — so callers must spawn it through
+/// [`crate::sandbox::host_invocation`] rather than executing it directly.
+#[cfg(unix)]
+fn find_binary_on_host(name: &str) -> Option<PathBuf> {
+    use std::process::{Command, Stdio};
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let invocation = crate::sandbox::host_invocation(&shell, [], None);
+
+    // `name` can come from user-authored MCP config, so it is passed as a
+    // positional argument rather than interpolated into the script — `$1` is
+    // never re-parsed as shell syntax. `--` stops `command` from reading a
+    // leading dash as a flag.
+    let mut child = Command::new(&invocation.program)
+        .args(&invocation.leading_args)
+        .args(["-lic", "command -v -- \"$1\"", "lr-probe", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .inspect_err(|e| tracing::debug!("Could not probe host for {name}: {e}"))
+        .ok()?;
+
+    let output = match wait_with_timeout(&mut child, SHELL_PATH_TIMEOUT) {
+        Some(output) => output,
+        None => {
+            tracing::warn!("Host probe for {name} timed out; killing it");
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    };
+
+    if !output.status.success() {
+        // A non-zero exit is `command -v` reporting "not installed".
+        return None;
+    }
+
+    // As with the PATH probe, an interactive shell may print banners first, so
+    // take the last non-empty line.
+    let resolved = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?
+        .to_string();
+
+    // `command -v` also succeeds for shell builtins and aliases, which print
+    // something that is not a path. Only an absolute path is executable by us.
+    if !resolved.starts_with('/') {
+        tracing::debug!("Host resolved {name} to a non-path ({resolved}); ignoring");
+        return None;
+    }
+
+    Some(PathBuf::from(resolved))
+}
+
+#[cfg(not(unix))]
+fn find_binary_on_host(_name: &str) -> Option<PathBuf> {
+    // Flatpak is Linux-only, so this branch is unreachable in practice.
     None
 }
 

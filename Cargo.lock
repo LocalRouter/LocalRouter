@@ -5846,6 +5846,8 @@ dependencies = [
  "dirs 5.0.1",
  "lr-types",
  "ring",
+ "serde",
+ "serde_json",
  "tracing",
  "which 7.0.3",
 ]

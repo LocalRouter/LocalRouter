@@ -32,6 +32,53 @@
 
 ---
 
+## Install
+
+```bash
+# macOS
+brew install --cask localrouter/tap/localrouter
+
+# Windows
+winget install LocalRouter.LocalRouter
+scoop bucket add localrouter https://github.com/LocalRouter/homebrew-tap
+scoop install localrouter
+
+# Arch
+yay -S localrouter-bin
+
+# Debian / Ubuntu
+curl -fsSL https://packages.localrouter.ai/localrouter.asc \
+  | sudo tee /etc/apt/keyrings/localrouter.asc > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/localrouter.asc] https://packages.localrouter.ai/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/localrouter.list
+sudo apt update && sudo apt install localrouter
+
+# Fedora / RHEL
+sudo dnf config-manager --add-repo https://packages.localrouter.ai/yum/localrouter.repo
+sudo dnf install localrouter
+
+# Flatpak
+flatpak install flathub ai.localrouter.app
+
+# Snap
+sudo snap install localrouter --classic
+
+# Docker
+docker pull ghcr.io/localrouter/localrouter:latest
+```
+
+Or download an installer directly from
+[localrouter.ai/download](https://localrouter.ai/download) — DMG, MSI, NSIS,
+`.deb`, `.rpm` and AppImage builds are attached to every
+[release](https://github.com/LocalRouter/LocalRouter/releases).
+
+When LocalRouter is installed through a package manager it detects this and
+disables its built-in updater, so upgrades always flow through the channel you
+installed from. See [`packaging/`](packaging/README.md) for how each channel is
+published.
+
+---
+
 ## Development
 
 ### Prerequisites

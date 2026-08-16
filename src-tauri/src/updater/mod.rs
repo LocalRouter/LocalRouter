@@ -7,6 +7,7 @@
 
 use chrono::Utc;
 use lr_config::{ConfigManager, UpdateMode};
+use lr_utils::install_source::InstallSource;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -53,6 +54,8 @@ pub enum UpdateCheckDecision {
     NotYet,
     /// Automatic mode is disabled
     Disabled,
+    /// A package manager owns this install, so we must not self-update
+    ManagedExternally(InstallSource),
 }
 
 /// Evaluate whether an update check should be performed based on config.
@@ -64,7 +67,16 @@ pub fn should_check_for_updates(
     last_check: Option<chrono::DateTime<Utc>>,
     check_interval_days: u64,
     now: chrono::DateTime<Utc>,
+    install_source: InstallSource,
 ) -> UpdateCheckDecision {
+    // Checked before the mode so that a package-managed install reports *why*
+    // it will never update, even if the user also left the mode on Automatic.
+    // Self-updating on top of brew/apt/flatpak desynchronises the package
+    // manager's recorded version from what is actually on disk.
+    if !install_source.is_self_updatable() {
+        return UpdateCheckDecision::ManagedExternally(install_source);
+    }
+
     if *mode != UpdateMode::Automatic {
         return UpdateCheckDecision::Disabled;
     }
@@ -91,6 +103,18 @@ pub fn should_check_for_updates(
 /// 4. On first run (last_check = None), just sets timestamp without checking
 /// 5. Emits "check-for-updates" event to frontend to trigger actual update check
 pub async fn start_update_timer(app: AppHandle, config_manager: Arc<ConfigManager>) {
+    let install_source = lr_utils::install_source::current();
+
+    // Detected once at startup — the install location cannot change while the
+    // process is running, and probing the filesystem every 24h would be waste.
+    if !install_source.is_self_updatable() {
+        info!(
+            "Install is managed by {}; background update timer will not run",
+            install_source.label()
+        );
+        return;
+    }
+
     info!("Starting background update timer");
 
     loop {
@@ -106,9 +130,17 @@ pub async fn start_update_timer(app: AppHandle, config_manager: Arc<ConfigManage
             update_config.last_check,
             update_config.check_interval_days,
             now,
+            install_source,
         );
 
         match decision {
+            UpdateCheckDecision::ManagedExternally(source) => {
+                // Unreachable given the early return above, but keeping the
+                // match exhaustive means a future caller cannot silently fall
+                // through to a self-update.
+                debug!("Install managed by {}, skipping check", source.label());
+                continue;
+            }
             UpdateCheckDecision::Disabled => {
                 debug!("Automatic updates disabled, skipping check");
                 continue;
@@ -144,10 +176,77 @@ mod tests {
     use chrono::Duration;
 
     #[test]
+    fn package_managed_installs_never_self_update() {
+        let now = Utc::now();
+        // Automatic mode, interval long elapsed: the only thing stopping a
+        // self-update here is the install source.
+        let last_check = now - Duration::days(365);
+        for source in [
+            InstallSource::Homebrew,
+            InstallSource::Scoop,
+            InstallSource::WinGet,
+            InstallSource::Aur,
+            InstallSource::Debian,
+            InstallSource::Rpm,
+            InstallSource::SystemPackage,
+            InstallSource::Flatpak,
+            InstallSource::Snap,
+            InstallSource::Docker,
+        ] {
+            assert_eq!(
+                should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 7, now, source,),
+                UpdateCheckDecision::ManagedExternally(source),
+                "{source:?} must not trigger a self-update"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_install_reports_the_manager_even_in_manual_mode() {
+        // The UI needs to say "managed by Homebrew" rather than the generic
+        // "updates are off", so the source check comes first.
+        let now = Utc::now();
+        assert_eq!(
+            should_check_for_updates(
+                &UpdateMode::Manual,
+                Some(now),
+                7,
+                now,
+                InstallSource::Homebrew,
+            ),
+            UpdateCheckDecision::ManagedExternally(InstallSource::Homebrew)
+        );
+    }
+
+    #[test]
+    fn appimage_still_self_updates() {
+        // Tauri's updater can replace an AppImage in place, so it keeps the
+        // normal scheduling behaviour.
+        let now = Utc::now();
+        let last_check = now - Duration::days(10);
+        assert_eq!(
+            should_check_for_updates(
+                &UpdateMode::Automatic,
+                Some(last_check),
+                7,
+                now,
+                InstallSource::AppImage,
+            ),
+            UpdateCheckDecision::ShouldCheck
+        );
+    }
+
+    #[test]
     fn test_disabled_mode_returns_disabled() {
         let now = Utc::now();
         assert_eq!(
-            should_check_for_updates(&UpdateMode::Manual, Some(now), 7, now),
+            should_check_for_updates(
+                &UpdateMode::Manual,
+                Some(now),
+                7,
+                now,
+                InstallSource::Direct,
+            ),
             UpdateCheckDecision::Disabled
         );
     }
@@ -156,7 +255,7 @@ mod tests {
     fn test_first_run_no_last_check() {
         let now = Utc::now();
         assert_eq!(
-            should_check_for_updates(&UpdateMode::Automatic, None, 7, now),
+            should_check_for_updates(&UpdateMode::Automatic, None, 7, now, InstallSource::Direct,),
             UpdateCheckDecision::FirstRun
         );
     }
@@ -166,7 +265,13 @@ mod tests {
         let now = Utc::now();
         let last_check = now - Duration::days(3);
         assert_eq!(
-            should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 7, now),
+            should_check_for_updates(
+                &UpdateMode::Automatic,
+                Some(last_check),
+                7,
+                now,
+                InstallSource::Direct,
+            ),
             UpdateCheckDecision::NotYet
         );
     }
@@ -176,7 +281,13 @@ mod tests {
         let now = Utc::now();
         let last_check = now - Duration::days(7);
         assert_eq!(
-            should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 7, now),
+            should_check_for_updates(
+                &UpdateMode::Automatic,
+                Some(last_check),
+                7,
+                now,
+                InstallSource::Direct,
+            ),
             UpdateCheckDecision::ShouldCheck
         );
     }
@@ -186,7 +297,13 @@ mod tests {
         let now = Utc::now();
         let last_check = now - Duration::days(30);
         assert_eq!(
-            should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 7, now),
+            should_check_for_updates(
+                &UpdateMode::Automatic,
+                Some(last_check),
+                7,
+                now,
+                InstallSource::Direct,
+            ),
             UpdateCheckDecision::ShouldCheck
         );
     }
@@ -195,7 +312,13 @@ mod tests {
     fn test_just_checked_returns_not_yet() {
         let now = Utc::now();
         assert_eq!(
-            should_check_for_updates(&UpdateMode::Automatic, Some(now), 1, now),
+            should_check_for_updates(
+                &UpdateMode::Automatic,
+                Some(now),
+                1,
+                now,
+                InstallSource::Direct,
+            ),
             UpdateCheckDecision::NotYet
         );
     }
@@ -205,7 +328,13 @@ mod tests {
         let now = Utc::now();
         let last_check = now - Duration::days(1);
         assert_eq!(
-            should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 1, now),
+            should_check_for_updates(
+                &UpdateMode::Automatic,
+                Some(last_check),
+                1,
+                now,
+                InstallSource::Direct,
+            ),
             UpdateCheckDecision::ShouldCheck
         );
     }

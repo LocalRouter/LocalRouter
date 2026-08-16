@@ -2653,6 +2653,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_update_config,
             ui::commands::update_update_config,
             ui::commands::mark_update_check_performed,
+            ui::commands::get_install_source,
             ui::commands::skip_update_version,
             ui::commands::set_update_notification,
             // Logging configuration commands

@@ -2,7 +2,9 @@
 
 pub mod binary;
 pub mod crypto;
+pub mod install_source;
 pub mod paths;
+pub mod sandbox;
 pub mod test_mode;
 
 // Re-export errors from lr-types for backward compatibility (utils::errors::AppError)

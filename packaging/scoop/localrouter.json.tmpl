@@ -1,0 +1,49 @@
+{
+  "##": [
+    "Scoop manifest for LocalRouter. Rendered by scripts/publish-packages.sh",
+    "and pushed to LocalRouter/homebrew-tap as bucket/localrouter.json.",
+    "",
+    "This installs the PORTABLE executable rather than driving the NSIS",
+    "installer. Every tray and window icon is include_bytes!-compiled into the",
+    "binary (src-tauri/src/ui/tray.rs), so the exe needs no sidecar resources,",
+    "and Scoop keeps its usual clean install/uninstall semantics instead of",
+    "fighting an installer over the install directory.",
+    "",
+    "Config lives in %APPDATA%\\LocalRouter, outside $dir, so nothing needs to",
+    "be persisted across upgrades.",
+    "",
+    "Placeholders: __VERSION__, __SHA256_X64__"
+  ],
+  "version": "__VERSION__",
+  "description": "Local OpenAI-compatible API gateway with intelligent multi-provider routing",
+  "homepage": "https://localrouter.ai",
+  "license": "AGPL-3.0-or-later",
+  "notes": [
+    "LocalRouter needs the Microsoft Edge WebView2 runtime, which ships with",
+    "Windows 11 and current Windows 10. If the window fails to open, install",
+    "it from https://developer.microsoft.com/microsoft-edge/webview2/"
+  ],
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/LocalRouter/LocalRouter/releases/download/v__VERSION__/LocalRouter___VERSION___x64_portable.exe#/LocalRouter.exe",
+      "hash": "__SHA256_X64__"
+    }
+  },
+  "bin": "LocalRouter.exe",
+  "shortcuts": [
+    [
+      "LocalRouter.exe",
+      "LocalRouter"
+    ]
+  ],
+  "checkver": {
+    "github": "https://github.com/LocalRouter/LocalRouter"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/LocalRouter/LocalRouter/releases/download/v$version/LocalRouter_$version_x64_portable.exe#/LocalRouter.exe"
+      }
+    }
+  }
+}

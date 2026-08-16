@@ -22,7 +22,7 @@ import type { InvokeArgs } from '@tauri-apps/api/core'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
-import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix } from '@app/types/tauri-commands'
+import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo } from '@app/types/tauri-commands'
 
 // Track warned commands to avoid spam (only warn once per command)
 const warnedCommands = new Set<string>()
@@ -2505,6 +2505,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Updates
   // ============================================================================
   'get_update_config': () => mockData.updateConfig,
+  // The demo behaves like a plain download so the updater UI stays visible;
+  // a package-managed source would hide the whole Update Settings card.
+  'get_install_source': (): InstallSourceInfo => ({
+    source: 'direct',
+    label: 'Direct download',
+    self_updatable: true,
+    upgrade_command: null,
+  }),
   'update_update_config': (args) => {
     if (args?.updates) {
       Object.assign(mockData.updateConfig, args.updates)

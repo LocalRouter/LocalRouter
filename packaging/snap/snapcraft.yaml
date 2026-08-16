@@ -1,0 +1,87 @@
+# Snapcraft recipe for LocalRouter.
+#
+# `__VERSION__` is substituted by scripts/publish-packages.sh.
+#
+# ---------------------------------------------------------------------------
+# Why classic confinement
+# ---------------------------------------------------------------------------
+# LocalRouter's core features spawn binaries that belong to the user, not to
+# us: MCP stdio servers (`npx`, `uvx`) in crates/lr-mcp, and coding agents
+# (`claude`, `aider`) in crates/lr-coding-agents. It also reads their config
+# out of $HOME (~/.claude, ~/.aider.conf.yml) and operates on arbitrary project
+# directories the user selects.
+#
+# Under strict confinement none of that works — `home` plus `system-backup`
+# still would not let us execute host binaries with the user's PATH. This is
+# exactly the VS Code / IntelliJ situation, and classic is the interface the
+# Snap Store grants for it.
+#
+# Classic confinement requires a manual review request on
+# https://forum.snapcraft.io/c/store-requests before the first upload:
+#   1. `snapcraft upload --release=stable localrouter_*.snap` will be held
+#   2. open a store-request topic explaining the host-execution requirement
+#   3. re-upload once granted
+#
+# Unlike Flatpak, classic snaps run unconfined, so no `flatpak-spawn`-style
+# rewriting is needed — crates/lr-utils/src/sandbox.rs treats Snap as a
+# pass-through and only uses the detection to disable the in-app updater.
+# ---------------------------------------------------------------------------
+name: localrouter
+title: LocalRouter
+base: core24
+version: '__VERSION__'
+summary: Local OpenAI-compatible API gateway with intelligent routing
+description: |
+  LocalRouter is a local, OpenAI-compatible API gateway. Point any tool that
+  speaks the OpenAI API at your own machine and LocalRouter routes each request
+  to the provider that fits it best.
+
+  * One OpenAI-compatible endpoint in front of 19 providers
+  * Cost- and latency-aware routing, with per-client rate limits
+  * An MCP gateway for Claude Desktop, Cursor and VS Code
+  * Request monitoring, logging and spend tracking
+
+  LocalRouter is private by design: no telemetry, no analytics, and the API
+  binds to localhost by default.
+
+license: AGPL-3.0-or-later
+website: https://localrouter.ai
+issues: https://github.com/LocalRouter/LocalRouter/issues
+source-code: https://github.com/LocalRouter/LocalRouter
+
+grade: stable
+confinement: classic
+compression: lzo
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  localrouter:
+    command: usr/bin/localrouter
+    desktop: usr/share/applications/LocalRouter.desktop
+    extensions: [gnome]
+    environment:
+      # Classic snaps do not get a rewritten loader path, so point the dynamic
+      # linker at the libraries we unpacked from the .deb.
+      LD_LIBRARY_PATH: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:$SNAP/usr/lib
+      # Read by crates/lr-utils/src/install_source.rs. $SNAP is also detected
+      # directly; this keeps the answer right if the env is ever cleared.
+      LOCALROUTER_INSTALL_SOURCE: snap
+
+parts:
+  localrouter:
+    plugin: dump
+    # Repack the released .deb: a from-source build would need node plus a full
+    # npm install inside the snap build environment.
+    source: https://github.com/LocalRouter/LocalRouter/releases/download/v__VERSION__/LocalRouter___VERSION___$CRAFT_ARCH_BUILD_FOR.deb
+    source-type: deb
+    stage-packages:
+      - libwebkit2gtk-4.1-0
+      - libayatana-appindicator3-1
+      - libssl3t64
+    override-prime: |
+      craftctl default
+      # Marker file, mirroring what the deb/rpm packaging writes.
+      echo snap | install -Dm644 /dev/stdin "$CRAFT_PRIME/usr/share/localrouter/install-source"

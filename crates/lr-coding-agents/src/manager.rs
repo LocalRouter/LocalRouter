@@ -1107,21 +1107,45 @@ async fn spawn_direct(
             reason: format!("{} not found on PATH", agent_type.binary_name()),
         })?;
 
-    let mut command = tokio::process::Command::new(&binary);
+    // Collect every environment variable before building the command. Inside
+    // a Flatpak sandbox these are folded into `flatpak-spawn --env=` flags, so
+    // they must all be known up front rather than applied to the Command.
+    let mut spawn_env: Vec<(String, String)> = Vec::new();
+    // These CLIs shell out to their own toolchain (aider is a Python entry
+    // point, agy runs git), so hand them the user's real PATH. Under Flatpak
+    // `shell_path()` reports the *host's* login-shell PATH, which is what the
+    // host-side process needs.
+    //
+    // ExecutionEnv wins if it sets its own PATH, matching the previous
+    // ordering where apply_to_command ran after this. Skipping the push
+    // rather than emitting both and relying on last-wins matters under
+    // Flatpak: duplicates would become two conflicting `--env=PATH=` flags.
+    if !env.contains_key("PATH") {
+        if let Some(path) = lr_utils::binary::shell_path() {
+            spawn_env.push(("PATH".to_string(), path));
+        }
+    }
+    spawn_env.extend(env.vars.iter().map(|(k, v)| (k.clone(), v.clone())));
+
+    let invocation =
+        lr_utils::sandbox::host_invocation(&binary.to_string_lossy(), spawn_env, Some(work_dir));
+
+    let mut command = tokio::process::Command::new(&invocation.program);
     command
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .current_dir(work_dir)
+        .args(&invocation.leading_args)
         .args(args);
-
-    // These CLIs shell out to their own toolchain (aider is a Python entry
-    // point, agy runs git), so hand them the user's real PATH.
-    if let Some(path) = lr_utils::binary::shell_path() {
-        command.env("PATH", path);
+    for (key, value) in &invocation.envs {
+        command.env(key, value);
     }
-    env.apply_to_command(&mut command);
+    // When proxying, the working directory travels as `--directory=`; the host
+    // path means nothing to the `flatpak-spawn` process itself.
+    if !lr_utils::sandbox::current().needs_host_proxy() {
+        command.current_dir(work_dir);
+    }
 
     let mut child = command
         .group_spawn_no_window()

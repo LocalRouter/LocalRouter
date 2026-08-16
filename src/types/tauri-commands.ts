@@ -3037,6 +3037,37 @@ export interface SetStartOnBootParams {
   enabled: boolean
 }
 
+/**
+ * Rust: crates/lr-utils/src/install_source.rs - InstallSource enum
+ *
+ * How this copy of LocalRouter was installed. "direct" and "appimage" are the
+ * only sources the in-app updater is allowed to replace.
+ */
+export type InstallSource =
+  | "direct"
+  | "appimage"
+  | "homebrew"
+  | "scoop"
+  | "winget"
+  | "aur"
+  | "debian"
+  | "rpm"
+  | "system_package"
+  | "flatpak"
+  | "snap"
+  | "docker"
+
+/** Rust: src-tauri/src/ui/commands.rs - InstallSourceInfo struct */
+export interface InstallSourceInfo {
+  source: InstallSource
+  /** Human-readable name of the owning package manager, e.g. "Homebrew". */
+  label: string
+  /** False when a package manager owns updates for this install. */
+  self_updatable: boolean
+  /** Command the user should run to upgrade, when one is known. */
+  upgrade_command: string | null
+}
+
 /** Params for set_coding_agent_tool_prefix */
 export interface SetCodingAgentToolPrefixParams {
   prefix: string
