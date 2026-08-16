@@ -967,6 +967,14 @@ async fn spawn_via_executor(
     env.insert("CLAUDE_CODE_ENTRYPOINT", "");
     env.insert("CLAUDE_CODE_SESSION_ACCESS_TOKEN", "");
 
+    // Agents the executors crate has no support for are spawned directly.
+    // Borrowing another agent's executor does not work: each one hard-codes
+    // the flags of the CLI it was written for and `base_command_override`
+    // replaces only the base command, not those flags.
+    if let Some(args) = direct_cli_args(agent_type, prompt, config, resume_session_id) {
+        return spawn_direct(agent_type, &args, work_dir, &env).await;
+    }
+
     let mut executor = build_executor(agent_type, config, approval_mode)?;
     if let Some(svc) = approval_override {
         // Plug an externally supplied approval service into whichever
@@ -988,6 +996,140 @@ async fn spawn_via_executor(
         agent: agent_type.display_name().to_string(),
         reason: e.to_string(),
     })
+}
+
+/// Command-line arguments for agents we spawn ourselves, or `None` for
+/// agents the executors crate handles.
+///
+/// Both CLIs here take the prompt as a flag value and emit plain text on
+/// stdout, which is exactly what the session output reader consumes.
+///
+/// Flag sets were verified against the installed binaries (agy 1.1.13,
+/// aider) rather than taken from documentation.
+fn direct_cli_args(
+    agent_type: CodingAgentType,
+    prompt: &str,
+    config: &SessionConfig,
+    resume_session_id: Option<&str>,
+) -> Option<Vec<String>> {
+    let is_auto = matches!(config.permission_mode, CodingPermissionMode::Auto);
+    let is_plan = matches!(config.permission_mode, CodingPermissionMode::Plan);
+    let mut args: Vec<String> = Vec::new();
+
+    match agent_type {
+        CodingAgentType::Antigravity => {
+            // `text` is agy's default, but state it so a future change to
+            // that default cannot silently turn the output into JSON that
+            // the line reader would surface as noise.
+            args.extend(["--output-format".into(), "text".into()]);
+
+            if let Some(model) = &config.model {
+                args.extend(["--model".into(), model.clone()]);
+            }
+            if is_auto {
+                args.push("--dangerously-skip-permissions".into());
+            }
+            if is_plan {
+                args.extend(["--mode".into(), "plan".into()]);
+            }
+            if let Some(sid) = resume_session_id {
+                args.extend(["--conversation".into(), sid.to_string()]);
+            }
+
+            // `--print` takes the prompt as its value and must come last so
+            // the prompt cannot be parsed as a flag.
+            args.extend(["--print".into(), prompt.to_string()]);
+        }
+        CodingAgentType::Aider => {
+            // Aider is interactive by default; --message runs one prompt and
+            // exits.
+            //
+            // --no-pretty and --no-stream matter for correctness, not
+            // cosmetics: pretty mode redraws lines with ANSI escapes, which
+            // the line-oriented output reader would record as garbage.
+            //
+            // --no-auto-commits keeps aider from committing to the user's
+            // repository behind their back.
+            args.extend([
+                "--no-pretty".into(),
+                "--no-stream".into(),
+                "--no-auto-commits".into(),
+                "--no-check-update".into(),
+            ]);
+
+            if let Some(model) = &config.model {
+                args.extend(["--model".into(), model.clone()]);
+            }
+            if is_auto {
+                args.push("--yes-always".into());
+            }
+            // Aider has no resume-by-id concept; a follow-up starts fresh.
+
+            args.extend(["--message".into(), prompt.to_string()]);
+        }
+        _ => return None,
+    }
+
+    Some(args)
+}
+
+/// Spawn a CLI agent directly, bypassing the executors crate.
+async fn spawn_direct(
+    agent_type: CodingAgentType,
+    args: &[String],
+    work_dir: &Path,
+    env: &ExecutionEnv,
+) -> Result<SpawnedChild, CodingAgentError> {
+    use std::process::Stdio;
+    use workspace_utils::command_ext::GroupSpawnNoWindowExt;
+
+    // Resolve to an absolute path: the app's own PATH may not contain it.
+    let binary = lr_utils::binary::find_binary(agent_type.binary_name()).ok_or_else(|| {
+        CodingAgentError::SpawnFailed {
+            agent: agent_type.display_name().to_string(),
+            reason: format!("{} not found on PATH", agent_type.binary_name()),
+        }
+    })?;
+
+    let mut command = tokio::process::Command::new(&binary);
+    command
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(work_dir)
+        .args(args);
+
+    // These CLIs shell out to their own toolchain (aider is a Python entry
+    // point, agy runs git), so hand them the user's real PATH.
+    if let Some(path) = lr_utils::binary::shell_path() {
+        command.env("PATH", path);
+    }
+    env.apply_to_command(&mut command);
+
+    let mut child = command
+        .group_spawn_no_window()
+        .map_err(|e| CodingAgentError::SpawnFailed {
+            agent: agent_type.display_name().to_string(),
+            reason: format!("failed to start {}: {e}", binary.display()),
+        })?;
+
+    // Drain stderr. The session reader only consumes stdout, and an unread
+    // pipe would eventually fill and block the child — so this is required
+    // for correctness, not just for the log line it produces.
+    if let Some(stderr) = child.inner().stderr.take() {
+        let agent = agent_type.display_name().to_string();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    warn!(agent = %agent, "stderr: {line}");
+                }
+            }
+        });
+    }
+
+    Ok(child.into())
 }
 
 /// Build a CodingAgent executor for the given agent type and config.
@@ -1150,47 +1292,15 @@ fn build_executor(
             let executor = deser_executor(json, "Droid")?;
             Ok(CodingAgent::Droid(executor))
         }
-        CodingAgentType::Antigravity => {
-            // Detection and listing work; driving a session does not yet.
-            //
-            // Every executor in the executors crate hard-codes the flags of
-            // the CLI it was written for, and `base_command_override` swaps
-            // only the base command, not those flags (see
-            // CommandBuilder::override_base). Borrowing the Amp executor the
-            // way the Aider arm below does would invoke
-            // `agy --execute --stream-json ...`, which agy rejects.
-            //
-            // Failing loudly here is better than spawning a process that
-            // cannot work: the user gets a message that explains itself
-            // instead of an opaque CLI usage error.
+        // Spawned directly by `spawn_direct`, which runs before this
+        // function is reached. Kept as explicit arms so adding a future
+        // direct-spawn agent still has to make a deliberate choice here.
+        CodingAgentType::Antigravity | CodingAgentType::Aider => {
             Err(CodingAgentError::SpawnFailed {
-                agent: "Antigravity".to_string(),
-                reason: "Antigravity (agy) is detected but running sessions \
-                         through it is not supported yet — it needs an \
-                         executor that speaks agy's own headless flags. \
-                         Use the agy CLI directly for now."
+                agent: agent_type.display_name().to_string(),
+                reason: "internal: agent is spawned directly, not via the executors crate"
                     .to_string(),
             })
-        }
-        CodingAgentType::Aider => {
-            // Aider is not in the executors crate — use Amp executor with base command override.
-            // Amp is the simplest executor (no control protocol, just stdin/stdout pipe).
-            // ClaudeCode would add -p, --output-format=stream-json etc. which Aider doesn't support.
-            warn!("Aider not supported by executors crate, using Amp executor with base command override");
-            let mut additional: Vec<serde_json::Value> =
-                vec![serde_json::Value::String("--no-auto-commits".into())];
-            if is_auto {
-                additional.push(serde_json::Value::String("--yes".into()));
-            }
-            let mut json = serde_json::json!({
-                "base_command_override": "aider",
-                "additional_params": additional,
-            });
-            if let Some(ref model) = config.model {
-                json["model"] = serde_json::Value::String(model.clone());
-            }
-            let executor = deser_executor(json, "Aider")?;
-            Ok(CodingAgent::Amp(executor))
         }
     }
 }
@@ -1365,6 +1475,141 @@ pub enum CodingAgentError {
 impl CodingAgentError {
     pub fn to_mcp_error(&self) -> String {
         self.to_string()
+    }
+}
+
+#[cfg(test)]
+mod direct_cli_tests {
+    use super::*;
+
+    fn cfg(mode: CodingPermissionMode, model: Option<&str>) -> SessionConfig {
+        SessionConfig {
+            model: model.map(str::to_string),
+            permission_mode: mode,
+            env: Default::default(),
+        }
+    }
+
+    /// Flags that belong to other agents' executors and that both CLIs
+    /// reject. This is the defect that made the previous implementation
+    /// unusable, so it is asserted directly.
+    const FOREIGN_FLAGS: &[&str] = &["--execute", "--stream-json", "--experimental-acp", "--acp"];
+
+    #[test]
+    fn executor_agents_are_not_spawned_directly() {
+        for agent in [
+            CodingAgentType::ClaudeCode,
+            CodingAgentType::Codex,
+            CodingAgentType::Opencode,
+            CodingAgentType::GeminiCli,
+        ] {
+            assert!(
+                direct_cli_args(
+                    agent,
+                    "hi",
+                    &cfg(CodingPermissionMode::Supervised, None),
+                    None
+                )
+                .is_none(),
+                "{agent} should use the executors crate"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_agents_never_get_another_agents_flags() {
+        for agent in [CodingAgentType::Antigravity, CodingAgentType::Aider] {
+            for mode in [
+                CodingPermissionMode::Auto,
+                CodingPermissionMode::Supervised,
+                CodingPermissionMode::Plan,
+            ] {
+                let args = direct_cli_args(agent, "hi", &cfg(mode, Some("m")), None).unwrap();
+                for bad in FOREIGN_FLAGS {
+                    assert!(
+                        !args.iter().any(|a| a == bad),
+                        "{agent} args contain foreign flag {bad}: {args:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn antigravity_prompt_is_the_last_argument() {
+        // agy's --print consumes the next argument, so anything appended
+        // after the prompt would be swallowed as part of it.
+        let args = direct_cli_args(
+            CodingAgentType::Antigravity,
+            "do the thing",
+            &cfg(CodingPermissionMode::Auto, Some("gemini-3-pro")),
+            Some("conv-1"),
+        )
+        .unwrap();
+
+        assert_eq!(args.last().unwrap(), "do the thing");
+        assert_eq!(args[args.len() - 2], "--print");
+        assert!(args.windows(2).any(|w| w == ["--model", "gemini-3-pro"]));
+        assert!(args.windows(2).any(|w| w == ["--conversation", "conv-1"]));
+        assert!(args.iter().any(|a| a == "--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn antigravity_plan_mode_uses_mode_flag_not_skip_permissions() {
+        let args = direct_cli_args(
+            CodingAgentType::Antigravity,
+            "hi",
+            &cfg(CodingPermissionMode::Plan, None),
+            None,
+        )
+        .unwrap();
+        assert!(args.windows(2).any(|w| w == ["--mode", "plan"]));
+        assert!(!args.iter().any(|a| a == "--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn supervised_mode_grants_nothing_extra() {
+        for agent in [CodingAgentType::Antigravity, CodingAgentType::Aider] {
+            let args = direct_cli_args(
+                agent,
+                "hi",
+                &cfg(CodingPermissionMode::Supervised, None),
+                None,
+            )
+            .unwrap();
+            assert!(!args.iter().any(|a| a == "--dangerously-skip-permissions"));
+            assert!(!args.iter().any(|a| a == "--yes-always"));
+        }
+    }
+
+    #[test]
+    fn aider_runs_one_shot_without_touching_the_repo() {
+        let args = direct_cli_args(
+            CodingAgentType::Aider,
+            "fix the bug",
+            &cfg(CodingPermissionMode::Auto, Some("gpt-4o")),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(args.last().unwrap(), "fix the bug");
+        assert_eq!(args[args.len() - 2], "--message");
+        // Committing to the user's repo unasked would be destructive.
+        assert!(args.iter().any(|a| a == "--no-auto-commits"));
+        // ANSI redraws would be recorded verbatim by the line reader.
+        assert!(args.iter().any(|a| a == "--no-pretty"));
+        assert!(args.iter().any(|a| a == "--no-stream"));
+        assert!(args.iter().any(|a| a == "--yes-always"));
+        assert!(args.windows(2).any(|w| w == ["--model", "gpt-4o"]));
+    }
+
+    #[test]
+    fn model_is_omitted_when_unset() {
+        for agent in [CodingAgentType::Antigravity, CodingAgentType::Aider] {
+            let args =
+                direct_cli_args(agent, "hi", &cfg(CodingPermissionMode::Auto, None), None).unwrap();
+            assert!(!args.iter().any(|a| a == "--model"), "{agent}: {args:?}");
+        }
     }
 }
 

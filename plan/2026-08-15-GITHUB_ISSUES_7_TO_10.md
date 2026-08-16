@@ -187,6 +187,52 @@ false. Detection and listing — the actual ask in #10 — work.
 invoke `aider --execute --stream-json --no-auto-commits`. Worth its own
 issue.
 
+### Follow-up (2026-08-16): both spawn paths fixed for real
+
+`agy` and `aider` were installed on the dev machine, so both defects could
+be confirmed against the real binaries rather than reasoned about:
+
+```
+$ agy --execute --stream-json --print      → flag needs an argument: -print
+$ aider --execute --stream-json …          → usage: aider [-h] …
+```
+
+There is no generic "run any CLI" executor in the vibe-kanban `executors`
+crate — all nine variants hard-code their own CLI's flags — so neither agent
+can be served by borrowing one. `SpawnedChild` has public fields and a
+`From<AsyncGroupChild>` impl, and the session output reader consumes plain
+stdout lines, so these two agents are now spawned directly:
+
+| Agent | Invocation |
+|---|---|
+| Antigravity | `--output-format text [--model M] [--dangerously-skip-permissions] [--mode plan] [--conversation ID] --print <prompt>` |
+| Aider | `--no-pretty --no-stream --no-auto-commits --no-check-update [--model M] [--yes-always] --message <prompt>` |
+
+Flag sets were verified against agy 1.1.13 and the installed aider by
+appending a sentinel `--lr-bogus` immediately before the prompt flag: both
+CLIs error naming only the sentinel, proving every preceding flag parses,
+and parsing fails before any model call so the check costs nothing.
+
+Details that matter:
+
+- **The prompt must be last.** `--print` / `--message` consume the next
+  argument, so anything appended after would be swallowed into the prompt.
+- **`--no-pretty` / `--no-stream` are correctness, not cosmetics.** Aider's
+  pretty mode redraws lines with ANSI escapes, which the line-oriented
+  reader would record verbatim as garbage.
+- **`--no-auto-commits`** keeps aider from committing to the user's repo
+  unasked.
+- **stderr is drained** by a spawned task. The session reader only consumes
+  stdout, and an unread pipe would fill and block the child.
+
+Capability metadata now matches reality: Antigravity gains model selection
+plus auto/plan permission modes, Aider gains auto mode via `--yes-always`.
+
+Known limitation: a configured `CodingAgentConfig.binary_path` override
+applies to detection but not to spawning. That was already true of every
+executor-backed agent (they run npx-based base commands), so direct spawn is
+no worse; unifying it would mean threading config through `spawn_via_executor`.
+
 ### Verification
 
 - `rustup run stable cargo clippy --workspace --all-targets -- -D warnings` — clean
