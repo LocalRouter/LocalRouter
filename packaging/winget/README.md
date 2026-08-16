@@ -1,42 +1,42 @@
-# WinGet submission (manual)
+# WinGet submission (automated)
 
-WinGet is deliberately **not** automated in `release.yml`. Microsoft's
-community repo runs an automated validation pipeline plus a human review, and
-a bad automated submission burns goodwill on the `winget-pkgs` moderators. Run
-it by hand and read the validation result.
+WinGet has no user-hostable equivalent of a Homebrew tap — third-party
+"REST sources" exist but require running a server — so `microsoft/winget-pkgs`
+is the channel. The **submission is automated anyway**: every release,
+`publish-winget` in `.github/workflows/release.yml` renders the manifests and
+runs `submit-winget.sh`, which forks `winget-pkgs` under the token's account,
+pushes a one-commit branch, and opens the PR. Microsoft's validation bots plus
+a moderator take it from there; new versions of an already-accepted package
+are routinely approved without discussion.
 
 ## One-time setup
 
-1. Fork <https://github.com/microsoft/winget-pkgs> under the `LocalRouter` org.
-2. Install [Komac](https://github.com/russellbanks/Komac):
-   `winget install RussellBanks.Komac`
-3. Create a **classic** PAT with `public_repo` scope (fine-grained PATs are
-   not supported) and export it as `GITHUB_TOKEN`.
+1. Create a **classic** PAT with the `public_repo` scope on the GitHub account
+   that should own the fork (fine-grained PATs cannot open PRs against repos
+   they don't own).
+2. Save it as the `WINGET_PAT` repository secret.
 
-## Per release
+That's it — the fork of `microsoft/winget-pkgs` is created automatically on
+first run. While `WINGET_PAT` is unset the job logs a notice and skips, so
+releases never fail on it.
 
-Render the manifests for the version you just shipped:
+Expect the **first** PR (the "New package" one) to get moderator questions;
+answer them on the PR. Everything after that is hands-off.
+
+## Manual fallback
+
+The same script runs locally:
 
 ```bash
 ./scripts/publish-packages.sh --version 0.0.139 --only winget --out-dir /tmp/pkg
+WINGET_PAT=<token> ./packaging/winget/submit-winget.sh \
+  --version 0.0.139 --manifests-dir /tmp/pkg/winget
 ```
 
-That writes the three manifests to
-`/tmp/pkg/winget/manifests/l/LocalRouter/LocalRouter/0.0.139/` with the real
-SHA256 of the published NSIS installer.
-
-Then either submit those files directly, or let Komac regenerate them from the
-release (it re-derives the installer metadata, which catches drift):
-
-```bash
-komac update LocalRouter.LocalRouter \
-  --version 0.0.139 \
-  --urls https://github.com/LocalRouter/LocalRouter/releases/download/v0.0.139/LocalRouter_0.0.139_x64-setup.exe \
-  --submit
-```
-
-For the **very first** submission use `komac new LocalRouter.LocalRouter`
-instead, and expect review questions.
+Or hand the rendered files in
+`/tmp/pkg/winget/manifests/l/LocalRouter/LocalRouter/0.0.139/` to
+[Komac](https://github.com/russellbanks/Komac) / `wingetcreate` if you prefer
+their validation.
 
 ## Known friction
 

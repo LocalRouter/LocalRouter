@@ -102,10 +102,11 @@ needed_assets() {
                 echo "LocalRouter_${VERSION}_x64.dmg" ;;
       scoop)    echo "LocalRouter_${VERSION}_x64_portable.exe" ;;
       winget)   echo "LocalRouter_${VERSION}_x64-setup.exe" ;;
-      aur|flatpak)
+      # snapcraft downloads the deb itself at build time, but the recipe
+      # pins its sha256, which is computed here from the same assets.
+      aur|flatpak|snap)
                 echo "LocalRouter_${VERSION}_amd64.deb"
                 echo "LocalRouter_${VERSION}_arm64.deb" ;;
-      snap)     ;;  # snapcraft downloads the deb itself at build time
     esac
   done | sort -u
 }
@@ -116,7 +117,7 @@ if [ -z "$ASSETS_DIR" ]; then
   assets="$(needed_assets)"
   if [ -n "$assets" ]; then
     log "Downloading release assets for v$VERSION"
-    # shellcheck disable=SC2086 # each line is one -p pattern
+    # shellcheck disable=SC2086,SC2046 # deliberate splitting: each line is one -p pattern
     gh release download "v$VERSION" \
       --repo "$REPO_SLUG" \
       --dir "$ASSETS_DIR" \
@@ -256,6 +257,8 @@ if wants flatpak; then
 fi
 
 if wants snap; then
+  SHA_DEB_AMD64="$(asset_sha256 "LocalRouter_${VERSION}_amd64.deb")"
+  SHA_DEB_ARM64="$(asset_sha256 "LocalRouter_${VERSION}_arm64.deb")"
   render_template "$PACKAGING_DIR/snap/snapcraft.yaml" "$OUT_DIR/snap/snapcraft.yaml"
 fi
 
@@ -338,8 +341,14 @@ push_aur() {
 push_tap
 push_aur
 
-# Flatpak, Snap and WinGet are intentionally never pushed from here: each goes
-# through a review process where a human should be reading the diff.
+# Flatpak, Snap and WinGet are not pushed from here, but they ARE automated —
+# each has a dedicated consumer in .github/workflows/release.yml:
+#   flatpak — the build-flatpak jobs run flatpak-builder on the rendered
+#             manifest, then publish-packages merges the result into the
+#             self-hosted repo via packaging/linux-repo/build-flatpak-repo.sh
+#   snap    — the build-snap jobs run snapcraft on the rendered recipe and
+#             upload to the release (and to the Snap Store when credentialed)
+#   winget  — packaging/winget/submit-winget.sh PRs microsoft/winget-pkgs
 if wants flatpak || wants snap || wants winget; then
-  log "flatpak/snap/winget were rendered but not pushed — see packaging/README.md"
+  log "flatpak/snap/winget rendered — publishing happens in release.yml, see packaging/README.md"
 fi

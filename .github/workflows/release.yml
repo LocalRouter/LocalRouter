@@ -451,11 +451,194 @@ jobs:
           echo ""
           echo "Release URL: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.version-bump.outputs.version }}"
 
-  publish-packages:
-    name: Publish to Package Managers
+  # Build the flatpak per-architecture and export an (unsigned) OSTree repo.
+  # publish-packages later merges + signs these into the self-hosted flatpak
+  # remote at packages.localrouter.ai/flatpak — our own "tap", no Flathub
+  # review. The single-file .flatpak bundle is also attached to the release
+  # for offline installs.
+  build-flatpak:
+    name: Flatpak - ${{ matrix.arch }}
+    needs: [version-bump, create-release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version-bump.outputs.version }}
+          # publish-packages.sh derives the release date from the tag.
+          fetch-depth: 0
+
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Render the flatpak manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./scripts/publish-packages.sh \
+            --version "${{ needs.version-bump.outputs.version }}" \
+            --only flatpak \
+            --out-dir /tmp/pkgout
+
+      - name: Build the flatpak
+        working-directory: /tmp/pkgout/flatpak
+        run: |
+          flatpak-builder --user \
+            --install-deps-from=flathub \
+            --arch ${{ matrix.arch }} \
+            --repo /tmp/flatpak-repo \
+            --disable-rofiles-fuse \
+            --force-clean \
+            builddir ai.localrouter.app.yml
+
+      - name: Attach the bundle to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.version-bump.outputs.version }}"
+          flatpak build-bundle /tmp/flatpak-repo \
+            "LocalRouter_${VERSION}_${{ matrix.arch }}.flatpak" \
+            ai.localrouter.app stable --arch=${{ matrix.arch }}
+          gh release upload "v${VERSION}" \
+            --repo ${{ github.repository }} \
+            --clobber \
+            "LocalRouter_${VERSION}_${{ matrix.arch }}.flatpak"
+
+      - name: Upload the OSTree repo for publish-packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-repo-${{ matrix.arch }}
+          path: /tmp/flatpak-repo
+          retention-days: 1
+          if-no-files-found: error
+
+  # Build the snap per-architecture and attach it to the release. If the
+  # SNAPCRAFT_STORE_CREDENTIALS secret is configured it is also uploaded to
+  # the Snap Store — snapd is hardwired to Canonical's store, so unlike
+  # flatpak there is no self-hostable remote; without credentials users can
+  # still `snap install --dangerous --classic` the attached file.
+  build-snap:
+    name: Snap - ${{ matrix.arch }}
+    needs: [version-bump, create-release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Runner OS must match `base: core22` for --destructive-mode.
+          - runner: ubuntu-22.04
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version-bump.outputs.version }}
+          fetch-depth: 0
+
+      - name: Render the snapcraft recipe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./scripts/publish-packages.sh \
+            --version "${{ needs.version-bump.outputs.version }}" \
+            --only snap \
+            --out-dir /tmp/pkgout
+          mkdir -p /tmp/snap-build/snap
+          cp /tmp/pkgout/snap/snapcraft.yaml /tmp/snap-build/snap/
+
+      - name: Build the snap
+        working-directory: /tmp/snap-build
+        run: |
+          sudo snap install snapcraft --classic
+          sudo snapcraft pack --destructive-mode --verbosity=verbose
+          ls -lh ./*.snap
+
+      - name: Attach the snap to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: /tmp/snap-build
+        run: |
+          gh release upload "v${{ needs.version-bump.outputs.version }}" \
+            --repo ${{ github.repository }} \
+            --clobber \
+            ./*.snap
+
+      - name: Upload to the Snap Store
+        # The first classic upload is held until Canonical's one-time
+        # classic-confinement review (forum store-request) is granted, so a
+        # store rejection must not fail the release — the .snap is already on
+        # the GitHub release either way.
+        continue-on-error: true
+        working-directory: /tmp/snap-build
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          if [ -z "$SNAPCRAFT_STORE_CREDENTIALS" ]; then
+            echo "::notice::SNAPCRAFT_STORE_CREDENTIALS unset — skipping Snap Store upload"
+            exit 0
+          fi
+          snapcraft upload --release=stable ./*.snap
+
+  # PR the rendered manifests to microsoft/winget-pkgs. WinGet has no
+  # user-hostable source (short of running a REST server), but the submission
+  # itself is fully automated; Microsoft's bots validate and a moderator
+  # merges — routine for new versions of an existing package.
+  publish-winget:
+    name: Publish to WinGet
     needs: [version-bump, create-release]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version-bump.outputs.version }}
+          fetch-depth: 0
+
+      - name: Render and submit the WinGet manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          if [ -z "$WINGET_PAT" ]; then
+            echo "::notice::WINGET_PAT unset — skipping the winget-pkgs submission"
+            exit 0
+          fi
+          ./scripts/publish-packages.sh \
+            --version "${{ needs.version-bump.outputs.version }}" \
+            --only winget \
+            --out-dir /tmp/pkgout
+          ./packaging/winget/submit-winget.sh \
+            --version "${{ needs.version-bump.outputs.version }}" \
+            --manifests-dir /tmp/pkgout/winget
+
+  publish-packages:
+    name: Publish to Package Managers
+    needs: [version-bump, create-release, build-flatpak]
+    # Run even when the flatpak build failed: brew/scoop/AUR/apt/yum must not
+    # be held hostage by a flatpak runtime issue. The flatpak merge steps
+    # below just skip when the artifacts are missing.
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -470,7 +653,9 @@ jobs:
       - name: Install repository tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev apt-utils createrepo-c
+          # flatpak + ostree drive build-flatpak-repo.sh (build-commit-from,
+          # build-update-repo); the rest is for the APT/YUM metadata.
+          sudo apt-get install -y dpkg-dev apt-utils createrepo-c flatpak ostree
 
       - name: Download release assets
         env:
@@ -483,9 +668,9 @@ jobs:
             --clobber
           ls -lh release-assets/
 
-      # Homebrew tap + Scoop bucket + AUR. WinGet is deliberately excluded:
-      # Microsoft's community repo has a human review step, so it is submitted
-      # by hand — see packaging/winget/README.md.
+      # Homebrew tap + Scoop bucket + AUR. WinGet is handled by the separate
+      # publish-winget job (it PRs microsoft/winget-pkgs); flatpak and snap
+      # are built by their own jobs above.
       - name: Render and push brew / scoop / AUR
         env:
           PACKAGING_PAT: ${{ secrets.PACKAGING_PAT }}
@@ -504,23 +689,14 @@ jobs:
             --push
           rm -f /tmp/aur_key
 
-      - name: Render flatpak / snap manifests for review
-        run: |
-          ./scripts/publish-packages.sh \
-            --version "${{ needs.version-bump.outputs.version }}" \
-            --only flatpak,snap,winget \
-            --assets-dir release-assets \
-            --out-dir /tmp/pkgout-review
-
-      # These three go through external review, so CI only produces the files.
-      # Download them from the run summary when submitting.
-      - name: Upload review manifests
-        uses: actions/upload-artifact@v4
+      # Tolerate absence: when build-flatpak failed there is nothing to merge,
+      # and the apt/yum publish below must still happen.
+      - name: Download the flatpak OSTree repos
+        uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
-          name: manifests-for-review-${{ needs.version-bump.outputs.version }}
-          path: /tmp/pkgout-review
-          retention-days: 30
-          if-no-files-found: error
+          pattern: flatpak-repo-*
+          path: flatpak-repos
 
       - name: Checkout the package repository
         uses: actions/checkout@v4
@@ -549,7 +725,18 @@ jobs:
           # --pinentry-mode loopback; the agent must be told to accept that.
           mkdir -p ~/.gnupg && chmod 700 ~/.gnupg
           echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
           gpgconf --reload gpg-agent
+          # build-flatpak-repo.sh signs through ostree, which drives gpg
+          # internally with no passphrase plumbing — preset the passphrase in
+          # the agent so those invocations never hit a pinentry.
+          if [ -n "$APT_GPG_PASSPHRASE" ]; then
+            for grip in $(gpg --list-secret-keys --with-keygrip --with-colons \
+                            | awk -F: '/^grp:/ {print $10}'); do
+              printf '%s' "$APT_GPG_PASSPHRASE" | \
+                /usr/lib/gnupg/gpg-preset-passphrase --preset "$grip"
+            done
+          fi
 
       - name: Build the APT and YUM repositories
         env:
@@ -561,6 +748,21 @@ jobs:
             --version "${{ needs.version-bump.outputs.version }}" \
             --assets-dir release-assets \
             --repo-dir packages-repo
+
+      - name: Build the flatpak repository
+        env:
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          args=()
+          for repo in flatpak-repos/flatpak-repo-*; do
+            [ -d "$repo/objects" ] && args+=(--src-repo "$repo")
+          done
+          if [ "${#args[@]}" -eq 0 ]; then
+            echo "::warning::no flatpak OSTree repos to merge — did build-flatpak fail?"
+            exit 0
+          fi
+          ./packaging/linux-repo/build-flatpak-repo.sh \
+            --repo-dir packages-repo "${args[@]}"
 
       - name: Commit and push the package repository
         working-directory: packages-repo

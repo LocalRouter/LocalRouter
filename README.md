@@ -57,8 +57,8 @@ sudo apt update && sudo apt install localrouter
 sudo dnf config-manager --add-repo https://packages.localrouter.ai/yum/localrouter.repo
 sudo dnf install localrouter
 
-# Flatpak
-flatpak install flathub ai.localrouter.app
+# Flatpak (LocalRouter's own repo — like a Homebrew tap)
+flatpak install --from https://packages.localrouter.ai/flatpak/localrouter.flatpakref
 
 # Snap
 sudo snap install localrouter --classic
@@ -69,7 +69,7 @@ docker pull ghcr.io/localrouter/localrouter:latest
 
 Or download an installer directly from
 [localrouter.ai/download](https://localrouter.ai/download) — DMG, MSI, NSIS,
-`.deb`, `.rpm` and AppImage builds are attached to every
+`.deb`, `.rpm`, AppImage, `.flatpak` and `.snap` builds are attached to every
 [release](https://github.com/LocalRouter/LocalRouter/releases).
 
 When LocalRouter is installed through a package manager it detects this and

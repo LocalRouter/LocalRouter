@@ -1,16 +1,25 @@
 # Flatpak manifest for LocalRouter.
 #
-# Submitted to Flathub as a PR to flathub/flathub creating the
-# `ai.localrouter.app` repository. The app id matches the localrouter.ai
-# domain, which is what Flathub's ownership check requires.
+# Built per-architecture by the `build-flatpak` job in
+# .github/workflows/release.yml and published to LocalRouter's OWN flatpak
+# repository (packaging/linux-repo/build-flatpak-repo.sh, served from
+# https://packages.localrouter.ai/flatpak) — the flatpak equivalent of a
+# Homebrew tap, with no external review gate. Users add the remote once and
+# `flatpak update` works from then on.
+#
+# The same manifest is Flathub-ready: submitting to flathub/flathub later is
+# optional extra reach, not a requirement. The app id matches the
+# localrouter.ai domain, which is what Flathub's ownership check requires.
 #
 # `__VERSION__` / `__SHA256_AMD64__` / `__SHA256_ARM64__` are substituted by
 # scripts/publish-packages.sh.
 #
-# NOTE: `runtime-version` must be a runtime that Flathub still supports at
-# submission time. Verify against https://docs.flatpak.org/en/latest/available-runtimes.html
-# and bump before opening the PR — an EOL runtime is an automatic rejection.
+# NOTE: `runtime-version` must be a currently-supported runtime. Verify
+# against https://docs.flatpak.org/en/latest/available-runtimes.html when
+# bumping — an EOL runtime stops getting security fixes (and is an automatic
+# rejection if this is ever submitted to Flathub).
 app-id: ai.localrouter.app
+branch: stable
 runtime: org.gnome.Platform
 runtime-version: '48'
 sdk: org.gnome.Sdk

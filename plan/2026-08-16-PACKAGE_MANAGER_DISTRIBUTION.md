@@ -23,12 +23,16 @@ Also skipped by decision: Chocolatey (redundant with WinGet), Nixpkgs
 | Channel | Gate | Automation | Notes |
 |---|---|---|---|
 | Homebrew (own tap) | none | CI, automatic | Official `homebrew-cask` needs 225★ for self-submission; repo has 25★ |
-| WinGet | none | **manual PR** (by decision) | `LocalRouter.LocalRouter`, NSIS installer |
+| WinGet | MS validation + moderator merge | CI, automatic PR | `submit-winget.sh` forks + PRs `microsoft/winget-pkgs` |
 | Scoop (own bucket) | none | CI, automatic | Same repo as the tap |
 | AUR (`localrouter-bin`) | none | CI, automatic | Repacks the `.deb` |
-| Flathub | PR review | manual | Sandbox work required — see below |
-| Snap Store | classic-confinement review | manual | Same sandbox reasons |
+| Flatpak (own repo) | none | CI, automatic | Self-hosted OSTree repo on Pages — the flatpak "tap"; Flathub optional later |
+| Snap Store | one-time classic review | CI builds + uploads | `.snap` always on the release; store upload when credentialed |
 | APT/YUM repo | none | CI, automatic | Self-hosted on GitHub Pages |
+
+*(Revised the same day: originally WinGet/Flathub/Snap were "manual submit".
+The user asked for tap-style automation everywhere — see the
+"Full automation" addendum at the bottom.)*
 
 ### Why Homebrew uses our own tap
 
@@ -210,3 +214,63 @@ precedence order.
 Not verifiable from macOS, and flagged in `packaging/README.md`: building or
 installing the Scoop, AUR, Flatpak and Snap packages, and running
 `build-linux-repo.sh` against real `dpkg-scanpackages` / `createrepo_c`.
+
+## Addendum — full automation (2026-08-16, second pass)
+
+The user rejected "manual submit" for WinGet/Flathub/Snap and asked for
+tap-style automation. What exists per ecosystem, and what was built:
+
+- **Flatpak**: flatpak natively supports third-party remotes — the true tap
+  equivalent. Dropped the Flathub-first plan; LocalRouter now hosts its own
+  OSTree repo at `packages.localrouter.ai/flatpak` (same Pages repo as
+  apt/yum). New `build-flatpak` matrix job (x86_64 on `ubuntu-latest`,
+  aarch64 on `ubuntu-24.04-arm`) runs `flatpak-builder`, attaches a
+  `.flatpak` bundle to the release, and hands the OSTree repo to
+  `publish-packages`, where the new
+  `packaging/linux-repo/build-flatpak-repo.sh` merges per-arch builds with
+  `flatpak build-commit-from` (re-signing with the apt GPG key — the
+  documented pattern for promoting autobuilder commits), then
+  `build-update-repo --generate-static-deltas --prune --prune-depth=1` and
+  writes `.flatpakrepo`/`.flatpakref`. ostree drives gpg internally with no
+  passphrase plumbing, so the CI key-import step now presets the passphrase
+  in gpg-agent (`gpg-preset-passphrase` + `allow-preset-passphrase`).
+  Manifest gained `branch: stable`. Flathub submission is now optional reach,
+  not a dependency.
+- **WinGet**: no self-hostable source exists short of running a REST server,
+  but the submission is fully automatable. New
+  `packaging/winget/submit-winget.sh`: forks `microsoft/winget-pkgs` under
+  the `WINGET_PAT` account (auto-created, idempotent), syncs the fork,
+  sparse+treeless-clones it (the full repo is GBs), commits the rendered
+  manifests, force-pushes a per-version branch and opens the PR with the
+  title convention moderators key off ("New package:" / "New version:").
+  New `publish-winget` job runs it; skips with a notice while `WINGET_PAT`
+  is unset.
+- **Snap**: snapd is hardwired to Canonical's store — no third-party repos,
+  so this is the one channel with an unavoidable (one-time) human gate.
+  New `build-snap` matrix job (`ubuntu-22.04`/`-arm`, matching `base`) runs
+  `snapcraft pack --destructive-mode`, always attaches the `.snap` to the
+  release (`snap install --dangerous --classic` works today), and uploads to
+  the store when `SNAPCRAFT_STORE_CREDENTIALS` is set (`continue-on-error`:
+  the first classic upload is held until the store request is granted).
+- **snapcraft.yaml rewritten** for buildability: `base: core22` (matches the
+  ubuntu-22.04 deb build environment; also avoids canonical/craft-parts#623
+  where `enable-patchelf` picks the wrong interpreter on core24), dropped
+  `extensions: [gnome]` (extensions don't apply to classic confinement),
+  `plugin: nil` + explicit checksum-verified deb download (the previous
+  `dump` + `$CRAFT_ARCH_BUILD_FOR`-in-`source:` relied on unverified variable
+  expansion), `build-attributes: [enable-patchelf]` (required for classic),
+  and a generated `bin/localrouter-launch` that bakes in the arch triplet for
+  `LD_LIBRARY_PATH` / `WEBKIT_EXEC_PATH` / `WEBKIT_INJECTED_BUNDLE_PATH`
+  (classic snaps get no env rewriting from snapd; WebKit's helper processes
+  live in an arch-specific libdir the host won't have).
+- `publish-packages.sh`: the snap channel now needs the two debs (its recipe
+  pins their sha256); flatpak/snap/winget trailing note updated.
+- `publish-packages` job: review-artifact steps removed; runs even if
+  `build-flatpak` failed (`!cancelled() && create-release == success`) so a
+  flatpak runtime issue can't block brew/apt publishing.
+
+New secrets: `WINGET_PAT` (classic PAT, `public_repo`),
+`SNAPCRAFT_STORE_CREDENTIALS` (optional). Flatpak reuses `PACKAGING_PAT` +
+the apt GPG key. Remaining human actions: the one-time Snap Store
+name-registration + classic request, and answering questions on the first
+winget-pkgs PR.
