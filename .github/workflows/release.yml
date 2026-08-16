@@ -595,41 +595,6 @@ jobs:
           fi
           snapcraft upload --release=stable ./*.snap
 
-  # PR the rendered manifests to microsoft/winget-pkgs. WinGet has no
-  # user-hostable source (short of running a REST server), but the submission
-  # itself is fully automated; Microsoft's bots validate and a moderator
-  # merges — routine for new versions of an existing package.
-  publish-winget:
-    name: Publish to WinGet
-    needs: [version-bump, create-release]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: v${{ needs.version-bump.outputs.version }}
-          fetch-depth: 0
-
-      - name: Render and submit the WinGet manifests
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WINGET_PAT: ${{ secrets.WINGET_PAT }}
-        run: |
-          if [ -z "$WINGET_PAT" ]; then
-            echo "::notice::WINGET_PAT unset — skipping the winget-pkgs submission"
-            exit 0
-          fi
-          ./scripts/publish-packages.sh \
-            --version "${{ needs.version-bump.outputs.version }}" \
-            --only winget \
-            --out-dir /tmp/pkgout
-          ./packaging/winget/submit-winget.sh \
-            --version "${{ needs.version-bump.outputs.version }}" \
-            --manifests-dir /tmp/pkgout/winget
-
   publish-packages:
     name: Publish to Package Managers
     needs: [version-bump, create-release, build-flatpak]
@@ -668,9 +633,10 @@ jobs:
             --clobber
           ls -lh release-assets/
 
-      # Homebrew tap + Scoop bucket + AUR. WinGet is handled by the separate
-      # publish-winget job (it PRs microsoft/winget-pkgs); flatpak and snap
-      # are built by their own jobs above.
+      # Homebrew tap + Scoop bucket + AUR. Flatpak and snap are built by
+      # their own jobs above. WinGet is deliberately manual (by decision:
+      # no bot-opened PRs against other people's repos) — the manifests are
+      # rendered below and uploaded as an artifact for hand submission.
       - name: Render and push brew / scoop / AUR
         env:
           PACKAGING_PAT: ${{ secrets.PACKAGING_PAT }}
@@ -688,6 +654,25 @@ jobs:
             --out-dir /tmp/pkgout \
             --push
           rm -f /tmp/aur_key
+
+      - name: Render the WinGet manifests for manual submission
+        run: |
+          ./scripts/publish-packages.sh \
+            --version "${{ needs.version-bump.outputs.version }}" \
+            --only winget \
+            --assets-dir release-assets \
+            --out-dir /tmp/pkgout-winget
+
+      # WinGet goes through Microsoft's repo, which we do not PR from CI.
+      # Download this from the run summary and submit by hand — see
+      # packaging/winget/README.md.
+      - name: Upload the WinGet manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests-${{ needs.version-bump.outputs.version }}
+          path: /tmp/pkgout-winget
+          retention-days: 30
+          if-no-files-found: error
 
       # Tolerate absence: when build-flatpak failed there is nothing to merge,
       # and the apt/yum publish below must still happen.

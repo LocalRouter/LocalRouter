@@ -348,7 +348,8 @@ push_aur
 #             self-hosted repo via packaging/linux-repo/build-flatpak-repo.sh
 #   snap    — the build-snap jobs run snapcraft on the rendered recipe and
 #             upload to the release (and to the Snap Store when credentialed)
-#   winget  — packaging/winget/submit-winget.sh PRs microsoft/winget-pkgs
+#   winget  — rendered and uploaded as a CI artifact; submitted by hand
+#             (by decision: no bot PRs to microsoft/winget-pkgs)
 if wants flatpak || wants snap || wants winget; then
   log "flatpak/snap/winget rendered — publishing happens in release.yml, see packaging/README.md"
 fi

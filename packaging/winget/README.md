@@ -1,42 +1,37 @@
-# WinGet submission (automated)
+# WinGet submission (manual, by decision)
 
 WinGet has no user-hostable equivalent of a Homebrew tap — third-party
 "REST sources" exist but require running a server — so `microsoft/winget-pkgs`
-is the channel. The **submission is automated anyway**: every release,
-`publish-winget` in `.github/workflows/release.yml` renders the manifests and
-runs `submit-winget.sh`, which forks `winget-pkgs` under the token's account,
-pushes a one-commit branch, and opens the PR. Microsoft's validation bots plus
-a moderator take it from there; new versions of an already-accepted package
-are routinely approved without discussion.
+is the channel, and getting in means opening a PR there.
 
-## One-time setup
+Automating that PR was built and then **deliberately removed**: it requires a
+classic PAT (fine-grained tokens cannot open PRs against repos you don't own)
+and means a bot opening PRs on someone else's repository under your name.
+Decision: no classic PATs, no auto-created PRs in other people's repos.
 
-1. Create a **classic** PAT with the `public_repo` scope on the GitHub account
-   that should own the fork (fine-grained PATs cannot open PRs against repos
-   they don't own).
-2. Save it as the `WINGET_PAT` repository secret.
+So CI renders the manifests every release and uploads them as the
+`winget-manifests-<version>` artifact on the `publish-packages` job; a human
+submits them.
 
-That's it — the fork of `microsoft/winget-pkgs` is created automatically on
-first run. While `WINGET_PAT` is unset the job logs a notice and skips, so
-releases never fail on it.
+## Per release
 
-Expect the **first** PR (the "New package" one) to get moderator questions;
-answer them on the PR. Everything after that is hands-off.
+1. Download `winget-manifests-<version>` from the release run's summary page
+   (or render locally:
+   `./scripts/publish-packages.sh --version 0.0.139 --only winget --out-dir /tmp/pkg`).
+2. Submit the `manifests/l/LocalRouter/LocalRouter/<version>/` directory to
+   <https://github.com/microsoft/winget-pkgs> — either:
+   - **Web UI, no token needed**: fork winget-pkgs on github.com, "Add file →
+     Upload files" into `manifests/l/LocalRouter/LocalRouter/<version>/` on a
+     branch, open the PR. Title it
+     `New version: LocalRouter.LocalRouter version <version>`
+     (`New package:` for the very first one) — the moderation tooling keys
+     off that format.
+   - Or [Komac](https://github.com/russellbanks/Komac) /
+     [`wingetcreate`](https://github.com/microsoft/winget-create) if you're
+     comfortable giving those your own token interactively.
 
-## Manual fallback
-
-The same script runs locally:
-
-```bash
-./scripts/publish-packages.sh --version 0.0.139 --only winget --out-dir /tmp/pkg
-WINGET_PAT=<token> ./packaging/winget/submit-winget.sh \
-  --version 0.0.139 --manifests-dir /tmp/pkg/winget
-```
-
-Or hand the rendered files in
-`/tmp/pkg/winget/manifests/l/LocalRouter/LocalRouter/0.0.139/` to
-[Komac](https://github.com/russellbanks/Komac) / `wingetcreate` if you prefer
-their validation.
+Microsoft's validation bots check the manifests, then a moderator merges.
+Expect questions on the first PR; new versions afterwards are routine.
 
 ## Known friction
 

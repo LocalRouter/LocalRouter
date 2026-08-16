@@ -23,7 +23,7 @@ Also skipped by decision: Chocolatey (redundant with WinGet), Nixpkgs
 | Channel | Gate | Automation | Notes |
 |---|---|---|---|
 | Homebrew (own tap) | none | CI, automatic | Official `homebrew-cask` needs 225★ for self-submission; repo has 25★ |
-| WinGet | MS validation + moderator merge | CI, automatic PR | `submit-winget.sh` forks + PRs `microsoft/winget-pkgs` |
+| WinGet | MS validation + moderator merge | manual PR (CI renders the manifests) | classic-PAT/bot-PR automation rejected by decision |
 | Scoop (own bucket) | none | CI, automatic | Same repo as the tap |
 | AUR (`localrouter-bin`) | none | CI, automatic | Repacks the `.deb` |
 | Flatpak (own repo) | none | CI, automatic | Self-hosted OSTree repo on Pages — the flatpak "tap"; Flathub optional later |
@@ -236,15 +236,13 @@ tap-style automation. What exists per ecosystem, and what was built:
   in gpg-agent (`gpg-preset-passphrase` + `allow-preset-passphrase`).
   Manifest gained `branch: stable`. Flathub submission is now optional reach,
   not a dependency.
-- **WinGet**: no self-hostable source exists short of running a REST server,
-  but the submission is fully automatable. New
-  `packaging/winget/submit-winget.sh`: forks `microsoft/winget-pkgs` under
-  the `WINGET_PAT` account (auto-created, idempotent), syncs the fork,
-  sparse+treeless-clones it (the full repo is GBs), commits the rendered
-  manifests, force-pushes a per-version branch and opens the PR with the
-  title convention moderators key off ("New package:" / "New version:").
-  New `publish-winget` job runs it; skips with a notice while `WINGET_PAT`
-  is unset.
+- **WinGet**: no self-hostable source exists short of running a REST server;
+  the submission itself was automated (`submit-winget.sh` forking + PRing
+  `microsoft/winget-pkgs`), then **removed at the user's direction** — it
+  required a classic PAT and meant bot-opened PRs on someone else's repo,
+  both rejected. CI now renders the manifests as the
+  `winget-manifests-<version>` artifact for hand submission (web-UI fork
+  upload needs no token at all); see `packaging/winget/README.md`.
 - **Snap**: snapd is hardwired to Canonical's store — no third-party repos,
   so this is the one channel with an unavoidable (one-time) human gate.
   New `build-snap` matrix job (`ubuntu-22.04`/`-arm`, matching `base`) runs
@@ -269,8 +267,8 @@ tap-style automation. What exists per ecosystem, and what was built:
   `build-flatpak` failed (`!cancelled() && create-release == success`) so a
   flatpak runtime issue can't block brew/apt publishing.
 
-New secrets: `WINGET_PAT` (classic PAT, `public_repo`),
-`SNAPCRAFT_STORE_CREDENTIALS` (optional). Flatpak reuses `PACKAGING_PAT` +
-the apt GPG key. Remaining human actions: the one-time Snap Store
-name-registration + classic request, and answering questions on the first
-winget-pkgs PR.
+New secret: `SNAPCRAFT_STORE_CREDENTIALS` (optional). Flatpak reuses
+`PACKAGING_PAT` + the apt GPG key; `PACKAGING_PAT` can (and should) be a
+fine-grained PAT restricted to `homebrew-tap` + `packages`. Remaining human
+actions: the one-time Snap Store name-registration + classic request, and
+filing each winget-pkgs PR from the CI-rendered artifact.

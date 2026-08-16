@@ -19,7 +19,7 @@ party reviews it afterwards.
 | AUR | Arch (x86_64 + aarch64) | `localrouter-bin` | none |
 | APT / YUM | Debian, Ubuntu, Fedora, RHEL | `LocalRouter/packages` (Pages) | none |
 | Flatpak | Linux | our own flatpak repo, also in `LocalRouter/packages` | none |
-| WinGet | Windows x64 | automated PR to `microsoft/winget-pkgs` | MS validation + moderator merge |
+| WinGet | Windows x64 | **manual PR** to `microsoft/winget-pkgs` (CI renders the manifests) | MS validation + moderator merge |
 | Snap | Linux | GitHub release asset; Snap Store when credentialed | one-time classic review |
 
 Everything is rendered by `scripts/publish-packages.sh`, which resolves the
@@ -51,11 +51,13 @@ the exact flatpak analogue of a Homebrew tap, with no review queue:
 
 Submitting the same manifest to Flathub later is optional extra reach.
 
-### WinGet: automated PR
+### WinGet: manual PR, by decision
 
 No self-hosting option exists (WinGet "REST sources" require running a
-server), but `packaging/winget/submit-winget.sh` automates the submission:
-fork, one-commit branch, PR. See `winget/README.md`.
+server), so the channel is a PR to `microsoft/winget-pkgs`. Automating that
+PR needs a classic PAT and a bot opening PRs on Microsoft's repo — rejected
+by decision. CI renders the manifests as the `winget-manifests-<version>`
+artifact; a human files them. See `winget/README.md`.
 
 ### Snap: the one genuinely gated channel
 
@@ -102,9 +104,7 @@ gracefully while its piece is missing, so these can be done incrementally.
    flatpak OSTree repo.
 3. **AUR account** with `localrouter-bin` registered and an SSH key uploaded.
 4. **GPG key** for signing the APT/YUM metadata and the flatpak repo.
-5. **WinGet**: a classic PAT with `public_repo` scope (`WINGET_PAT`); the
-   fork of `microsoft/winget-pkgs` is created automatically on first run.
-6. **Snap Store** (optional until wanted): free Snapcraft account,
+5. **Snap Store** (optional until wanted): free Snapcraft account,
    `snapcraft register localrouter`, one classic-confinement store request,
    then `snapcraft export-login` → `SNAPCRAFT_STORE_CREDENTIALS`.
 
@@ -112,11 +112,10 @@ gracefully while its piece is missing, so these can be done incrementally.
 
 | Secret | Used for |
 |---|---|
-| `PACKAGING_PAT` | pushing to `homebrew-tap` and `packages` |
+| `PACKAGING_PAT` | pushing to `homebrew-tap` and `packages` — a **fine-grained** PAT restricted to those two repos (Contents: read/write) is sufficient and preferred |
 | `AUR_SSH_PRIVATE_KEY` | pushing to the AUR |
 | `APT_GPG_PRIVATE_KEY` | signing `Release` / `repomd.xml` / flatpak commits |
 | `APT_GPG_PASSPHRASE` | unlocking that key |
-| `WINGET_PAT` | forking + PRing `microsoft/winget-pkgs` |
 | `SNAPCRAFT_STORE_CREDENTIALS` | `snapcraft upload` (optional) |
 
 Without the GPG secrets the job still succeeds but publishes an **unsigned**
