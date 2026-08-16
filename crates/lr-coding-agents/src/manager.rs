@@ -133,6 +133,36 @@ impl CodingAgentManager {
         &self.config
     }
 
+    /// The user's explicit `binary_path` override for an agent, if it is set
+    /// and still points at something that exists.
+    ///
+    /// Deliberately separate from [`Self::resolve_binary`]: spawning only
+    /// diverts from an agent's normal launch command when the user asked for
+    /// it, never because auto-detection happened to find a binary.
+    pub fn configured_binary_path(&self, agent_type: CodingAgentType) -> Option<PathBuf> {
+        let configured = self
+            .config
+            .agents
+            .iter()
+            .find(|a| a.agent_type == agent_type)
+            .and_then(|a| a.binary_path.as_ref())
+            .filter(|p| !p.trim().is_empty())?;
+
+        let path = PathBuf::from(configured.trim());
+        if path.exists() {
+            return Some(path);
+        }
+
+        // An override pointing at something that no longer exists is worth
+        // surfacing: silently falling back would make the override look like
+        // it took effect.
+        tracing::warn!(
+            "Configured binary_path for {} does not exist: {configured}",
+            agent_type.display_name()
+        );
+        None
+    }
+
     /// Resolve the executable for an agent, honouring a configured override.
     ///
     /// A user-set `binary_path` wins outright — it is the escape hatch for
@@ -141,28 +171,8 @@ impl CodingAgentManager {
     /// [`lr_utils::binary::find_binary`] for why the process PATH alone is not
     /// enough in a GUI app.
     pub fn resolve_binary(&self, agent_type: CodingAgentType) -> Option<PathBuf> {
-        if let Some(configured) = self
-            .config
-            .agents
-            .iter()
-            .find(|a| a.agent_type == agent_type)
-            .and_then(|a| a.binary_path.as_ref())
-            .filter(|p| !p.trim().is_empty())
-        {
-            let path = PathBuf::from(configured);
-            if path.exists() {
-                return Some(path);
-            }
-            // An override pointing at something that no longer exists is
-            // worth surfacing: silently falling back would make the override
-            // look like it took effect.
-            tracing::warn!(
-                "Configured binary_path for {} does not exist: {configured}",
-                agent_type.display_name()
-            );
-        }
-
-        lr_utils::binary::find_binary(agent_type.binary_name())
+        self.configured_binary_path(agent_type)
+            .or_else(|| lr_utils::binary::find_binary(agent_type.binary_name()))
     }
 
     /// Check if an agent type is available (binary installed on system).
@@ -246,6 +256,7 @@ impl CodingAgentManager {
             self.config.approval_mode,
             None, // no session_id for initial spawn
             approval_override,
+            self.configured_binary_path(agent_type),
         )
         .await?;
 
@@ -489,6 +500,7 @@ impl CodingAgentManager {
                     .as_ref()
                     .map(|factory| factory(&session_id.to_string()))
             },
+            self.configured_binary_path(agent_type),
         )
         .await?;
 
@@ -878,6 +890,7 @@ impl CodingAgentManager {
             self.config.approval_mode,
             Some(&agent_session_id),
             approval_override,
+            self.configured_binary_path(agent_type),
         )
         .await?;
 
@@ -950,6 +963,7 @@ async fn spawn_via_executor(
     approval_mode: CodingAgentApprovalMode,
     resume_session_id: Option<&str>,
     approval_override: Option<Arc<dyn ExecutorApprovalService>>,
+    configured_binary: Option<PathBuf>,
 ) -> Result<SpawnedChild, CodingAgentError> {
     let mut env = ExecutionEnv::new(
         RepoContext::new(work_dir.to_path_buf(), Vec::new()),
@@ -972,10 +986,10 @@ async fn spawn_via_executor(
     // the flags of the CLI it was written for and `base_command_override`
     // replaces only the base command, not those flags.
     if let Some(args) = direct_cli_args(agent_type, prompt, config, resume_session_id) {
-        return spawn_direct(agent_type, &args, work_dir, &env).await;
+        return spawn_direct(agent_type, &args, work_dir, &env, configured_binary).await;
     }
 
-    let mut executor = build_executor(agent_type, config, approval_mode)?;
+    let mut executor = build_executor(agent_type, config, approval_mode, configured_binary)?;
     if let Some(svc) = approval_override {
         // Plug an externally supplied approval service into whichever
         // executor variant `build_executor` produced. The default impl
@@ -1079,17 +1093,19 @@ async fn spawn_direct(
     args: &[String],
     work_dir: &Path,
     env: &ExecutionEnv,
+    configured_binary: Option<PathBuf>,
 ) -> Result<SpawnedChild, CodingAgentError> {
     use std::process::Stdio;
     use workspace_utils::command_ext::GroupSpawnNoWindowExt;
 
-    // Resolve to an absolute path: the app's own PATH may not contain it.
-    let binary = lr_utils::binary::find_binary(agent_type.binary_name()).ok_or_else(|| {
-        CodingAgentError::SpawnFailed {
+    // An explicit binary_path wins; otherwise resolve to an absolute path,
+    // since the app's own PATH may not contain it.
+    let binary = configured_binary
+        .or_else(|| lr_utils::binary::find_binary(agent_type.binary_name()))
+        .ok_or_else(|| CodingAgentError::SpawnFailed {
             agent: agent_type.display_name().to_string(),
             reason: format!("{} not found on PATH", agent_type.binary_name()),
-        }
-    })?;
+        })?;
 
     let mut command = tokio::process::Command::new(&binary);
     command
@@ -1167,7 +1183,12 @@ fn build_executor(
     agent_type: CodingAgentType,
     config: &SessionConfig,
     approval_mode: CodingAgentApprovalMode,
+    configured_binary: Option<PathBuf>,
 ) -> Result<CodingAgent, CodingAgentError> {
+    // Every arm below funnels through `deser_executor`, so applying the
+    // user's binary_path override there covers all of them at once rather
+    // than needing the same line repeated per agent.
+    let configured_binary = configured_binary.as_deref();
     // `is_auto` must reflect the **session's** declared `permission_mode`,
     // not the server-wide `approval_mode`. The doc comment block above
     // (Claude Code, Gemini CLI, …) describes per-session intent —
@@ -1215,7 +1236,7 @@ fn build_executor(
                 json["model"] = serde_json::Value::String(model.clone());
             }
 
-            let executor = deser_executor(json, "Claude Code")?;
+            let executor = deser_executor(json, "Claude Code", configured_binary)?;
             Ok(CodingAgent::ClaudeCode(executor))
         }
         CodingAgentType::GeminiCli => {
@@ -1223,7 +1244,7 @@ fn build_executor(
             if is_auto {
                 json["yolo"] = serde_json::Value::Bool(true);
             }
-            let executor = deser_executor(json, "Gemini")?;
+            let executor = deser_executor(json, "Gemini", configured_binary)?;
             Ok(CodingAgent::Gemini(executor))
         }
         CodingAgentType::Codex => {
@@ -1235,7 +1256,7 @@ fn build_executor(
                 json["sandbox"] = serde_json::Value::String("workspace_write".into());
                 json["ask_for_approval"] = serde_json::Value::String("on_request".into());
             }
-            let executor = deser_executor(json, "Codex")?;
+            let executor = deser_executor(json, "Codex", configured_binary)?;
             Ok(CodingAgent::Codex(executor))
         }
         CodingAgentType::Amp => {
@@ -1244,7 +1265,7 @@ fn build_executor(
             } else {
                 serde_json::json!({})
             };
-            let executor = deser_executor(json, "Amp")?;
+            let executor = deser_executor(json, "Amp", configured_binary)?;
             Ok(CodingAgent::Amp(executor))
         }
         CodingAgentType::Cursor => {
@@ -1253,7 +1274,7 @@ fn build_executor(
             } else {
                 serde_json::json!({})
             };
-            let executor = deser_executor(json, "Cursor")?;
+            let executor = deser_executor(json, "Cursor", configured_binary)?;
             Ok(CodingAgent::CursorAgent(executor))
         }
         CodingAgentType::Opencode => {
@@ -1262,7 +1283,7 @@ fn build_executor(
             // but spell it out for both branches so behaviour is
             // explicit and visible in logs.
             json["auto_approve"] = serde_json::Value::Bool(is_auto);
-            let executor = deser_executor(json, "Opencode")?;
+            let executor = deser_executor(json, "Opencode", configured_binary)?;
             Ok(CodingAgent::Opencode(executor))
         }
         CodingAgentType::QwenCode => {
@@ -1271,7 +1292,7 @@ fn build_executor(
             } else {
                 serde_json::json!({})
             };
-            let executor = deser_executor(json, "QwenCode")?;
+            let executor = deser_executor(json, "QwenCode", configured_binary)?;
             Ok(CodingAgent::QwenCode(executor))
         }
         CodingAgentType::Copilot => {
@@ -1280,7 +1301,7 @@ fn build_executor(
             } else {
                 serde_json::json!({})
             };
-            let executor = deser_executor(json, "Copilot")?;
+            let executor = deser_executor(json, "Copilot", configured_binary)?;
             Ok(CodingAgent::Copilot(executor))
         }
         CodingAgentType::Droid => {
@@ -1289,7 +1310,7 @@ fn build_executor(
             } else {
                 serde_json::json!({})
             };
-            let executor = deser_executor(json, "Droid")?;
+            let executor = deser_executor(json, "Droid", configured_binary)?;
             Ok(CodingAgent::Droid(executor))
         }
         // Spawned directly by `spawn_direct`, which runs before this
@@ -1316,13 +1337,51 @@ fn build_model_json(config: &SessionConfig) -> serde_json::Value {
 
 /// Helper to deserialize an executor from JSON, returning CodingAgentError on failure.
 fn deser_executor<T: serde::de::DeserializeOwned>(
-    json: serde_json::Value,
+    mut json: serde_json::Value,
     agent_name: &str,
+    configured_binary: Option<&Path>,
 ) -> Result<T, CodingAgentError> {
+    // Point the executor at the user's binary instead of its built-in launch
+    // command (usually an `npx ...` invocation). Every executor honours
+    // `base_command_override` via CmdOverrides.
+    if let Some(binary) = configured_binary {
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert(
+                "base_command_override".to_string(),
+                serde_json::Value::String(quote_base_command(binary)),
+            );
+        }
+    }
+
     serde_json::from_value(json).map_err(|e| CodingAgentError::SpawnFailed {
         agent: agent_name.to_string(),
         reason: format!("Failed to build executor: {}", e),
     })
+}
+
+/// Render a path so the executors crate's shell-style splitter reads it back
+/// as a single argument.
+///
+/// `CommandBuilder` runs its base string through `shlex::split` (Unix) or
+/// `winsplit::split` (Windows), so an unquoted path containing spaces — say
+/// `/Users/me/My Tools/claude` — would be torn into two arguments and the
+/// spawn would fail with a confusing "not found".
+fn quote_base_command(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+
+    #[cfg(windows)]
+    {
+        // winsplit follows the MSVCRT rules: double quotes group, and an
+        // embedded quote is escaped by doubling it.
+        format!("\"{}\"", raw.replace('"', "\"\""))
+    }
+
+    #[cfg(not(windows))]
+    {
+        shlex::try_quote(raw.as_ref())
+            .map(|q| q.into_owned())
+            .unwrap_or_else(|_| raw.into_owned())
+    }
 }
 
 /// Spawn a background task that reads stdout and appends to the session buffer.
@@ -1601,6 +1660,155 @@ mod direct_cli_tests {
         assert!(args.iter().any(|a| a == "--no-stream"));
         assert!(args.iter().any(|a| a == "--yes-always"));
         assert!(args.windows(2).any(|w| w == ["--model", "gpt-4o"]));
+    }
+
+    fn manager_with_binary_path(agent: CodingAgentType, path: &str) -> CodingAgentManager {
+        CodingAgentManager::new(CodingAgentsConfig {
+            agents: vec![lr_config::CodingAgentConfig {
+                agent_type: agent,
+                working_directory: None,
+                model_id: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+                binary_path: Some(path.to_string()),
+            }],
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn configured_binary_path_is_honoured_when_it_exists() {
+        // Any real file works; the check is existence, not executability.
+        let real = if cfg!(windows) {
+            "C:\\Windows\\System32\\cmd.exe"
+        } else {
+            "/bin/sh"
+        };
+        let mgr = manager_with_binary_path(CodingAgentType::Aider, real);
+
+        assert_eq!(
+            mgr.configured_binary_path(CodingAgentType::Aider),
+            Some(PathBuf::from(real))
+        );
+        assert_eq!(
+            mgr.resolve_binary(CodingAgentType::Aider),
+            Some(real.into())
+        );
+    }
+
+    #[test]
+    fn stale_override_falls_back_instead_of_breaking_detection() {
+        let mgr = manager_with_binary_path(
+            CodingAgentType::Aider,
+            "/nonexistent/path/to/aider-that-was-uninstalled",
+        );
+        // The override is ignored...
+        assert!(mgr.configured_binary_path(CodingAgentType::Aider).is_none());
+        // ...and detection still behaves as if it were never set, rather
+        // than reporting the agent as missing.
+        assert_eq!(
+            mgr.resolve_binary(CodingAgentType::Aider),
+            lr_utils::binary::find_binary("aider")
+        );
+    }
+
+    #[test]
+    fn blank_override_is_treated_as_unset() {
+        for blank in ["", "   "] {
+            let mgr = manager_with_binary_path(CodingAgentType::Aider, blank);
+            assert!(mgr.configured_binary_path(CodingAgentType::Aider).is_none());
+        }
+    }
+
+    #[test]
+    fn override_is_not_invented_for_agents_without_one() {
+        let mgr = manager_with_binary_path(CodingAgentType::Aider, "/bin/sh");
+        // Configuring one agent must not divert another.
+        assert!(mgr
+            .configured_binary_path(CodingAgentType::ClaudeCode)
+            .is_none());
+    }
+
+    #[test]
+    fn base_command_quoting_survives_spaces() {
+        // The executors crate splits its base string shell-style, so an
+        // unquoted path with spaces would be torn into two arguments.
+        let quoted = quote_base_command(Path::new("/Users/me/My Tools/claude"));
+        let parts = shlex::split(&quoted).expect("quoted path must re-parse");
+        assert_eq!(parts, vec!["/Users/me/My Tools/claude"]);
+    }
+
+    #[test]
+    fn base_command_quoting_leaves_plain_paths_readable() {
+        assert_eq!(
+            shlex::split(&quote_base_command(Path::new("/usr/local/bin/claude"))).unwrap(),
+            vec!["/usr/local/bin/claude"]
+        );
+    }
+
+    /// Round-trip the built executor through serde to see what it actually
+    /// holds — `base_command_override` lives on a flattened `CmdOverrides`,
+    /// so asserting on the JSON is the way to prove it survived.
+    fn executor_json(agent: CodingAgentType, binary: Option<&str>) -> serde_json::Value {
+        let executor = build_executor(
+            agent,
+            &cfg(CodingPermissionMode::Supervised, None),
+            CodingAgentApprovalMode::default(),
+            binary.map(PathBuf::from),
+        )
+        .unwrap_or_else(|e| panic!("{agent} executor should build: {e}"));
+
+        // CodingAgent is externally tagged, so the executor's own fields sit
+        // one level under the variant key (e.g. {"CLAUDE_CODE": { .. }}).
+        let value = serde_json::to_value(&executor).expect("executor should serialize");
+        value
+            .as_object()
+            .and_then(|o| o.values().next())
+            .cloned()
+            .unwrap_or(value)
+    }
+
+    #[test]
+    fn executor_agents_get_base_command_override_only_when_configured() {
+        // Every executor-backed agent must accept the override, since the
+        // user can set binary_path for any of them.
+        for agent in [
+            CodingAgentType::ClaudeCode,
+            CodingAgentType::GeminiCli,
+            CodingAgentType::Codex,
+            CodingAgentType::Amp,
+            CodingAgentType::Cursor,
+            CodingAgentType::Opencode,
+            CodingAgentType::QwenCode,
+            CodingAgentType::Copilot,
+            CodingAgentType::Droid,
+        ] {
+            let plain = executor_json(agent, None).to_string();
+            assert!(
+                !plain.contains("base_command_override"),
+                "{agent} diverted its launch command without being asked"
+            );
+
+            let overridden = executor_json(agent, Some("/opt/custom/bin/tool")).to_string();
+            assert!(
+                overridden.contains("/opt/custom/bin/tool"),
+                "{agent} dropped the configured binary_path: {overridden}"
+            );
+        }
+    }
+
+    #[test]
+    fn overridden_base_command_with_spaces_reaches_the_executor_quoted() {
+        let json = executor_json(CodingAgentType::ClaudeCode, Some("/opt/My Tools/claude"));
+        let base = json
+            .get("base_command_override")
+            .and_then(|v| v.as_str())
+            .expect("override should be present");
+        assert_eq!(
+            shlex::split(base).unwrap(),
+            vec!["/opt/My Tools/claude"],
+            "stored base must re-parse as one argument"
+        );
     }
 
     #[test]

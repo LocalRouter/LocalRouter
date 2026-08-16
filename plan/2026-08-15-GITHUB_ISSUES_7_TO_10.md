@@ -228,10 +228,37 @@ Details that matter:
 Capability metadata now matches reality: Antigravity gains model selection
 plus auto/plan permission modes, Aider gains auto mode via `--yes-always`.
 
-Known limitation: a configured `CodingAgentConfig.binary_path` override
-applies to detection but not to spawning. That was already true of every
-executor-backed agent (they run npx-based base commands), so direct spawn is
-no worse; unifying it would mean threading config through `spawn_via_executor`.
+### Follow-up 2: `binary_path` now applies to spawning too
+
+The limitation above is closed. `CodingAgentConfig.binary_path` previously
+affected detection only, so an agent could be *listed* at a user-specified
+path and then *launched* from somewhere else entirely.
+
+- `configured_binary_path()` returns only the **explicit** override, existence
+  checked. Kept separate from `resolve_binary()` on purpose: spawning should
+  divert from an agent's normal launch command because the user asked, never
+  because auto-detection happened to find something.
+- Threaded through `spawn_via_executor` to both spawn paths. Direct-spawn
+  agents run the path as-is; executor-backed agents get it as
+  `base_command_override`, which every executor honours via `CmdOverrides`.
+- A stale override (path deleted) warns and falls back to detection rather
+  than reporting the agent as missing.
+
+**Quoting matters here.** `CommandBuilder` splits its base string with
+`shlex::split` on Unix / `winsplit::split` on Windows, so a path like
+`/opt/My Tools/claude` would be torn into two arguments and fail with a
+confusing "not found". `quote_base_command()` quotes per-platform, and a test
+round-trips the stored value back through `shlex::split` to prove it re-parses
+as exactly one argument.
+
+Writing that test caught a wrong assumption: `CodingAgent` is externally
+tagged, so executor fields sit one level under the variant key
+(`{"CLAUDE_CODE": {...}}`), not at the top level. A weaker
+`.to_string().contains(..)` assertion had passed and hidden this.
+
+15 tests cover the two spawn paths, including that all nine executor-backed
+agents accept the override and that none of them diverts its launch command
+when no override is configured.
 
 ### Verification
 
