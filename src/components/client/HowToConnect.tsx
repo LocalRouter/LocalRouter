@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/Input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   AlertDialog,
@@ -34,7 +35,7 @@ import type { ClientTemplate } from "./ClientTemplates"
 import ServiceIcon from "@/components/ServiceIcon"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
-import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams, ProxySetupInfo, GetClientProxySetupParams, ConfigureClientProxyParams, UnconfigureClientProxyParams, CaTrustStatus, ReverseProxySetupInfo, ReverseListenerState, GetClientReverseProxySetupParams, ConfigureClientReverseProxyParams, UnconfigureClientReverseProxyParams, StartClientReverseProxyParams, StopClientReverseProxyParams } from "@/types/tauri-commands"
+import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams, ProxySetupInfo, GetClientProxySetupParams, ConfigureClientProxyParams, UnconfigureClientProxyParams, CaTrustStatus, ReverseProxySetupInfo, ReverseListenerState, GetClientReverseProxySetupParams, ConfigureClientReverseProxyParams, UnconfigureClientReverseProxyParams, StartClientReverseProxyParams, StopClientReverseProxyParams, SetClientReverseProxyConfigParams } from "@/types/tauri-commands"
 
 interface ServerConfig {
   host: string
@@ -703,6 +704,10 @@ function ReverseProxySetup({
   const [busyListener, setBusyListener] = useState(false)
   const [result, setResult] = useState<LaunchResult | null>(null)
   const [innerTab, setInnerTab] = useState("auto")
+  // Draft port values, so typing doesn't rewrite config on every keystroke.
+  const [draftListen, setDraftListen] = useState("")
+  const [draftUpstream, setDraftUpstream] = useState("")
+  const [savingPorts, setSavingPorts] = useState(false)
 
   const load = useCallback(() => {
     return invoke<ReverseProxySetupInfo>("get_client_reverse_proxy_setup", {
@@ -726,6 +731,13 @@ function ReverseProxySetup({
   useEffect(() => {
     if (info) setInnerTab(info.supports_auto ? "auto" : "manual")
   }, [info?.supports_auto]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep the port fields in step with whatever the backend reports.
+  useEffect(() => {
+    if (!info) return
+    setDraftListen(String(info.listen_port))
+    setDraftUpstream(String(info.upstream_url.split(":").pop() ?? ""))
+  }, [info?.listen_port, info?.upstream_url]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleConfigure = async () => {
     try {
@@ -759,6 +771,38 @@ function ReverseProxySetup({
       toast.error(`Failed: ${e}`)
     } finally {
       setUndoing(false)
+    }
+  }
+
+  const handleSavePorts = async () => {
+    const listen = Number(draftListen)
+    const upstream = Number(draftUpstream)
+    if (!Number.isInteger(listen) || listen < 1 || listen > 65535) {
+      toast.error("The port to wrap must be between 1 and 65535")
+      return
+    }
+    if (!Number.isInteger(upstream) || upstream < 1 || upstream > 65535) {
+      toast.error("The provider's new port must be between 1 and 65535")
+      return
+    }
+    if (listen === upstream) {
+      // Forwarding to itself would loop every request back into the listener.
+      toast.error("The two ports must differ — the provider has to move aside")
+      return
+    }
+    try {
+      setSavingPorts(true)
+      await invoke("set_client_reverse_proxy_config", {
+        clientId: clientUuid,
+        listenPort: listen,
+        upstreamUrl: `http://${info?.listen_host ?? "127.0.0.1"}:${upstream}`,
+      } satisfies SetClientReverseProxyConfigParams)
+      toast.success("Ports updated")
+      await load()
+    } catch (e) {
+      toast.error(String(e))
+    } finally {
+      setSavingPorts(false)
     }
   }
 
@@ -814,6 +858,58 @@ function ReverseProxySetup({
         <code className="bg-muted px-1 py-0.5 rounded">{info.upstream_url}</code>, recording each
         call in the Monitor along the way. Nothing needs to change in the apps themselves.
       </div>
+
+      {/* The two ports. Editable only for the generic template — for a known
+          provider they are shown, disabled, because changing them would just
+          describe a provider that isn't there. */}
+      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <div className="space-y-1.5">
+          <Label className="text-xs" htmlFor="rp-listen">Port to wrap</Label>
+          <Input
+            id="rp-listen"
+            value={draftListen}
+            onChange={(e) => setDraftListen(e.target.value.replace(/[^0-9]/g, ""))}
+            disabled={!info.ports_editable || savingPorts}
+            inputMode="numeric"
+            className="h-8 font-mono text-xs"
+          />
+          <p className="text-[11px] text-muted-foreground">Your apps keep using this one</p>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs" htmlFor="rp-upstream">{providerName}&apos;s new port</Label>
+          <Input
+            id="rp-upstream"
+            value={draftUpstream}
+            onChange={(e) => setDraftUpstream(e.target.value.replace(/[^0-9]/g, ""))}
+            disabled={!info.ports_editable || savingPorts}
+            inputMode="numeric"
+            className="h-8 font-mono text-xs"
+          />
+          <p className="text-[11px] text-muted-foreground">Where it moves to</p>
+        </div>
+        {info.ports_editable && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="mb-6"
+            onClick={handleSavePorts}
+            disabled={
+              savingPorts ||
+              (draftListen === String(info.listen_port) &&
+                draftUpstream === (info.upstream_url.split(":").pop() ?? ""))
+            }
+          >
+            {savingPorts && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}
+            Save ports
+          </Button>
+        )}
+      </div>
+      {!info.ports_editable && (
+        <p className="text-[11px] text-muted-foreground -mt-1">
+          These are {providerName}&apos;s standard ports. Use the Custom template if you need to
+          choose your own.
+        </p>
+      )}
 
       {/* The three pieces that have to line up, each shown on its own. */}
       <div className="grid gap-2.5 sm:grid-cols-3 rounded-md border p-3">

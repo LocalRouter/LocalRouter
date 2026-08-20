@@ -37,17 +37,41 @@ pub const DEFAULT_PORTS: &[(&str, u16, u16)] = &[
     ("llamacpp", 8080, 8082),
 ];
 
-/// Client-template id → provider key (`reverse-ollama` → `ollama`).
+/// The generic "wrap anything" template: the user supplies both ports, and we
+/// make no assumptions about how (or whether) the provider can be restarted.
+pub const CUSTOM_KEY: &str = "custom";
+
+/// Starting ports for the generic template. Deliberately a common local-server
+/// pair rather than a real provider's, since the user is expected to change
+/// both — a client must be valid the moment it is created, so they can't start
+/// empty.
+pub const CUSTOM_DEFAULT_PORTS: (u16, u16) = (8000, 8001);
+
+/// Client-template id → provider key (`reverse-ollama` → `ollama`,
+/// `reverse-custom` → `custom`).
 pub fn provider_key_for_template(template_id: &str) -> Option<&'static str> {
     let key = template_id.strip_prefix("reverse-")?;
+    if key == CUSTOM_KEY {
+        return Some(CUSTOM_KEY);
+    }
     DEFAULT_PORTS
         .iter()
         .find(|(k, _, _)| *k == key)
         .map(|(k, _, _)| *k)
 }
 
+/// Whether this provider's ports are the user's to choose. Every preconfigured
+/// provider has known ports we fill in and show read-only; only the generic
+/// template asks the user.
+pub fn ports_are_editable(provider_key: Option<&str>) -> bool {
+    provider_key == Some(CUSTOM_KEY)
+}
+
 /// Default (listen_port, upstream_port) for a provider key.
 pub fn default_ports(provider_key: &str) -> Option<(u16, u16)> {
+    if provider_key == CUSTOM_KEY {
+        return Some(CUSTOM_DEFAULT_PORTS);
+    }
     DEFAULT_PORTS
         .iter()
         .find(|(k, _, _)| *k == provider_key)
@@ -253,6 +277,25 @@ pub fn plan_for(provider_key: &str, listen_port: u16, upstream_port: u16) -> Rev
             restart_hint: Some(
                 "Relaunch llama-server on the new port, then click Start listener.".to_string(),
             ),
+            ..Default::default()
+        },
+        CUSTOM_KEY => ReversePlan {
+            provider_label: "your provider".to_string(),
+            manual_steps: vec![
+                format!("Restart the server that currently owns port {listen_port} so it listens on {upstream_port} instead."),
+                format!("Leave everything else as-is — your apps keep using port {listen_port}."),
+                "Then start the listener below.".to_string(),
+            ],
+            notes: vec![
+                "LocalRouter doesn't know how to restart this server, so move it yourself and \
+                 then bind the port here."
+                    .to_string(),
+                format!("Anything speaking HTTP on port {listen_port} can be wrapped — the \
+                         request is forwarded byte for byte."),
+            ],
+            restart_hint: Some(format!(
+                "Once something is answering on port {upstream_port}, click Start listener."
+            )),
             ..Default::default()
         },
         other => ReversePlan {
@@ -591,6 +634,46 @@ mod tests {
         assert_eq!(provider_key_for_template("reverse-unknown"), None);
         assert_eq!(default_ports("ollama"), Some((11434, 11435)));
         assert_eq!(default_ports("nope"), None);
+    }
+
+    #[test]
+    fn generic_template_lets_the_user_pick_the_ports() {
+        assert_eq!(
+            provider_key_for_template("reverse-custom"),
+            Some(CUSTOM_KEY)
+        );
+        assert_eq!(default_ports(CUSTOM_KEY), Some(CUSTOM_DEFAULT_PORTS));
+        // A new client must be valid immediately, so the defaults can't be zero
+        // and can't collide with each other.
+        let (listen, upstream) = CUSTOM_DEFAULT_PORTS;
+        assert!(listen > 0 && upstream > 0);
+        assert_ne!(listen, upstream);
+
+        // Only the generic template exposes the ports for editing.
+        assert!(ports_are_editable(Some(CUSTOM_KEY)));
+        for (key, _, _) in DEFAULT_PORTS {
+            assert!(
+                !ports_are_editable(Some(key)),
+                "{key} has known ports and must show them read-only"
+            );
+        }
+        assert!(!ports_are_editable(None));
+    }
+
+    #[test]
+    fn generic_plan_explains_the_move_without_claiming_automation() {
+        let plan = plan_for(CUSTOM_KEY, 8000, 8001);
+        assert!(
+            !plan.supports_auto(),
+            "we know nothing about how to restart an arbitrary server"
+        );
+        assert!(!plan.manual_steps.is_empty());
+        // The steps must name both ports, or they're not actionable.
+        let joined = plan.manual_steps.join(" ");
+        assert!(
+            joined.contains("8000") && joined.contains("8001"),
+            "{joined}"
+        );
     }
 
     #[test]

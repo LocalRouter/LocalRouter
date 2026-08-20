@@ -329,6 +329,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       error: null,
     },
     upstream_reachable: true,
+    ports_editable: false,
     supports_auto: true,
     supports_undo: true,
     auto_commands: [

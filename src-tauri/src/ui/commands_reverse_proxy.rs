@@ -42,6 +42,9 @@ pub struct ReverseProxySetupInfo {
     pub listener: ReverseListenerState,
     /// Whether something is actually answering at the upstream address.
     pub upstream_reachable: bool,
+    /// Whether the user chooses the ports (the generic template) or they are
+    /// fixed by the provider we know about.
+    pub ports_editable: bool,
     /// Whether LocalRouter can relocate this provider itself.
     pub supports_auto: bool,
     pub supports_undo: bool,
@@ -140,6 +143,12 @@ pub async fn get_client_reverse_proxy_setup(
         listen_port: binding.listen_port,
         upstream_url: binding.upstream_base().to_string(),
         upstream_reachable: upstream_reachable(&binding).await,
+        ports_editable: reverse_setup::ports_are_editable(
+            client
+                .template_id
+                .as_deref()
+                .and_then(reverse_setup::provider_key_for_template),
+        ),
         listener,
         supports_auto: plan.supports_auto(),
         supports_undo: plan.supports_undo(),

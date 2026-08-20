@@ -1807,6 +1807,8 @@ export interface ReverseProxySetupInfo {
   listener: ReverseListenerState
   /** Whether something is actually answering at the upstream address. */
   upstream_reachable: boolean
+  /** Whether the user chooses the ports (generic template) or they are fixed. */
+  ports_editable: boolean
   /** Whether LocalRouter can relocate this provider itself. */
   supports_auto: boolean
   supports_undo: boolean

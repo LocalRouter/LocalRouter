@@ -600,6 +600,22 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     supportsReverseProxy: true,
     reverseProxy: { listenPort: 8080, upstreamPort: 8082 },
   },
+  {
+    id: 'reverse-custom',
+    name: 'Custom / Other',
+    description: 'Wrap any local server: you choose the port to take over and the port it moves to.',
+    category: 'local_providers',
+    icon: 'custom',
+    defaultMode: 'llm_only',
+    setupType: 'generic',
+    manualInstructions:
+      'Pick the port your apps already use and the port the server should move to. ' +
+      'Restart the server on the new port, then start the listener.',
+    supportsMcp: false,
+    supportsLlm: false,
+    supportsReverseProxy: true,
+    reverseProxy: { listenPort: 8000, upstreamPort: 8001 },
+  },
 ]
 
 export const CUSTOM_CLIENT_TEMPLATE: ClientTemplate = {

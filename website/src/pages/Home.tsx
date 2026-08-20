@@ -35,6 +35,7 @@ import {
   Globe,
   Network,
   Server,
+  Repeat,
 } from 'lucide-react'
 
 export default function Home() {
@@ -271,7 +272,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature: Via Gateway / HTTPS Proxy */}
+      {/* Feature: Via Gateway or Proxy */}
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
@@ -279,13 +280,13 @@ export default function Home() {
             <div>
               <div className="flex items-center gap-2 mb-4">
                 <Network className="h-5 w-5 text-blue-500" />
-                <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">Two ways to connect</span>
+                <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">Three ways to connect</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Via Gateway / HTTPS Proxy
+                Via Gateway or Proxy
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Connect clients either via the <span className="font-medium text-foreground">Gateway</span> — an explicit OpenAI-compatible endpoint that routes every request across your providers — or through the <span className="font-medium text-foreground">HTTPS Proxy</span>, a transparent pass-through that leaves tools like Claude Code and Codex on their own provider and subscription, retaining observability and optional request rewriting.
+                Connect clients via the <span className="font-medium text-foreground">Gateway</span> — an explicit OpenAI-compatible endpoint that routes every request across your providers — through the <span className="font-medium text-foreground">HTTPS Proxy</span>, a transparent pass-through that leaves tools like Claude Code and Codex on their own provider and subscription — or with the <span className="font-medium text-foreground">Reverse Proxy</span>, which wraps a local provider on its own port so apps you have already configured need no changes at all.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
@@ -304,59 +305,96 @@ export default function Home() {
                     <code className="mt-1.5 block w-fit rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"><span className="text-amber-500">HTTPS_PROXY</span>=http://localhost:3626 <span className="text-foreground font-semibold">claude</span></code>
                   </div>
                 </li>
+                <li className="flex gap-3">
+                  <Repeat className="h-5 w-5 shrink-0 text-emerald-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Via Reverse Proxy</span>
+                    <p className="text-sm text-muted-foreground">Wrap a local provider: Ollama is restarted on a new port and LocalRouter takes over the original one. Every app already pointing there keeps working untouched — and every call becomes visible</p>
+                    <code className="mt-1.5 block w-fit rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"><span className="text-emerald-500">ANTHROPIC_BASE_URL</span>=http://localhost:11434 <span className="text-foreground font-semibold">claude</span></code>
+                    <p className="mt-1.5 text-xs text-muted-foreground/70">Same address as before — nothing in the app changes</p>
+                  </div>
+                </li>
               </ul>
             </div>
 
             {/* Visual: two lanes through one hub */}
             <div className="relative overflow-x-auto">
               <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 p-4 shadow-2xl min-w-[420px]">
-                <svg viewBox="0 0 560 300" className="w-full" role="img" aria-label="One app connects to LocalRouter either through the LLM Gateway option, routed to many providers, or through the HTTPS Proxy option, passed through to its own provider">
-                  {/* One app, two alternative paths */}
-                  <rect x="24" y="138" width="152" height="54" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
-                  <text x="100" y="161" textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="500">Claude Code · Codex</text>
-                  <text x="100" y="177" textAnchor="middle" fill="#64748b" fontSize="10">or any OpenAI app</text>
+                <svg viewBox="0 0 560 322" className="w-full" role="img" aria-label="One app connects to LocalRouter three ways: through the Gateway, routed to many providers; through the HTTPS Proxy, passed through to its own provider; or through the Reverse Proxy, which holds a local provider's original port 11434 while Ollama itself is moved to port 11435">
+                  {/* One app, three alternative paths */}
+                  <rect x="24" y="136" width="152" height="54" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
+                  <text x="100" y="159" textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="500">Claude Code · Codex</text>
+                  <text x="100" y="175" textAnchor="middle" fill="#64748b" fontSize="10">or any app you already use</text>
 
-                  {/* app → gateway option / app → proxy option */}
-                  <path d="M176,156 C214,150 212,100 233,100" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
-                  <path d="M176,174 C214,180 212,232 233,232" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                  {/* app → gateway / proxy / reverse proxy */}
+                  <path d="M176,150 C214,145 212,75 233,75" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
+                  <path d="M176,163 C206,163 210,166 233,166" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                  <path d="M176,177 C214,182 212,251 233,251" fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" />
 
-                  {/* LocalRouter hub with the two options, divided */}
-                  <rect x="235" y="34" width="90" height="232" rx="14" fill="#1e293b" stroke="#475569" strokeWidth="1.5" />
-                  <text x="280" y="56" textAnchor="middle" fill="#e2e8f0" fontSize="11" fontWeight="600" letterSpacing="0.5">LocalRouter</text>
+                  {/* LocalRouter hub with the three options, divided */}
+                  <rect x="235" y="26" width="90" height="262" rx="14" fill="#1e293b" stroke="#475569" strokeWidth="1.5" />
+                  <text x="280" y="46" textAnchor="middle" fill="#e2e8f0" fontSize="11" fontWeight="600" letterSpacing="0.5">LocalRouter</text>
 
-                  {/* Option 1: LLM Gateway */}
-                  <text x="280" y="82" textAnchor="middle" fill="#60a5fa" fontSize="9" fontWeight="700" letterSpacing="1.5">GATEWAY</text>
-                  <rect x="246" y="90" width="68" height="26" rx="13" fill="#172554" stroke="#3b82f6" strokeWidth="1.5" />
-                  <text x="280" y="107" textAnchor="middle" fill="#93c5fd" fontSize="11" fontWeight="600">Router</text>
+                  {/* Option 1: Gateway */}
+                  <text x="280" y="66" textAnchor="middle" fill="#60a5fa" fontSize="9" fontWeight="700" letterSpacing="1.5">GATEWAY</text>
+                  <rect x="246" y="72" width="68" height="24" rx="12" fill="#172554" stroke="#3b82f6" strokeWidth="1.5" />
+                  <text x="280" y="88" textAnchor="middle" fill="#93c5fd" fontSize="10" fontWeight="600">:3625</text>
 
-                  {/* divider between the two options */}
-                  <line x1="245" y1="164" x2="315" y2="164" stroke="#475569" strokeWidth="1" strokeDasharray="4 4" />
-                  <rect x="268" y="155" width="24" height="18" rx="9" fill="#1e293b" />
-                  <text x="280" y="168" textAnchor="middle" fill="#64748b" fontSize="9" fontWeight="600">or</text>
+                  {/* divider */}
+                  <line x1="245" y1="118" x2="315" y2="118" stroke="#475569" strokeWidth="1" strokeDasharray="4 4" />
+                  <rect x="268" y="109" width="24" height="18" rx="9" fill="#1e293b" />
+                  <text x="280" y="122" textAnchor="middle" fill="#64748b" fontSize="9" fontWeight="600">or</text>
 
                   {/* Option 2: HTTPS Proxy */}
-                  <text x="280" y="200" textAnchor="middle" fill="#fbbf24" fontSize="9" fontWeight="700" letterSpacing="1.5">HTTPS PROXY</text>
-                  <rect x="246" y="208" width="68" height="26" rx="13" fill="#451a03" stroke="#f59e0b" strokeWidth="1.5" />
-                  <text x="280" y="225" textAnchor="middle" fill="#fcd34d" fontSize="11" fontWeight="600">Proxy</text>
+                  <text x="280" y="146" textAnchor="middle" fill="#fbbf24" fontSize="9" fontWeight="700" letterSpacing="1.5">HTTPS PROXY</text>
+                  <rect x="246" y="152" width="68" height="24" rx="12" fill="#451a03" stroke="#f59e0b" strokeWidth="1.5" />
+                  <text x="280" y="168" textAnchor="middle" fill="#fcd34d" fontSize="10" fontWeight="600">:3626</text>
 
-                  {/* Gateway: routed across providers (lane y=103) */}
-                  <path d="M316,103 C370,103 390,56 443,56" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
-                  <line x1="316" y1="103" x2="443" y2="103" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
-                  <path d="M316,103 C370,103 390,148 443,148" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
-                  <circle cx="443" cy="56" r="3" fill="#3b82f6" />
-                  <circle cx="443" cy="103" r="3" fill="#3b82f6" />
-                  <circle cx="443" cy="148" r="3" fill="#3b82f6" />
-                  <text x="453" y="60" fill="#94a3b8" fontSize="11">Anthropic</text>
-                  <text x="453" y="107" fill="#94a3b8" fontSize="11">OpenAI</text>
-                  <text x="453" y="152" fill="#94a3b8" fontSize="11">17+ more</text>
-                  <text x="395" y="173" textAnchor="middle" fill="#475569" fontSize="9">routed to the best model</text>
+                  {/* divider */}
+                  <line x1="245" y1="198" x2="315" y2="198" stroke="#475569" strokeWidth="1" strokeDasharray="4 4" />
+                  <rect x="268" y="189" width="24" height="18" rx="9" fill="#1e293b" />
+                  <text x="280" y="202" textAnchor="middle" fill="#64748b" fontSize="9" fontWeight="600">or</text>
 
-                  {/* Proxy: straight through to the app's own provider (lane y=221) */}
-                  <line x1="316" y1="221" x2="443" y2="221" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
-                  <circle cx="443" cy="221" r="3" fill="#f59e0b" />
-                  <text x="453" y="217" fill="#94a3b8" fontSize="11">same provider,</text>
-                  <text x="453" y="232" fill="#94a3b8" fontSize="11">same account</text>
-                  <text x="330" y="249" fill="#475569" fontSize="9">observed · forwarded unchanged</text>
+                  {/* Option 3: Reverse Proxy — holds the provider's original port */}
+                  <text x="280" y="226" textAnchor="middle" fill="#34d399" fontSize="9" fontWeight="700" letterSpacing="1.5">REVERSE PROXY</text>
+                  <rect x="246" y="232" width="68" height="24" rx="12" fill="#022c22" stroke="#10b981" strokeWidth="1.5" />
+                  <text x="280" y="248" textAnchor="middle" fill="#6ee7b7" fontSize="10" fontWeight="600">:11434</text>
+                  <text x="280" y="270" textAnchor="middle" fill="#475569" fontSize="8">Ollama&apos;s own port</text>
+
+                  {/* Gateway: routed across providers (lane y=84) */}
+                  <path d="M316,84 C370,84 390,46 443,46" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <line x1="316" y1="84" x2="443" y2="84" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <path d="M316,84 C370,84 390,122 443,122" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.85" />
+                  <circle cx="443" cy="46" r="3" fill="#3b82f6" />
+                  <circle cx="443" cy="84" r="3" fill="#3b82f6" />
+                  <circle cx="443" cy="122" r="3" fill="#3b82f6" />
+                  <text x="453" y="50" fill="#94a3b8" fontSize="11">Anthropic</text>
+                  <text x="453" y="88" fill="#94a3b8" fontSize="11">OpenAI</text>
+                  <text x="453" y="126" fill="#94a3b8" fontSize="11">17+ more</text>
+                  <text x="395" y="145" textAnchor="middle" fill="#475569" fontSize="9">routed to the best model</text>
+
+                  {/* HTTPS Proxy: straight through to the app's own provider (lane y=164) */}
+                  <line x1="316" y1="164" x2="443" y2="164" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                  <circle cx="443" cy="164" r="3" fill="#f59e0b" />
+                  <text x="453" y="160" fill="#94a3b8" fontSize="11">same provider,</text>
+                  <text x="453" y="175" fill="#94a3b8" fontSize="11">same account</text>
+                  <text x="330" y="190" fill="#475569" fontSize="9">observed · forwarded unchanged</text>
+
+                  {/* Reverse Proxy: forwarded to the relocated Ollama (lane y=251) */}
+                  <line x1="316" y1="251" x2="424" y2="251" stroke="#10b981" strokeWidth="2" strokeLinecap="round" />
+                  <text x="370" y="244" textAnchor="middle" fill="#475569" fontSize="9">forwarded</text>
+
+                  {/* Ollama, moved aside: original port struck out, new port live */}
+                  <rect x="426" y="224" width="118" height="56" rx="10" fill="rgba(16,185,129,0.06)" stroke="#10b981" strokeWidth="1.5" />
+                  <text x="485" y="243" textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="500">Ollama</text>
+                  {/* old port, crossed out */}
+                  <text x="470" y="264" textAnchor="end" fill="#64748b" fontSize="10">:11434</text>
+                  <line x1="438" y1="260" x2="472" y2="260" stroke="#f87171" strokeWidth="1.5" strokeLinecap="round" />
+                  <text x="479" y="264" textAnchor="middle" fill="#64748b" fontSize="10">→</text>
+                  {/* new port it was moved to */}
+                  <text x="488" y="264" fill="#34d399" fontSize="10" fontWeight="600">:11435</text>
+                  <text x="485" y="295" textAnchor="middle" fill="#475569" fontSize="9">restarted on a new port</text>
+                  <text x="485" y="308" textAnchor="middle" fill="#475569" fontSize="9">apps keep using :11434</text>
                 </svg>
               </div>
             </div>
