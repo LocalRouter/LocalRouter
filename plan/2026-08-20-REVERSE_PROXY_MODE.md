@@ -251,3 +251,49 @@ Deviations and additions relative to the plan above:
   (it is verbatim pass-through, so the Models tab is hidden for these clients
   rather than shown and not enforced); no tray entries; no websocket upgrade
   support (no local provider needs it).
+
+
+## Post-testing fixes (live run against a real Ollama)
+
+The first live attempt failed with "Address already in use". Four bugs, found by
+diagnosing the machine rather than re-reading the code:
+
+1. **Ollama refuses a scripted quit.** `osascript -e 'quit app "Ollama"'`
+   returns `User canceled. (-128)`. That step was marked best-effort, so the
+   failure was swallowed, `open -a Ollama` then no-op'd (the app was still
+   running), and the sequence reported success while nothing had moved.
+2. **The GUI app must restart, not just the server.** `launchctl setenv` only
+   seeds *newly launched* processes; the running app's environment was fixed
+   (verified: zero `OLLAMA_HOST` entries in its env), so any server it respawned
+   would keep the old port. Escalation is now `pkill -x Ollama` + `open -a
+   Ollama`, and it is shown in the UI up front, marked "only if the port is
+   still held".
+3. **LocalRouter's own listener held the port being observed.** After a restart,
+   startup sync binds the original port; the relocation then waited for *that*
+   port to be released and blamed the provider when it never was. `configure`
+   now releases its own listener first.
+4. **`pkill` exits non-zero when nothing matches**, which is a success for our
+   purposes. Every stop command is now best-effort and the *port state* is the
+   only gate.
+
+The underlying design error was trusting exit codes. `relocate()` now verifies
+outcomes — old port released, new port answering — and is idempotent (a wrap
+that is already in the desired state returns immediately instead of restarting
+a healthy provider).
+
+Cross-provider follow-ups from the same pass:
+- `supports_undo()` required a non-empty `unconfigure`, which silently dropped
+  LM Studio's Undo button (its port is a CLI argument, so it has nothing to
+  un-configure). Undo is now offered for anything we can relocate.
+- Added tests asserting, for *every* provider in `DEFAULT_PORTS`: automation
+  implies reversibility, all stop commands are best-effort, and no provider
+  leaves the user with a blank panel.
+
+**Try it out** (`test_client_reverse_proxy`): calls the *wrapped port* — the
+address the user's apps use — and reports status, latency and discovered
+models. Hitting the listener rather than the provider is deliberate: a pass
+proves listener → forwarding → provider, not merely that the provider is alive.
+
+Verified end to end against a real Ollama: native `/api/chat` NDJSON streaming
+and OpenAI-shaped `/v1/chat/completions` both flow through the wrap on 11434 to
+Ollama on 11435.

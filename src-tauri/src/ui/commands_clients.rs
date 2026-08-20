@@ -83,6 +83,9 @@ pub struct ClientInfo {
     pub template_id: Option<String>,
     /// Whether auto-sync of external app config is enabled
     pub sync_config: bool,
+    /// Reverse-proxy binding — the address apps use, so Try It Out can send
+    /// requests through the wrapped port rather than the native gateway.
+    pub reverse_proxy: Option<lr_config::ClientReverseProxy>,
     /// Whether guardrails are active (has non-allow category_actions)
     pub guardrails_active: bool,
     /// Whether JSON repair is active (resolved from per-client override or global)
@@ -130,6 +133,7 @@ pub async fn list_clients(
                 mcp_mode: c.mcp_mode,
                 template_id: c.template_id.clone(),
                 sync_config: c.sync_config,
+                reverse_proxy: c.reverse_proxy.clone(),
                 guardrails_active: guardrails_active_for(&c, &config),
                 json_repair_active: c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
             }
@@ -293,6 +297,7 @@ pub async fn create_client(
         mcp_mode: client.mcp_mode,
         template_id: client.template_id.clone(),
         sync_config: client.sync_config,
+        reverse_proxy: client.reverse_proxy.clone(),
         guardrails_active: guardrails_active_for(&client, &config_manager.get()),
         json_repair_active: {
             let cfg = config_manager.get();
@@ -545,6 +550,7 @@ pub async fn clone_client(
         mcp_mode: new_client.mcp_mode,
         template_id: new_client.template_id.clone(),
         sync_config: false,
+        reverse_proxy: new_client.reverse_proxy.clone(),
         guardrails_active: guardrails_active_for(&new_client, &config_manager.get()),
         json_repair_active: {
             let cfg = config_manager.get();

@@ -291,9 +291,18 @@ interface LlmTabProps {
   initialClientId?: string
   hideModeSwitcher?: boolean
   hideProviderSelector?: boolean
+  /**
+   * Send requests to this base URL instead of LocalRouter's own `/v1`.
+   *
+   * Used by reverse-proxy clients, whose whole point is that apps talk to the
+   * *wrapped provider's* address. Testing against the native gateway would
+   * exercise a path those clients are explicitly denied, and would prove
+   * nothing about the wrap.
+   */
+  baseUrlOverride?: string | null
 }
 
-export function LlmTab({ initialMode, initialProvider, initialClientId, hideModeSwitcher, hideProviderSelector }: LlmTabProps) {
+export function LlmTab({ initialMode, initialProvider, initialClientId, hideModeSwitcher, hideProviderSelector, baseUrlOverride }: LlmTabProps) {
   const [activeSubtab, setActiveSubtab] = useState("chat")
   const [mode, setMode] = useState<TestMode>(initialMode ?? "client")
   const [serverPort, setServerPort] = useState<number | null>(null)
@@ -454,6 +463,13 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
   // Create OpenAI client when token/port changes
   const openaiClient = useMemo(() => {
+    // A wrapped local provider is reached at its own address and needs no
+    // credentials — the listener is the client's identity. The SDK still
+    // requires a non-empty key, so pass a placeholder.
+    if (baseUrlOverride) {
+      return createOpenAIClient({ apiKey: "local", baseURL: baseUrlOverride })
+    }
+
     const token = getAuthToken()
     if (!token || !serverPort) return null
 
@@ -461,7 +477,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
       apiKey: token,
       baseURL: `http://localhost:${serverPort}/v1`,
     })
-  }, [getAuthToken, serverPort])
+  }, [getAuthToken, serverPort, baseUrlOverride])
 
   // Fetch models using OpenAI SDK
   const fetchModels = useCallback(async () => {

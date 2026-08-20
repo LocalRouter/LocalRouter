@@ -21,7 +21,7 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
 use crate::launcher::reverse_proxy::{ReverseListenerState, ReverseProxyService};
-use crate::launcher::reverse_setup::{self, Cmd};
+use crate::launcher::reverse_setup;
 use crate::ui::commands_clients::LaunchResult;
 
 /// Everything the reverse-proxy setup UI needs for one client.
@@ -261,6 +261,14 @@ pub async fn configure_client_reverse_proxy(
     let upstream_port = upstream_port_of(&binding);
     let mut steps: Vec<String> = Vec::new();
 
+    // 0. Release our own listener first. Relocation decides whether the
+    //    provider has moved by watching the original port — and if LocalRouter
+    //    is already bound to it (a re-run, or a listener restored at startup),
+    //    that port never frees and the wait times out blaming the provider.
+    if let Some(service) = app.try_state::<Arc<ReverseProxyService>>() {
+        service.stop_client(&client_id);
+    }
+
     // 1. Point LocalRouter's own provider instance at the new address first.
     //    Doing this before the move means that if the user aborts, the gateway
     //    is pointing somewhere harmless rather than at our own listener.
@@ -271,9 +279,13 @@ pub async fn configure_client_reverse_proxy(
         }
     }
 
-    // 2. Relocate the provider process itself, when we know how.
+    // 2. Relocate the provider process itself, when we know how. This verifies
+    //    the outcome (old port released, new port answering) rather than
+    //    trusting exit codes — providers do refuse scripted quits.
     if plan.supports_auto() {
-        match reverse_setup::run(&plan.auto, &plan.provider_label) {
+        match reverse_setup::relocate(&plan, binding.listen_port, upstream_port, &plan.configure)
+            .await
+        {
             Ok(result) => steps.push(result.message),
             Err(e) => {
                 return Ok(LaunchResult {
@@ -349,15 +361,25 @@ pub async fn unconfigure_client_reverse_proxy(
         .template_id
         .as_deref()
         .and_then(reverse_setup::provider_key_for_template);
-    let undo: Vec<Cmd> = if key == Some("lmstudio") {
-        // LM Studio's undo needs the original port, which the plan doesn't carry.
-        reverse_setup::lmstudio_undo(binding.listen_port)
+    // LM Studio's undo needs the original port, which the forward plan doesn't
+    // carry (it only knows where the provider was going).
+    let undo_plan = if key == Some("lmstudio") {
+        reverse_setup::lmstudio_undo_plan(binding.listen_port)
     } else {
-        plan.undo.clone()
+        plan.clone()
     };
 
-    if !undo.is_empty() {
-        match reverse_setup::run(&undo, &plan.provider_label) {
+    if undo_plan.supports_auto() {
+        // Moving home reverses the ports: the relocated port is freed and the
+        // original one must answer again.
+        match reverse_setup::relocate(
+            &undo_plan,
+            upstream_port_of(&binding),
+            binding.listen_port,
+            &undo_plan.unconfigure,
+        )
+        .await
+        {
             Ok(result) => steps.push(result.message),
             Err(e) => steps.push(format!("Could not move {} back: {e}", plan.provider_label)),
         }
