@@ -91,6 +91,18 @@ pub struct Cmd {
     pub args: Vec<String>,
     /// Failure is expected/harmless (e.g. quitting an app that isn't running).
     pub ignore_failure: bool,
+    /// Environment overrides for the child: `Some` sets, `None` removes.
+    ///
+    /// A process we spawn inherits *our* environment, not whatever `setx` or
+    /// `launchctl setenv` just wrote — so a relaunched provider has to be
+    /// handed the variable explicitly, and an undo relaunch has to have it
+    /// taken away explicitly (LocalRouter itself may have been started after
+    /// the variable was set).
+    pub env: Vec<(String, Option<String>)>,
+    /// Spawn without waiting for exit. Required for GUI apps: `open -a`
+    /// returns at once, but launching `ollama app.exe` or a Linux binary
+    /// directly would block `output()` until the user quits the app.
+    pub detach: bool,
 }
 
 impl Cmd {
@@ -99,6 +111,8 @@ impl Cmd {
             program: program.to_string(),
             args: args.iter().map(|a| a.to_string()).collect(),
             ignore_failure: false,
+            env: Vec::new(),
+            detach: false,
         }
     }
 
@@ -109,8 +123,33 @@ impl Cmd {
         }
     }
 
+    /// A GUI app launch: detached, with the given environment overrides.
+    fn launch(program: &str, args: &[&str], env: &[(&str, Option<&str>)]) -> Self {
+        Self {
+            detach: true,
+            env: env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.map(str::to_string)))
+                .collect(),
+            ..Self::new(program, args)
+        }
+    }
+
     /// Human-readable form, for the UI and for error messages.
     pub fn display(&self) -> String {
+        let env = self
+            .env
+            .iter()
+            .map(|(k, v)| match v {
+                Some(v) => format!("{k}={v} "),
+                None => format!("{k}= "),
+            })
+            .collect::<String>();
+        let program = if self.program.contains(' ') {
+            format!("'{}'", self.program)
+        } else {
+            self.program.clone()
+        };
         let args = self
             .args
             .iter()
@@ -124,9 +163,9 @@ impl Cmd {
             .collect::<Vec<_>>()
             .join(" ");
         if args.is_empty() {
-            self.program.clone()
+            format!("{env}{program}")
         } else {
-            format!("{} {args}", self.program)
+            format!("{env}{program} {args}")
         }
     }
 }
@@ -145,6 +184,11 @@ pub struct ReversePlan {
     /// Configuration changes made before the restart (e.g. setting the env var
     /// the provider reads at start-up).
     pub configure: Vec<Cmd>,
+    /// `configure` (and `unconfigure`) already restart the provider, so there
+    /// is no separate `start`. Used where every step needs elevation
+    /// (systemd on Linux): `pkexec` does not cache credentials, so three
+    /// phases would mean three password prompts — one transaction is one.
+    pub configure_restarts: bool,
     /// The same, for undo (e.g. clearing that env var).
     pub unconfigure: Vec<Cmd>,
     /// Ask the provider to stop, politely.
@@ -155,6 +199,10 @@ pub struct ReversePlan {
     pub force_stop: Vec<Cmd>,
     /// Start the provider again (it re-reads its configuration here).
     pub start: Vec<Cmd>,
+    /// Start for the *undo* direction, when it must differ from `start` —
+    /// a relaunch that passes the variable explicitly has to pass its
+    /// absence just as explicitly on the way back. Empty = reuse `start`.
+    pub undo_start: Vec<Cmd>,
     /// A command the user can run to start the provider on the new port.
     pub oneoff_command: Option<String>,
     /// GUI steps, when the provider can't be relocated programmatically.
@@ -169,6 +217,9 @@ impl ReversePlan {
     /// Automation is only claimed when we can both change the configuration and
     /// restart the provider — either half alone leaves the user stranded.
     pub fn supports_auto(&self) -> bool {
+        if self.configure_restarts {
+            return !self.configure.is_empty();
+        }
         !self.start.is_empty() && (!self.configure.is_empty() || !self.stop.is_empty())
     }
 
@@ -179,6 +230,24 @@ impl ReversePlan {
     /// silently dropped its Undo button.
     pub fn supports_undo(&self) -> bool {
         self.supports_auto()
+    }
+
+    /// The same plan pointed the other way: `unconfigure` becomes the
+    /// configuration step and `undo_start` (if any) the relaunch. Feeding this
+    /// to [`relocate`] with the ports swapped moves the provider home.
+    pub fn into_undo(self) -> ReversePlan {
+        let start = if self.undo_start.is_empty() {
+            self.start.clone()
+        } else {
+            self.undo_start.clone()
+        };
+        ReversePlan {
+            configure: self.unconfigure.clone(),
+            unconfigure: self.configure.clone(),
+            start,
+            undo_start: Vec::new(),
+            ..self
+        }
     }
 
     /// Every command automatic relocation may run, in order, as display
@@ -323,7 +392,7 @@ pub fn plan_for(provider_key: &str, listen_port: u16, upstream_port: u16) -> Rev
 fn ollama_plan(host_port: &str, listen_port: u16, upstream_port: u16) -> ReversePlan {
     let mut plan = ReversePlan {
         provider_label: "Ollama".to_string(),
-        oneoff_command: Some(format!("OLLAMA_HOST={host_port} ollama serve")),
+        oneoff_command: Some(ollama_oneoff(host_port)),
         restart_hint: Some("Ollama must be restarted for the new port to take effect.".to_string()),
         ..Default::default()
     };
@@ -357,35 +426,9 @@ fn ollama_plan(host_port: &str, listen_port: u16, upstream_port: u16) -> Reverse
                 .to_string(),
         ];
     } else if cfg!(target_os = "windows") {
-        // `setx` writes the user-level environment variable; already-running
-        // processes keep the old value, hence the explicit restart step.
-        plan.configure = vec![Cmd::new("setx", &["OLLAMA_HOST", host_port])];
-        plan.unconfigure = vec![Cmd::new("setx", &["OLLAMA_HOST", ""])];
-        plan.manual_steps =
-            vec!["Quit Ollama from the system tray and start it again.".to_string()];
-        plan.notes = vec![
-            format!("Sets the user environment variable OLLAMA_HOST={host_port}."),
-            "Ollama must be quit from the tray and restarted — running processes don't see the \
-             new value."
-                .to_string(),
-        ];
-        plan.restart_hint = Some(
-            "Quit Ollama from the tray, start it again, then click Start listener.".to_string(),
-        );
+        windows_ollama_plan(&mut plan, host_port);
     } else {
-        // Linux: Ollama is typically a systemd unit, and editing it needs root.
-        plan.manual_steps = vec![
-            "Run `sudo systemctl edit ollama.service`.".to_string(),
-            format!("Add:\n[Service]\nEnvironment=\"OLLAMA_HOST={host_port}\""),
-            "Run `sudo systemctl daemon-reload && sudo systemctl restart ollama`.".to_string(),
-        ];
-        plan.notes = vec![
-            "On Linux, Ollama usually runs as a systemd service and relocating it needs root, \
-             so LocalRouter won't do it for you."
-                .to_string(),
-        ];
-        plan.restart_hint =
-            Some("After Ollama restarts on the new port, click Start listener.".to_string());
+        linux_ollama_plan(&mut plan, host_port);
     }
 
     plan.notes.push(format!(
@@ -399,6 +442,158 @@ fn ollama_plan(host_port: &str, listen_port: u16, upstream_port: u16) -> Reverse
             .to_string(),
     );
     plan
+}
+
+/// `ollama serve` on the new port, for the shell the user actually has.
+fn ollama_oneoff(host_port: &str) -> String {
+    if cfg!(target_os = "windows") {
+        // PowerShell is the default shell on Windows 10/11; `VAR=value cmd`
+        // is a Unix-ism that errors there.
+        format!("$env:OLLAMA_HOST=\"{host_port}\"; ollama serve")
+    } else {
+        format!("OLLAMA_HOST={host_port} ollama serve")
+    }
+}
+
+/// Windows: the Ollama installer puts the tray app at
+/// `%LOCALAPPDATA%\\Programs\\Ollama\\ollama app.exe` and registers it to run
+/// at login. `setx` persists `OLLAMA_HOST` for future launches (Explorer picks
+/// up the change via the broadcast `setx` sends), and the relaunch we do
+/// ourselves passes the variable explicitly because a child inherits *our*
+/// environment, not the registry.
+fn windows_ollama_plan(plan: &mut ReversePlan, host_port: &str) {
+    plan.manual_steps = vec![
+        format!("Set the user environment variable OLLAMA_HOST to {host_port} (Settings → System → About → Advanced system settings → Environment Variables)."),
+        "Quit Ollama from the system tray and start it again.".to_string(),
+    ];
+    plan.restart_hint =
+        Some("Quit Ollama from the tray, start it again, then click Start listener.".to_string());
+
+    let Some(app) = find_ollama_app_windows() else {
+        plan.notes.push(
+            "The Ollama app wasn't found under %LOCALAPPDATA%\\Programs\\Ollama, so LocalRouter \
+             can't restart it for you — set the variable and restart Ollama yourself."
+                .to_string(),
+        );
+        return;
+    };
+
+    plan.configure = vec![Cmd::new("setx", &["OLLAMA_HOST", host_port])];
+    // `setx VAR ""` leaves an empty variable behind; deleting the registry
+    // value is the real inverse. Best-effort: the value may already be gone.
+    plan.unconfigure = vec![Cmd::optional(
+        "reg",
+        &["delete", "HKCU\\Environment", "/v", "OLLAMA_HOST", "/f"],
+    )];
+    // Without /F `taskkill` asks the app to close; a tray app without a
+    // window usually ignores that, so the forced kill is the one that counts.
+    // Both the tray app and the server child are named, so a stray
+    // `ollama.exe` holding the port without its parent is caught too.
+    plan.stop = vec![Cmd::optional("taskkill", &["/IM", "ollama app.exe"])];
+    plan.force_stop = vec![
+        Cmd::optional("taskkill", &["/F", "/IM", "ollama app.exe"]),
+        Cmd::optional("taskkill", &["/F", "/IM", "ollama.exe"]),
+    ];
+    plan.start = vec![Cmd::launch(&app, &[], &[("OLLAMA_HOST", Some(host_port))])];
+    // Moving back must relaunch *without* the variable — and LocalRouter's
+    // own environment may still carry it, so it is removed, not just omitted.
+    plan.undo_start = vec![Cmd::launch(&app, &[], &[("OLLAMA_HOST", None)])];
+    plan.notes = vec![
+        format!("Sets the user environment variable OLLAMA_HOST={host_port} (setx), then restarts the Ollama tray app with it."),
+        "Ollama's tray app ignores a polite close, so LocalRouter terminates it and starts it \
+         again. Any loaded model is unloaded and reloads on the next request."
+            .to_string(),
+        "If you run `ollama serve` from a terminal instead, open a new terminal after this so \
+         it sees the variable — or use the one-off command shown under Manual."
+            .to_string(),
+    ];
+}
+
+/// `%LOCALAPPDATA%\\Programs\\Ollama\\ollama app.exe`, if installed.
+fn find_ollama_app_windows() -> Option<String> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let base = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)?;
+    let candidate = base.join("Programs").join("Ollama").join("ollama app.exe");
+    candidate.exists().then(|| candidate.display().to_string())
+}
+
+/// Where the systemd drop-in for Ollama goes. A drop-in, not an edit of the
+/// unit: it survives Ollama's own upgrades (which rewrite the unit) and undo
+/// is a file removal rather than a diff.
+const LINUX_OLLAMA_DROPIN: &str = "/etc/systemd/system/ollama.service.d/localrouter.conf";
+
+/// Linux: Ollama's installer sets it up as a system-wide systemd unit, and
+/// changing a system unit needs root. `pkexec` is the desktop way to ask for
+/// it (one password dialog via the session's polkit agent), so when both the
+/// unit and `pkexec` are present the whole move is one elevated transaction:
+/// write the drop-in, reload, restart. Otherwise — a hand-run `ollama serve`,
+/// a headless box without polkit — the user gets the exact commands instead.
+fn linux_ollama_plan(plan: &mut ReversePlan, host_port: &str) {
+    plan.manual_steps = vec![
+        "Run `sudo systemctl edit ollama.service`.".to_string(),
+        format!("Add:\n[Service]\nEnvironment=\"OLLAMA_HOST={host_port}\""),
+        "Run `sudo systemctl daemon-reload && sudo systemctl restart ollama`.".to_string(),
+    ];
+    plan.restart_hint =
+        Some("After Ollama restarts on the new port, click Start listener.".to_string());
+
+    if !linux_ollama_unit_exists() {
+        plan.notes.push(
+            "No ollama.service systemd unit was found, so Ollama is probably started by hand \
+             — restart it with the one-off command shown under Manual."
+                .to_string(),
+        );
+        return;
+    }
+    if lr_utils::binary::find_binary("pkexec").is_none() {
+        plan.notes.push(
+            "Relocating the ollama.service unit needs root and `pkexec` isn't available for a \
+             password prompt, so run the steps under Manual yourself."
+                .to_string(),
+        );
+        return;
+    }
+
+    // host_port is built by us from a u16, so it is safe to inline. The
+    // script is `sh -c` so one pkexec prompt covers write + reload + restart.
+    let dir = LINUX_OLLAMA_DROPIN
+        .rsplit_once('/')
+        .map(|(d, _)| d)
+        .unwrap_or("/");
+    let apply = format!(
+        "mkdir -p {dir} && printf '[Service]\\nEnvironment=OLLAMA_HOST={host_port}\\n' > {LINUX_OLLAMA_DROPIN} && systemctl daemon-reload && systemctl restart ollama"
+    );
+    let revert = format!(
+        "rm -f {LINUX_OLLAMA_DROPIN} && systemctl daemon-reload && systemctl restart ollama"
+    );
+    plan.configure = vec![Cmd::new("pkexec", &["sh", "-c", &apply])];
+    plan.unconfigure = vec![Cmd::new("pkexec", &["sh", "-c", &revert])];
+    plan.configure_restarts = true;
+    plan.notes = vec![
+        format!("Asks for your password once (pkexec), writes {LINUX_OLLAMA_DROPIN} with OLLAMA_HOST={host_port}, and restarts the ollama systemd service."),
+        "Undo removes that file and restarts the service again — nothing else in the unit is \
+         touched."
+            .to_string(),
+        "Any loaded model is unloaded by the restart and reloads on the next request."
+            .to_string(),
+    ];
+}
+
+/// Whether an `ollama.service` unit is installed (system-wide, where the
+/// official installer puts it).
+fn linux_ollama_unit_exists() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    [
+        "/etc/systemd/system/ollama.service",
+        "/usr/lib/systemd/system/ollama.service",
+        "/lib/systemd/system/ollama.service",
+    ]
+    .iter()
+    .any(|p| std::path::Path::new(p).exists())
 }
 
 /// LM Studio ships an `lms` CLI that can restart its server on another port.
@@ -464,11 +659,16 @@ fn find_lms() -> Option<String> {
         return Some("lms".to_string());
     }
     let home = dirs::home_dir()?;
-    let candidate =
-        home.join(".lmstudio")
-            .join("bin")
-            .join(if cfg!(windows) { "lms.exe" } else { "lms" });
-    candidate.exists().then(|| candidate.display().to_string())
+    let exe = if cfg!(windows) { "lms.exe" } else { "lms" };
+    // `~/.lmstudio/bin` is the current install location on every OS;
+    // `~/.cache/lm-studio/bin` is where older releases put it.
+    [
+        home.join(".lmstudio").join("bin").join(exe),
+        home.join(".cache").join("lm-studio").join("bin").join(exe),
+    ]
+    .into_iter()
+    .find(|c| c.exists())
+    .map(|c| c.display().to_string())
 }
 
 /// How long to wait for a port to change state during a relocation.
@@ -505,7 +705,31 @@ async fn wait_for_port(port: u16, want_in_use: bool, limit: Duration) -> bool {
 /// caller rather than aborting — the caller decides, based on the *outcome*,
 /// whether it mattered.
 fn run_one(cmd: &Cmd) -> Result<(), String> {
-    match Command::new(&cmd.program).args(&cmd.args).output() {
+    let mut command = Command::new(&cmd.program);
+    command.args(&cmd.args);
+    for (k, v) in &cmd.env {
+        match v {
+            Some(v) => command.env(k, v),
+            None => command.env_remove(k),
+        };
+    }
+    if cmd.detach {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: the app must
+            // outlive LocalRouter and not share its (non-existent) console.
+            command.creation_flags(0x0000_0008 | 0x0000_0200);
+        }
+        return command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(drop)
+            .map_err(|e| format!("could not start `{}`: {e}", cmd.display()));
+    }
+    match command.output() {
         Ok(out) if out.status.success() => Ok(()),
         Ok(out) => {
             // Some tools report failure in stderr while still exiting 0-ish,
@@ -574,6 +798,19 @@ pub async fn relocate(
 
     let mut steps = run_phase(configure)?;
 
+    if plan.configure_restarts {
+        // The restart happened inside `configure`; the service may still be
+        // letting go of the old socket. Binding it while it is held would be
+        // blamed on the provider by the listener, so wait here instead.
+        if !wait_for_port(free_port, false, PORT_WAIT).await {
+            return Err(format!(
+                "{} was restarted but is still listening on port {free_port}",
+                plan.provider_label
+            ));
+        }
+        steps.push(format!("Port {free_port} released"));
+    }
+
     // Nothing to stop if the port is already free — the provider may simply not
     // be running, which is a perfectly normal starting point.
     if port_in_use(free_port).await && (!plan.stop.is_empty() || !plan.force_stop.is_empty()) {
@@ -597,7 +834,9 @@ pub async fn relocate(
         steps.push(format!("Port {free_port} released"));
     }
 
-    steps.extend(run_phase(&plan.start)?);
+    if !plan.configure_restarts {
+        steps.extend(run_phase(&plan.start)?);
+    }
 
     if !wait_for_port(serve_port, true, START_WAIT).await {
         return Err(format!(
@@ -687,10 +926,12 @@ mod tests {
     fn ollama_plan_mentions_both_ports_and_offers_a_oneoff() {
         let plan = plan_for("ollama", 11434, 11435);
         assert_eq!(plan.provider_label, "Ollama");
-        assert_eq!(
-            plan.oneoff_command.as_deref(),
-            Some("OLLAMA_HOST=127.0.0.1:11435 ollama serve")
-        );
+        let expected = if cfg!(target_os = "windows") {
+            "$env:OLLAMA_HOST=\"127.0.0.1:11435\"; ollama serve"
+        } else {
+            "OLLAMA_HOST=127.0.0.1:11435 ollama serve"
+        };
+        assert_eq!(plan.oneoff_command.as_deref(), Some(expected));
         assert!(plan.notes.iter().any(|n| n.contains("11434")));
         assert!(plan.notes.iter().any(|n| n.contains("11435")));
     }
@@ -749,11 +990,179 @@ mod tests {
                     "{key} can be relocated but not restored"
                 );
                 assert!(
-                    !plan.start.is_empty(),
+                    !plan.start.is_empty() || plan.configure_restarts,
                     "{key} claims automation without a way to start the provider"
+                );
+                if plan.configure_restarts {
+                    assert!(
+                        !plan.unconfigure.is_empty(),
+                        "{key}: a configure-restarts plan must undo by the same route"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_provider_has_a_plan_on_this_os() {
+        // The point of the exercise: no provider may be a macOS special case.
+        // On every OS each one either automates or explains itself, and the
+        // explanation must name the port the provider is moving to.
+        for (key, listen, upstream) in DEFAULT_PORTS {
+            let plan = plan_for(key, *listen, *upstream);
+            let text = plan
+                .manual_steps
+                .iter()
+                .chain(plan.notes.iter())
+                .chain(plan.oneoff_command.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                plan.supports_auto() || text.contains(&upstream.to_string()),
+                "{key}: manual guidance on this OS never mentions port {upstream}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn gui_launches_are_detached_and_carry_their_environment() {
+        // A relaunch must (a) not block until the user quits the app, and
+        // (b) hand the provider the variable explicitly — the child inherits
+        // LocalRouter's environment, not what setx/launchctl just wrote.
+        for (key, listen, upstream) in DEFAULT_PORTS {
+            let plan = plan_for(key, *listen, *upstream);
+            for cmd in plan.start.iter().filter(|c| c.detach) {
+                assert!(
+                    !cmd.env.is_empty() || cfg!(target_os = "macos"),
+                    "{key}: detached launch `{}` relies on inherited environment",
+                    cmd.display()
                 );
             }
         }
+    }
+
+    #[test]
+    fn undo_relaunches_without_the_variable_it_set() {
+        // The Windows bug this guards: reusing `start` for undo would hand
+        // the relaunched app OLLAMA_HOST=<new port> and move it nowhere.
+        let plan = ReversePlan {
+            provider_label: "App".to_string(),
+            configure: vec![Cmd::new("setx", &["V", "1"])],
+            unconfigure: vec![Cmd::new("reg", &["delete", "V"])],
+            start: vec![Cmd::launch("app", &[], &[("V", Some("1"))])],
+            undo_start: vec![Cmd::launch("app", &[], &[("V", None)])],
+            ..Default::default()
+        };
+        let undo = plan.clone().into_undo();
+        assert_eq!(undo.configure, plan.unconfigure);
+        assert_eq!(undo.start[0].env, vec![("V".to_string(), None)]);
+        assert!(undo.supports_auto());
+
+        // No undo_start: the same relaunch serves both directions (macOS).
+        let same = ReversePlan {
+            undo_start: vec![],
+            ..plan
+        }
+        .into_undo();
+        assert_eq!(
+            same.start[0].env,
+            vec![("V".to_string(), Some("1".to_string()))]
+        );
+    }
+
+    #[test]
+    fn configure_restarts_plans_need_no_separate_start() {
+        let plan = ReversePlan {
+            provider_label: "Unit".to_string(),
+            configure: vec![Cmd::new("true", &[])],
+            unconfigure: vec![Cmd::new("true", &[])],
+            configure_restarts: true,
+            ..Default::default()
+        };
+        assert!(plan.supports_auto() && plan.supports_undo());
+        // …but an empty configure is still nothing.
+        let empty = ReversePlan {
+            configure: vec![],
+            ..plan
+        };
+        assert!(!empty.supports_auto());
+    }
+
+    #[test]
+    fn display_shows_environment_and_quotes_spaced_programs() {
+        let cmd = Cmd::launch(
+            r"C:\Users\me\AppData\Local\Programs\Ollama\ollama app.exe",
+            &[],
+            &[("OLLAMA_HOST", Some("127.0.0.1:11435"))],
+        );
+        assert_eq!(
+            cmd.display(),
+            r"OLLAMA_HOST=127.0.0.1:11435 'C:\Users\me\AppData\Local\Programs\Ollama\ollama app.exe'"
+        );
+        let unset = Cmd::launch("app", &[], &[("OLLAMA_HOST", None)]);
+        assert_eq!(unset.display(), "OLLAMA_HOST= app");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_ollama_uses_setx_and_relaunches_with_the_variable() {
+        let plan = plan_for("ollama", 11434, 11435);
+        assert!(plan
+            .oneoff_command
+            .as_deref()
+            .is_some_and(|c| c.starts_with("$env:OLLAMA_HOST=")));
+        if !plan.supports_auto() {
+            // No Ollama installed on this machine: must fall back to manual,
+            // not to a half plan.
+            assert!(plan.configure.is_empty() && plan.start.is_empty());
+            assert!(!plan.manual_steps.is_empty());
+            return;
+        }
+        let cmds = plan.auto_commands();
+        assert_eq!(cmds[0], "setx OLLAMA_HOST 127.0.0.1:11435");
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("taskkill /F /IM 'ollama app.exe'")
+                && c.contains("only if the port is still held")));
+        let start = &plan.start[0];
+        assert!(start.detach && start.program.ends_with("ollama app.exe"));
+        assert_eq!(
+            start.env,
+            vec![(
+                "OLLAMA_HOST".to_string(),
+                Some("127.0.0.1:11435".to_string())
+            )]
+        );
+        // Undo deletes the value (setx "" would leave an empty variable).
+        assert!(plan.unconfigure[0].display().starts_with("reg delete"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_ollama_is_one_pkexec_transaction_or_manual() {
+        let plan = plan_for("ollama", 11434, 11435);
+        assert!(plan
+            .manual_steps
+            .iter()
+            .any(|s| s.contains("systemctl edit")));
+        if !plan.supports_auto() {
+            assert!(plan.configure.is_empty());
+            return;
+        }
+        assert!(plan.configure_restarts);
+        assert!(
+            plan.start.is_empty(),
+            "start would be a second password prompt"
+        );
+        assert_eq!(plan.configure.len(), 1);
+        assert_eq!(plan.configure[0].program, "pkexec");
+        let script = plan.configure[0].args.last().unwrap();
+        assert!(script.contains(LINUX_OLLAMA_DROPIN));
+        assert!(script.contains("OLLAMA_HOST=127.0.0.1:11435"));
+        assert!(script.contains("systemctl restart ollama"));
+        let undo = plan.unconfigure[0].args.last().unwrap();
+        assert!(undo.contains(&format!("rm -f {LINUX_OLLAMA_DROPIN}")));
     }
 
     #[test]

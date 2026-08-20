@@ -375,7 +375,7 @@ pub async fn unconfigure_client_reverse_proxy(
     let undo_plan = if key == Some("lmstudio") {
         reverse_setup::lmstudio_undo_plan(binding.listen_port)
     } else {
-        plan.clone()
+        plan.clone().into_undo()
     };
 
     if undo_plan.supports_auto() {
@@ -385,7 +385,7 @@ pub async fn unconfigure_client_reverse_proxy(
             &undo_plan,
             upstream_port_of(&binding),
             binding.listen_port,
-            &undo_plan.unconfigure,
+            &undo_plan.configure,
         )
         .await
         {

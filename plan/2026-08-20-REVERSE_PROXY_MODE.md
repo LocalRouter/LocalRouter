@@ -226,11 +226,12 @@ Deviations and additions relative to the plan above:
   bound / provider relocated / provider instance retargeted. That triple is what
   actually goes wrong, so the UI shows each one.
 - **Relocation is per-provider and honest about it.** Automatic only where it is
-  reliable: Ollama on macOS (`launchctl setenv` + app restart) and Windows
-  (`setx`), LM Studio via the `lms` CLI when present. Linux Ollama (systemd,
-  needs root), Jan and GPT4All (GUI-only) get manual steps; LocalAI and
-  llama.cpp get a one-off command. The exact commands are shown in the UI
-  before the user runs them.
+  reliable: Ollama on macOS (`launchctl setenv` + app restart), Windows
+  (`setx` + `taskkill` + detached relaunch) and Linux (systemd drop-in via one
+  `pkexec` transaction, when the unit and `pkexec` exist); LM Studio via the
+  `lms` CLI when present. Jan and GPT4All (GUI-only) get manual steps; LocalAI
+  and llama.cpp get a one-off command. The exact commands are shown in the UI
+  before the user runs them. Per-OS details: `2026-08-20-REVERSE_PROXY_ALL_OS.md`.
 - **`upstream_url` is plain `http://` only** — every supported local provider
   speaks it, and pretending to support `https://` upstreams would have meant an
   untested TLS path.
