@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -112,7 +112,7 @@ fn apply_token_response(state: &mut FlowState, response: TokenResponse, now: i64
 
 /// GitHub Copilot OAuth provider
 pub struct GitHubCopilotOAuthProvider {
-    client: Client,
+    client: ClientWithMiddleware,
     current_flow: Arc<RwLock<Option<FlowState>>>,
 }
 

@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::Stream;
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -25,7 +25,7 @@ use lr_types::{AppError, AppResult};
 pub struct LocalAIProvider {
     base_url: String,
     api_key: Option<String>,
-    client: Client,
+    client: ClientWithMiddleware,
 }
 
 #[allow(dead_code)]

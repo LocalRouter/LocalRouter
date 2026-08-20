@@ -5,33 +5,84 @@
 //! are not cut short, plus a fast connect timeout (10 s) for quick
 //! failure when a provider is unreachable.
 
-use lr_types::{AppError, AppResult};
+use lr_types::{AppError, AppResult, RequestTrace, TRACE_HEADER};
 use reqwest::Client;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use std::time::Duration;
+
+tokio::task_local! {
+    /// The cross-hop trace to stamp on every upstream request sent while this
+    /// task-local is in scope. Set by the router around each provider
+    /// dispatch; read by [`TraceHeaderMiddleware`] so no provider has to
+    /// thread it through its own request building.
+    pub static OUTBOUND_TRACE: Option<RequestTrace>;
+}
+
+/// Run `fut` with `trace` as the outbound trace for any upstream HTTP request
+/// it sends. `None` sends no header (dedupe disabled).
+pub async fn with_outbound_trace<F: std::future::Future>(
+    trace: Option<RequestTrace>,
+    fut: F,
+) -> F::Output {
+    OUTBOUND_TRACE.scope(trace, fut).await
+}
+
+/// Adds `X-LocalRouter-Trace` to outgoing requests when [`OUTBOUND_TRACE`]
+/// is set, so a downstream LocalRouter hop can recognize the request as one
+/// this instance already handled.
+struct TraceHeaderMiddleware;
+
+#[async_trait::async_trait]
+impl Middleware for TraceHeaderMiddleware {
+    async fn handle(
+        &self,
+        mut req: reqwest::Request,
+        extensions: &mut http::Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<reqwest::Response> {
+        let trace = OUTBOUND_TRACE.try_with(|t| t.clone()).ok().flatten();
+        if let Some(trace) = trace {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&trace.header_value()) {
+                req.headers_mut().insert(TRACE_HEADER, value);
+            }
+        }
+        next.run(req, extensions).await
+    }
+}
+
+/// Wrap a plain reqwest client with the shared middleware stack.
+pub fn with_middleware(client: Client) -> ClientWithMiddleware {
+    ClientBuilder::new(client)
+        .with(TraceHeaderMiddleware)
+        .build()
+}
 
 /// Default client for standard API providers.
 ///
 /// * connect_timeout 10 s – fail fast if the host is unreachable
 /// * overall timeout 300 s – safety net; long enough for streaming
-pub fn default_client() -> Client {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
-        .no_gzip()
-        .build()
-        .unwrap_or_default()
+pub fn default_client() -> ClientWithMiddleware {
+    with_middleware(
+        Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(300))
+            .no_gzip()
+            .build()
+            .unwrap_or_default(),
+    )
 }
 
 /// Extended-timeout client for providers that may have slower responses.
 ///
 /// Same as `default_client` — the previous 120 s limit was too short for
 /// streaming with tool-use payloads. Both now share the 300 s ceiling.
-pub fn extended_client() -> AppResult<Client> {
+pub fn extended_client() -> AppResult<ClientWithMiddleware> {
     Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(300))
         .no_gzip()
         .build()
+        .map(with_middleware)
         .map_err(|e| AppError::Provider(format!("Failed to create HTTP client: {}", e)))
 }
 
@@ -53,12 +104,14 @@ pub fn format_stream_error(e: &reqwest::Error) -> String {
 }
 
 /// Short-timeout client for local service discovery (2s timeout).
-pub fn discovery_client() -> Client {
-    Client::builder()
-        .timeout(Duration::from_secs(2))
-        .no_gzip()
-        .build()
-        .unwrap_or_default()
+pub fn discovery_client() -> ClientWithMiddleware {
+    with_middleware(
+        Client::builder()
+            .timeout(Duration::from_secs(2))
+            .no_gzip()
+            .build()
+            .unwrap_or_default(),
+    )
 }
 
 /// Parse an OpenAI-style error body and return the best-typed `AppError`.
@@ -272,5 +325,60 @@ mod tests {
             (Some(128_000), Some(200_000))
         );
         assert_eq!(parse_context_numbers("nothing to parse"), (None, None));
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
+
+    /// Minimal one-shot HTTP server that records the trace header it received.
+    async fn echo_server() -> (SocketAddr, Arc<Mutex<Vec<Option<String>>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let seen = seen2.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let header = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("x-localrouter-trace: "))
+                        .map(|v| v.trim().to_string());
+                    seen.lock().unwrap().push(header);
+                    let _ = sock
+                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                        .await;
+                });
+            }
+        });
+        (addr, seen)
+    }
+
+    #[tokio::test]
+    async fn header_is_added_only_inside_scope() {
+        let (addr, seen) = echo_server().await;
+        let client = default_client();
+        let url = format!("http://{addr}/v1/chat/completions");
+
+        client.get(&url).send().await.unwrap();
+        let trace = RequestTrace::parse("abc;hop=2").unwrap();
+        with_outbound_trace(Some(trace), client.get(&url).send())
+            .await
+            .unwrap();
+        with_outbound_trace(None, client.get(&url).send())
+            .await
+            .unwrap();
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen, vec![None, Some("abc;hop=2".to_string()), None]);
     }
 }
