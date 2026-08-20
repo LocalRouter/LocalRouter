@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lr_config::{ClientReverseProxy, ConfigManager, LlmMode};
+use lr_config::{ClientReverseProxy, ConfigManager};
 use lr_providers::registry::ProviderRegistry;
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
@@ -525,11 +525,6 @@ pub async fn sync_reverse_proxies(app: &tauri::AppHandle) {
     if let Some(service) = app.try_state::<Arc<ReverseProxyService>>() {
         service.sync().await;
     }
-}
-
-/// True when the client is in reverse-proxy mode and needs a listener.
-pub fn wants_listener(client: &lr_config::Client) -> bool {
-    client.enabled && client.llm_mode == LlmMode::ReverseProxy && client.reverse_proxy.is_some()
 }
 
 #[cfg(test)]

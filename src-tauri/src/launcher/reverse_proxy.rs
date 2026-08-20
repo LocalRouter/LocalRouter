@@ -243,12 +243,4 @@ impl ReverseProxyService {
             }
         }
     }
-
-    /// Stop every listener (app teardown).
-    pub fn stop_all(&self) {
-        let ids: Vec<String> = self.running.lock().keys().cloned().collect();
-        for id in ids {
-            self.stop_client(&id);
-        }
-    }
 }

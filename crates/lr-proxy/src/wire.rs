@@ -63,10 +63,8 @@ pub fn detect(path: &str) -> Option<WireFormat> {
         Some(WireFormat::OpenAiChat)
     } else if path.ends_with("/responses") {
         Some(WireFormat::OpenAiResponses)
-    } else if let Some(endpoint) = ollama::detect(path) {
-        Some(WireFormat::Ollama(endpoint))
     } else {
-        None
+        ollama::detect(path).map(WireFormat::Ollama)
     }
 }
 

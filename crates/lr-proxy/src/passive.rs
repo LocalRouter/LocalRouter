@@ -355,7 +355,6 @@ impl PassiveInterceptor {
     }
 }
 
-/// Monitor protocol marker for a wire format.
 // ---------------------------------------------------------------------------
 // Reverse-proxy bridge
 // ---------------------------------------------------------------------------
@@ -414,6 +413,7 @@ fn source_for(source: ExchangeSource) -> LlmCallSource {
     }
 }
 
+/// Monitor protocol marker for a wire format.
 fn protocol_for(format: WireFormat) -> LlmProtocol {
     match format {
         WireFormat::AnthropicMessages => LlmProtocol::Anthropic,
