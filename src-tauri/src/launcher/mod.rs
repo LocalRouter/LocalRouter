@@ -13,6 +13,8 @@ pub mod ca_trust;
 pub mod integrations;
 pub mod proxy;
 pub mod proxy_setup;
+pub mod reverse_proxy;
+pub mod reverse_setup;
 
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 

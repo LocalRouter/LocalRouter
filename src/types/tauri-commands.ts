@@ -189,9 +189,26 @@ export type ClientMode = 'both' | 'llm_only' | 'mcp_only' | 'mcp_via_llm'
  * - `gateway`: native `/v1` endpoints (the historical "on")
  * - `proxy`: HTTPS inspection proxy — decrypt/inspect + firewall (allow/ask/deny,
  *   model enforcement, request transforms) before forwarding
+ * - `reverse_proxy`: LocalRouter binds a local provider's original port and
+ *   forwards to the relocated provider, monitoring everything in between
  * Rust: crates/lr-config/src/types.rs - LlmMode enum
  */
-export type LlmMode = 'off' | 'gateway' | 'proxy'
+export type LlmMode = 'off' | 'gateway' | 'proxy' | 'reverse_proxy'
+
+/**
+ * Reverse-proxy binding for a client in `reverse_proxy` LLM mode.
+ * Rust: crates/lr-config/src/types.rs - ClientReverseProxy struct
+ */
+export interface ClientReverseProxy {
+  /** Address LocalRouter binds (the provider's original host). */
+  listen_host: string
+  /** Port LocalRouter binds (the provider's original port, e.g. 11434). */
+  listen_port: number
+  /** Where the relocated provider now listens, e.g. "http://127.0.0.1:11435". */
+  upstream_url: string
+  /** Provider instance this wraps, kept in sync on relocation. */
+  provider_instance?: string | null
+}
 
 /**
  * MCP access mode (the other axis of the former ClientMode).
@@ -232,6 +249,8 @@ export interface ClientInfo {
   mcp_mode: McpMode
   template_id: string | null
   sync_config: boolean
+  /** Reverse-proxy binding (present only for `reverse_proxy` clients). */
+  reverse_proxy?: ClientReverseProxy | null
   guardrails_active: boolean
   json_repair_active: boolean
 }
@@ -1658,6 +1677,12 @@ export interface CreateClientParams {
   mcpMode?: McpMode | null
   /** Template ID (e.g. "claude-code"). Null = no template. */
   templateId?: string | null
+  /**
+   * Reverse-proxy binding. Omit for `reverse_proxy` templates and the backend
+   * fills in that provider's defaults (original port, relocated port, and the
+   * matching provider instance).
+   */
+  reverseProxy?: ClientReverseProxy | null
 }
 
 /** Params for delete_client */
@@ -1749,6 +1774,103 @@ export interface CaTrustStatus {
   ca_cert_path: string
   /** Manual steps, for platforms LocalRouter can't manage automatically. */
   manual_instructions: string | null
+}
+
+/**
+ * State of one client's reverse-proxy listener.
+ * Rust: src-tauri/src/launcher/reverse_proxy.rs - ReverseListenerState struct
+ */
+export interface ReverseListenerState {
+  running: boolean
+  port: number | null
+  upstream: string | null
+  /** Why the listener isn't running (usually: the port is still occupied). */
+  error: string | null
+}
+
+/**
+ * Reverse-proxy setup details for a client.
+ * Rust: src-tauri/src/ui/commands_reverse_proxy.rs - ReverseProxySetupInfo struct
+ */
+export interface ReverseProxySetupInfo {
+  /** Display name of the wrapped provider ("Ollama"). */
+  provider_label: string
+  /** Provider key ("ollama", "lmstudio", …), or null for unknown templates. */
+  provider_key: string | null
+  /** Provider instance in LocalRouter's config that this client wraps. */
+  provider_instance: string | null
+  /** Address apps keep using. */
+  listen_host: string
+  listen_port: number
+  /** Where the provider is expected to listen after relocation. */
+  upstream_url: string
+  listener: ReverseListenerState
+  /** Whether something is actually answering at the upstream address. */
+  upstream_reachable: boolean
+  /** Whether LocalRouter can relocate this provider itself. */
+  supports_auto: boolean
+  supports_undo: boolean
+  /** Exactly what automatic relocation would run. */
+  auto_commands: string[]
+  /** A command the user can run to start the provider on the new port. */
+  oneoff_command: string | null
+  /** GUI steps for providers that can't be relocated programmatically. */
+  manual_steps: string[]
+  notes: string[]
+  restart_hint: string | null
+}
+
+/**
+ * Suggested reverse-proxy settings for a template.
+ * Rust: src-tauri/src/ui/commands_reverse_proxy.rs - ReverseProxyDefaults struct
+ */
+export interface ReverseProxyDefaults {
+  provider_key: string
+  provider_label: string
+  listen_port: number
+  upstream_url: string
+  /** Matching provider instance already configured in LocalRouter, if any. */
+  provider_instance: string | null
+  /** Whether that provider currently answers on the port we'd take over. */
+  provider_detected: boolean
+}
+
+/** Params for get_client_reverse_proxy_setup */
+export interface GetClientReverseProxySetupParams {
+  clientId: string
+}
+
+/** Params for configure_client_reverse_proxy */
+export interface ConfigureClientReverseProxyParams {
+  clientId: string
+}
+
+/** Params for unconfigure_client_reverse_proxy */
+export interface UnconfigureClientReverseProxyParams {
+  clientId: string
+}
+
+/** Params for start_client_reverse_proxy */
+export interface StartClientReverseProxyParams {
+  clientId: string
+}
+
+/** Params for stop_client_reverse_proxy */
+export interface StopClientReverseProxyParams {
+  clientId: string
+}
+
+/** Params for set_client_reverse_proxy_config */
+export interface SetClientReverseProxyConfigParams {
+  clientId: string
+  listenPort: number
+  upstreamUrl: string
+  providerInstance?: string | null
+}
+
+/** Params for get_reverse_proxy_defaults */
+export interface GetReverseProxyDefaultsParams {
+  templateId: string
 }
 
 /** Params for get_client_proxy_setup */
@@ -3599,8 +3721,8 @@ export interface MonitorEventSummary {
   status: EventStatus
   duration_ms: number | null
   summary: string
-  /** For LLM calls: 'api' (native) or 'proxy' (via the inspection proxy). */
-  source?: 'api' | 'proxy' | null
+  /** For LLM calls: 'api' (native), 'proxy' (inspection proxy), or 'reverse_proxy' (wrapped local provider). */
+  source?: 'api' | 'proxy' | 'reverse_proxy' | null
 }
 
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEvent */

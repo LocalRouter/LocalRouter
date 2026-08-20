@@ -657,6 +657,24 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         }
     };
 
+    // Reverse proxies: one listener per client that wraps a local provider's
+    // port. Listeners are reconciled from config on startup (and whenever
+    // clients change), so a configured wrap survives a restart.
+    let reverse_proxy_service: Option<Arc<launcher::reverse_proxy::ReverseProxyService>> =
+        server_manager.get_state().map(|state| {
+            Arc::new(launcher::reverse_proxy::ReverseProxyService::new(
+                state.monitor_store.clone(),
+                metrics_collector.clone(),
+                client_manager.clone(),
+                config_manager.clone(),
+            ))
+        });
+    if let Some(svc) = reverse_proxy_service.clone() {
+        // Bind now, before the UI is up, so wrapped providers are covered from
+        // the moment the app starts.
+        svc.sync().await;
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -719,6 +737,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(app_router.clone());
             if let Some(proxy) = proxy_service.clone() {
                 app.manage(proxy);
+            }
+            if let Some(reverse) = reverse_proxy_service.clone() {
+                app.manage(reverse);
             }
             app.manage(rate_limiter.clone());
             app.manage(free_tier_manager.clone());
@@ -2415,6 +2436,29 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 });
             }
 
+            // Reverse-proxy listeners follow client config: a client switched
+            // into (or out of) reverse-proxy mode, re-pointed, disabled, or
+            // deleted must be reflected in what is actually bound. Debounced
+            // the same way, since binding a port is not free.
+            {
+                let (rp_tx, mut rp_rx) = tokio::sync::mpsc::channel::<()>(16);
+                let app_handle_rp = app.handle().clone();
+                tokio::spawn(async move {
+                    loop {
+                        if rp_rx.recv().await.is_none() {
+                            break;
+                        }
+                        while rp_rx.try_recv().is_ok() {}
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        while rp_rx.try_recv().is_ok() {}
+                        ui::commands_reverse_proxy::sync_reverse_proxies(&app_handle_rp).await;
+                    }
+                });
+                app.listen("clients-changed", move |_event| {
+                    let _ = rp_tx.try_send(());
+                });
+            }
+
             // Start background free tier persistence (every 60 seconds)
             let free_tier_manager_persist = free_tier_manager.clone();
             tokio::spawn(async move {
@@ -2589,6 +2633,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_client_proxy_setup,
             ui::commands::configure_client_proxy,
             ui::commands::unconfigure_client_proxy,
+            ui::commands_reverse_proxy::get_client_reverse_proxy_setup,
+            ui::commands_reverse_proxy::configure_client_reverse_proxy,
+            ui::commands_reverse_proxy::unconfigure_client_reverse_proxy,
+            ui::commands_reverse_proxy::start_client_reverse_proxy,
+            ui::commands_reverse_proxy::stop_client_reverse_proxy,
+            ui::commands_reverse_proxy::set_client_reverse_proxy_config,
+            ui::commands_reverse_proxy::get_reverse_proxy_defaults,
             ui::commands::get_proxy_ca_trust_status,
             ui::commands::trust_proxy_ca,
             ui::commands::untrust_proxy_ca,

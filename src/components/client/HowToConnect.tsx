@@ -11,7 +11,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen, AlertTriangle, Info, ShieldCheck } from "lucide-react"
+import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen, AlertTriangle, Info, ShieldCheck, Network, Play, Square } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { Button } from "@/components/ui/Button"
@@ -34,7 +34,7 @@ import type { ClientTemplate } from "./ClientTemplates"
 import ServiceIcon from "@/components/ServiceIcon"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
-import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams, ProxySetupInfo, GetClientProxySetupParams, ConfigureClientProxyParams, UnconfigureClientProxyParams, CaTrustStatus } from "@/types/tauri-commands"
+import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams, ProxySetupInfo, GetClientProxySetupParams, ConfigureClientProxyParams, UnconfigureClientProxyParams, CaTrustStatus, ReverseProxySetupInfo, ReverseListenerState, GetClientReverseProxySetupParams, ConfigureClientReverseProxyParams, UnconfigureClientReverseProxyParams, StartClientReverseProxyParams, StopClientReverseProxyParams } from "@/types/tauri-commands"
 
 interface ServerConfig {
   host: string
@@ -680,6 +680,286 @@ function QuickSetupTab({
 // LLM connection instructions for a client in an HTTPS-proxy mode. Replaces the
 // native ANTHROPIC_BASE_URL setup — the tool keeps talking to the provider, but
 // its traffic is routed through LocalRouter (via HTTPS_PROXY) for inspection.
+/**
+ * Reverse-proxy setup: LocalRouter takes over a local provider's port.
+ *
+ * The UI's job here is to make a three-part state legible, because that is what
+ * actually goes wrong: the provider has to have moved, LocalRouter has to hold
+ * the original port, and the provider instance in LocalRouter's own config has
+ * to point at the new address. Each piece is shown separately rather than
+ * collapsed into one "configured" boolean.
+ */
+function ReverseProxySetup({
+  clientUuid,
+  template,
+}: {
+  clientUuid: string
+  template: ClientTemplate | null
+}) {
+  const [info, setInfo] = useState<ReverseProxySetupInfo | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [configuring, setConfiguring] = useState(false)
+  const [undoing, setUndoing] = useState(false)
+  const [busyListener, setBusyListener] = useState(false)
+  const [result, setResult] = useState<LaunchResult | null>(null)
+  const [innerTab, setInnerTab] = useState("auto")
+
+  const load = useCallback(() => {
+    return invoke<ReverseProxySetupInfo>("get_client_reverse_proxy_setup", {
+      clientId: clientUuid,
+    } satisfies GetClientReverseProxySetupParams)
+      .then((data) => { setInfo(data); setError(null) })
+      .catch((e) => setError(String(e)))
+  }, [clientUuid])
+
+  useEffect(() => {
+    // Clear the previous client's state so a result banner can never appear
+    // under a client it didn't apply to.
+    setInfo(null)
+    setError(null)
+    setResult(null)
+    load()
+    const l = listenSafe("clients-changed", load)
+    return () => l.cleanup()
+  }, [clientUuid, load])
+
+  useEffect(() => {
+    if (info) setInnerTab(info.supports_auto ? "auto" : "manual")
+  }, [info?.supports_auto]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleConfigure = async () => {
+    try {
+      setConfiguring(true)
+      setResult(null)
+      const res = await invoke<LaunchResult>("configure_client_reverse_proxy", {
+        clientId: clientUuid,
+      } satisfies ConfigureClientReverseProxyParams)
+      setResult(res)
+      if (res.success) toast.success(`${info?.provider_label ?? "Provider"} wrapped`)
+      else toast.error("Setup did not complete — see the details below")
+      await load()
+    } catch (e) {
+      toast.error(`Failed: ${e}`)
+    } finally {
+      setConfiguring(false)
+    }
+  }
+
+  const handleUndo = async () => {
+    try {
+      setUndoing(true)
+      setResult(null)
+      const res = await invoke<LaunchResult>("unconfigure_client_reverse_proxy", {
+        clientId: clientUuid,
+      } satisfies UnconfigureClientReverseProxyParams)
+      setResult(res)
+      toast.success("Reverted")
+      await load()
+    } catch (e) {
+      toast.error(`Failed: ${e}`)
+    } finally {
+      setUndoing(false)
+    }
+  }
+
+  const handleListener = async (start: boolean) => {
+    try {
+      setBusyListener(true)
+      await invoke<ReverseListenerState>(
+        start ? "start_client_reverse_proxy" : "stop_client_reverse_proxy",
+        start
+          ? ({ clientId: clientUuid } satisfies StartClientReverseProxyParams)
+          : ({ clientId: clientUuid } satisfies StopClientReverseProxyParams),
+      )
+      toast.success(start ? "Listener started" : "Listener stopped")
+      await load()
+    } catch (e) {
+      toast.error(String(e))
+    } finally {
+      setBusyListener(false)
+    }
+  }
+
+  if (error) return <p className="text-sm text-destructive">Failed to load setup: {error}</p>
+  if (!info) return <p className="text-sm text-muted-foreground">Loading reverse-proxy setup…</p>
+
+  const providerName = info.provider_label || template?.name || "your provider"
+  const appAddress = `http://${info.listen_host}:${info.listen_port}`
+  const listening = info.listener.running
+
+  const StatusRow = ({ ok, label, detail }: { ok: boolean; label: string; detail: string }) => (
+    <div className="flex items-start gap-2">
+      {ok ? (
+        <CheckCircle2 className="h-4 w-4 mt-px shrink-0 text-green-600 dark:text-green-500" />
+      ) : (
+        <XCircle className="h-4 w-4 mt-px shrink-0 text-muted-foreground" />
+      )}
+      <div className="min-w-0">
+        <p className="text-xs font-medium">{label}</p>
+        <p className="text-[11px] text-muted-foreground break-all">{detail}</p>
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="rounded-lg border p-4 space-y-4">
+      <div className="flex items-center gap-2">
+        <Network className="h-4 w-4 text-muted-foreground" />
+        <span className="text-sm font-medium">Reverse Proxy — wrapping {providerName}</span>
+      </div>
+
+      <div className="rounded-md border bg-muted/40 p-2.5 text-xs text-muted-foreground">
+        Your apps keep pointing at <code className="bg-muted px-1 py-0.5 rounded">{appAddress}</code>{" "}
+        exactly as before. LocalRouter answers there and forwards everything to {providerName} at{" "}
+        <code className="bg-muted px-1 py-0.5 rounded">{info.upstream_url}</code>, recording each
+        call in the Monitor along the way. Nothing needs to change in the apps themselves.
+      </div>
+
+      {/* The three pieces that have to line up, each shown on its own. */}
+      <div className="grid gap-2.5 sm:grid-cols-3 rounded-md border p-3">
+        <StatusRow
+          ok={listening}
+          label={listening ? "LocalRouter is listening" : "Not listening"}
+          detail={
+            listening
+              ? `Holding port ${info.listen_port} for your apps`
+              : info.listener.error ?? `Port ${info.listen_port} is not bound yet`
+          }
+        />
+        <StatusRow
+          ok={info.upstream_reachable}
+          label={info.upstream_reachable ? `${providerName} relocated` : `${providerName} not found`}
+          detail={
+            info.upstream_reachable
+              ? `Answering at ${info.upstream_url}`
+              : `Nothing is answering at ${info.upstream_url} yet`
+          }
+        />
+        <StatusRow
+          ok={!!info.provider_instance}
+          label={info.provider_instance ? "Provider linked" : "No linked provider"}
+          detail={
+            info.provider_instance
+              ? `'${info.provider_instance}' follows the move automatically`
+              : "LocalRouter's own provider list won't be updated"
+          }
+        />
+      </div>
+
+      {info.notes.length > 0 && (
+        <ul className="space-y-1.5 text-xs text-muted-foreground">
+          {info.notes.map((note, i) => (
+            <li key={i} className="flex gap-1.5">
+              <Info className="h-3.5 w-3.5 shrink-0 mt-px" />
+              <span className="whitespace-pre-line">{note}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Tabs value={innerTab} onValueChange={setInnerTab}>
+        <TabsList className={`mb-4 grid w-full ${info.supports_auto ? "grid-cols-2" : "grid-cols-1"}`}>
+          {info.supports_auto && (
+            <TabsTrigger value="auto" className="text-xs gap-1">
+              <RefreshCcw className="h-3 w-3" />
+              Auto
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="manual" className="text-xs gap-1">
+            <BookOpen className="h-3 w-3" />
+            Manual
+          </TabsTrigger>
+        </TabsList>
+
+        {info.supports_auto && (
+          <TabsContent value="auto" className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              LocalRouter moves {providerName} to port{" "}
+              <code className="bg-muted px-1 py-0.5 rounded">
+                {info.upstream_url.split(":").pop()}
+              </code>
+              , points its own provider entry at the new address, then binds port{" "}
+              <code className="bg-muted px-1 py-0.5 rounded">{info.listen_port}</code>.
+              {info.restart_hint && ` ${info.restart_hint}`}
+            </p>
+            {info.auto_commands.length > 0 && (
+              <div className="rounded-md bg-muted/60 p-2 space-y-1">
+                <p className="text-[11px] text-muted-foreground">This runs:</p>
+                {info.auto_commands.map((cmd, i) => (
+                  <code key={i} className="block text-[11px] font-mono break-all">{cmd}</code>
+                ))}
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={handleConfigure} disabled={configuring || undoing}>
+                {configuring ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Settings2 className="h-3.5 w-3.5 mr-2" />}
+                Wrap {providerName}
+              </Button>
+              {info.supports_undo && (
+                <Button size="sm" variant="outline" onClick={handleUndo} disabled={configuring || undoing}>
+                  {undoing && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}
+                  Undo
+                </Button>
+              )}
+            </div>
+          </TabsContent>
+        )}
+
+        <TabsContent value="manual" className="space-y-3">
+          {info.manual_steps.length > 0 && (
+            <ol className="space-y-1.5 text-xs list-decimal list-inside text-muted-foreground">
+              {info.manual_steps.map((step, i) => (
+                <li key={i} className="whitespace-pre-line">{step}</li>
+              ))}
+            </ol>
+          )}
+          {info.oneoff_command && (
+            <div className="space-y-1.5">
+              <Label className="text-xs">Or start {providerName} on the new port for this session</Label>
+              <CopyableCode value={info.oneoff_command} />
+            </div>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Once {providerName} answers on {info.upstream_url}, start the listener below.
+          </p>
+        </TabsContent>
+      </Tabs>
+
+      {/* The listener is separately controllable: for providers LocalRouter
+          can't relocate, moving the provider and binding the port are two
+          different acts by two different parties. */}
+      <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+        {listening ? (
+          <Button size="sm" variant="outline" onClick={() => handleListener(false)} disabled={busyListener}>
+            {busyListener ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Square className="h-3.5 w-3.5 mr-2" />}
+            Stop listener
+          </Button>
+        ) : (
+          <Button size="sm" variant="outline" onClick={() => handleListener(true)} disabled={busyListener}>
+            {busyListener ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-2" />}
+            Start listener
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" onClick={() => load()} disabled={busyListener}>
+          <RefreshCw className="h-3.5 w-3.5 mr-2" />
+          Recheck
+        </Button>
+      </div>
+
+      {result && (
+        <div className={`rounded-md border p-2.5 text-xs whitespace-pre-line ${result.success ? "" : "border-destructive/50 text-destructive"}`}>
+          {result.message}
+          {result.terminal_command && (
+            <div className="mt-2">
+              <CopyableCode value={result.terminal_command} />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ProxyLlmSetup({
   clientUuid,
   template,
@@ -994,6 +1274,7 @@ export function HowToConnect({
     : null
 
   const isLlmProxy = llmMode === "proxy"
+  const isLlmReverseProxy = llmMode === "reverse_proxy"
   const hasQuickSetup = template && template.setupType !== "generic"
   // Native LLM connect info is shown only for the gateway; proxy clients get the
   // ProxyLlmSetup block instead.
@@ -1165,8 +1446,13 @@ export function HowToConnect({
             ANTHROPIC_BASE_URL setup. MCP (if a gateway) still renders below. */}
         {isLlmProxy && <ProxyLlmSetup clientUuid={clientUuid} template={template} />}
 
+        {/* Reverse proxy: the client's "connection details" are the provider's
+            own address, so there is nothing to copy into an app — the setup
+            block is the whole story. */}
+        {isLlmReverseProxy && <ReverseProxySetup clientUuid={clientUuid} template={template} />}
+
         {/* Template-based clients (native gateway): show Quick Setup directly */}
-        {!isLlmProxy && hasQuickSetup && template ? (
+        {!isLlmProxy && !isLlmReverseProxy && hasQuickSetup && template ? (
           <QuickSetupTab
             template={template}
             clientId={clientId}

@@ -314,6 +314,113 @@ fn validate_client_modes(config: &AppConfig) -> AppResult<()> {
                 client.name
             )));
         }
+
+        if client.llm_mode == LlmMode::ReverseProxy {
+            let Some(rp) = client.reverse_proxy.as_ref() else {
+                return Err(AppError::Config(format!(
+                    "Client '{}' uses the reverse proxy but has no reverse-proxy \
+                     configuration (listen port + upstream URL)",
+                    client.name
+                )));
+            };
+            if rp.listen_port == 0 {
+                return Err(AppError::Config(format!(
+                    "Client '{}' has an invalid reverse-proxy listen port (0)",
+                    client.name
+                )));
+            }
+            if rp.upstream_url.trim().is_empty() {
+                return Err(AppError::Config(format!(
+                    "Client '{}' has an empty reverse-proxy upstream URL",
+                    client.name
+                )));
+            }
+            if !rp.upstream_url.starts_with("http://") && !rp.upstream_url.starts_with("https://") {
+                return Err(AppError::Config(format!(
+                    "Client '{}' reverse-proxy upstream URL must start with http:// or https:// \
+                     (got '{}')",
+                    client.name, rp.upstream_url
+                )));
+            }
+            // Forwarding to our own listener would loop every request back into
+            // itself until something runs out. The provider has to have moved.
+            if upstream_is_self(rp) {
+                return Err(AppError::Config(format!(
+                    "Client '{}' reverse-proxy upstream '{}' is the same address it listens on \
+                     ({}:{}) — the wrapped provider must move to a different port",
+                    client.name, rp.upstream_url, rp.listen_host, rp.listen_port
+                )));
+            }
+        }
+    }
+
+    validate_reverse_proxy_ports(config)?;
+    Ok(())
+}
+
+/// Whether a reverse-proxy binding forwards to itself: same port, and a host
+/// that resolves to the same interface. `localhost` and `127.0.0.1` are treated
+/// as the same place, because they are the two spellings users actually mix.
+fn upstream_is_self(rp: &crate::ClientReverseProxy) -> bool {
+    let authority = rp
+        .upstream_base()
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(rp.upstream_base());
+    let authority = authority.split('/').next().unwrap_or_default();
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) => match p.parse::<u16>() {
+            Ok(port) => (h, port),
+            // Unparseable port: not provably a loop, and the URL check above
+            // already rejects the malformed shapes we care about.
+            Err(_) => return false,
+        },
+        None => return false,
+    };
+    if port != rp.listen_port {
+        return false;
+    }
+    let same_host = |a: &str, b: &str| {
+        let norm = |h: &str| match h.trim().trim_matches(|c| c == '[' || c == ']') {
+            "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" => "loopback".to_string(),
+            other => other.to_ascii_lowercase(),
+        };
+        norm(a) == norm(b)
+    };
+    same_host(host, &rp.listen_host)
+}
+
+/// A reverse-proxy listener owns a real local port, so it must not collide with
+/// LocalRouter's own listeners or with another client's binding. Only enabled
+/// clients are considered — a disabled client never binds.
+fn validate_reverse_proxy_ports(config: &AppConfig) -> AppResult<()> {
+    let mut seen: Vec<(u16, &str)> = Vec::new();
+    for client in &config.clients {
+        if !client.enabled {
+            continue;
+        }
+        let Some(rp) = client.active_reverse_proxy() else {
+            continue;
+        };
+        if rp.listen_port == config.server.port {
+            return Err(AppError::Config(format!(
+                "Client '{}' reverse-proxy port {} collides with the LocalRouter server port",
+                client.name, rp.listen_port
+            )));
+        }
+        if rp.listen_port == config.proxy.port {
+            return Err(AppError::Config(format!(
+                "Client '{}' reverse-proxy port {} collides with the HTTPS inspection proxy port",
+                client.name, rp.listen_port
+            )));
+        }
+        if let Some((_, other)) = seen.iter().find(|(p, _)| *p == rp.listen_port) {
+            return Err(AppError::Config(format!(
+                "Clients '{}' and '{other}' both bind reverse-proxy port {}",
+                client.name, rp.listen_port
+            )));
+        }
+        seen.push((rp.listen_port, &client.name));
     }
     Ok(())
 }
@@ -596,6 +703,128 @@ mod tests {
             McpMode::ViaLlm
         )))
         .is_err());
+    }
+
+    /// A reverse-proxy client with a valid binding.
+    fn reverse_client(name: &str, listen_port: u16) -> crate::Client {
+        let mut c = client_with_modes(LlmMode::ReverseProxy, McpMode::Off);
+        c.name = name.to_string();
+        c.reverse_proxy = Some(crate::ClientReverseProxy {
+            listen_host: "127.0.0.1".to_string(),
+            listen_port,
+            upstream_url: format!("http://127.0.0.1:{}", listen_port + 1),
+            provider_instance: Some("Ollama".to_string()),
+        });
+        c
+    }
+
+    #[test]
+    fn reverse_proxy_client_needs_a_binding() {
+        // Mode without configuration is meaningless — and would leave the
+        // listener silently absent.
+        let mut c = client_with_modes(LlmMode::ReverseProxy, McpMode::Off);
+        c.reverse_proxy = None;
+        assert!(validate_client_modes(&config_with_client(c)).is_err());
+
+        assert!(
+            validate_client_modes(&config_with_client(reverse_client("Ollama", 11434))).is_ok()
+        );
+    }
+
+    #[test]
+    fn reverse_proxy_binding_must_be_usable() {
+        let mut c = reverse_client("Ollama", 11434);
+        c.reverse_proxy.as_mut().unwrap().listen_port = 0;
+        assert!(validate_client_modes(&config_with_client(c)).is_err());
+
+        let mut c = reverse_client("Ollama", 11434);
+        c.reverse_proxy.as_mut().unwrap().upstream_url = String::new();
+        assert!(validate_client_modes(&config_with_client(c)).is_err());
+
+        let mut c = reverse_client("Ollama", 11434);
+        c.reverse_proxy.as_mut().unwrap().upstream_url = "127.0.0.1:11435".to_string();
+        assert!(
+            validate_client_modes(&config_with_client(c)).is_err(),
+            "a schemeless upstream is rejected rather than silently guessed"
+        );
+    }
+
+    #[test]
+    fn reverse_proxy_upstream_must_not_be_the_listener_itself() {
+        // Same port, same host spelling.
+        let mut c = reverse_client("Ollama", 11434);
+        c.reverse_proxy.as_mut().unwrap().upstream_url = "http://127.0.0.1:11434".to_string();
+        assert!(validate_client_modes(&config_with_client(c)).is_err());
+
+        // Same port, the other spelling of the same interface — still a loop.
+        let mut c = reverse_client("Ollama", 11434);
+        c.reverse_proxy.as_mut().unwrap().upstream_url = "http://localhost:11434".to_string();
+        assert!(
+            validate_client_modes(&config_with_client(c)).is_err(),
+            "localhost and 127.0.0.1 are the same place"
+        );
+
+        // A different port on the same host is exactly the intended setup.
+        let c = reverse_client("Ollama", 11434);
+        assert!(validate_client_modes(&config_with_client(c)).is_ok());
+
+        // Same port on a genuinely different host is not a self-loop.
+        let mut c = reverse_client("Ollama", 11434);
+        c.reverse_proxy.as_mut().unwrap().upstream_url = "http://192.168.1.9:11434".to_string();
+        assert!(validate_client_modes(&config_with_client(c)).is_ok());
+    }
+
+    #[test]
+    fn reverse_proxy_via_llm_is_rejected() {
+        // Reverse-proxied traffic is forwarded verbatim, so there is nowhere to
+        // inject MCP tools.
+        let mut c = reverse_client("Ollama", 11434);
+        c.mcp_mode = McpMode::ViaLlm;
+        assert!(validate_client_modes(&config_with_client(c)).is_err());
+    }
+
+    #[test]
+    fn reverse_proxy_ports_must_not_collide() {
+        // With LocalRouter's own server port.
+        let mut cfg = config_with_client(reverse_client("Ollama", 11434));
+        cfg.server.port = 11434;
+        assert!(validate_client_modes(&cfg).is_err());
+
+        // With the HTTPS inspection proxy port.
+        let mut cfg = config_with_client(reverse_client("Ollama", 11434));
+        cfg.proxy.port = 11434;
+        assert!(validate_client_modes(&cfg).is_err());
+
+        // With another client's listener.
+        let mut cfg = config_with_client(reverse_client("Ollama", 11434));
+        cfg.clients.push(reverse_client("Ollama copy", 11434));
+        assert!(validate_client_modes(&cfg).is_err());
+
+        // Two clients on different ports are fine.
+        let mut cfg = config_with_client(reverse_client("Ollama", 11434));
+        cfg.clients.push(reverse_client("LM Studio", 1234));
+        assert!(validate_client_modes(&cfg).is_ok());
+    }
+
+    #[test]
+    fn disabled_clients_do_not_reserve_a_port() {
+        // A disabled client never binds, so it must not block another client
+        // (or a later re-enable of itself) from using that port.
+        let mut cfg = config_with_client(reverse_client("Ollama", 11434));
+        cfg.clients[0].enabled = false;
+        cfg.clients.push(reverse_client("Ollama new", 11434));
+        assert!(validate_client_modes(&cfg).is_ok());
+    }
+
+    #[test]
+    fn a_disabled_reverse_client_still_needs_a_valid_binding() {
+        // Port reservation is skipped for disabled clients, but the mode's own
+        // invariants still hold — otherwise re-enabling would fail at runtime
+        // rather than at save time.
+        let mut c = client_with_modes(LlmMode::ReverseProxy, McpMode::Off);
+        c.enabled = false;
+        c.reverse_proxy = None;
+        assert!(validate_client_modes(&config_with_client(c)).is_err());
     }
 
     fn make_strategy(name: &str) -> Strategy {

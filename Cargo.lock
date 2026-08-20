@@ -5636,6 +5636,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "futures",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",

@@ -2,14 +2,16 @@
  * ClientModeSelector - Shared component for selecting a client's access modes.
  *
  * The former single 4-way mode is split into two independent axes:
- *   - LLM: Off / Gateway / Inspect Proxy (passive) / Rewrite Proxy (active, WIP)
+ *   - LLM: Off / Gateway / HTTPS Proxy / Reverse Proxy
  *   - MCP: Off / Gateway / Via LLM
  *
  * Not every combination is legal, so options gray out contextually:
  *   - "MCP via LLM" needs the native LLM gateway (it can't inject tools into
  *     proxied traffic), so it's disabled whenever the LLM proxy is selected.
  *   - The LLM proxy modes are disabled while "MCP via LLM" is selected.
- *   - The active "Rewrite Proxy" is not implemented yet (permanently disabled).
+ *   - "Reverse Proxy" only applies to templates that wrap a local provider
+ *     (there has to be a port on this machine to take over), and like the
+ *     HTTPS proxy it can't serve MCP via LLM.
  *   - At least one axis must stay enabled (the last "Off" is disabled).
  *
  * Used in both the client settings tab and the new-client wizard.
@@ -46,6 +48,18 @@ function ServerIcon({ className }: { className?: string }) {
       <path d="M5 12h9" />
       <path d="M10 7l5 5-5 5" />
       <rect x="17" y="8" width="4" height="8" rx="1" />
+    </svg>
+  )
+}
+
+function ReverseProxyIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {/* An app arrives at the original port and is handed on to the provider. */}
+      <rect x="2" y="9" width="6" height="6" rx="1" />
+      <path d="M8 12h8" />
+      <path d="M13 9l3 3-3 3" />
+      <rect x="16" y="6" width="6" height="12" rx="1" />
     </svg>
   )
 }
@@ -102,6 +116,12 @@ const LLM_OPTIONS: ModeOption<LlmMode>[] = [
     description: "LocalRouter acts as the client's HTTPS proxy",
     Icon: InspectIcon,
   },
+  {
+    value: "reverse_proxy",
+    label: "Reverse Proxy",
+    description: "LocalRouter takes over a local provider's port and forwards to it — apps need no changes",
+    Icon: ReverseProxyIcon,
+  },
 ]
 
 const MCP_OPTIONS: ModeOption<McpMode>[] = [
@@ -126,8 +146,9 @@ const MCP_OPTIONS: ModeOption<McpMode>[] = [
   },
 ]
 
+/** Either proxy shape: neither can inject MCP tools into traffic it forwards. */
 function isLlmProxy(mode: LlmMode): boolean {
-  return mode === "proxy"
+  return mode === "proxy" || mode === "reverse_proxy"
 }
 
 // ── Component ───────────────────────────────────────────────────────────
@@ -153,6 +174,16 @@ function llmOptionState(
   }
   if (value === "proxy" && template && !template.supportsProxy) {
     return { allowed: false, reason: `Not supported by ${template.name}` }
+  }
+  // Reverse proxy wraps a local provider's port, so it only makes sense for
+  // the local-provider templates. A custom client has no port to wrap either.
+  if (value === "reverse_proxy" && !template?.supportsReverseProxy) {
+    return {
+      allowed: false,
+      reason: template
+        ? `${template.name} isn't a local provider to wrap`
+        : "Pick a local provider template to wrap its port",
+    }
   }
 
   // Proxy modes are incompatible with MCP via LLM.

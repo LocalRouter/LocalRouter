@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use crate::{anthropic, openai};
+use crate::{anthropic, ollama, openai};
 
 /// The request/response encoding of an intercepted LLM call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +19,9 @@ pub enum WireFormat {
     OpenAiChat,
     /// OpenAI Responses API (`POST .../responses`) — Codex CLI.
     OpenAiResponses,
+    /// Ollama's native API (`POST /api/chat`, `POST /api/generate`), seen by
+    /// the reverse proxy when it wraps a local Ollama. Streams NDJSON, not SSE.
+    Ollama(ollama::OllamaEndpoint),
 }
 
 /// Request-side metadata extracted from an intercepted LLM request body.
@@ -60,6 +63,8 @@ pub fn detect(path: &str) -> Option<WireFormat> {
         Some(WireFormat::OpenAiChat)
     } else if path.ends_with("/responses") {
         Some(WireFormat::OpenAiResponses)
+    } else if let Some(endpoint) = ollama::detect(path) {
+        Some(WireFormat::Ollama(endpoint))
     } else {
         None
     }
@@ -131,8 +136,9 @@ pub fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
             "response.completed" | "response.failed" | "response.incomplete" | "error"
         ),
         // Chat Completions has no websocket transport; cycles close on
-        // connection end instead.
-        WireFormat::OpenAiChat => false,
+        // connection end instead. Neither does Ollama's native API — the
+        // reverse proxy sees plain HTTP request/response pairs.
+        WireFormat::OpenAiChat | WireFormat::Ollama(_) => false,
     }
 }
 
@@ -161,6 +167,7 @@ pub fn parse_request(format: WireFormat, body: &Value) -> RequestMeta {
         WireFormat::AnthropicMessages => anthropic::parse_request(body),
         WireFormat::OpenAiChat => openai::parse_chat_request(body),
         WireFormat::OpenAiResponses => openai::parse_responses_request(body),
+        WireFormat::Ollama(endpoint) => ollama::parse_request(endpoint, body),
     }
 }
 
@@ -170,6 +177,7 @@ pub fn parse_response(format: WireFormat, body: &Value) -> ResponseMeta {
         WireFormat::AnthropicMessages => anthropic::parse_response(body),
         WireFormat::OpenAiChat => openai::parse_chat_response(body),
         WireFormat::OpenAiResponses => openai::parse_responses_response(body),
+        WireFormat::Ollama(endpoint) => ollama::parse_response(endpoint, body),
     }
 }
 
@@ -179,6 +187,20 @@ pub fn reconstruct_sse(format: WireFormat, raw: &str) -> (ResponseMeta, Value) {
         WireFormat::AnthropicMessages => anthropic::reconstruct_sse(raw),
         WireFormat::OpenAiChat => openai::reconstruct_chat_sse(raw),
         WireFormat::OpenAiResponses => openai::reconstruct_responses_sse(raw),
+        // Ollama never sends SSE on its native API; treat a mislabeled stream
+        // as NDJSON rather than losing the exchange.
+        WireFormat::Ollama(endpoint) => ollama::reconstruct_ndjson(endpoint, raw),
+    }
+}
+
+/// Reconstruct a newline-delimited JSON stream (Ollama's native streaming
+/// encoding) into (metadata, assembled response body). Formats that don't use
+/// NDJSON fall back to their SSE reconstruction, which tolerates arbitrary
+/// input and simply yields empty metadata.
+pub fn reconstruct_ndjson(format: WireFormat, raw: &str) -> (ResponseMeta, Value) {
+    match format {
+        WireFormat::Ollama(endpoint) => ollama::reconstruct_ndjson(endpoint, raw),
+        other => reconstruct_sse(other, raw),
     }
 }
 

@@ -2837,6 +2837,12 @@ pub enum LlmMode {
     /// transforms — before forwarding. Aliases keep old split configs loading.
     #[serde(alias = "proxy_inspect", alias = "proxy_rewrite")]
     Proxy,
+    /// Reverse proxy: LocalRouter listens on a local LLM provider's original
+    /// port and transparently forwards every request to that provider, which
+    /// has been relocated to a different port. Apps keep pointing at the
+    /// original address and gain monitoring/metrics without any change.
+    /// Requires [`Client::reverse_proxy`] to be set.
+    ReverseProxy,
 }
 
 /// MCP access mode for a client (one half of the former `ClientMode`).
@@ -2852,6 +2858,37 @@ pub enum McpMode {
     /// MCP tools injected into LLM chat requests and executed server-side
     /// (the former `McpViaLlm`). Requires [`LlmMode::Gateway`].
     ViaLlm,
+}
+
+/// Reverse-proxy binding for a client in [`LlmMode::ReverseProxy`].
+///
+/// LocalRouter binds `listen_host:listen_port` — the address the wrapped
+/// provider *used* to occupy — and forwards everything to `upstream_url`,
+/// where the provider now actually listens.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientReverseProxy {
+    /// Address LocalRouter binds (the provider's original host).
+    #[serde(default = "default_reverse_listen_host")]
+    pub listen_host: String,
+    /// Port LocalRouter binds (the provider's original port, e.g. 11434).
+    pub listen_port: u16,
+    /// Where the relocated provider now listens, e.g. `http://127.0.0.1:11435`.
+    pub upstream_url: String,
+    /// Provider instance this wraps, so relocation can keep the provider's
+    /// own `base_url` pointing at the new upstream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_instance: Option<String>,
+}
+
+fn default_reverse_listen_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+impl ClientReverseProxy {
+    /// Upstream base URL without a trailing slash.
+    pub fn upstream_base(&self) -> &str {
+        self.upstream_url.trim_end_matches('/')
+    }
 }
 
 impl ClientMode {
@@ -3027,6 +3064,11 @@ pub struct Client {
     #[serde(default)]
     pub sync_config: bool,
 
+    /// Reverse-proxy binding (required when `llm_mode` is
+    /// [`LlmMode::ReverseProxy`], ignored otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverse_proxy: Option<ClientReverseProxy>,
+
     /// Migration shim: old guardrails_enabled (deserialize only, not serialized)
     #[serde(default, skip_serializing)]
     pub guardrails_enabled: Option<bool>,
@@ -3073,6 +3115,20 @@ impl Client {
     /// Client routes LLM traffic through the HTTPS inspection proxy.
     pub fn llm_proxy_enabled(&self) -> bool {
         self.llm_mode == LlmMode::Proxy
+    }
+
+    /// Client wraps a local provider port via the reverse proxy.
+    pub fn llm_reverse_proxy_enabled(&self) -> bool {
+        self.llm_mode == LlmMode::ReverseProxy
+    }
+
+    /// The reverse-proxy binding, only when the mode actually uses it.
+    pub fn active_reverse_proxy(&self) -> Option<&ClientReverseProxy> {
+        if self.llm_reverse_proxy_enabled() {
+            self.reverse_proxy.as_ref()
+        } else {
+            None
+        }
     }
 
     /// Direct MCP access is active (client speaks MCP to `/mcp`).
@@ -4087,6 +4143,7 @@ impl Client {
             mcp_mode: McpMode::default(),
             template_id: None,
             sync_config: false,
+            reverse_proxy: None,
             guardrails_enabled: None,
             guardrails: ClientGuardrailsConfig::default(),
             prompt_compression: ClientPromptCompressionConfig::default(),

@@ -97,6 +97,29 @@ pub struct ObservedExchange {
     pub response_body: Option<Vec<u8>>,
     /// Whether the response was an SSE stream (`text/event-stream`).
     pub response_is_sse: bool,
+    /// Whether the response was newline-delimited JSON (Ollama's native
+    /// streaming encoding, seen by the reverse proxy).
+    pub response_is_ndjson: bool,
+    /// Provider name for metrics/pricing attribution, when the host doesn't
+    /// identify it. The reverse proxy sets this from the wrapped provider
+    /// instance; the MITM proxy leaves it unset and infers from the host.
+    pub provider_override: Option<String>,
+    /// Monitor event source, so reverse-proxied calls are distinguishable from
+    /// MITM-proxied ones in the UI.
+    pub source: ExchangeSource,
+    /// Transport-level failure (e.g. the upstream could not be reached), shown
+    /// on the monitor event.
+    pub error: Option<String>,
+}
+
+/// Where an observed exchange was captured.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExchangeSource {
+    /// The HTTPS inspection (MITM) proxy.
+    #[default]
+    Proxy,
+    /// A reverse-proxy listener wrapping a local provider's port.
+    ReverseProxy,
 }
 
 /// Token usage for a single call, for cost computation.

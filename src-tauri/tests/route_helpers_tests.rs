@@ -51,6 +51,7 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         mcp_mode: lr_config::McpMode::default(),
         template_id: None,
         sync_config: false,
+        reverse_proxy: None,
         guardrails_enabled: None,
         guardrails: lr_config::ClientGuardrailsConfig::default(),
         prompt_compression: lr_config::ClientPromptCompressionConfig::default(),

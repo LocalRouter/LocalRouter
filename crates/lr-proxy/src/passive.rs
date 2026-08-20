@@ -14,8 +14,8 @@ use lr_monitor::{
 use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
 
 use crate::interceptor::{
-    ClientCtx, ClientNameResolver, ConnectDecision, ObservedExchange, PricingResolver,
-    ProxyInterceptor, RequestAction, TokenUsage,
+    ClientCtx, ClientNameResolver, ConnectDecision, ExchangeSource, ObservedExchange,
+    PricingResolver, ProxyInterceptor, RequestAction, TokenUsage,
 };
 use crate::wire::{self, RequestMeta, ResponseMeta, WireFormat};
 
@@ -111,6 +111,12 @@ impl PassiveInterceptor {
                 let (meta, body) = wire::reconstruct_sse(format, &raw);
                 (meta, Some(body))
             }
+            // Ollama's native streaming: one JSON object per line.
+            Some(bytes) if ex.response_is_ndjson => {
+                let raw = String::from_utf8_lossy(bytes);
+                let (meta, body) = wire::reconstruct_ndjson(format, &raw);
+                (meta, Some(body))
+            }
             Some(bytes) => {
                 let json = serde_json::from_slice::<serde_json::Value>(bytes).ok();
                 let meta = json
@@ -146,7 +152,11 @@ impl PassiveInterceptor {
             .clone()
             .or_else(|| resp_meta.model.clone())
             .unwrap_or_default();
-        let provider = wire::provider_for_host(&ex.host);
+        let provider = ex
+            .provider_override
+            .clone()
+            .unwrap_or_else(|| wire::provider_for_host(&ex.host).to_string());
+        let provider = provider.as_str();
 
         // Cost from the catalog, including cache-write/cache-read/reasoning tokens.
         let usage = TokenUsage {
@@ -210,7 +220,7 @@ impl PassiveInterceptor {
             has_tools: req_meta.has_tools,
             tool_count,
             request_body: request_json.unwrap_or(serde_json::Value::Null),
-            source: LlmCallSource::Proxy,
+            source: source_for(ex.source),
             protocol: protocol_for(format),
             transformed_body: None,
             transformations_applied: None,
@@ -228,7 +238,7 @@ impl PassiveInterceptor {
             response_body: None,
             raw_request,
             raw_response: None,
-            error: None,
+            error: ex.error.clone(),
             routing_info: None,
         };
 
@@ -269,6 +279,7 @@ impl PassiveInterceptor {
                 content_preview: cp,
                 response_body: rb,
                 raw_response: rr,
+                error: err,
                 ..
             } = &mut event.data
             {
@@ -284,6 +295,9 @@ impl PassiveInterceptor {
                 *cp = resp_meta.content_preview.clone();
                 *rb = response_json;
                 *rr = raw_response;
+                if ex.error.is_some() {
+                    *err = ex.error.clone();
+                }
             }
         });
     }
@@ -307,7 +321,7 @@ impl PassiveInterceptor {
             has_tools: req_meta.has_tools,
             tool_count,
             request_body: request_json.unwrap_or(serde_json::Value::Null),
-            source: LlmCallSource::Proxy,
+            source: source_for(ex.source),
             protocol: protocol_for(format),
             transformed_body: None,
             transformations_applied: None,
@@ -325,7 +339,7 @@ impl PassiveInterceptor {
             response_body: response_json,
             raw_request,
             raw_response,
-            error: None,
+            error: ex.error.clone(),
             routing_info: None,
         };
 
@@ -342,10 +356,71 @@ impl PassiveInterceptor {
 }
 
 /// Monitor protocol marker for a wire format.
+// ---------------------------------------------------------------------------
+// Reverse-proxy bridge
+// ---------------------------------------------------------------------------
+
+/// Project a reverse-proxy exchange onto the shared observation type, so both
+/// proxies produce identical monitor events and metrics.
+fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> ObservedExchange {
+    ObservedExchange {
+        client_id: ex.client_id.clone(),
+        event_id: ex.event_id.clone(),
+        strategy_id: ex.strategy_id.clone(),
+        latency_ms: ex.latency_ms,
+        // The wrapped provider stands in for the "host" — monitor events show
+        // it as the provider, and it reads better than `127.0.0.1:11435`.
+        host: ex
+            .provider_instance
+            .clone()
+            .unwrap_or_else(|| ex.upstream.clone()),
+        method: ex.method.clone(),
+        path: ex.path.clone(),
+        request_body: ex.request_body.clone(),
+        status: ex.status,
+        response_body: ex.response_body.clone(),
+        response_is_sse: ex.response_is_sse,
+        response_is_ndjson: ex.response_is_ndjson,
+        provider_override: ex.provider_instance.clone(),
+        source: ExchangeSource::ReverseProxy,
+        error: ex.error.clone(),
+    }
+}
+
+#[async_trait]
+impl crate::reverse::ReverseRecorder for PassiveInterceptor {
+    fn begin(&self, ex: &crate::reverse::ReverseExchange) -> Option<String> {
+        self.emit_pending(&observed_from_reverse(ex))
+    }
+
+    async fn record(&self, ex: crate::reverse::ReverseExchange) {
+        let observed = observed_from_reverse(&ex);
+        match &observed.event_id {
+            // Complete the pending event opened at request time.
+            Some(id) => self.complete(id, &observed),
+            // No pending event (an unrecognized path, or `begin` declined):
+            // push a combined one. `PassiveInterceptor::record` is the
+            // inherent method, disambiguated from this trait method.
+            None => PassiveInterceptor::record(self, &observed),
+        }
+    }
+}
+
+/// Map the capture site onto the monitor's source enum.
+fn source_for(source: ExchangeSource) -> LlmCallSource {
+    match source {
+        ExchangeSource::Proxy => LlmCallSource::Proxy,
+        ExchangeSource::ReverseProxy => LlmCallSource::ReverseProxy,
+    }
+}
+
 fn protocol_for(format: WireFormat) -> LlmProtocol {
     match format {
         WireFormat::AnthropicMessages => LlmProtocol::Anthropic,
         WireFormat::OpenAiChat | WireFormat::OpenAiResponses => LlmProtocol::Openai,
+        // Ollama's native dialect is closest to the OpenAI shape for the
+        // monitor's purposes (messages + content + token counts).
+        WireFormat::Ollama(_) => LlmProtocol::Openai,
     }
 }
 
