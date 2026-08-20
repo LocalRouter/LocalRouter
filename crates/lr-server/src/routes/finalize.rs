@@ -49,6 +49,10 @@ pub(crate) fn maybe_repair_json_content(
     state: &AppState,
     auth: &AuthContext,
 ) -> String {
+    // A duplicate hop passes the upstream response through untouched.
+    if lr_types::is_duplicate_hop() {
+        return content;
+    }
     let schema = match &request.response_format {
         Some(crate::types::ResponseFormat::JsonObject { .. }) => None,
         Some(crate::types::ResponseFormat::JsonSchema { schema, .. }) => Some(schema),

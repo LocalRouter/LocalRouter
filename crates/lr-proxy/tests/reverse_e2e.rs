@@ -40,6 +40,12 @@ async fn upstream_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_string();
+    let trace = req
+        .headers()
+        .get("x-localrouter-trace")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
     let body = req.into_body().collect().await.unwrap().to_bytes();
 
     if path == "/api/chat" {
@@ -58,7 +64,7 @@ async fn upstream_handler(
     }
 
     let payload = format!(
-        "{{\"path\":\"{path}\",\"host\":\"{had_host}\",\"body\":{}}}",
+        "{{\"path\":\"{path}\",\"host\":\"{had_host}\",\"trace\":\"{trace}\",\"body\":{}}}",
         if body.is_empty() {
             "null".to_string()
         } else {
@@ -99,6 +105,14 @@ async fn start_reverse(
     upstream_port: u16,
     recorder: Arc<CapturingRecorder>,
 ) -> (u16, tokio::sync::oneshot::Sender<()>) {
+    start_reverse_with_dedupe(upstream_port, recorder, true).await
+}
+
+async fn start_reverse_with_dedupe(
+    upstream_port: u16,
+    recorder: Arc<CapturingRecorder>,
+    dedupe: bool,
+) -> (u16, tokio::sync::oneshot::Sender<()>) {
     let proxy = Arc::new(
         ReverseProxy::new(
             &format!("http://127.0.0.1:{upstream_port}"),
@@ -109,7 +123,8 @@ async fn start_reverse(
             },
             recorder,
         )
-        .unwrap(),
+        .unwrap()
+        .with_dedupe_flag(Arc::new(std::sync::atomic::AtomicBool::new(dedupe))),
     );
     let listener = ReverseProxy::bind("127.0.0.1", 0).await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -131,6 +146,16 @@ async fn request(
     path: &str,
     body: &str,
 ) -> (u16, hyper::HeaderMap, String) {
+    request_with_headers(port, method, path, body, &[]).await
+}
+
+async fn request_with_headers(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: &str,
+    extra: &[(&str, &str)],
+) -> (u16, hyper::HeaderMap, String) {
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
@@ -138,11 +163,15 @@ async fn request(
     tokio::spawn(async move {
         let _ = conn.await;
     });
-    let req = Request::builder()
+    let mut builder = Request::builder()
         .method(method)
         .uri(path)
         .header("host", "127.0.0.1")
-        .header("accept-encoding", "gzip")
+        .header("accept-encoding", "gzip");
+    for (k, v) in extra {
+        builder = builder.header(*k, *v);
+    }
+    let req = builder
         .body(Full::new(Bytes::from(body.to_string())))
         .unwrap();
     let resp = sender.send_request(req).await.unwrap();
@@ -268,4 +297,68 @@ async fn reports_unreachable_upstream_as_502() {
     let seen = recorder.seen.lock().await;
     assert_eq!(seen[0].status, Some(502));
     assert!(seen[0].error.is_some(), "failure recorded for the monitor");
+}
+
+#[tokio::test]
+async fn stamps_trace_header_for_the_next_hop() {
+    let up = start_upstream().await;
+    let recorder = Arc::new(CapturingRecorder::default());
+    let (port, _shutdown) = start_reverse(up, recorder.clone()).await;
+
+    // Fresh request: upstream sees hop 1 of a new trace.
+    let (_, _, body) = request(port, "POST", "/v1/chat/completions", "{}").await;
+    let trace: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let header = trace["trace"].as_str().unwrap();
+    let t = lr_types::RequestTrace::parse(header).expect("valid trace header");
+    assert_eq!(t.hop, 1);
+
+    // Already-traced request: upstream sees hop 2 of the same trace.
+    let (_, _, body) = request_with_headers(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        "{}",
+        &[("x-localrouter-trace", "abc;hop=1")],
+    )
+    .await;
+    let trace: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(trace["trace"].as_str().unwrap(), "abc;hop=2");
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let seen = recorder.seen.lock().await;
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].trace.as_ref().unwrap().hop, 1);
+    let dup = seen[1].trace.as_ref().unwrap();
+    assert_eq!((dup.trace_id.as_str(), dup.hop), ("abc", 2));
+    assert!(dup.is_duplicate());
+}
+
+#[tokio::test]
+async fn disabled_dedupe_leaves_headers_alone() {
+    let up = start_upstream().await;
+    let recorder = Arc::new(CapturingRecorder::default());
+    let (port, _shutdown) = start_reverse_with_dedupe(up, recorder.clone(), false).await;
+
+    let (_, _, body) = request(port, "POST", "/v1/chat/completions", "{}").await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["trace"].as_str().unwrap(), "", "no header added");
+
+    let (_, _, body) = request_with_headers(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        "{}",
+        &[("x-localrouter-trace", "abc;hop=1")],
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v["trace"].as_str().unwrap(),
+        "abc;hop=1",
+        "forwarded verbatim"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let seen = recorder.seen.lock().await;
+    assert!(seen.iter().all(|e| e.trace.is_none()));
 }

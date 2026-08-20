@@ -66,6 +66,11 @@ impl ProxyInterceptor for ActiveInterceptor {
     }
 
     async fn on_request(&self, ex: &ObservedExchange) -> RequestAction {
+        // A request an earlier LocalRouter hop already handled was already
+        // judged (and possibly rewritten) there — pass it through verbatim.
+        if ex.is_duplicate_hop() {
+            return RequestAction::Forward;
+        }
         // Only recognized LLM API calls are subject to the firewall; anything
         // else (auth preflights, etc.) passes through untouched.
         let Some(format) = wire::detect(&ex.path) else {
@@ -160,5 +165,22 @@ mod tests {
         let mut ex = messages_exchange();
         ex.path = "/v1/complete".to_string();
         assert!(matches!(it.on_request(&ex).await, RequestAction::Forward));
+    }
+
+    #[tokio::test]
+    async fn duplicate_hops_bypass_the_firewall() {
+        // A denying firewall is never consulted for a request an earlier
+        // LocalRouter hop already handled.
+        let it = interceptor(|_| RequestAction::reject_json(403, "no"));
+        let mut ex = messages_exchange();
+        ex.trace = Some(lr_types::RequestTrace::parse("abc;hop=2").unwrap());
+        assert!(matches!(it.on_request(&ex).await, RequestAction::Forward));
+
+        // The first hop is still judged.
+        ex.trace = Some(lr_types::RequestTrace::parse("abc;hop=1").unwrap());
+        assert!(matches!(
+            it.on_request(&ex).await,
+            RequestAction::Reject { status: 403, .. }
+        ));
     }
 }

@@ -3154,6 +3154,17 @@ export interface SetMaxCodingSessionsParams {
   maxSessions: number
 }
 
+/** Rust: crates/lr-config/src/types.rs - RequestDedupeConfig struct */
+export interface RequestDedupeConfig {
+  /** Stamp X-LocalRouter-Trace on forwarded requests and pass duplicate hops through uncounted */
+  enabled: boolean
+}
+
+/** Params for set_request_dedupe_enabled */
+export interface SetRequestDedupeEnabledParams {
+  enabled: boolean
+}
+
 /** Params for set_start_on_boot */
 export interface SetStartOnBootParams {
   enabled: boolean
@@ -3723,6 +3734,10 @@ export interface MonitorEventSummary {
   summary: string
   /** For LLM calls: 'api' (native), 'proxy' (inspection proxy), or 'reverse_proxy' (wrapped local provider). */
   source?: 'api' | 'proxy' | 'reverse_proxy' | null
+  /** For LLM calls: hop number (≥ 2) when an earlier LocalRouter hop already handled this request (passthrough, not counted). */
+  duplicate_hop?: number | null
+  /** For LLM calls: cross-hop trace id shared by every LocalRouter hop of one request. */
+  trace_id?: string | null
 }
 
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEvent */

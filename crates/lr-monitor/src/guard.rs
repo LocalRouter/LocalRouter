@@ -152,6 +152,8 @@ mod tests {
                 response_body: None,
                 error: None,
                 routing_info: None,
+                trace_id: None,
+                duplicate_hop: None,
             },
             EventStatus::Pending,
             None,

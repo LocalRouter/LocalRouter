@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/Button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
 import { cn } from '@/lib/utils'
-import { Clock, User, Server, Copy, Check, FileText } from 'lucide-react'
+import { Clock, User, Server, Copy, Check, FileText, AlertTriangle } from 'lucide-react'
 import { useState, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import ReactMarkdown from 'react-markdown'
@@ -170,6 +170,23 @@ export function EventDetail({ event }: EventDetailProps) {
             {copied ? 'Copied' : 'Copy full event'}
           </Button>
         </div>
+
+        {/* Duplicate hop warning */}
+        {type === 'llm_call' && data.duplicate_hop != null && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <div className="space-y-0.5">
+              <p className="font-medium">
+                Duplicate hop {data.duplicate_hop} — this request already passed through LocalRouter
+              </p>
+              <p className="text-amber-700/80 dark:text-amber-300/80">
+                It was forwarded unmodified (no guardrails, compression, JSON repair or prompts) and is
+                <strong> not counted</strong> in usage stats or rate limits. Search the Monitor for trace{' '}
+                <code className="font-mono break-all">{String(data.trace_id ?? '')}</code> to see every hop.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Client info */}
         {(event.client_id || event.client_name) && (

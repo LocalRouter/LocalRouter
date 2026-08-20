@@ -617,6 +617,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     // HTTPS inspection proxy: shares the server's monitor store; started when
     // enabled in config or any client is in a proxy LLM mode. Its "ask" firewall
     // reuses the app's shared FirewallManager (same popup window as the gateway).
+    // Duplicate-request detection switch, shared with both proxy kinds.
+    let request_dedupe_flag =
+        launcher::proxy::RequestDedupeFlag::new(config_manager.get().request_dedupe.enabled);
+
     let proxy_service: Option<Arc<launcher::proxy::ProxyService>> = {
         let cfg = config_manager.get();
         match server_manager.get_state().map(|s| {
@@ -637,6 +641,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     model_approvals,
                     app_state,
                     cfg.proxy.host.clone(),
+                    request_dedupe_flag.clone(),
                 ) {
                     Ok(svc) => {
                         // The listener is a cheap loopback socket that is idle until a
@@ -667,6 +672,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 metrics_collector.clone(),
                 client_manager.clone(),
                 config_manager.clone(),
+                request_dedupe_flag.clone(),
             ))
         });
     if let Some(svc) = reverse_proxy_service.clone() {
@@ -741,6 +747,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             if let Some(reverse) = reverse_proxy_service.clone() {
                 app.manage(reverse);
             }
+            app.manage(request_dedupe_flag.clone());
             app.manage(rate_limiter.clone());
             app.manage(free_tier_manager.clone());
             app.manage(oauth_manager.clone());
@@ -2781,6 +2788,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Start-on-boot (launch at login)
             ui::commands::get_start_on_boot,
             ui::commands::set_start_on_boot,
+            ui::commands::get_request_dedupe_config,
+            ui::commands::set_request_dedupe_enabled,
             // RouteLLM intelligent routing commands
             ui::commands_routellm::routellm_get_status,
             ui::commands_routellm::routellm_test_prediction,

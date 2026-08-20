@@ -268,6 +268,7 @@ pub(crate) fn apply_firewall_request_edits(
 ///
 /// Mutates `request` in-place when the user edits the request via the
 /// firewall popup; returns `Err` if access is denied.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_model_access_checks(
     state: &AppState,
     auth: &AuthContext,
@@ -275,6 +276,7 @@ pub(crate) async fn apply_model_access_checks(
     session_id: &str,
     request: &mut ChatCompletionRequest,
     llm_guard: &mut super::monitor_helpers::LlmCallGuard,
+    is_duplicate: bool,
 ) -> ApiResult<()> {
     // Normalize auto model name: bare "auto" or custom model_name →
     // "localrouter/auto" so all downstream hardcoded checks work
@@ -483,7 +485,9 @@ pub(crate) async fn apply_model_access_checks(
             .ok()
             .and_then(|(_, s)| s.auto_config.map(|ac| ac.permission));
 
-        if !is_mcp_via_llm_client {
+        // A duplicate hop never prompts: the first hop already got the
+        // user's answer for this request.
+        if !is_mcp_via_llm_client && !is_duplicate {
             let firewall_edits = check_model_firewall_permission(
                 state,
                 client_auth.map(|e| &e.0),
@@ -1885,7 +1889,7 @@ pub(crate) fn spawn_routellm_classification(
     let request_clone = request.clone();
     let metrics_collector = state.metrics_collector.clone();
 
-    Some(tokio::spawn(async move {
+    Some(lr_types::spawn_traced(async move {
         let prompt = request_clone
             .messages
             .iter()
@@ -2015,6 +2019,11 @@ pub(crate) struct TurnContext {
     #[allow(dead_code)]
     pub guardrail_handle:
         Option<tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>>,
+    /// True when an earlier LocalRouter hop already handled this
+    /// request (see `lr_types::trace`). Every active stage was skipped
+    /// and the caller must pass the response through unmodified (no
+    /// JSON repair, no MCP-via-LLM orchestration).
+    pub is_duplicate: bool,
 }
 
 /// Canonical pre-LLM pipeline. Runs validate → access checks → rate
@@ -2049,6 +2058,20 @@ pub(crate) async fn run_turn_pipeline(
         return Err(llm_guard.capture_err(e));
     }
 
+    // Duplicate hop: an earlier LocalRouter hop already ran every
+    // active stage on this exact request. Resolve routing so it can be
+    // forwarded, but skip rate limits, scans, prompts and rewrites.
+    let is_duplicate = lr_types::is_duplicate_hop();
+    let caps = if is_duplicate {
+        PipelineCaps {
+            allow_compression: false,
+            allow_routellm: false,
+            parallel_guardrails: false,
+        }
+    } else {
+        caps
+    };
+
     // Stage 2: access checks (strategy / auto-routing firewall / MCP mode gate)
     apply_model_access_checks(
         state,
@@ -2057,8 +2080,25 @@ pub(crate) async fn run_turn_pipeline(
         &session_id,
         &mut chat_req,
         llm_guard,
+        is_duplicate,
     )
     .await?;
+
+    if is_duplicate {
+        let mut provider_request =
+            convert_to_provider_request(&chat_req).map_err(|e| llm_guard.capture_err(e))?;
+        // No feature adapters on a pass-through hop.
+        provider_request.extensions = None;
+        return Ok(TurnContext {
+            chat_req,
+            provider_request,
+            session_id,
+            endpoint,
+            compression_tokens_saved: 0,
+            guardrail_handle: None,
+            is_duplicate: true,
+        });
+    }
 
     // Stage 3: rate limits
     if let Err(e) = check_rate_limits(state, auth, &chat_req).await {
@@ -2092,7 +2132,7 @@ pub(crate) async fn run_turn_pipeline(
         let state_ref = state.clone();
         let client_ctx = client_auth.map(|e| e.0.clone());
         let request_clone = chat_req.clone();
-        Some(tokio::spawn(async move {
+        Some(lr_types::spawn_traced(async move {
             run_guardrails_scan(&state_ref, client_ctx.as_ref(), &request_clone).await
         }))
     } else {
@@ -2127,7 +2167,7 @@ pub(crate) async fn run_turn_pipeline(
         let state_ref = state.clone();
         let client_ctx = client_auth.map(|e| e.0.clone());
         let request_clone = chat_req.clone();
-        Some(tokio::spawn(async move {
+        Some(lr_types::spawn_traced(async move {
             run_prompt_compression(&state_ref, client_ctx.as_ref(), &request_clone).await
         }))
     } else {
@@ -2222,6 +2262,7 @@ pub(crate) async fn run_turn_pipeline(
         endpoint,
         compression_tokens_saved,
         guardrail_handle,
+        is_duplicate: false,
     })
 }
 

@@ -461,6 +461,11 @@ impl RateLimiterManager {
 
     /// Record usage for an API key after a request completes
     pub async fn record_api_key_usage(&self, key_id: &str, usage: &UsageInfo) -> AppResult<()> {
+        // A duplicate hop of an already-handled request is a pass-through:
+        // the first hop charged the usage.
+        if lr_types::is_duplicate_hop() {
+            return Ok(());
+        }
         let limiters = match self.api_key_limiters.get(key_id) {
             Some(l) => l.clone(),
             None => return Ok(()),
@@ -596,6 +601,46 @@ impl RateLimiterManager {
 mod tests {
     use super::*;
     use tokio::time::sleep;
+
+    /// Usage recorded while a duplicate-hop trace is in scope is ignored —
+    /// the first LocalRouter hop already charged it.
+    #[tokio::test]
+    async fn test_duplicate_hop_does_not_charge_usage() {
+        let manager = Arc::new(RateLimiterManager::new(None));
+        manager.add_api_key_limiters(
+            "dup-key".to_string(),
+            vec![RateLimiter::new(RateLimitType::TotalTokens, 1_000.0, 60)],
+        );
+        let usage = UsageInfo {
+            input_tokens: 100,
+            output_tokens: 50,
+            cost_usd: 0.01,
+        };
+
+        let dup = lr_types::RequestTrace::parse("abc;hop=2").unwrap();
+        lr_types::with_outbound_trace(Some(dup), async {
+            manager
+                .record_api_key_usage("dup-key", &usage)
+                .await
+                .unwrap();
+        })
+        .await;
+        let (used, _, _) = manager
+            .get_api_key_usage("dup-key", RateLimitType::TotalTokens)
+            .await
+            .unwrap();
+        assert_eq!(used, 0.0, "duplicate hop must not be charged");
+
+        manager
+            .record_api_key_usage("dup-key", &usage)
+            .await
+            .unwrap();
+        let (used, _, _) = manager
+            .get_api_key_usage("dup-key", RateLimitType::TotalTokens)
+            .await
+            .unwrap();
+        assert_eq!(used, 150.0, "normal request is charged");
+    }
 
     #[tokio::test]
     async fn test_request_rate_limiter() {

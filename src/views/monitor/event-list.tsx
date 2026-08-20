@@ -138,6 +138,15 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
                   {event.client_name || event.client_id?.slice(0, 8) || '—'}
                 </td>
                 <td className="px-2 py-1 truncate" title={event.summary}>
+                  {event.duplicate_hop != null && (
+                    <span
+                      className="inline-flex items-center gap-0.5 mr-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-medium text-amber-600 dark:text-amber-400 align-middle"
+                      title={`Duplicate hop ${event.duplicate_hop}: this request already passed through LocalRouter — passed through unmodified and not counted in stats`}
+                    >
+                      <AlertTriangle className="h-2.5 w-2.5" />
+                      dup ×{event.duplicate_hop}
+                    </span>
+                  )}
                   {event.summary}
                 </td>
                 <td className="px-2 py-1 text-right font-mono text-muted-foreground">

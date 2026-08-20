@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use chrono::{DateTime, Utc};
+use lr_types::{current_outbound_trace, RequestTrace};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -62,9 +63,27 @@ pub struct AccessLogEntry {
     /// RouteLLM win rate (0.0-1.0) if RouteLLM routing was used
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routellm_win_rate: Option<f32>,
+
+    /// Cross-hop trace id shared by every LocalRouter hop of one request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+
+    /// Set (hop number ≥ 2) when an earlier LocalRouter hop already handled
+    /// this request — it was passed through and is not counted in metrics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_hop: Option<u32>,
 }
 
 impl AccessLogEntry {
+    /// Attach the cross-hop trace (and duplicate marker) to this entry.
+    pub fn with_trace(mut self, trace: Option<&RequestTrace>) -> Self {
+        if let Some(t) = trace {
+            self.trace_id = Some(t.trace_id.clone());
+            self.duplicate_hop = t.is_duplicate().then_some(t.hop);
+        }
+        self
+    }
+
     /// Create a new access log entry for a successful request
     pub fn success(
         api_key_name: impl Into<String>,
@@ -91,6 +110,8 @@ impl AccessLogEntry {
             latency_ms,
             request_id: request_id.into(),
             routellm_win_rate: None,
+            trace_id: None,
+            duplicate_hop: None,
         }
     }
 
@@ -118,6 +139,8 @@ impl AccessLogEntry {
             latency_ms,
             request_id: request_id.into(),
             routellm_win_rate: None,
+            trace_id: None,
+            duplicate_hop: None,
         }
     }
 }
@@ -385,7 +408,8 @@ impl AccessLogger {
             cost_usd,
             latency_ms,
             request_id,
-        );
+        )
+        .with_trace(current_outbound_trace().as_ref());
         self.log(&entry)
     }
 
@@ -406,7 +430,8 @@ impl AccessLogger {
             status_code,
             latency_ms,
             request_id,
-        );
+        )
+        .with_trace(current_outbound_trace().as_ref());
         self.log(&entry)
     }
 }

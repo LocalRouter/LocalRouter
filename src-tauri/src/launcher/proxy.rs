@@ -288,12 +288,30 @@ impl lr_proxy::active::Firewall for AppFirewall {
     }
 }
 
+/// Live "duplicate request detection" switch (`request_dedupe.enabled`),
+/// shared by the HTTPS proxy and reverse-proxy listeners so the setting takes
+/// effect immediately without rebinding them. The gateway reads the config
+/// directly.
+#[derive(Clone)]
+pub struct RequestDedupeFlag(pub Arc<std::sync::atomic::AtomicBool>);
+
+impl RequestDedupeFlag {
+    pub fn new(enabled: bool) -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(enabled)))
+    }
+
+    pub fn set(&self, enabled: bool) {
+        self.0.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// The running-or-idle proxy service.
 pub struct ProxyService {
     ca: Arc<CertAuthority>,
     host: String,
     interceptor: Arc<dyn lr_proxy::interceptor::ProxyInterceptor>,
     resolver: Arc<AppClientResolver>,
+    dedupe: RequestDedupeFlag,
     running: Mutex<Option<RunningProxy>>,
 }
 
@@ -313,6 +331,7 @@ impl ProxyService {
         model_approvals: Arc<lr_server::state::ModelApprovalTracker>,
         state: lr_server::state::AppState,
         host: String,
+        dedupe: RequestDedupeFlag,
     ) -> AppResult<Self> {
         let dir = lr_utils::paths::config_dir()?.join("proxy");
         let ca = Arc::new(
@@ -340,6 +359,7 @@ impl ProxyService {
             host,
             interceptor: Arc::new(interceptor),
             resolver: Arc::new(AppClientResolver { client_manager }),
+            dedupe,
             running: Mutex::new(None),
         })
     }
@@ -370,7 +390,8 @@ impl ProxyService {
             self.interceptor.clone(),
             self.resolver.clone(),
         )
-        .map_err(|e| AppError::Internal(format!("proxy manager: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("proxy manager: {e}")))?
+        .with_dedupe_flag(self.dedupe.0.clone());
 
         let listener = ProxyManager::bind(&self.host, port)
             .await

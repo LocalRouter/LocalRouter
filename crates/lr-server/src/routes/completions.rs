@@ -966,7 +966,7 @@ async fn handle_streaming(
     // responses.rs streaming — cost, metrics, tray graph, access log,
     // `complete_llm_call`, `update_llm_call_response_body`, and the
     // generation-tracker row.
-    tokio::spawn(async move {
+    lr_types::spawn_traced(async move {
         // Wait for stream completion signal with a timeout fallback
         let _ = tokio::time::timeout(
             tokio::time::Duration::from_secs(300), // 5 minute timeout for long completions
@@ -1118,7 +1118,7 @@ async fn handle_streaming_parallel(
         let state = state.clone();
         let client_auth = client_auth.clone();
         let request = request.clone();
-        tokio::spawn(async move {
+        lr_types::spawn_traced(async move {
             let result = guardrail_handle.await;
             match result {
                 Ok(Ok(None)) => {
@@ -1162,7 +1162,7 @@ async fn handle_streaming_parallel(
         let mut gate_rx = gate_rx;
         let mut stream = stream;
 
-        tokio::spawn(async move {
+        lr_types::spawn_traced(async move {
             let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
             let mut gate_resolved = false;
             let mut gate_state = GuardrailGate::Pending;

@@ -5,31 +5,14 @@
 //! are not cut short, plus a fast connect timeout (10 s) for quick
 //! failure when a provider is unreachable.
 
-use lr_types::{AppError, AppResult, RequestTrace, TRACE_HEADER};
+use lr_types::{current_outbound_trace, AppError, AppResult, TRACE_HEADER};
 use reqwest::Client;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use std::time::Duration;
 
-tokio::task_local! {
-    /// The cross-hop trace to stamp on every upstream request sent while this
-    /// task-local is in scope. Set by the router around each provider
-    /// dispatch; read by [`TraceHeaderMiddleware`] so no provider has to
-    /// thread it through its own request building.
-    pub static OUTBOUND_TRACE: Option<RequestTrace>;
-}
-
-/// Run `fut` with `trace` as the outbound trace for any upstream HTTP request
-/// it sends. `None` sends no header (dedupe disabled).
-pub async fn with_outbound_trace<F: std::future::Future>(
-    trace: Option<RequestTrace>,
-    fut: F,
-) -> F::Output {
-    OUTBOUND_TRACE.scope(trace, fut).await
-}
-
-/// Adds `X-LocalRouter-Trace` to outgoing requests when [`OUTBOUND_TRACE`]
-/// is set, so a downstream LocalRouter hop can recognize the request as one
-/// this instance already handled.
+/// Adds `X-LocalRouter-Trace` to outgoing requests when a request trace is in
+/// scope (see [`lr_types::trace`]), so a downstream LocalRouter hop can
+/// recognize the request as one this instance already handled.
 struct TraceHeaderMiddleware;
 
 #[async_trait::async_trait]
@@ -40,8 +23,7 @@ impl Middleware for TraceHeaderMiddleware {
         extensions: &mut http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<reqwest::Response> {
-        let trace = OUTBOUND_TRACE.try_with(|t| t.clone()).ok().flatten();
-        if let Some(trace) = trace {
+        if let Some(trace) = current_outbound_trace() {
             if let Ok(value) = reqwest::header::HeaderValue::from_str(&trace.header_value()) {
                 req.headers_mut().insert(TRACE_HEADER, value);
             }
@@ -331,6 +313,7 @@ mod tests {
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    use lr_types::{with_outbound_trace, RequestTrace};
     use std::net::SocketAddr;
     use std::sync::{Arc, Mutex};
 
@@ -343,7 +326,9 @@ mod trace_tests {
         let seen2 = seen.clone();
         tokio::spawn(async move {
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
                 let seen = seen2.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 8192];

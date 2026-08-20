@@ -90,7 +90,10 @@ impl OpenAICompatibleProvider {
     /// Custom headers are applied last and `RequestBuilder::headers` replaces
     /// same-named entries, so a user-supplied `Authorization` (or
     /// `Content-Type`) wins over the default instead of being sent twice.
-    fn apply_headers(&self, mut request: reqwest_middleware::RequestBuilder) -> reqwest_middleware::RequestBuilder {
+    fn apply_headers(
+        &self,
+        mut request: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder {
         if let Some(auth) = self.auth_header() {
             request = request.header("Authorization", auth);
         }

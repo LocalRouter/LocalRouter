@@ -87,6 +87,45 @@ impl Default for RequestTrace {
     }
 }
 
+tokio::task_local! {
+    /// The trace of the request the current task is handling, as it will be
+    /// stamped on any upstream request this task sends. Set once per inbound
+    /// request by the server / proxy entry points; read by the HTTP client
+    /// middleware (to add the header) and by the accounting layers (to skip
+    /// counting a duplicate hop). `None` means dedupe is disabled.
+    pub static OUTBOUND_TRACE: Option<RequestTrace>;
+}
+
+/// Run `fut` with `trace` as the current request trace.
+pub async fn with_outbound_trace<F: std::future::Future>(
+    trace: Option<RequestTrace>,
+    fut: F,
+) -> F::Output {
+    OUTBOUND_TRACE.scope(trace, fut).await
+}
+
+/// The current request trace, if one is in scope.
+pub fn current_outbound_trace() -> Option<RequestTrace> {
+    OUTBOUND_TRACE.try_with(|t| t.clone()).ok().flatten()
+}
+
+/// Whether the request the current task is handling was already handled by
+/// an earlier LocalRouter hop — in which case it must be passed through
+/// unmodified and must not be counted in stats again.
+pub fn is_duplicate_hop() -> bool {
+    current_outbound_trace().is_some_and(|t| t.is_duplicate())
+}
+
+/// `tokio::spawn` that carries the current request trace into the new task
+/// (task-locals are not inherited by spawned tasks otherwise).
+pub fn spawn_traced<F>(fut: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(OUTBOUND_TRACE.scope(current_outbound_trace(), fut))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,6 +164,22 @@ mod tests {
         assert!(RequestTrace::parse(";hop=1").is_none());
         assert!(RequestTrace::parse("a b;hop=1").is_none());
         assert!(RequestTrace::parse("é;hop=1").is_none());
+    }
+
+    #[tokio::test]
+    async fn task_local_scope_and_spawn() {
+        assert!(current_outbound_trace().is_none());
+        assert!(!is_duplicate_hop());
+        let t = RequestTrace::parse("abc;hop=2").unwrap();
+        with_outbound_trace(Some(t.clone()), async {
+            assert_eq!(current_outbound_trace(), Some(t.clone()));
+            assert!(is_duplicate_hop());
+            // Plain spawn loses the scope; spawn_traced keeps it.
+            assert!(!tokio::spawn(async { is_duplicate_hop() }).await.unwrap());
+            assert!(spawn_traced(async { is_duplicate_hop() }).await.unwrap());
+        })
+        .await;
+        assert!(!is_duplicate_hop());
     }
 
     #[test]

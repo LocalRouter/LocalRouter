@@ -22,7 +22,7 @@ import type { InvokeArgs } from '@tauri-apps/api/core'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
-import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo } from '@app/types/tauri-commands'
+import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 
 // Track warned commands to avoid spam (only warn once per command)
 const warnedCommands = new Set<string>()
@@ -2417,6 +2417,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'end_coding_session': () => null,
   'get_max_coding_sessions': () => 10,
   'set_max_coding_sessions': () => null,
+  'get_request_dedupe_config': (): RequestDedupeConfig => ({ enabled: true }),
+  'set_request_dedupe_enabled': () => null,
   'get_start_on_boot': () => true,
   'set_start_on_boot': () => null,
   'set_client_coding_agent_permission': (args) => {

@@ -177,7 +177,10 @@ impl PassiveInterceptor {
             None => EventStatus::Error,
         };
 
-        if let Some(metrics) = &self.metrics {
+        // A duplicate hop was counted by the first hop; recording it again
+        // would double every tier.
+        let metrics = self.metrics.as_ref().filter(|_| !ex.is_duplicate_hop());
+        if let Some(metrics) = metrics {
             if status == EventStatus::Complete {
                 metrics.record_success(&RequestMetrics {
                     api_key_name: &ex.client_id,
@@ -223,7 +226,7 @@ impl PassiveInterceptor {
             source: source_for(ex.source),
             protocol: protocol_for(format),
             transformed_body: None,
-            transformations_applied: None,
+            transformations_applied: duplicate_label(ex),
             provider: Some(ex.host.clone()),
             status_code: None,
             input_tokens: None,
@@ -240,6 +243,8 @@ impl PassiveInterceptor {
             raw_response: None,
             error: ex.error.clone(),
             routing_info: None,
+            trace_id: ex.trace.as_ref().map(|t| t.trace_id.clone()),
+            duplicate_hop: duplicate_hop(ex),
         };
 
         Some(self.monitor.push(
@@ -324,7 +329,7 @@ impl PassiveInterceptor {
             source: source_for(ex.source),
             protocol: protocol_for(format),
             transformed_body: None,
-            transformations_applied: None,
+            transformations_applied: duplicate_label(ex),
             provider: Some(ex.host.clone()),
             status_code: ex.status,
             input_tokens: resp_meta.input_tokens,
@@ -341,6 +346,8 @@ impl PassiveInterceptor {
             raw_response,
             error: ex.error.clone(),
             routing_info: None,
+            trace_id: ex.trace.as_ref().map(|t| t.trace_id.clone()),
+            duplicate_hop: duplicate_hop(ex),
         };
 
         self.monitor.push(
@@ -383,6 +390,7 @@ fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> ObservedExchan
         provider_override: ex.provider_instance.clone(),
         source: ExchangeSource::ReverseProxy,
         error: ex.error.clone(),
+        trace: ex.trace.clone(),
     }
 }
 
@@ -411,6 +419,21 @@ fn source_for(source: ExchangeSource) -> LlmCallSource {
         ExchangeSource::Proxy => LlmCallSource::Proxy,
         ExchangeSource::ReverseProxy => LlmCallSource::ReverseProxy,
     }
+}
+
+/// Hop number when an earlier LocalRouter hop already handled the request.
+fn duplicate_hop(ex: &ObservedExchange) -> Option<u32> {
+    ex.trace
+        .as_ref()
+        .filter(|t| t.is_duplicate())
+        .map(|t| t.hop)
+}
+
+/// Transformation label shown on duplicate-hop events.
+pub const DUPLICATE_HOP_LABEL: &str = "duplicate hop (passthrough, not counted)";
+
+fn duplicate_label(ex: &ObservedExchange) -> Option<Vec<String>> {
+    duplicate_hop(ex).map(|_| vec![DUPLICATE_HOP_LABEL.to_string()])
 }
 
 /// Monitor protocol marker for a wire format.
@@ -653,5 +676,78 @@ mod tests {
             resp.events.is_empty(),
             "non-messages paths must not be recorded"
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_hop_is_flagged_and_not_counted() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        #[allow(deprecated)]
+        let metrics = Arc::new(MetricsCollector::with_default_retention());
+        let it = PassiveInterceptor::new(store.clone()).with_metrics(metrics.clone());
+        let total_requests = |m: &MetricsCollector| -> u64 {
+            let now = chrono::Utc::now();
+            m.get_global_range(
+                now - chrono::Duration::hours(1),
+                now + chrono::Duration::hours(1),
+            )
+            .iter()
+            .map(|p| p.requests)
+            .sum()
+        };
+
+        let mut dup = exchange();
+        dup.trace = Some(lr_types::RequestTrace::parse("abc;hop=2").unwrap());
+        it.on_response(&dup).await;
+        assert_eq!(total_requests(&metrics), 0, "duplicate hop not counted");
+
+        let listed = store.list(0, 10, None);
+        assert_eq!(listed.events.len(), 1);
+        assert_eq!(listed.events[0].duplicate_hop, Some(2));
+        assert_eq!(listed.events[0].trace_id.as_deref(), Some("abc"));
+        let full = store.get(&listed.events[0].id).unwrap();
+        match &full.data {
+            MonitorEventData::LlmCall {
+                duplicate_hop,
+                trace_id,
+                transformations_applied,
+                ..
+            } => {
+                assert_eq!(*duplicate_hop, Some(2));
+                assert_eq!(trace_id.as_deref(), Some("abc"));
+                assert_eq!(
+                    transformations_applied.as_deref(),
+                    Some(&[DUPLICATE_HOP_LABEL.to_string()][..])
+                );
+            }
+            other => panic!("unexpected data: {other:?}"),
+        }
+
+        // First hop: counted, carries the trace id, not flagged.
+        let mut first = exchange();
+        first.trace = Some(lr_types::RequestTrace::parse("abc;hop=1").unwrap());
+        it.on_response(&first).await;
+        assert_eq!(total_requests(&metrics), 1);
+        let listed = store.list(0, 10, None);
+        let newest = listed
+            .events
+            .iter()
+            .find(|e| e.duplicate_hop.is_none())
+            .unwrap();
+        assert_eq!(newest.trace_id.as_deref(), Some("abc"));
+
+        // The pending → complete path keeps the flag too.
+        let id = it.begin(&dup).expect("pending event");
+        let mut done = dup.clone();
+        done.event_id = Some(id.clone());
+        it.on_response(&done).await;
+        assert_eq!(total_requests(&metrics), 1, "still not counted");
+        let ev = store.get(&id).unwrap();
+        assert!(matches!(
+            ev.data,
+            MonitorEventData::LlmCall {
+                duplicate_hop: Some(2),
+                ..
+            }
+        ));
     }
 }

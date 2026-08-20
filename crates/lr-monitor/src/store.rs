@@ -210,7 +210,11 @@ fn match_filter(event: &MonitorEvent, filter: Option<&MonitorEventFilter>) -> bo
         if !search.is_empty() {
             let summary = crate::summary::generate_summary(event);
             let search_lower = search.to_lowercase();
-            if !summary.to_lowercase().contains(&search_lower) {
+            let trace_match = matches!(
+                &event.data,
+                MonitorEventData::LlmCall { trace_id: Some(t), .. } if t.to_lowercase().contains(&search_lower)
+            );
+            if !summary.to_lowercase().contains(&search_lower) && !trace_match {
                 return false;
             }
         }
@@ -261,6 +265,8 @@ mod tests {
                 response_body: None,
                 error: None,
                 routing_info: None,
+                trace_id: None,
+                duplicate_hop: None,
             },
             EventStatus::Pending,
             None,
@@ -433,6 +439,8 @@ mod tests {
                 response_body: None,
                 error: None,
                 routing_info: None,
+                trace_id: None,
+                duplicate_hop: None,
             },
             EventStatus::Pending,
             None,
