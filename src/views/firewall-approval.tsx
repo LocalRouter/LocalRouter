@@ -502,18 +502,6 @@ export function FirewallApproval() {
     })
   }
 
-  /**
-   * Every finding is now ignored, so there is nothing to approve: let the
-   * request through (Ask) or just close the informational popup (Notify).
-   */
-  const handleAllFindingsIgnored = () => {
-    if (details?.is_notify_only) {
-      handleDismiss()
-    } else {
-      handleAction("allow_once")
-    }
-  }
-
   const handleAction = async (action: ApprovalAction) => {
     // Guard with ref to prevent double-invocation from Radix dropdown click-through.
     // When a dropdown item is clicked, the portal is removed on pointerup, causing
@@ -923,7 +911,6 @@ export function FirewallApproval() {
           onIgnorePermanently={
             details.is_secret_scan_request ? handleIgnorePermanently : undefined
           }
-          onAllFindingsIgnored={handleAllFindingsIgnored}
           onEdit={enterEditMode}
           submitting={submitting}
         />

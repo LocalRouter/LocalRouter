@@ -8,6 +8,7 @@
 import { useState } from "react"
 import { ChevronDown, Pencil, Eye, EyeOff } from "lucide-react"
 import { Button } from "@/components/ui/Button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -198,11 +199,11 @@ export interface FirewallApprovalCardProps {
   onReveal?: (findingIndex: number) => Promise<string | null>
   /**
    * Permanently stop flagging one finding's value for this client. Stores a
-   * salted hash, never the value. Omitted (demo) = the option is not offered.
+   * salted hash, never the value. Called for every finding the user ticked,
+   * right before whichever action they choose is carried out.
+   * Omitted (demo) = the checkbox is not offered.
    */
   onIgnorePermanently?: (findingIndex: number) => Promise<void>
-  /** Every finding has been permanently ignored — nothing left to decide. */
-  onAllFindingsIgnored?: () => void
   onEdit?: () => void
   submitting?: boolean
   className?: string
@@ -246,7 +247,6 @@ export function FirewallApprovalCard({
   onDismiss,
   onReveal,
   onIgnorePermanently,
-  onAllFindingsIgnored,
   onEdit,
   submitting = false,
   className,
@@ -254,64 +254,46 @@ export function FirewallApprovalCard({
   // Revealed plaintext per finding index; absent = still masked.
   const [revealed, setRevealed] = useState<Record<number, string>>({})
   const [revealError, setRevealError] = useState<Record<number, string>>({})
-  // Findings the user has permanently ignored during this popup.
-  const [ignored, setIgnored] = useState<Record<number, boolean>>({})
+  // Findings ticked "never flag again" — applied when the user picks any action.
+  const [ignoreChecked, setIgnoreChecked] = useState<Record<number, boolean>>({})
   const [ignoreError, setIgnoreError] = useState<Record<number, string>>({})
-  const [ignoring, setIgnoring] = useState<number | null>(null)
+  const [applyingIgnores, setApplyingIgnores] = useState(false)
 
-  const ignorePermanently = async (index: number) => {
-    if (!onIgnorePermanently || ignoring !== null) return
-    setIgnoring(index)
+  /**
+   * Store the hash for every ticked finding. Returns false (and shows the error
+   * under the finding) if any failed, so the action is not carried out and the
+   * user can see what went wrong instead of losing the popup.
+   */
+  const applyIgnores = async (): Promise<boolean> => {
+    const indices = Object.keys(ignoreChecked)
+      .map(Number)
+      .filter((i) => ignoreChecked[i])
+    if (!onIgnorePermanently || indices.length === 0) return true
+    setApplyingIgnores(true)
+    const errors: Record<number, string> = {}
     try {
-      await onIgnorePermanently(index)
-      setIgnoreError((prev) => {
-        const next = { ...prev }
-        delete next[index]
-        return next
-      })
-      // Compute the next set here rather than inside the state updater: React
-      // does not promise to run the updater synchronously, so reading a count
-      // out of it leaves this at 0 and the popup never resolves.
-      const nextIgnored = { ...ignored, [index]: true }
-      setIgnored(nextIgnored)
-      // Nothing left to decide once every finding is ignored — resolve the
-      // popup (allow the request / dismiss) instead of making the user click again.
-      const total = secretScanFindings?.length ?? 0
-      if (total > 0 && Object.keys(nextIgnored).length >= total) {
-        onAllFindingsIgnored?.()
+      for (const i of indices) {
+        try {
+          await onIgnorePermanently(i)
+        } catch (err) {
+          errors[i] = typeof err === "string" ? err : "Could not save this exception"
+        }
       }
-    } catch (err) {
-      setIgnoreError((prev) => ({
-        ...prev,
-        [index]: typeof err === "string" ? err : "Could not save this exception",
-      }))
     } finally {
-      setIgnoring(null)
+      setApplyingIgnores(false)
     }
+    setIgnoreError(errors)
+    return Object.keys(errors).length === 0
   }
 
-  /// "Ignore this secret" entries for the overflow menus: one per still-flagged
-  /// finding, so a value can be permanently excepted without a separate button.
-  const ignoreMenuItems = () => {
-    if (!onIgnorePermanently || !secretScanFindings?.length) return null
-    const pending = secretScanFindings
-      .map((finding, i) => ({ finding, i }))
-      .filter(({ i }) => !ignored[i])
-    if (pending.length === 0) return null
-    return pending.map(({ finding, i }) => (
-      <DropdownMenuItem
-        key={`ignore-${i}`}
-        onClick={() => ignorePermanently(i)}
-        disabled={ignoring !== null || submitting}
-        title={`Stores a salted hash of this value — never the value itself — so it is never flagged again for ${clientName}. Reversible in that client's Secret Scanning settings.`}
-      >
-        {ignoring === i
-          ? "Saving…"
-          : pending.length === 1
-            ? "Ignore This Secret"
-            : `Ignore This Secret: ${finding.rule_description}`}
-      </DropdownMenuItem>
-    ))
+  /** Run the ticked ignores first, then the chosen action. */
+  const act = async (action: ApprovalAction) => {
+    if (!onAction) return
+    if (await applyIgnores()) onAction(action)
+  }
+  const dismiss = async () => {
+    if (!onDismiss) return
+    if (await applyIgnores()) onDismiss()
   }
 
   const toggleReveal = async (index: number) => {
@@ -352,7 +334,7 @@ export function FirewallApprovalCard({
   })
   const parsedArgs = parseArguments(argumentsPreview || "")
   const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback" && requestType !== "secret_scan"
-  const disabled = !onAction || submitting
+  const disabled = !onAction || submitting || applyingIgnores
 
   return (
     <div className={className}>
@@ -592,6 +574,22 @@ export function FirewallApprovalCard({
                   <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
                   <span className="ml-auto font-mono">{finding.rule_id}</span>
                 </div>
+                {onIgnorePermanently && (
+                  <label
+                    className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer pt-0.5"
+                    title={`Stores a salted hash of this value — never the value itself — so it is never flagged again for ${clientName}. Reversible in that client's Secret Scanning settings.`}
+                  >
+                    <Checkbox
+                      className="h-3 w-3"
+                      checked={!!ignoreChecked[i]}
+                      disabled={applyingIgnores || submitting}
+                      onCheckedChange={(checked) =>
+                        setIgnoreChecked((prev) => ({ ...prev, [i]: checked === true }))
+                      }
+                    />
+                    <span>Never flag this value again for this client</span>
+                  </label>
+                )}
                 {ignoreError[i] && (
                   <div className="text-[10px] text-destructive">{ignoreError[i]}</div>
                 )}
@@ -609,8 +607,8 @@ export function FirewallApprovalCard({
           <div className="flex flex-1">
             <Button
               className="flex-1 h-10 rounded-r-none font-bold"
-              onClick={onDismiss}
-              disabled={!onDismiss || submitting}
+              onClick={dismiss}
+              disabled={!onDismiss || submitting || applyingIgnores}
             >
               Dismiss
             </Button>
@@ -618,17 +616,16 @@ export function FirewallApprovalCard({
               <DropdownMenuTrigger asChild>
                 <Button
                   className="h-10 px-2 rounded-l-none border-l border-background/30"
-                  disabled={!onAction || submitting}
+                  disabled={!onAction || submitting || applyingIgnores}
                 >
                   <ChevronDown className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {ignoreMenuItems()}
-                <DropdownMenuItem onClick={() => onAction?.("allow_1_hour")}>
+                <DropdownMenuItem onClick={() => act("allow_1_hour")}>
                   Dismiss for 1 Hour
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAction?.("deny_always")}>
+                <DropdownMenuItem onClick={() => act("deny_always")}>
                   Ignore Secrets for Client
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -642,7 +639,7 @@ export function FirewallApprovalCard({
           <Button
             variant="destructive"
             className="flex-1 h-10 rounded-r-none font-bold"
-            onClick={() => onAction?.("deny")}
+            onClick={() => act("deny")}
             disabled={disabled}
           >
             {requestType === "secret_scan" ? "Block" : "Deny Once"}
@@ -659,37 +656,37 @@ export function FirewallApprovalCard({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
               {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("deny_session")}>
+                <DropdownMenuItem onClick={() => act("deny_session")}>
                   Deny for Session
                 </DropdownMenuItem>
               )}
               {isGuardrailRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("deny_1_hour")}>
+                <DropdownMenuItem onClick={() => act("deny_1_hour")}>
                   Deny for 1 Hour
                 </DropdownMenuItem>
               )}
               {isGuardrailRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("block_categories")}>
+                <DropdownMenuItem onClick={() => act("block_categories")}>
                   Deny Categories Always
                 </DropdownMenuItem>
               )}
               {isGuardrailRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("disable_client")}>
+                <DropdownMenuItem onClick={() => act("disable_client")}>
                   Disable Client
                 </DropdownMenuItem>
               )}
               {isSecretScanRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("disable_client")}>
+                <DropdownMenuItem onClick={() => act("disable_client")}>
                   Disable Client
                 </DropdownMenuItem>
               )}
               {isSecretScanRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("deny_always")}>
+                <DropdownMenuItem onClick={() => act("deny_always")}>
                   Disable Scan for Client
                 </DropdownMenuItem>
               )}
               {!isGuardrailRequest && !isSecretScanRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("deny_always")}>
+                <DropdownMenuItem onClick={() => act("deny_always")}>
                   Deny Always
                 </DropdownMenuItem>
               )}
@@ -713,7 +710,7 @@ export function FirewallApprovalCard({
         <div className="flex flex-1">
           <Button
             className="flex-1 h-10 rounded-r-none bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
-            onClick={() => onAction?.("allow_once")}
+            onClick={() => act("allow_once")}
             disabled={disabled}
           >
             {requestType === "secret_scan" ? "Allow" : "Allow Once"}
@@ -728,29 +725,28 @@ export function FirewallApprovalCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {isSecretScanRequest && ignoreMenuItems()}
               {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("allow_session")}>
+                <DropdownMenuItem onClick={() => act("allow_session")}>
                   Allow for Session
                 </DropdownMenuItem>
               )}
               {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isAutoRouterRequest) && (
-                <DropdownMenuItem onClick={() => onAction?.("allow_1_minute")}>
+                <DropdownMenuItem onClick={() => act("allow_1_minute")}>
                   Allow for 1 Minute
                 </DropdownMenuItem>
               )}
               {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isAutoRouterRequest || isSecretScanRequest) && (
-                <DropdownMenuItem onClick={() => onAction?.("allow_1_hour")}>
+                <DropdownMenuItem onClick={() => act("allow_1_hour")}>
                   Allow for 1 Hour
                 </DropdownMenuItem>
               )}
               {isGuardrailRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("allow_categories")}>
+                <DropdownMenuItem onClick={() => act("allow_categories")}>
                   Allow Always for Categories
                 </DropdownMenuItem>
               )}
               {!isSecretScanRequest && (
-                <DropdownMenuItem onClick={() => onAction?.("allow_permanent")}>
+                <DropdownMenuItem onClick={() => act("allow_permanent")}>
                   {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
                 </DropdownMenuItem>
               )}
