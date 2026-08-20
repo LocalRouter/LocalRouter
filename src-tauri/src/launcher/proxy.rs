@@ -38,8 +38,8 @@ impl ClientResolver for AppClientResolver {
 
 /// Resolves client display names for proxy-recorded monitor events, so the
 /// Monitor shows "Claude Code" rather than the client UUID.
-struct AppClientNames {
-    client_manager: Arc<lr_clients::ClientManager>,
+pub(crate) struct AppClientNames {
+    pub(crate) client_manager: Arc<lr_clients::ClientManager>,
 }
 
 impl lr_proxy::interceptor::ClientNameResolver for AppClientNames {
@@ -49,7 +49,7 @@ impl lr_proxy::interceptor::ClientNameResolver for AppClientNames {
 }
 
 /// Prices proxied Anthropic calls from the model catalog (sync, static lookup).
-struct CatalogPricing;
+pub(crate) struct CatalogPricing;
 
 impl lr_proxy::interceptor::PricingResolver for CatalogPricing {
     fn cost_usd(

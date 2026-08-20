@@ -239,6 +239,11 @@ fn llm_denied_reason(client: &Client) -> (&'static str, &'static str) {
             "llm_proxy_client_native",
             "Client is in LLM proxy mode; route LLM traffic through the HTTPS proxy, not the native API",
         )
+    } else if client.llm_reverse_proxy_enabled() {
+        (
+            "llm_reverse_proxy_client_native",
+            "Client is in reverse-proxy mode; it serves the wrapped provider's own port, not the native API",
+        )
     } else {
         (
             "mcp_only_client_llm",

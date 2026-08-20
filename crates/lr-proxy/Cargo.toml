@@ -45,6 +45,7 @@ tokio = { workspace = true }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 rustls-pemfile = "2"
+futures = { workspace = true }
 
 [lints]
 workspace = true

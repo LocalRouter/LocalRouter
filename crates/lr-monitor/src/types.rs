@@ -175,6 +175,8 @@ pub enum LlmCallSource {
     Api,
     /// Observed by decrypting proxied traffic (inspect-only).
     Proxy,
+    /// Observed by the reverse proxy, which wraps a local provider's port.
+    ReverseProxy,
 }
 
 /// The wire protocol an observed LLM call used.

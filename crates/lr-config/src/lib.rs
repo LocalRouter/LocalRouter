@@ -323,6 +323,7 @@ impl ConfigManager {
             mcp_mode: McpMode::default(),
             template_id: None,
             sync_config: false,
+            reverse_proxy: None,
             guardrails_enabled: None,
             guardrails: ClientGuardrailsConfig::default(),
             prompt_compression: ClientPromptCompressionConfig::default(),

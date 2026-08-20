@@ -20,4 +20,8 @@ pub enum ProxyError {
     /// Malformed CONNECT request or proxy protocol violation.
     #[error("proxy protocol error: {0}")]
     Protocol(String),
+
+    /// Invalid proxy configuration (e.g. an unusable upstream URL).
+    #[error("proxy configuration error: {0}")]
+    Config(String),
 }

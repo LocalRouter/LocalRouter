@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata for Flathub. Validate before submitting:
+    flatpak run org.freedesktop.appstream-glib validate ai.localrouter.app.metainfo.xml
+
+  The <releases> block is rewritten by scripts/publish-packages.sh
+  (__VERSION__ / __RELEASE_DATE__). Screenshot URLs must be reachable and
+  served over HTTPS or Flathub's linter rejects the submission.
+-->
+<component type="desktop-application">
+  <id>ai.localrouter.app</id>
+
+  <name>LocalRouter</name>
+  <summary>Route AI requests across providers, locally</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+
+  <developer id="ai.localrouter">
+    <name>LocalRouter</name>
+  </developer>
+
+  <description>
+    <p>
+      LocalRouter is a local, OpenAI-compatible API gateway. Point any tool
+      that speaks the OpenAI API at your own machine and LocalRouter routes
+      each request to the provider that fits it best.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>One OpenAI-compatible endpoint in front of 19 providers</li>
+      <li>Cost- and latency-aware routing, with per-client rate limits</li>
+      <li>An MCP gateway for Claude Desktop, Cursor and VS Code</li>
+      <li>Request monitoring, logging and spend tracking</li>
+      <li>Guardrails, secret scanning and prompt caching</li>
+    </ul>
+    <p>
+      LocalRouter is private by design: there is no telemetry and no analytics,
+      the API binds to localhost by default, and provider credentials stay in
+      your system keyring.
+    </p>
+    <p>
+      Note: LocalRouter runs MCP servers and coding agents that are installed
+      on your system, so it requests permission to talk to the host.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">ai.localrouter.app.desktop</launchable>
+
+  <url type="homepage">https://localrouter.ai</url>
+  <url type="bugtracker">https://github.com/LocalRouter/LocalRouter/issues</url>
+  <url type="vcs-browser">https://github.com/LocalRouter/LocalRouter</url>
+
+  <categories>
+    <category>Development</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>ai</keyword>
+    <keyword>llm</keyword>
+    <keyword>openai</keyword>
+    <keyword>gateway</keyword>
+    <keyword>mcp</keyword>
+  </keywords>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <content_rating type="oars-1.1"/>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://localrouter.ai/screenshots/dashboard.png</image>
+      <caption>The dashboard, showing live routing and spend</caption>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="__VERSION__" date="__RELEASE_DATE__">
+      <url type="details">https://github.com/LocalRouter/LocalRouter/releases/tag/v__VERSION__</url>
+    </release>
+  </releases>
+</component>

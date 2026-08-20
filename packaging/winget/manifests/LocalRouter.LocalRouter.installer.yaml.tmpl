@@ -1,0 +1,20 @@
+# Installer manifest.
+# Placeholders: __VERSION__, __SHA256_X64_NSIS__, __RELEASE_DATE__
+PackageIdentifier: LocalRouter.LocalRouter
+PackageVersion: __VERSION__
+InstallerType: nullsoft
+# Tauri's NSIS installer defaults to a per-user install, which needs no
+# elevation and keeps SmartScreen friction lower for an unsigned binary.
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: __RELEASE_DATE__
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/LocalRouter/LocalRouter/releases/download/v__VERSION__/LocalRouter___VERSION___x64-setup.exe
+    InstallerSha256: __SHA256_X64_NSIS__
+ManifestType: installer
+ManifestVersion: 1.6.0

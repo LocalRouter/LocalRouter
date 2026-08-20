@@ -5638,6 +5638,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "futures",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
@@ -5848,6 +5849,8 @@ dependencies = [
  "dirs 5.0.1",
  "lr-types",
  "ring",
+ "serde",
+ "serde_json",
  "tracing",
  "which 7.0.3",
 ]

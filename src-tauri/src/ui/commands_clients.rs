@@ -83,6 +83,9 @@ pub struct ClientInfo {
     pub template_id: Option<String>,
     /// Whether auto-sync of external app config is enabled
     pub sync_config: bool,
+    /// Reverse-proxy binding — the address apps use, so Try It Out can send
+    /// requests through the wrapped port rather than the native gateway.
+    pub reverse_proxy: Option<lr_config::ClientReverseProxy>,
     /// Whether guardrails are active (has non-allow category_actions)
     pub guardrails_active: bool,
     /// Whether JSON repair is active (resolved from per-client override or global)
@@ -130,11 +133,44 @@ pub async fn list_clients(
                 mcp_mode: c.mcp_mode,
                 template_id: c.template_id.clone(),
                 sync_config: c.sync_config,
+                reverse_proxy: c.reverse_proxy.clone(),
                 guardrails_active: guardrails_active_for(&c, &config),
                 json_repair_active: c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
             }
         })
         .collect())
+}
+
+/// Default reverse-proxy binding for a template, resolved against the provider
+/// instances this LocalRouter already has. Returns `None` for templates that
+/// don't wrap a local provider.
+fn default_reverse_binding(
+    template_id: &str,
+    config_manager: &ConfigManager,
+) -> Option<lr_config::ClientReverseProxy> {
+    use crate::launcher::reverse_setup;
+
+    let key = reverse_setup::provider_key_for_template(template_id)?;
+    let (listen_port, upstream_port) = reverse_setup::default_ports(key)?;
+    let type_name = reverse_setup::provider_type_name(key);
+    let provider_instance = config_manager
+        .get()
+        .providers
+        .iter()
+        .find(|p| {
+            serde_json::to_value(p.provider_type)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .is_some_and(|t| t == type_name)
+        })
+        .map(|p| p.name.clone());
+
+    Some(lr_config::ClientReverseProxy {
+        listen_host: "127.0.0.1".to_string(),
+        listen_port,
+        upstream_url: format!("http://127.0.0.1:{upstream_port}"),
+        provider_instance,
+    })
 }
 
 /// Create a new client
@@ -149,6 +185,7 @@ pub async fn create_client(
     llm_mode: Option<LlmMode>,
     mcp_mode: Option<McpMode>,
     template_id: Option<String>,
+    reverse_proxy: Option<lr_config::ClientReverseProxy>,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
@@ -164,9 +201,20 @@ pub async fn create_client(
 
     // Apply optional mode/template in the same Tauri command so the
     // client never leaves this command in a half-configured state.
-    if llm_mode.is_some() || mcp_mode.is_some() || template_id.is_some() {
+    // A reverse-proxy client is invalid without its binding, so resolve the
+    // template's defaults when the caller didn't supply one explicitly.
+    let reverse_proxy = match (llm_mode, reverse_proxy, template_id.as_deref()) {
+        (Some(LlmMode::ReverseProxy), None, Some(tid)) => {
+            default_reverse_binding(tid, &config_manager)
+        }
+        (_, rp, _) => rp,
+    };
+
+    if llm_mode.is_some() || mcp_mode.is_some() || template_id.is_some() || reverse_proxy.is_some()
+    {
         let cid = client.id.clone();
         let tid = template_id.clone();
+        let rp = reverse_proxy.clone();
         config_manager
             .update(|cfg| {
                 if let Some(c) = cfg.clients.iter_mut().find(|c| c.id == cid) {
@@ -178,6 +226,9 @@ pub async fn create_client(
                     }
                     if let Some(t) = tid {
                         c.template_id = Some(t);
+                    }
+                    if let Some(rp) = rp {
+                        c.reverse_proxy = Some(rp);
                     }
                 }
             })
@@ -246,6 +297,7 @@ pub async fn create_client(
         mcp_mode: client.mcp_mode,
         template_id: client.template_id.clone(),
         sync_config: client.sync_config,
+        reverse_proxy: client.reverse_proxy.clone(),
         guardrails_active: guardrails_active_for(&client, &config_manager.get()),
         json_repair_active: {
             let cfg = config_manager.get();
@@ -417,10 +469,17 @@ pub async fn clone_client(
         coding_agent_permission: source_client.coding_agent_permission.clone(),
         coding_agent_type: source_client.coding_agent_type,
         client_mode: source_client.client_mode,
-        llm_mode: source_client.llm_mode,
+        llm_mode: if source_client.llm_mode == lr_config::LlmMode::ReverseProxy {
+            lr_config::LlmMode::Gateway
+        } else {
+            source_client.llm_mode
+        },
         mcp_mode: source_client.mcp_mode,
         template_id: source_client.template_id.clone(),
         sync_config: false, // Disabled for clones to avoid conflicts
+        // A reverse-proxy binding owns a specific local port, so it must not be
+        // duplicated; the clone falls back to the native gateway instead.
+        reverse_proxy: None,
         guardrails_enabled: None,
         guardrails: source_client.guardrails.clone(),
         prompt_compression: source_client.prompt_compression.clone(),
@@ -491,6 +550,7 @@ pub async fn clone_client(
         mcp_mode: new_client.mcp_mode,
         template_id: new_client.template_id.clone(),
         sync_config: false,
+        reverse_proxy: new_client.reverse_proxy.clone(),
         guardrails_active: guardrails_active_for(&new_client, &config_manager.get()),
         json_repair_active: {
             let cfg = config_manager.get();
@@ -3247,11 +3307,29 @@ async fn apply_client_mode_change(
 ) -> Result<(), String> {
     let mut found = false;
     let mut mutate = Some(mutate);
+    // Switching an existing client into reverse-proxy mode needs a binding, or
+    // config validation rejects the change. Resolve the template's defaults up
+    // front so picking the mode in the UI just works, the same way creating a
+    // client with it does. (Computed here because the update closure can't
+    // borrow the config manager it is mutating.)
+    let fallback_binding = {
+        let cfg = config_manager.get();
+        cfg.clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .filter(|c| c.reverse_proxy.is_none())
+            .and_then(|c| c.template_id.as_deref())
+            .and_then(|tid| default_reverse_binding(tid, &config_manager))
+    };
+
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
                 if let Some(f) = mutate.take() {
                     f(client);
+                }
+                if client.llm_mode == LlmMode::ReverseProxy && client.reverse_proxy.is_none() {
+                    client.reverse_proxy = fallback_binding.clone();
                 }
                 found = true;
             }

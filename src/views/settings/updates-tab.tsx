@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { check, Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { toast } from "sonner"
-import { Power, RefreshCw, Download, SkipForward } from "lucide-react"
+import { Power, RefreshCw, Download, SkipForward, Package } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import ReactMarkdown from "react-markdown"
-import type { SetStartOnBootParams } from "@/types/tauri-commands"
+import type { InstallSourceInfo, SetStartOnBootParams } from "@/types/tauri-commands"
 
 
 interface UpdateConfig {
@@ -42,13 +42,43 @@ export function UpdatesTab() {
   const [startOnBoot, setStartOnBoot] = useState<boolean>(true)
   const [startOnBootBusy, setStartOnBootBusy] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
+  const [installSource, setInstallSource] = useState<InstallSourceInfo | null>(null)
+
+  // A package manager owning this install means the in-app updater must stay
+  // out of the way: self-updating on top of brew/apt/flatpak leaves the
+  // package manager describing a version that is no longer on disk.
+  const isManaged = installSource !== null && !installSource.self_updatable
 
   useEffect(() => {
     loadCurrentVersion()
     loadUpdateConfig()
     loadStartOnBoot()
-    checkForUpdatesOnMount()
+    loadInstallSource()
   }, [])
+
+  // Deliberately separate from the mount effect above: the automatic check
+  // must not fire until we know whether a package manager owns this install.
+  useEffect(() => {
+    if (installSource !== null && !isManaged) {
+      checkForUpdatesOnMount()
+    }
+  }, [installSource, isManaged])
+
+  const loadInstallSource = async () => {
+    try {
+      setInstallSource(await invoke<InstallSourceInfo>("get_install_source"))
+    } catch (err) {
+      console.error("Failed to detect install source:", err)
+      // Fall back to the pre-existing behaviour rather than locking the user
+      // out of updating entirely.
+      setInstallSource({
+        source: "direct",
+        label: "Direct download",
+        self_updatable: true,
+        upgrade_command: null,
+      })
+    }
+  }
 
   const loadStartOnBoot = async () => {
     try {
@@ -327,18 +357,27 @@ export function UpdatesTab() {
               )}
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground">
-                Last checked: {formatLastCheck(updateConfig.last_check)}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleCheckForUpdates}
-                disabled={isChecking || isDownloading}
-              >
-                <RefreshCw className={`h-3 w-3 mr-1 ${isChecking ? "animate-spin" : ""}`} />
-                {isChecking ? "Checking..." : "Check Now"}
-              </Button>
+              {isManaged ? (
+                <Badge variant="outline" className="gap-1">
+                  <Package className="h-3 w-3" />
+                  Installed via {installSource?.label}
+                </Badge>
+              ) : (
+                <>
+                  <span className="text-xs text-muted-foreground">
+                    Last checked: {formatLastCheck(updateConfig.last_check)}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCheckForUpdates}
+                    disabled={isChecking || isDownloading}
+                  >
+                    <RefreshCw className={`h-3 w-3 mr-1 ${isChecking ? "animate-spin" : ""}`} />
+                    {isChecking ? "Checking..." : "Check Now"}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
           {checkError && (
@@ -346,6 +385,34 @@ export function UpdatesTab() {
           )}
         </CardContent>
       </Card>
+
+      {/* Managed by a package manager */}
+      {isManaged && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Package className="h-4 w-4" />
+              Updates are managed by {installSource?.label}
+            </CardTitle>
+            <CardDescription>
+              LocalRouter was installed by a package manager, so its built-in
+              updater is turned off. Updating in place would leave{" "}
+              {installSource?.label} recording a version that is no longer
+              installed.
+            </CardDescription>
+          </CardHeader>
+          {installSource?.upgrade_command && (
+            <CardContent>
+              <p className="text-xs text-muted-foreground mb-2">
+                To upgrade, run:
+              </p>
+              <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto">
+                <code>{installSource.upgrade_command}</code>
+              </pre>
+            </CardContent>
+          )}
+        </Card>
+      )}
 
       {/* Update Available */}
       {updateAvailable && !isDownloading && (
@@ -431,8 +498,9 @@ export function UpdatesTab() {
         </Card>
       )}
 
-      {/* Update Settings (inline) */}
-      <Card>
+      {/* Update Settings (inline) — meaningless when a package manager owns
+          the install, since no check will ever run. */}
+      <Card className={isManaged ? "hidden" : undefined}>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm">Update Settings</CardTitle>
           <CardDescription>

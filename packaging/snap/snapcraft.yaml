@@ -1,0 +1,131 @@
+# Snapcraft recipe for LocalRouter.
+#
+# `__VERSION__` / `__SHA256_AMD64__` / `__SHA256_ARM64__` are substituted by
+# scripts/publish-packages.sh. Built per-architecture by the `build-snap` job
+# in .github/workflows/release.yml (`snapcraft pack --destructive-mode` on an
+# ubuntu-22.04 runner, which must match `base: core22`), attached to the
+# GitHub release for sideloading, and uploaded to the Snap Store when the
+# SNAPCRAFT_STORE_CREDENTIALS secret is configured.
+#
+# ---------------------------------------------------------------------------
+# Why classic confinement
+# ---------------------------------------------------------------------------
+# LocalRouter's core features spawn binaries that belong to the user, not to
+# us: MCP stdio servers (`npx`, `uvx`) in crates/lr-mcp, and coding agents
+# (`claude`, `aider`) in crates/lr-coding-agents. It also reads their config
+# out of $HOME (~/.claude, ~/.aider.conf.yml) and operates on arbitrary project
+# directories the user selects.
+#
+# Under strict confinement none of that works — `home` plus `system-backup`
+# still would not let us execute host binaries with the user's PATH. This is
+# exactly the VS Code / IntelliJ situation, and classic is the interface the
+# Snap Store grants for it.
+#
+# Classic confinement requires a one-time review on
+# https://forum.snapcraft.io/c/store-requests before the first store release:
+#   1. the first `snapcraft upload --release=stable` is held by the store
+#   2. open a store-request topic explaining the host-execution requirement
+#   3. re-run the release job (or `snapcraft upload` by hand) once granted
+# Until then the .snap on the GitHub release installs with
+# `sudo snap install --dangerous --classic ./localrouter_*.snap`.
+#
+# Unlike Flatpak, classic snaps run unconfined, so no `flatpak-spawn`-style
+# rewriting is needed — crates/lr-utils/src/sandbox.rs treats Snap as a
+# pass-through and only uses the detection to disable the in-app updater.
+#
+# Base is core22, not core24, deliberately: the released .deb is built on
+# ubuntu-22.04 so core22's glibc/webkit match what the binary links against,
+# and `enable-patchelf` (required for classic) picks the wrong dynamic linker
+# on core24 (canonical/craft-parts#623).
+# ---------------------------------------------------------------------------
+name: localrouter
+title: LocalRouter
+base: core22
+version: '__VERSION__'
+summary: Local OpenAI-compatible API gateway with intelligent routing
+description: |
+  LocalRouter is a local, OpenAI-compatible API gateway. Point any tool that
+  speaks the OpenAI API at your own machine and LocalRouter routes each request
+  to the provider that fits it best.
+
+  * One OpenAI-compatible endpoint in front of 19 providers
+  * Cost- and latency-aware routing, with per-client rate limits
+  * An MCP gateway for Claude Desktop, Cursor and VS Code
+  * Request monitoring, logging and spend tracking
+
+  LocalRouter is private by design: no telemetry, no analytics, and the API
+  binds to localhost by default.
+
+license: AGPL-3.0-or-later
+website: https://localrouter.ai
+issues: https://github.com/LocalRouter/LocalRouter/issues
+source-code: https://github.com/LocalRouter/LocalRouter
+
+grade: stable
+confinement: classic
+compression: lzo
+
+architectures:
+  - build-on: [amd64]
+  - build-on: [arm64]
+
+apps:
+  localrouter:
+    # A generated launcher, not the binary itself: classic snaps get no
+    # environment rewriting from snapd, so the launcher exports the library
+    # and WebKit helper paths pointing into $SNAP before exec'ing the app.
+    command: bin/localrouter-launch
+    desktop: usr/share/applications/LocalRouter.desktop
+
+parts:
+  localrouter:
+    # Repack the released .deb rather than rebuilding: a from-source Tauri
+    # build needs node plus a full npm install inside the build environment.
+    plugin: nil
+    # Classic snaps must carry their own rpath/interpreter patching — snapd
+    # does not remap library paths for them the way strict confinement does.
+    build-attributes: [enable-patchelf]
+    build-packages:
+      - ca-certificates
+      - wget
+    stage-packages:
+      - libwebkit2gtk-4.1-0
+      - libayatana-appindicator3-1
+      - libssl3
+    override-build: |
+      craftctl default
+
+      case "$CRAFT_ARCH_BUILD_FOR" in
+        amd64) deb_sha="__SHA256_AMD64__" ;;
+        arm64) deb_sha="__SHA256_ARM64__" ;;
+        *) echo "unsupported architecture: $CRAFT_ARCH_BUILD_FOR" >&2; exit 1 ;;
+      esac
+
+      wget -qO localrouter.deb \
+        "https://github.com/LocalRouter/LocalRouter/releases/download/v__VERSION__/LocalRouter___VERSION___${CRAFT_ARCH_BUILD_FOR}.deb"
+      echo "$deb_sha  localrouter.deb" | sha256sum -c -
+      dpkg-deb -x localrouter.deb "$CRAFT_PART_INSTALL"
+
+      # Marker read by crates/lr-utils/src/install_source.rs. $SNAP is also
+      # detected live; this keeps the answer right if the env is ever cleared.
+      mkdir -p "$CRAFT_PART_INSTALL/usr/share/localrouter"
+      echo snap > "$CRAFT_PART_INSTALL/usr/share/localrouter/install-source"
+
+      # Launcher. Quoted heredoc: $SNAP and friends must survive to runtime;
+      # only @TRIPLET@ is baked in at build time, because WebKit's helper
+      # processes (WebKitWebProcess etc.) live under an arch-specific libdir
+      # that the host almost certainly does not have.
+      mkdir -p "$CRAFT_PART_INSTALL/bin"
+      cat > localrouter-launch.in <<'LAUNCH'
+      #!/bin/sh
+      export LD_LIBRARY_PATH="$SNAP/usr/lib/@TRIPLET@:$SNAP/usr/lib:$SNAP/lib/@TRIPLET@:$SNAP/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      export WEBKIT_EXEC_PATH="$SNAP/usr/lib/@TRIPLET@/webkit2gtk-4.1"
+      export WEBKIT_INJECTED_BUNDLE_PATH="$SNAP/usr/lib/@TRIPLET@/webkit2gtk-4.1/injected-bundle"
+      export XDG_DATA_DIRS="$SNAP/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+      export LOCALROUTER_INSTALL_SOURCE=snap
+      exec "$SNAP/usr/bin/localrouter" "$@"
+      LAUNCH
+      sed "s|@TRIPLET@|$CRAFT_ARCH_TRIPLET|g" localrouter-launch.in \
+        > "$CRAFT_PART_INSTALL/bin/localrouter-launch"
+      rm localrouter-launch.in
+      chmod 755 "$CRAFT_PART_INSTALL/bin/localrouter-launch"

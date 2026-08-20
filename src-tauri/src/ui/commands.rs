@@ -1545,6 +1545,36 @@ pub async fn update_update_config(
     Ok(())
 }
 
+/// How this copy of LocalRouter was installed, and who owns its updates.
+#[derive(Serialize)]
+pub struct InstallSourceInfo {
+    /// Machine-readable source identifier (e.g. "homebrew", "flatpak").
+    pub source: lr_utils::install_source::InstallSource,
+    /// Human-readable name of the owning package manager.
+    pub label: String,
+    /// Whether the in-app updater may replace this installation.
+    pub self_updatable: bool,
+    /// The command the user should run to upgrade, when one is known.
+    pub upgrade_command: Option<String>,
+}
+
+/// Report how LocalRouter was installed.
+///
+/// The Updates settings tab uses this to hide the "Check for updates" control
+/// on package-managed installs and show the right upgrade command instead —
+/// a self-update on top of Homebrew or apt would desynchronise the package
+/// manager's recorded version from what is on disk.
+#[tauri::command]
+pub async fn get_install_source() -> Result<InstallSourceInfo, String> {
+    let source = lr_utils::install_source::current();
+    Ok(InstallSourceInfo {
+        source,
+        label: source.label().to_string(),
+        self_updatable: source.is_self_updatable(),
+        upgrade_command: source.upgrade_command().map(str::to_string),
+    })
+}
+
 /// Mark that an update check was performed (save timestamp)
 /// This is called by the frontend after it performs an update check
 #[tauri::command]

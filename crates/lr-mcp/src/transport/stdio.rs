@@ -7,6 +7,7 @@ use crate::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonR
 use crate::transport::Transport;
 use async_trait::async_trait;
 use lr_types::{AppError, AppResult};
+use lr_utils::sandbox;
 use parking_lot::RwLock;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -117,8 +118,13 @@ impl StdioTransport {
 
         // Fail with a directed message rather than the opaque OS error the
         // spawn would otherwise produce for a missing/!dir working directory.
+        //
+        // Skipped when proxying to the host: inside a Flatpak sandbox the path
+        // is resolved on the *host*, and a directory outside our exported
+        // filesystem is invisible here even though the host process can enter
+        // it. Let the host report the failure instead of rejecting it wrongly.
         if let Some(dir) = &cwd {
-            if !dir.is_dir() {
+            if !sandbox::current().needs_host_proxy() && !dir.is_dir() {
                 return Err(AppError::Mcp(format!(
                     "Working directory for MCP process '{}' is not an existing directory: {}",
                     command,
@@ -127,25 +133,42 @@ impl StdioTransport {
             }
         }
 
-        // Spawn the child process
-        let has_configured_pwd = env.contains_key("PWD");
-        let mut cmd = Command::new(&command);
-        cmd.args(&args)
-            .envs(env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null()) // Discard stderr to prevent pipe buffer deadlock
-            .kill_on_drop(true);
+        // Assemble the final environment before handing it to the sandbox
+        // helper: under Flatpak these become `--env=` flags on
+        // `flatpak-spawn`, so they have to be complete by then.
+        let mut env = env;
         if let Some(dir) = &cwd {
-            cmd.current_dir(dir);
             // The child inherits our environment, so a stale inherited `PWD`
             // would disagree with the directory we just set — shells and
             // scripts read `$PWD` rather than calling getcwd(). An explicitly
             // configured PWD still wins, as with every other env var.
-            if !has_configured_pwd {
+            if !env.contains_key("PWD") {
                 if let Some(dir_str) = dir.to_str() {
-                    cmd.env("PWD", dir_str);
+                    env.insert("PWD".to_string(), dir_str.to_string());
                 }
+            }
+        }
+
+        // MCP servers (`npx`, `uvx`, …) live on the host. Inside a Flatpak
+        // sandbox they are not on our filesystem at all, so this rewrites the
+        // invocation to proxy through `flatpak-spawn --host`. Outside a
+        // sandbox it is a pass-through.
+        let invocation = sandbox::host_invocation(&command, env, cwd.as_deref());
+
+        // Spawn the child process
+        let mut cmd = Command::new(&invocation.program);
+        cmd.args(&invocation.leading_args)
+            .args(&args)
+            .envs(invocation.envs.clone())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()) // Discard stderr to prevent pipe buffer deadlock
+            .kill_on_drop(true);
+        // Under Flatpak the working directory travels as `--directory=`; the
+        // host path is meaningless to the `flatpak-spawn` process itself.
+        if !sandbox::current().needs_host_proxy() {
+            if let Some(dir) = &cwd {
+                cmd.current_dir(dir);
             }
         }
         let mut child = cmd.spawn().map_err(|e| {

@@ -1,0 +1,44 @@
+# Maintainer: Matus Faro <matus@matus.io>
+#
+# AUR package for LocalRouter. Rendered by scripts/publish-packages.sh and
+# pushed to ssh://aur@aur.archlinux.org/localrouter-bin.git
+#
+# This repackages the released .deb rather than building from source: the
+# Tauri build needs node + a full npm install, which would make a
+# from-source AUR package slow and fragile. `-bin` is the correct AUR
+# convention for that.
+#
+# Placeholders: __VERSION__, __SHA256_AMD64__, __SHA256_ARM64__
+pkgname=localrouter-bin
+pkgver=__VERSION__
+pkgrel=1
+pkgdesc="Local OpenAI-compatible API gateway with intelligent multi-provider routing"
+arch=('x86_64' 'aarch64')
+url="https://localrouter.ai"
+license=('AGPL-3.0-or-later')
+# webkit2gtk-4.1 is the webview Tauri v2 links against; libayatana-appindicator
+# backs the tray icon, which LocalRouter lives in.
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'openssl')
+provides=('localrouter')
+conflicts=('localrouter')
+options=('!strip' '!debug')
+
+source_x86_64=("localrouter-${pkgver}-amd64.deb::https://github.com/LocalRouter/LocalRouter/releases/download/v${pkgver}/LocalRouter_${pkgver}_amd64.deb")
+source_aarch64=("localrouter-${pkgver}-arm64.deb::https://github.com/LocalRouter/LocalRouter/releases/download/v${pkgver}/LocalRouter_${pkgver}_arm64.deb")
+sha256sums_x86_64=('__SHA256_AMD64__')
+sha256sums_aarch64=('__SHA256_ARM64__')
+
+package() {
+    # The .deb payload is already laid out as /usr/bin, /usr/share/... so it
+    # can be unpacked straight into $pkgdir.
+    tar -xf data.tar.gz -C "$pkgdir"
+
+    # Tell the app that pacman owns this install, so the in-app Tauri updater
+    # stands down (see crates/lr-utils/src/install_source.rs). Without this the
+    # app would try to overwrite pacman-managed files in /usr/bin and leave the
+    # package database describing a version that is no longer on disk.
+    install -Dm644 /dev/stdin "$pkgdir/usr/share/localrouter/install-source" <<<'aur'
+
+    install -Dm644 "$pkgdir/usr/share/doc/localrouter/copyright" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE" 2>/dev/null || true
+}

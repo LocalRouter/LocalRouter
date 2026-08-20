@@ -27,6 +27,11 @@ export function splitClientMode(mode: ClientMode): { llmMode: LlmMode; mcpMode: 
 
 /** The default LLM/MCP modes a template should apply to a new client. */
 export function templateDefaultModes(template: ClientTemplate): { llmMode: LlmMode; mcpMode: McpMode } {
+  // A template that exists to wrap a provider's port is only meaningful in
+  // reverse-proxy mode, and has no MCP surface of its own.
+  if (template.supportsReverseProxy && !template.supportsLlm) {
+    return { llmMode: 'reverse_proxy', mcpMode: 'off' }
+  }
   return splitClientMode(template.defaultMode)
 }
 
@@ -36,13 +41,14 @@ export function templateDefaultModes(template: ClientTemplate): { llmMode: LlmMo
  *  gateway-shaped equivalent. */
 export function combineClientMode(llmMode: LlmMode, mcpMode: McpMode): ClientMode {
   if (mcpMode === 'via_llm') return 'mcp_via_llm'
+  if (llmMode === 'reverse_proxy') return mcpMode === 'gateway' ? 'both' : 'llm_only'
   if (llmMode === 'gateway' && mcpMode === 'gateway') return 'both'
   if (llmMode === 'gateway' && mcpMode === 'off') return 'llm_only'
   if (mcpMode === 'gateway') return 'mcp_only'
   return 'llm_only'
 }
 
-export type ClientTemplateCategory = 'coding_assistants' | 'ide_extensions' | 'ides' | 'chat' | 'automation' | 'cli'
+export type ClientTemplateCategory = 'coding_assistants' | 'ide_extensions' | 'ides' | 'chat' | 'automation' | 'local_providers' | 'cli'
 
 export interface ClientTemplateEnvVar {
   name: string
@@ -97,6 +103,19 @@ export interface ClientTemplate {
    * decision is in `plan/2026-07-29-HTTPS_PROXY_CLIENT_AUTOCONFIG_RESEARCH.md`.
    */
   supportsProxy?: boolean
+  /**
+   * Whether this template wraps a local LLM provider in reverse-proxy mode:
+   * LocalRouter binds the port the provider already owns and forwards to the
+   * provider on a new one, so every app pointed at the old address keeps
+   * working and becomes visible in the Monitor.
+   *
+   * Only local providers qualify — there is a port on this machine to take
+   * over. Per-provider relocation mechanics live in the backend
+   * (`src-tauri/src/launcher/reverse_setup.rs`).
+   */
+  supportsReverseProxy?: boolean
+  /** Ports involved in the wrap: what apps use, and where the provider moves. */
+  reverseProxy?: { listenPort: number; upstreamPort: number }
   binaryNames?: string[]
 }
 
@@ -478,6 +497,109 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     supportsMcp: false,
     supportsLlm: true,
   },
+  // === Wrap a Local Provider (reverse proxy) ===
+  {
+    id: 'reverse-ollama',
+    name: 'Ollama',
+    description: 'Wrap your local Ollama so every app using it shows up in the Monitor.',
+    category: 'local_providers',
+    icon: 'ollama',
+    defaultMode: 'llm_only',
+    setupType: 'generic',
+    manualInstructions:
+      'Move Ollama to port 11435, then let LocalRouter listen on 11434. ' +
+      'Apps keep using port 11434 exactly as before.',
+    docsUrl: 'https://docs.ollama.com/',
+    supportsMcp: false,
+    supportsLlm: false,
+    supportsReverseProxy: true,
+    reverseProxy: { listenPort: 11434, upstreamPort: 11435 },
+  },
+  {
+    id: 'reverse-lmstudio',
+    name: 'LM Studio',
+    description: 'Wrap LM Studio\'s local server and keep every connected app working.',
+    category: 'local_providers',
+    icon: 'lmstudio',
+    defaultMode: 'llm_only',
+    setupType: 'generic',
+    manualInstructions:
+      'Move LM Studio to port 1235, then let LocalRouter listen on 1234. ' +
+      'Apps keep using port 1234 exactly as before.',
+    docsUrl: 'https://lmstudio.ai/docs/app/api',
+    supportsMcp: false,
+    supportsLlm: false,
+    supportsReverseProxy: true,
+    reverseProxy: { listenPort: 1234, upstreamPort: 1235 },
+  },
+  {
+    id: 'reverse-jan',
+    name: 'Jan',
+    description: 'Wrap Jan\'s local API server to monitor everything that talks to it.',
+    category: 'local_providers',
+    icon: 'jan',
+    defaultMode: 'llm_only',
+    setupType: 'generic',
+    manualInstructions:
+      'Move Jan to port 1338, then let LocalRouter listen on 1337. ' +
+      'Apps keep using port 1337 exactly as before.',
+    docsUrl: 'https://jan.ai/docs/api-server',
+    supportsMcp: false,
+    supportsLlm: false,
+    supportsReverseProxy: true,
+    reverseProxy: { listenPort: 1337, upstreamPort: 1338 },
+  },
+  {
+    id: 'reverse-gpt4all',
+    name: 'GPT4All',
+    description: 'Wrap GPT4All\'s API server so its traffic is visible.',
+    category: 'local_providers',
+    icon: 'gpt4all',
+    defaultMode: 'llm_only',
+    setupType: 'generic',
+    manualInstructions:
+      'Move GPT4All to port 4892, then let LocalRouter listen on 4891. ' +
+      'Apps keep using port 4891 exactly as before.',
+    docsUrl: 'https://docs.gpt4all.io/gpt4all_api_server/home.html',
+    supportsMcp: false,
+    supportsLlm: false,
+    supportsReverseProxy: true,
+    reverseProxy: { listenPort: 4891, upstreamPort: 4892 },
+  },
+  {
+    id: 'reverse-localai',
+    name: 'LocalAI',
+    description: 'Wrap LocalAI\'s endpoint and monitor every app that uses it.',
+    category: 'local_providers',
+    icon: 'localai',
+    defaultMode: 'llm_only',
+    setupType: 'generic',
+    manualInstructions:
+      'Move LocalAI to port 8081, then let LocalRouter listen on 8080. ' +
+      'Apps keep using port 8080 exactly as before.',
+    docsUrl: 'https://localai.io/basics/getting_started/',
+    supportsMcp: false,
+    supportsLlm: false,
+    supportsReverseProxy: true,
+    reverseProxy: { listenPort: 8080, upstreamPort: 8081 },
+  },
+  {
+    id: 'reverse-llamacpp',
+    name: 'llama.cpp',
+    description: 'Wrap llama-server so its traffic runs through LocalRouter.',
+    category: 'local_providers',
+    icon: 'llamacpp',
+    defaultMode: 'llm_only',
+    setupType: 'generic',
+    manualInstructions:
+      'Move llama.cpp to port 8082, then let LocalRouter listen on 8080. ' +
+      'Apps keep using port 8080 exactly as before.',
+    docsUrl: 'https://github.com/ggml-org/llama.cpp/tree/master/tools/server',
+    supportsMcp: false,
+    supportsLlm: false,
+    supportsReverseProxy: true,
+    reverseProxy: { listenPort: 8080, upstreamPort: 8082 },
+  },
 ]
 
 export const CUSTOM_CLIENT_TEMPLATE: ClientTemplate = {
@@ -500,6 +622,10 @@ const CATEGORY_INFO: Record<ClientTemplateCategory, { title: string; description
   ides: { title: 'IDEs & Editors', description: 'AI-powered code editors' },
   chat: { title: 'Chat UIs', description: 'Web-based chat interfaces' },
   automation: { title: 'Automation & Notebooks', description: 'Workflow automation and data science' },
+  local_providers: {
+    title: 'Wrap a Local Provider',
+    description: 'Take over a local LLM server\'s port so every app using it is monitored — no app changes',
+  },
   cli: { title: 'Other', description: 'Custom and generic clients' },
 }
 
@@ -509,6 +635,7 @@ const CATEGORY_ORDER: ClientTemplateCategory[] = [
   'ides',
   'chat',
   'automation',
+  'local_providers',
   'cli',
 ]
 

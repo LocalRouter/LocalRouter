@@ -19,6 +19,8 @@
 //! - [`passive`] — the v1 inspect-only interceptor that records to the monitor.
 //! - [`websocket`] — frame codec + message-aware relay for upgraded
 //!   connections (Codex's Responses-over-websocket transport).
+//! - [`reverse`] — the *reverse* proxy: bind a local provider's original port
+//!   and forward to the relocated provider, teeing traffic to the monitor.
 //!
 //! The live MITM data-path (CONNECT handling, TLS terminate/re-originate,
 //! streaming tap) and the [`ProxyManager`] lifecycle build on these pieces.
@@ -29,9 +31,11 @@ pub mod cert;
 pub mod error;
 pub mod interceptor;
 pub mod manager;
+pub mod ollama;
 pub mod openai;
 pub mod passive;
 pub mod resolver;
+pub mod reverse;
 pub mod tap;
 pub mod tls;
 pub mod transport;

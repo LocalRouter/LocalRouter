@@ -45,6 +45,23 @@ export function StepNameAndMode({
         />
       </div>
 
+      {/* Wrapping a provider changes something outside LocalRouter — the
+          provider's own port — so say so before the client is created rather
+          than only in the setup screen afterwards. */}
+      {template?.supportsReverseProxy && template.reverseProxy && (
+        <div className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground space-y-1">
+          <p className="font-medium text-foreground">
+            LocalRouter will take over port {template.reverseProxy.listenPort}
+          </p>
+          <p>
+            {template.name} moves to port {template.reverseProxy.upstreamPort}, and LocalRouter
+            answers on {template.reverseProxy.listenPort} in its place — so every app already
+            pointed there keeps working, and its traffic shows up in the Monitor.
+          </p>
+          <p>You&apos;ll run the actual switch (and can undo it) on the next screen.</p>
+        </div>
+      )}
+
       {/* Mode selection */}
       <div className="space-y-2">
         <Label>Access Mode</Label>

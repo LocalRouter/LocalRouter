@@ -16,7 +16,7 @@ import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 import type { CodingAgentType } from "@/types/tauri-commands"
-import type { LlmMode, McpMode } from "@/types/tauri-commands"
+import type { LlmMode, McpMode, ClientReverseProxy } from "@/types/tauri-commands"
 import { combineClientMode } from "@/components/client/ClientTemplates"
 
 interface Client {
@@ -37,6 +37,8 @@ interface Client {
   mcp_mode?: McpMode
   template_id?: string | null
   sync_config: boolean
+  /** Present for reverse-proxy clients: the address their apps use. */
+  reverse_proxy?: ClientReverseProxy | null
   guardrails_active: boolean
   json_repair_active: boolean
   created_at: string
@@ -75,9 +77,16 @@ export function ClientDetail({
   // Proxy clients get a restricted variant (no weak-model / free-tier routing).
   const showModelsTab = llmMode === "gateway" || isProxy
   const showMcpTab = mcpMode !== "off"
-  // Try-It-Out needs the native gateway (we construct the request); a proxy
-  // client can't be exercised from here.
-  const showTryItOutLlm = llmMode === "gateway"
+  // Try-It-Out needs an address we can construct a request against: the native
+  // gateway, or a reverse-proxy client's wrapped port. An HTTPS-proxy client
+  // has neither — its traffic is intercepted, not addressed — so it stays off.
+  const isReverseProxy = llmMode === "reverse_proxy"
+  // The wrapped provider's own address — what apps actually call. Reverse-proxy
+  // clients are denied on the native /v1, so Try It Out must go through here.
+  const reverseProxyBaseUrl = isReverseProxy && client?.reverse_proxy
+    ? `http://${client.reverse_proxy.listen_host}:${client.reverse_proxy.listen_port}/v1`
+    : null
+  const showTryItOutLlm = llmMode === "gateway" || !!reverseProxyBaseUrl
   // Direct MCP try-it-out only for the MCP gateway (not via-LLM/off).
   const showTryItOutMcp = mcpMode === "gateway"
   const showTryItOut = showTryItOutLlm || showTryItOutMcp
@@ -209,6 +218,7 @@ export function ClientDetail({
                       initialMode="client"
                       initialClientId={client.client_id}
                       hideModeSwitcher
+                      baseUrlOverride={reverseProxyBaseUrl}
                     />
                   </TabsContent>
                   <TabsContent value="mcp" forceMount className="data-[state=inactive]:hidden">
@@ -226,6 +236,7 @@ export function ClientDetail({
                   initialMode="client"
                   initialClientId={client.client_id}
                   hideModeSwitcher
+                  baseUrlOverride={reverseProxyBaseUrl}
                 />
               ) : (
                 <McpTab
