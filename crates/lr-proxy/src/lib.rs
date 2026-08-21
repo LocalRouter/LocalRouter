@@ -54,6 +54,32 @@ pub const MITM_HOST_ALLOWLIST: &[&str] = &["api.anthropic.com", "api.openai.com"
 ///
 /// Matches the allow-list exactly or as a dotted suffix (so
 /// `foo.api.anthropic.com` also matches `api.anthropic.com`).
+/// Read the cross-hop trace an earlier LocalRouter hop may have stamped on
+/// `headers`, and replace it with the trace for the next hop (or a fresh one).
+/// Returns the outbound trace. With `enabled == false` the headers are left
+/// untouched and `None` is returned, so the request is neither recognized as
+/// a duplicate nor marked for downstream hops.
+pub fn stamp_trace(
+    headers: &mut hyper::HeaderMap,
+    enabled: bool,
+) -> Option<lr_types::RequestTrace> {
+    if !enabled {
+        return None;
+    }
+    let inbound = headers
+        .get(lr_types::TRACE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(lr_types::RequestTrace::parse);
+    let outbound = lr_types::RequestTrace::outbound_for(inbound.as_ref());
+    if let Ok(value) = hyper::header::HeaderValue::from_str(&outbound.header_value()) {
+        headers.insert(
+            hyper::header::HeaderName::from_static(lr_types::TRACE_HEADER),
+            value,
+        );
+    }
+    Some(outbound)
+}
+
 pub fn should_mitm_host(host: &str) -> bool {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
     MITM_HOST_ALLOWLIST
@@ -76,5 +102,34 @@ mod tests {
         assert!(!should_mitm_host("example.com"));
         // Guard against naive substring matching.
         assert!(!should_mitm_host("api.anthropic.com.evil.com"));
+    }
+
+    #[test]
+    fn stamp_trace_marks_fresh_and_duplicate_requests() {
+        use lr_types::{RequestTrace, TRACE_HEADER};
+        let mut h = hyper::HeaderMap::new();
+        let t = stamp_trace(&mut h, true).unwrap();
+        assert_eq!(t.hop, 1);
+        assert_eq!(
+            h.get(TRACE_HEADER).unwrap().to_str().unwrap(),
+            t.header_value()
+        );
+
+        let mut h = hyper::HeaderMap::new();
+        h.insert(TRACE_HEADER, "abc;hop=1".parse().unwrap());
+        let t = stamp_trace(&mut h, true).unwrap();
+        assert_eq!((t.trace_id.as_str(), t.hop), ("abc", 2));
+        assert!(t.is_duplicate());
+        assert_eq!(h.get(TRACE_HEADER).unwrap(), "abc;hop=2");
+        assert_eq!(RequestTrace::parse("abc;hop=2").unwrap(), t);
+
+        // Disabled: header untouched, nothing recognized.
+        let mut h = hyper::HeaderMap::new();
+        h.insert(TRACE_HEADER, "abc;hop=1".parse().unwrap());
+        assert!(stamp_trace(&mut h, false).is_none());
+        assert_eq!(h.get(TRACE_HEADER).unwrap(), "abc;hop=1");
+        let mut h = hyper::HeaderMap::new();
+        assert!(stamp_trace(&mut h, false).is_none());
+        assert!(h.get(TRACE_HEADER).is_none());
     }
 }

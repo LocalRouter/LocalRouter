@@ -61,6 +61,13 @@ pub struct MonitorEventSummary {
     /// For LLM calls: whether it was seen on the native API or via the proxy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<LlmCallSource>,
+    /// For LLM calls: the hop number when this is a duplicate pass of a
+    /// request an earlier LocalRouter hop already handled (not counted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_hop: Option<u32>,
+    /// For LLM calls: cross-hop trace id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +273,14 @@ pub enum MonitorEventData {
         // Routing info (filled when auto-routing was used)
         #[serde(skip_serializing_if = "Option::is_none")]
         routing_info: Option<AutoRoutingInfo>,
+
+        /// Cross-hop trace id shared by every LocalRouter hop of one request.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
+        /// Set (to the hop number, ≥ 2) when an earlier LocalRouter hop already
+        /// handled this request: it was passed through and not counted in stats.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duplicate_hop: Option<u32>,
     },
 
     // ---- MCP (combined: request + response) ----

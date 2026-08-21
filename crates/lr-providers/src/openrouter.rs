@@ -5,7 +5,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
-use reqwest::{Client, StatusCode};
+use reqwest::StatusCode;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -22,7 +23,7 @@ const OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
 
 /// OpenRouter provider implementation
 pub struct OpenRouterProvider {
-    client: Client,
+    client: ClientWithMiddleware,
     api_key: String,
     app_name: Option<String>,
     app_url: Option<String>,
@@ -76,7 +77,7 @@ impl OpenRouterProvider {
     }
 
     /// Builds request with authentication and routing headers
-    fn build_request(&self, url: &str) -> reqwest::RequestBuilder {
+    fn build_request(&self, url: &str) -> reqwest_middleware::RequestBuilder {
         let mut req = self
             .client
             .get(url)
@@ -94,7 +95,7 @@ impl OpenRouterProvider {
     }
 
     /// Builds POST request with authentication and routing headers
-    fn build_post_request(&self, url: &str) -> reqwest::RequestBuilder {
+    fn build_post_request(&self, url: &str) -> reqwest_middleware::RequestBuilder {
         let mut req = self
             .client
             .post(url)

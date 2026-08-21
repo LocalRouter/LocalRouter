@@ -971,6 +971,37 @@ pub async fn set_setup_wizard_shown(
     config_manager.save().await.map_err(|e| e.to_string())
 }
 
+// ============================================================================
+// Duplicate request detection (multi-hop trace)
+// ============================================================================
+
+/// Current `request_dedupe` configuration.
+#[tauri::command]
+pub async fn get_request_dedupe_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<lr_config::RequestDedupeConfig, String> {
+    Ok(config_manager.get().request_dedupe)
+}
+
+/// Enable or disable detection of requests that pass through LocalRouter more
+/// than once (gateway → HTTPS proxy → reverse proxy). Takes effect
+/// immediately for the gateway and both proxy kinds.
+#[tauri::command]
+pub async fn set_request_dedupe_enabled(
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+    dedupe_flag: State<'_, crate::launcher::proxy::RequestDedupeFlag>,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            cfg.request_dedupe.enabled = enabled;
+        })
+        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    dedupe_flag.set(enabled);
+    Ok(())
+}
+
 /// Whether LocalRouter launches automatically at login.
 ///
 /// Reflects the config setting (source of truth); the OS launch mechanism

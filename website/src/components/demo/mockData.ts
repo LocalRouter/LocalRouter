@@ -1085,6 +1085,13 @@ export const mockData = {
       data: { type: "llm_call", endpoint: "/v1/chat/completions", model: "gpt-4o", stream: true, message_count: 12, has_tools: true, tool_count: 5, request_body: { model: "gpt-4o", messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: "Help me refactor this function." }] }, provider: "openai", status_code: 200, input_tokens: 1200, output_tokens: 323, total_tokens: 1523, cost_usd: 0.0089, latency_ms: 1250, finish_reason: "stop", content_preview: "Here's the implementation you requested...", streamed: true },
     },
     {
+      id: "mon-002", sequence: 5, timestamp: new Date(Date.now() - 1100).toISOString(),
+      event_type: "llm_call", session_id: null, client_id: "client-4", client_name: "Ollama (reverse proxy)",
+      status: "complete", duration_ms: 1180, source: "reverse_proxy", trace_id: "7c1f3a2e-demo-trace", duplicate_hop: 2,
+      summary: "ollama/llama3.2 — 1,523 tokens",
+      data: { type: "llm_call", endpoint: "/v1/chat/completions", model: "llama3.2", stream: true, message_count: 12, has_tools: true, tool_count: 5, request_body: { model: "llama3.2", messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: "Help me refactor this function." }] }, source: "reverse_proxy", transformations_applied: ["duplicate hop (passthrough, not counted)"], provider: "ollama", status_code: 200, input_tokens: 1200, output_tokens: 323, total_tokens: 1523, cost_usd: 0, latency_ms: 1180, finish_reason: "stop", content_preview: "Here's the implementation you requested...", streamed: true, trace_id: "7c1f3a2e-demo-trace", duplicate_hop: 2 },
+    },
+    {
       id: "mon-003", sequence: 4, timestamp: new Date(Date.now() - 5000).toISOString(),
       event_type: "mcp_tool_call", session_id: "sess-002", client_id: "client-2", client_name: "Cursor",
       status: "complete", duration_ms: 340,

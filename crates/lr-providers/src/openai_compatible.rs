@@ -13,7 +13,7 @@ use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
 use lr_types::{AppError, AppResult};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -24,7 +24,7 @@ pub struct OpenAICompatibleProvider {
     api_key: Option<String>,
     base_url: String,
     extra_headers: HeaderMap,
-    client: Client,
+    client: ClientWithMiddleware,
 }
 
 /// Parse a `custom_headers` config value into a header map.
@@ -90,7 +90,10 @@ impl OpenAICompatibleProvider {
     /// Custom headers are applied last and `RequestBuilder::headers` replaces
     /// same-named entries, so a user-supplied `Authorization` (or
     /// `Content-Type`) wins over the default instead of being sent twice.
-    fn apply_headers(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    fn apply_headers(
+        &self,
+        mut request: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder {
         if let Some(auth) = self.auth_header() {
             request = request.header("Authorization", auth);
         }

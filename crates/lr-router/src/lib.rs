@@ -256,6 +256,10 @@ async fn wrap_stream_with_usage_tracking(
 ) -> Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    // Decide now, while the request's trace is still in scope (the stream is
+    // polled later, outside it): a duplicate hop must not charge usage.
+    let count_usage = !lr_types::is_duplicate_hop();
+
     // Track token counts as stream progresses
     let completion_chars = Arc::new(AtomicU64::new(0));
 
@@ -306,7 +310,7 @@ async fn wrap_stream_with_usage_tracking(
             });
 
             // If stream is ending, record usage
-            if is_last {
+            if is_last && count_usage {
                 // Estimate tokens: rough approximation is 1 token ≈ 4 characters
                 // We'll use prompt_tokens=10 as baseline (can't know actual from stream)
                 // and estimate completion tokens from character count

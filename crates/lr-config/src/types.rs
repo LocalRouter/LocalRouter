@@ -460,6 +460,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub proxy: ProxyConfig,
 
+    /// Multi-hop duplicate request detection
+    #[serde(default)]
+    pub request_dedupe: RequestDedupeConfig,
+
     /// Provider configurations
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
@@ -874,6 +878,23 @@ pub struct ProxyConfig {
 
     /// Proxy listen port.
     pub port: u16,
+}
+
+/// Detection of requests that traverse LocalRouter more than once (gateway →
+/// HTTPS proxy → reverse proxy, …). When enabled, every forwarding hop stamps
+/// an `X-LocalRouter-Trace` header and downstream hops pass such requests
+/// through without active transformations and without counting them again.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RequestDedupeConfig {
+    /// Whether to stamp outgoing requests and detect duplicate hops.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for RequestDedupeConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 impl Default for ProxyConfig {
@@ -3925,6 +3946,7 @@ impl Default for AppConfig {
             version: CONFIG_VERSION,
             server: ServerConfig::default(),
             proxy: ProxyConfig::default(),
+            request_dedupe: RequestDedupeConfig::default(),
             providers: Vec::new(), // Empty by default, discovered on first startup
             logging: LoggingConfig::default(),
             oauth_clients: Vec::new(),

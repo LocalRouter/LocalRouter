@@ -201,8 +201,15 @@ impl MetricsCollector {
         Self::new(db)
     }
 
-    /// Record a successful request
+    /// Record a successful request.
+    ///
+    /// A request that an earlier LocalRouter hop already handled (see
+    /// [`lr_types::trace`]) is a pass-through and is **not** counted — it
+    /// would otherwise inflate every tier once per hop.
     pub fn record_success(&self, metrics: &RequestMetrics) {
+        if lr_types::is_duplicate_hop() {
+            return;
+        }
         self.record_success_at(metrics, Utc::now());
     }
 
@@ -249,6 +256,9 @@ impl MetricsCollector {
         strategy_id: &str,
         latency_ms: u64,
     ) {
+        if lr_types::is_duplicate_hop() {
+            return;
+        }
         self.record_failure_at(
             api_key_name,
             provider,
@@ -490,6 +500,9 @@ impl MetricsCollector {
     /// - `tokens_value`: tokens saved (stored as input_tokens), 0 if not applicable
     /// - `cost_value`: cost saved in USD (stored as cost_usd), 0.0 if not applicable
     pub fn record_feature_event(&self, feature_type: &str, tokens_value: u64, cost_value: f64) {
+        if lr_types::is_duplicate_hop() {
+            return;
+        }
         let timestamp = Utc::now()
             .duration_trunc(chrono::Duration::minutes(1))
             .unwrap();
@@ -616,6 +629,45 @@ mod tests {
         let model_metrics = collector.get_model_range("gpt-4", start, end);
         assert_eq!(model_metrics.len(), 1);
         assert_eq!(model_metrics[0].requests, 1);
+    }
+
+    /// A duplicate hop (a request an earlier LocalRouter hop already
+    /// handled) must not be counted in any tier, or every hop would inflate
+    /// the dashboards. Detection is ambient, via the request trace in scope.
+    #[tokio::test]
+    async fn test_duplicate_hop_is_not_recorded() {
+        let (collector, _dir) = create_test_collector();
+        let metrics = RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 100,
+            output_tokens: 200,
+            cost_usd: 0.05,
+            latency_ms: 1000,
+            strategy_id: "default",
+        };
+        let dup = lr_types::RequestTrace::parse("abc;hop=2").unwrap();
+        let first = lr_types::RequestTrace::parse("abc;hop=1").unwrap();
+
+        lr_types::with_outbound_trace(Some(dup), async {
+            collector.record_success(&metrics);
+            collector.record_failure("key1", "openai", "gpt-4", "default", 5);
+            collector.record_feature_event("feature_json_repair", 1, 0.0);
+        })
+        .await;
+        assert_eq!(collector.global_data_point_count(), 0);
+        assert_eq!(collector.get_feature_totals().json_repairs, 0);
+
+        // The first hop (and an untraced request) still count.
+        lr_types::with_outbound_trace(Some(first), async {
+            collector.record_success(&metrics);
+        })
+        .await;
+        collector.record_success(&metrics);
+        let now = Utc::now();
+        let global = collector.get_global_range(now - Duration::hours(1), now + Duration::hours(1));
+        assert_eq!(global.iter().map(|m| m.requests).sum::<u64>(), 2);
     }
 
     /// The on_metrics_recorded callback is the single choke point feeding the

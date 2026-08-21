@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::{Stream, StreamExt};
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -20,7 +20,7 @@ use lr_types::{AppError, AppResult};
 
 /// Google Gemini provider
 pub struct GeminiProvider {
-    client: Client,
+    client: ClientWithMiddleware,
     api_key: String,
     base_url: String,
 }

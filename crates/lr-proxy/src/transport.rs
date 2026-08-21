@@ -34,6 +34,10 @@ pub struct ProxyContext {
     pub interceptor: Arc<dyn ProxyInterceptor>,
     pub resolver: Arc<dyn ClientResolver>,
     pub tls: Arc<TlsFactory>,
+    /// Whether to stamp `X-LocalRouter-Trace` on forwarded requests and pass
+    /// already-traced (duplicate-hop) requests through uncounted. Shared with
+    /// the app so the setting can change without restarting the listener.
+    pub dedupe_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A parsed `CONNECT` request line + relevant headers.
@@ -192,6 +196,14 @@ async fn proxy_request(
             .remove(hyper::header::SEC_WEBSOCKET_EXTENSIONS);
     }
 
+    // Cross-hop trace: recognize a request an earlier LocalRouter hop already
+    // handled, and mark the forwarded copy for the next hop.
+    let trace = crate::stamp_trace(
+        &mut parts.headers,
+        ctx.dedupe_enabled
+            .load(std::sync::atomic::Ordering::Relaxed),
+    );
+
     // Base exchange (request half); response fields filled at stream end.
     let base = ObservedExchange {
         client_id: (*client_id).clone(),
@@ -200,6 +212,7 @@ async fn proxy_request(
         method,
         path,
         request_body: (!req_bytes.is_empty()).then(|| req_bytes.to_vec()),
+        trace,
         ..Default::default()
     };
 

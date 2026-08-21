@@ -95,6 +95,7 @@ pub async fn chat_completions(
         provider_request,
         compression_tokens_saved,
         guardrail_handle,
+        is_duplicate,
         ..
     } = turn;
     // Keep the original names for the rest of this handler.
@@ -136,7 +137,9 @@ pub async fn chat_completions(
     // Guardrails run in parallel with the LLM call when possible; the orchestrator
     // awaits the guardrail gate before executing tools or returning a response.
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        if client.is_mcp_via_llm() {
+        // A duplicate hop is forwarded as-is: the first hop already ran
+        // the orchestrator (tool injection, agentic loop) for it.
+        if client.is_mcp_via_llm() && !is_duplicate {
             return handle_mcp_via_llm(
                 state,
                 auth,
@@ -336,7 +339,7 @@ async fn handle_mcp_via_llm(
             let state = state.clone();
             let client_auth = client_auth.clone();
             let request = request.clone();
-            tokio::spawn(async move {
+            lr_types::spawn_traced(async move {
                 let result = handle
                     .await
                     .map_err(|e| format!("Guardrail check failed: {}", e))?
@@ -493,7 +496,7 @@ async fn handle_mcp_via_llm(
                     .as_ref()
                     .and_then(|c| c.json_repair.syntax_repair)
                     .unwrap_or(config.json_repair.syntax_repair);
-                if enabled && syntax_repair {
+                if enabled && syntax_repair && !lr_types::is_duplicate_hop() {
                     Some(Arc::new(Mutex::new(
                         lr_json_repair::StreamingJsonRepairer::new(
                             None,
@@ -644,7 +647,7 @@ async fn handle_mcp_via_llm(
         // fidelity. All other telemetry (cost / metrics / tray /
         // access log / `metrics-updated` event / generation
         // tracker) still fires.
-        tokio::spawn(async move {
+        lr_types::spawn_traced(async move {
             let _ =
                 tokio::time::timeout(tokio::time::Duration::from_secs(300), completion_rx).await;
 
@@ -1470,7 +1473,7 @@ async fn handle_streaming(
                 .as_ref()
                 .and_then(|c| c.json_repair.syntax_repair)
                 .unwrap_or(config.json_repair.syntax_repair);
-            if enabled && syntax_repair {
+            if enabled && syntax_repair && !lr_types::is_duplicate_hop() {
                 Some(Arc::new(Mutex::new(
                     lr_json_repair::StreamingJsonRepairer::new(
                         None,
@@ -1625,7 +1628,7 @@ async fn handle_streaming(
     );
 
     // Record generation details after stream completes
-    tokio::spawn(async move {
+    lr_types::spawn_traced(async move {
         // Wait for stream completion signal with a timeout fallback
         let _ = tokio::time::timeout(
             tokio::time::Duration::from_secs(300), // 5 minute timeout for long completions
@@ -1805,7 +1808,7 @@ async fn handle_streaming_parallel(
         let state = state.clone();
         let client_auth = client_auth.clone();
         let request = request.clone();
-        tokio::spawn(async move {
+        lr_types::spawn_traced(async move {
             let result = handle.await;
             match result {
                 Ok(Ok(None)) => {
@@ -1876,7 +1879,7 @@ async fn handle_streaming_parallel(
                     .as_ref()
                     .and_then(|c| c.json_repair.syntax_repair)
                     .unwrap_or(config.json_repair.syntax_repair);
-                if enabled && syntax_repair {
+                if enabled && syntax_repair && !lr_types::is_duplicate_hop() {
                     Some(lr_json_repair::StreamingJsonRepairer::new(
                         None,
                         lr_json_repair::RepairOptions::default(),
@@ -1889,7 +1892,7 @@ async fn handle_streaming_parallel(
             }
         };
 
-        tokio::spawn(async move {
+        lr_types::spawn_traced(async move {
             let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
             let mut gate_resolved = false;
             let mut gate_state = GuardrailGate::Pending;

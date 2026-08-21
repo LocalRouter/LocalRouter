@@ -10,7 +10,7 @@ use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
 use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
 use lr_types::{AppError, AppResult};
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -29,7 +29,7 @@ const OAUTH_PROVIDER_ID: &str = "openai-codex";
 /// OpenAI provider implementation
 pub struct OpenAIProvider {
     api_key: String,
-    client: Client,
+    client: ClientWithMiddleware,
     base_url: String,
 }
 

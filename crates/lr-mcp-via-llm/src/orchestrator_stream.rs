@@ -189,7 +189,7 @@ pub async fn run_agentic_loop_streaming(
     let (tx, rx) = tokio::sync::mpsc::channel::<AppResult<CompletionChunk>>(64);
 
     // Spawn the multi-segment streaming loop
-    tokio::spawn(async move {
+    lr_types::spawn_traced(async move {
         let result = streaming_loop(
             gateway,
             router,
@@ -347,6 +347,8 @@ async fn streaming_loop(
                     response_body: None,
                     error: None,
                     routing_info: None,
+                    trace_id: None,
+                    duplicate_hop: None,
                 },
                 lr_monitor::EventStatus::Pending,
                 None,
@@ -638,7 +640,8 @@ async fn streaming_loop(
                         if !mcp_tool_names.contains(&tool_name) {
                             let err_msg = format!("Error: tool '{}' does not exist", tool_name);
                             let tc_id = tool_call_id.clone();
-                            let handle = tokio::spawn(async move { (tc_id, Err(err_msg)) });
+                            let handle =
+                                lr_types::spawn_traced(async move { (tc_id, Err(err_msg)) });
                             mcp_handles.push(handle);
                             continue;
                         }
@@ -656,7 +659,10 @@ async fn streaming_loop(
                                         tool_name, e, tool_call.function.arguments
                                     );
                                     let tc_id = tool_call_id.clone();
-                                    let handle = tokio::spawn(async move { (tc_id, Err(err_msg)) });
+                                    let handle =
+                                        lr_types::spawn_traced(
+                                            async move { (tc_id, Err(err_msg)) },
+                                        );
                                     mcp_handles.push(handle);
                                     continue;
                                 }
@@ -668,7 +674,7 @@ async fn streaming_loop(
                         let rts = roots.clone();
                         let p = permissions.clone();
 
-                        let handle = tokio::spawn(async move {
+                        let handle = lr_types::spawn_traced(async move {
                             let result = orchestrator::execute_mcp_tool_background(
                                 &gw, &cid, srv, rts, &p, &tool_name, arguments,
                             )
@@ -960,7 +966,7 @@ async fn streaming_loop(
                         .unwrap_or_default();
                     let exchange = format!("{}\n\n{}", user_text, assistant_text);
                     let timestamp = chrono::Utc::now().to_rfc3339();
-                    tokio::spawn(async move {
+                    lr_types::spawn_traced(async move {
                         if let Err(e) = svc
                             .transcript
                             .append_exchange(&path, &user_text, &assistant_text, &timestamp)

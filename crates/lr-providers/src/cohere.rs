@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::Stream;
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -23,7 +23,7 @@ const COHERE_API_BASE: &str = "https://api.cohere.com/v2";
 
 /// Cohere AI provider
 pub struct CohereProvider {
-    client: Client,
+    client: ClientWithMiddleware,
     api_key: String,
     base_url: String,
 }

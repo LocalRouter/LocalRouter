@@ -319,6 +319,13 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
     // Merge MCP routes (these use OAuth auth, not API key auth)
     router = router.merge(mcp_routes);
 
+    // Cross-hop request trace (must sit inside logging so the scope covers
+    // the whole handler, including every upstream call it makes).
+    router = router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        trace_middleware,
+    ));
+
     // Add logging middleware
     router = router.layer(axum::middleware::from_fn(logging_middleware));
     router = router.layer(axum::middleware::from_fn(security_headers_middleware));
@@ -516,6 +523,51 @@ async fn security_headers_middleware(req: Request, next: Next) -> Response {
     response
 }
 
+/// Cross-hop request trace middleware.
+///
+/// Reads `X-LocalRouter-Trace` from the inbound request (present when an
+/// earlier LocalRouter hop — a gateway, the HTTPS proxy or a reverse proxy —
+/// already handled this request) and runs the handler with the outbound
+/// trace in scope: hop 1 for a fresh request, hop N+1 for a duplicate. The
+/// upstream HTTP client stamps it on the forwarded request; the pipeline and
+/// accounting layers consult it to pass duplicates through uncounted.
+/// Disabled entirely by `request_dedupe.enabled = false`.
+async fn trace_middleware(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let enabled = state.config_manager.get().request_dedupe.enabled;
+    let outbound = resolve_outbound_trace(enabled, req.headers());
+    if let Some(t) = outbound.as_ref().filter(|t| t.is_duplicate()) {
+        info!(
+            "{} {} - duplicate hop of trace {} (hop {}): passthrough, not counted",
+            req.method(),
+            req.uri(),
+            t.trace_id,
+            t.hop
+        );
+    }
+    lr_types::with_outbound_trace(outbound, next.run(req)).await
+}
+
+/// The trace to run a request under: `None` when detection is disabled,
+/// hop 1 for a request no LocalRouter hop has seen, or the next hop of the
+/// trace found in `headers`. A malformed header counts as absent.
+fn resolve_outbound_trace(
+    enabled: bool,
+    headers: &axum::http::HeaderMap,
+) -> Option<lr_types::RequestTrace> {
+    if !enabled {
+        return None;
+    }
+    let inbound = headers
+        .get(lr_types::TRACE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(lr_types::RequestTrace::parse);
+    Some(lr_types::RequestTrace::outbound_for(inbound.as_ref()))
+}
+
 /// Logging middleware to log all requests
 async fn logging_middleware(req: Request, next: Next) -> Response {
     use crate::middleware::client_auth::LoggedClientId;
@@ -567,6 +619,100 @@ mod tests {
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
         assert!(config.enable_cors);
+    }
+}
+
+#[cfg(test)]
+mod trace_middleware_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::HeaderMap;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    fn headers(value: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(v) = value {
+            h.insert(lr_types::TRACE_HEADER, v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn fresh_request_gets_hop_one() {
+        let t = resolve_outbound_trace(true, &headers(None)).unwrap();
+        assert_eq!(t.hop, 1);
+        assert!(!t.is_duplicate());
+    }
+
+    #[test]
+    fn traced_request_is_next_hop_of_same_trace() {
+        let t = resolve_outbound_trace(true, &headers(Some("abc;hop=1"))).unwrap();
+        assert_eq!((t.trace_id.as_str(), t.hop), ("abc", 2));
+        assert!(t.is_duplicate());
+        let t = resolve_outbound_trace(true, &headers(Some("abc;hop=2"))).unwrap();
+        assert_eq!(t.hop, 3);
+    }
+
+    #[test]
+    fn malformed_header_is_treated_as_fresh() {
+        let t = resolve_outbound_trace(true, &headers(Some("garbage"))).unwrap();
+        assert_eq!(t.hop, 1);
+        assert_ne!(t.trace_id, "garbage");
+    }
+
+    #[test]
+    fn disabled_detection_yields_no_trace() {
+        assert!(resolve_outbound_trace(false, &headers(Some("abc;hop=1"))).is_none());
+        assert!(resolve_outbound_trace(false, &headers(None)).is_none());
+    }
+
+    /// The scope set by the middleware must be visible to the handler (and
+    /// therefore to the router / accounting code it calls) and must end with
+    /// the request.
+    #[tokio::test]
+    async fn handler_sees_duplicate_hop_inside_scope() {
+        async fn mw(req: Request, next: Next) -> Response {
+            let outbound = resolve_outbound_trace(true, req.headers());
+            lr_types::with_outbound_trace(outbound, next.run(req)).await
+        }
+        let app = Router::new()
+            .route(
+                "/probe",
+                get(|| async {
+                    let t = lr_types::current_outbound_trace().expect("trace in scope");
+                    format!("{}:{}", t.hop, lr_types::is_duplicate_hop())
+                }),
+            )
+            .layer(axum::middleware::from_fn(mw));
+
+        let body = |req: Request| {
+            let app = app.clone();
+            async move {
+                let resp = app.oneshot(req).await.unwrap();
+                let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+                String::from_utf8(bytes.to_vec()).unwrap()
+            }
+        };
+
+        let fresh = Request::builder()
+            .uri("/probe")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(body(fresh).await, "1:false");
+
+        let dup = Request::builder()
+            .uri("/probe")
+            .header(lr_types::TRACE_HEADER, "abc;hop=1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(body(dup).await, "2:true");
+
+        assert!(
+            lr_types::current_outbound_trace().is_none(),
+            "scope ends with the request"
+        );
     }
 }
 

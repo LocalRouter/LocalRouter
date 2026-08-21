@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -23,7 +23,7 @@ const PERPLEXITY_API_BASE: &str = "https://api.perplexity.ai";
 
 /// Perplexity AI provider
 pub struct PerplexityProvider {
-    client: Client,
+    client: ClientWithMiddleware,
     api_key: String,
 }
 

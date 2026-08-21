@@ -8,7 +8,7 @@
 use std::pin::Pin;
 
 use futures::stream::Stream;
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 
 use super::types::{ResponseObject, ResponsesApiRequest};
 use crate::{CompletionChunk, CompletionResponse};
@@ -20,7 +20,7 @@ use lr_types::{AppError, AppResult};
 /// `/responses` and send the JSON-serialized request with a Bearer
 /// Authorization header.
 pub async fn create_response(
-    client: &Client,
+    client: &ClientWithMiddleware,
     base_url: &str,
     access_token: &str,
     provider_name: &str,
@@ -54,7 +54,7 @@ pub const NATIVE_RESPONSES_API_EXT_KEY: &str = "__native_responses_api_object";
 /// `ResponseObject`, so the verbatim JSON is available to callers
 /// without requiring `Serialize` on our internal view of the response.
 pub async fn create_response_raw(
-    client: &Client,
+    client: &ClientWithMiddleware,
     base_url: &str,
     access_token: &str,
     request: ResponsesApiRequest,
@@ -92,7 +92,7 @@ pub async fn create_response_raw(
 /// Returns a `Stream<CompletionChunk>` — the SSE event-to-chunk
 /// translator (`stream.rs`) is applied automatically.
 pub async fn stream_response(
-    client: &Client,
+    client: &ClientWithMiddleware,
     base_url: &str,
     access_token: &str,
     provider_name: &str,

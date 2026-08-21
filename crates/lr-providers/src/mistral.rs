@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -23,7 +23,7 @@ const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
 
 /// Mistral AI provider
 pub struct MistralProvider {
-    client: Client,
+    client: ClientWithMiddleware,
     api_key: String,
     /// Optional override for the API base URL — used to point at the Codestral
     /// endpoint (`https://codestral.mistral.ai/v1`) or any compatible deployment.

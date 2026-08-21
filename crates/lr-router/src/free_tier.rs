@@ -882,6 +882,9 @@ impl FreeTierManager {
         total_tokens: u64,
         cost_usd: f64,
     ) {
+        if lr_types::is_duplicate_hop() {
+            return;
+        }
         match free_tier {
             FreeTierKind::RateLimitedFree { .. } => {
                 self.record_rate_limit_usage(provider_instance, total_tokens);

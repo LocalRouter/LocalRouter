@@ -103,6 +103,10 @@ impl LlmCallGuard {
 
 // ---- LLM Call (combined: request + transform + response/error) ----
 
+/// Transformation label shown for a request an earlier LocalRouter hop
+/// already handled.
+pub const DUPLICATE_HOP_LABEL: &str = "duplicate hop (passthrough, not counted)";
+
 /// Emit a pending LlmCall event at the start of a request. Returns an `LlmCallGuard`
 /// that auto-completes the event as Error if dropped without explicit completion.
 pub fn emit_llm_call(
@@ -126,6 +130,9 @@ pub fn emit_llm_call(
     let has_tools = tools.is_some_and(|t| !t.is_empty());
     let tool_count = tools.map(|t| t.len()).unwrap_or(0);
 
+    let trace = lr_types::current_outbound_trace();
+    let duplicate_hop = trace.as_ref().filter(|t| t.is_duplicate()).map(|t| t.hop);
+
     let event_id = state.monitor_store.push(
         MonitorEventType::LlmCall,
         client_id,
@@ -144,7 +151,7 @@ pub fn emit_llm_call(
             raw_request: None,
             raw_response: None,
             transformed_body: None,
-            transformations_applied: None,
+            transformations_applied: duplicate_hop.map(|_| vec![DUPLICATE_HOP_LABEL.to_string()]),
             provider: None,
             status_code: None,
             input_tokens: None,
@@ -159,6 +166,8 @@ pub fn emit_llm_call(
             response_body: None,
             error: None,
             routing_info: None,
+            trace_id: trace.as_ref().map(|t| t.trace_id.clone()),
+            duplicate_hop,
         },
         EventStatus::Pending,
         None,

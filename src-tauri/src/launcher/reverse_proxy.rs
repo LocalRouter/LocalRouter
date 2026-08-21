@@ -20,7 +20,7 @@ use lr_proxy::reverse::{ReverseClient, ReverseProxy, ReverseRecorder};
 use lr_types::{AppError, AppResult};
 use parking_lot::Mutex;
 
-use crate::launcher::proxy::{AppClientNames, CatalogPricing};
+use crate::launcher::proxy::{AppClientNames, CatalogPricing, RequestDedupeFlag};
 
 /// How long to keep retrying a bind, for the window where a relocated provider
 /// is still releasing its old port.
@@ -54,6 +54,7 @@ pub struct ReverseListenerState {
 pub struct ReverseProxyService {
     recorder: Arc<PassiveInterceptor>,
     config_manager: ConfigManager,
+    dedupe: RequestDedupeFlag,
     running: Mutex<HashMap<String, RunningListener>>,
     /// Last bind/start failure per client, cleared on success.
     errors: Mutex<HashMap<String, String>>,
@@ -65,6 +66,7 @@ impl ReverseProxyService {
         metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
         client_manager: Arc<lr_clients::ClientManager>,
         config_manager: ConfigManager,
+        dedupe: RequestDedupeFlag,
     ) -> Self {
         // Same recorder the MITM proxy uses, so reverse-proxied calls land in
         // the Monitor and the dashboards identically (tagged ReverseProxy).
@@ -75,6 +77,7 @@ impl ReverseProxyService {
         Self {
             recorder: Arc::new(recorder),
             config_manager,
+            dedupe,
             running: Mutex::new(HashMap::new()),
             errors: Mutex::new(HashMap::new()),
         }
@@ -120,7 +123,8 @@ impl ReverseProxyService {
                 },
                 self.recorder.clone() as Arc<dyn ReverseRecorder>,
             )
-            .map_err(|e| AppError::Config(e.to_string()))?,
+            .map_err(|e| AppError::Config(e.to_string()))?
+            .with_dedupe_flag(self.dedupe.0.clone()),
         );
 
         let listener = self

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::{Stream, StreamExt};
 use ollama_rs::Ollama as OllamaClient;
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -24,7 +24,7 @@ use lr_types::{AppError, AppResult};
 pub struct OllamaProvider {
     #[allow(dead_code)]
     sdk_client: OllamaClient,
-    http_client: Client,
+    http_client: ClientWithMiddleware,
     base_url: String,
 }
 

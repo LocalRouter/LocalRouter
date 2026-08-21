@@ -110,6 +110,17 @@ pub struct ObservedExchange {
     /// Transport-level failure (e.g. the upstream could not be reached), shown
     /// on the monitor event.
     pub error: Option<String>,
+    /// Cross-hop trace stamped on the forwarded request. `hop > 1` means an
+    /// earlier LocalRouter hop already handled this request: it is passed
+    /// through (no firewall) and not counted in metrics.
+    pub trace: Option<lr_types::RequestTrace>,
+}
+
+impl ObservedExchange {
+    /// Whether an earlier LocalRouter hop already handled this request.
+    pub fn is_duplicate_hop(&self) -> bool {
+        self.trace.as_ref().is_some_and(|t| t.is_duplicate())
+    }
 }
 
 /// Where an observed exchange was captured.

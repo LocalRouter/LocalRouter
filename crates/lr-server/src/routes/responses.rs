@@ -1229,7 +1229,7 @@ fn responses_session_store(state: &AppState) -> Option<ResponsesSessionStore> {
                     // dropped the task exits naturally.
                     let swept = s.clone();
                     let cfg_manager = state.config_manager.clone();
-                    tokio::spawn(async move {
+                    lr_types::spawn_traced(async move {
                         let mut interval =
                             tokio::time::interval(std::time::Duration::from_secs(3600));
                         // Skip the first tick — it fires immediately

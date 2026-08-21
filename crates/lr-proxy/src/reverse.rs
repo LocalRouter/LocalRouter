@@ -76,6 +76,9 @@ pub struct ReverseExchange {
     pub error: Option<String>,
     /// Monitor event opened by [`ReverseRecorder::begin`], completed on end.
     pub event_id: Option<String>,
+    /// Cross-hop trace stamped on the forwarded request; `hop > 1` marks a
+    /// request an earlier LocalRouter hop already handled (not counted).
+    pub trace: Option<lr_types::RequestTrace>,
 }
 
 /// Sink for observed exchanges. Implemented by the app layer (monitor +
@@ -116,6 +119,8 @@ pub struct ReverseProxy {
     upstream_port: u16,
     client: ReverseClient,
     recorder: Arc<dyn ReverseRecorder>,
+    /// Live "duplicate request detection" flag shared with the app.
+    dedupe_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ReverseProxy {
@@ -132,7 +137,15 @@ impl ReverseProxy {
             upstream_port: port,
             client,
             recorder,
+            dedupe_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
+    }
+
+    /// Share the app's live "duplicate request detection" flag (defaults to
+    /// enabled).
+    pub fn with_dedupe_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.dedupe_enabled = flag;
+        self
     }
 
     /// The normalized upstream base URL.
@@ -232,6 +245,13 @@ impl ReverseProxy {
             Ok(uri) => uri,
             Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid request path"),
         };
+        // Cross-hop trace: recognize a request an earlier LocalRouter hop
+        // already handled, and mark the forwarded copy for the next hop.
+        let trace = crate::stamp_trace(
+            &mut parts.headers,
+            self.dedupe_enabled
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
 
         let mut base = ReverseExchange {
             client_id: self.client.client_id.clone(),
@@ -242,6 +262,7 @@ impl ReverseProxy {
             path,
             request_body: (!req_bytes.is_empty()).then(|| req_bytes.to_vec()),
             started_at: Some(started_at),
+            trace,
             ..Default::default()
         };
         base.event_id = self.recorder.begin(&base);

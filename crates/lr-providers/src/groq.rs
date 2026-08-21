@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
@@ -39,7 +39,7 @@ fn audio_mime_type(file_name: &str) -> String {
 
 /// Groq provider for fast LLM inference
 pub struct GroqProvider {
-    client: Client,
+    client: ClientWithMiddleware,
     api_key: String,
     base_url: String,
 }

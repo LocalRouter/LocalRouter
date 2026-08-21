@@ -394,6 +394,14 @@ pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
             MonitorEventData::LlmCall { source, .. } => Some(*source),
             _ => None,
         },
+        duplicate_hop: match &event.data {
+            MonitorEventData::LlmCall { duplicate_hop, .. } => *duplicate_hop,
+            _ => None,
+        },
+        trace_id: match &event.data {
+            MonitorEventData::LlmCall { trace_id, .. } => trace_id.clone(),
+            _ => None,
+        },
     }
 }
 
@@ -445,6 +453,8 @@ mod source_tests {
             response_body: None,
             error: None,
             routing_info: None,
+            trace_id: None,
+            duplicate_hop: None,
         }
     }
 

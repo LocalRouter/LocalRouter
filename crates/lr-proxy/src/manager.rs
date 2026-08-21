@@ -53,6 +53,20 @@ impl ProxyManager {
                 interceptor,
                 resolver,
                 tls,
+                dedupe_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            }),
+        }
+    }
+
+    /// Share the app's live "duplicate request detection" flag with the
+    /// transport (defaults to enabled).
+    pub fn with_dedupe_flag(self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            ctx: Arc::new(ProxyContext {
+                interceptor: self.ctx.interceptor.clone(),
+                resolver: self.ctx.resolver.clone(),
+                tls: self.ctx.tls.clone(),
+                dedupe_enabled: flag,
             }),
         }
     }
