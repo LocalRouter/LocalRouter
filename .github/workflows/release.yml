@@ -655,7 +655,10 @@ jobs:
             --push
           rm -f /tmp/aur_key
 
+      # WinGet rendering is disabled for now; flip both `if: false` guards
+      # below to re-enable.
       - name: Render the WinGet manifests for manual submission
+        if: false
         run: |
           ./scripts/publish-packages.sh \
             --version "${{ needs.version-bump.outputs.version }}" \
@@ -667,6 +670,7 @@ jobs:
       # Download this from the run summary and submit by hand — see
       # packaging/winget/README.md.
       - name: Upload the WinGet manifests
+        if: false
         uses: actions/upload-artifact@v4
         with:
           name: winget-manifests-${{ needs.version-bump.outputs.version }}
