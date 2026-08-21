@@ -625,10 +625,11 @@ mod tests {
                 .unwrap();
         })
         .await;
-        let (used, _, _) = manager
+        // Nothing was recorded, so there may be no usage state at all yet.
+        let used = manager
             .get_api_key_usage("dup-key", RateLimitType::TotalTokens)
             .await
-            .unwrap();
+            .map_or(0.0, |(used, _, _)| used);
         assert_eq!(used, 0.0, "duplicate hop must not be charged");
 
         manager
