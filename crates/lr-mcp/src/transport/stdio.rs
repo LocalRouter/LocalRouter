@@ -164,6 +164,9 @@ impl StdioTransport {
             .stdout(Stdio::piped())
             .stderr(Stdio::null()) // Discard stderr to prevent pipe buffer deadlock
             .kill_on_drop(true);
+        // Windows: never allocate a visible console window for spawned MCP servers
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         // Under Flatpak the working directory travels as `--directory=`; the
         // host path is meaningless to the `flatpak-spawn` process itself.
         if !sandbox::current().needs_host_proxy() {
