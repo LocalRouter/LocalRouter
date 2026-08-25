@@ -28,7 +28,8 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use lr_monitor::MonitorEventStore;
 use lr_proxy::cert::CertAuthority;
 use lr_proxy::interceptor::{
-    ClientCtx, ConnectDecision, ObservedExchange, ProxyInterceptor, RequestAction,
+    ClientCtx, ConnectDecision, ObservedExchange, PassthroughExchange, ProxyInterceptor,
+    RequestAction,
 };
 use lr_proxy::passive::PassiveInterceptor;
 use lr_proxy::resolver::StaticResolver;
@@ -57,6 +58,12 @@ impl ProxyInterceptor for ForceMitm {
     }
     async fn on_response(&self, ex: &ObservedExchange) {
         self.0.on_response(ex).await
+    }
+    fn begin_passthrough(&self, ex: &PassthroughExchange) -> Option<String> {
+        self.0.begin_passthrough(ex)
+    }
+    fn end_passthrough(&self, event_id: Option<String>, ex: &PassthroughExchange) {
+        self.0.end_passthrough(event_id, ex)
     }
 }
 
@@ -548,6 +555,135 @@ async fn websocket_exchange_is_relayed_and_recorded() {
         Some(None),
         "proxy should strip Sec-WebSocket-Extensions so frames stay plaintext"
     );
+
+    let _ = shutdown_tx.send(());
+}
+
+/// A websocket on a path that carries no LLM traffic is relayed without
+/// inspection, and shows up as a passthrough carrying the destination only.
+#[tokio::test]
+async fn non_llm_websocket_is_relayed_as_a_passthrough() {
+    use lr_proxy::websocket::{encode_frame, FrameDecoder, WsMessage};
+
+    tls::ensure_crypto_provider();
+
+    let up_ca = make_ca();
+    let seen_ext = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (up_port, _up) = spawn_ws_upstream(&up_ca, seen_ext).await;
+    let mut up_roots = RootCertStore::empty();
+    up_roots.add(up_ca.ca_der.clone()).unwrap();
+
+    let dir = std::env::temp_dir().join(format!(
+        "lr-proxy-ws-passthrough-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let ca = Arc::new(CertAuthority::load_or_create(&dir).unwrap());
+    let proxy_ca_pem = ca.ca_pem().to_string();
+
+    let store = Arc::new(MonitorEventStore::new(64));
+    let interceptor = Arc::new(ForceMitm(PassiveInterceptor::new(store.clone())));
+    let resolver = Arc::new(StaticResolver {
+        client_id: CLIENT_ID.to_string(),
+        secret: SECRET.to_string(),
+        proxy_enabled: true,
+    });
+    let manager = ProxyManager::with_upstream_roots(ca, interceptor, resolver, up_roots).unwrap();
+    let proxy_listener = ProxyManager::bind("127.0.0.1", 0).await.unwrap();
+    let proxy_port = proxy_listener.local_addr().unwrap().port();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        manager
+            .serve(proxy_listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    let mut stream = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+    use base64::Engine;
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("{CLIENT_ID}:{SECRET}"));
+    let connect = format!(
+        "CONNECT {HOST}:{up_port} HTTP/1.1\r\nHost: {HOST}:{up_port}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
+    );
+    stream.write_all(connect.as_bytes()).await.unwrap();
+    assert!(read_connect_response(&mut stream).await.contains("200"));
+
+    let mut cc = ClientConfig::builder()
+        .with_root_certificates(client_root_store(&proxy_ca_pem))
+        .with_no_client_auth();
+    cc.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let connector = TlsConnector::from(Arc::new(cc));
+    let mut tls = connector
+        .connect(ServerName::try_from(HOST).unwrap(), stream)
+        .await
+        .unwrap();
+
+    // Not an LLM endpoint — telemetry, notifications, whatever the tool does.
+    let upgrade = format!(
+        "GET /telemetry/socket?token=secret HTTP/1.1\r\n\
+         Host: {HOST}:{up_port}\r\n\
+         Connection: Upgrade\r\n\
+         Upgrade: websocket\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    );
+    tls.write_all(upgrade.as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        assert!(tls.read(&mut b).await.unwrap() != 0, "proxy closed");
+        head.push(b[0]);
+    }
+    assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 101"));
+
+    // Frames still cross verbatim.
+    tls.write_all(&encode_frame(&WsMessage::Text("hello".into()), true))
+        .await
+        .unwrap();
+    let mut decoder = FrameDecoder::new();
+    let mut messages = Vec::new();
+    let mut buf = [0u8; 8192];
+    while messages.is_empty() {
+        let n = tls.read(&mut buf).await.unwrap();
+        assert!(n != 0, "connection closed before a reply arrived");
+        messages.extend(decoder.push(&buf[..n]));
+    }
+    drop(tls);
+
+    let mut event = None;
+    for _ in 0..100 {
+        let listed = store.list(0, 10, None);
+        if let Some(e) = listed
+            .events
+            .iter()
+            .find(|e| e.status != lr_monitor::EventStatus::Pending)
+        {
+            event = store.get(&e.id);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let event = event.expect("passthrough event settles when the relay ends");
+    assert_eq!(
+        event.event_type,
+        lr_monitor::MonitorEventType::ProxyPassthrough
+    );
+    let lr_monitor::MonitorEventData::ProxyPassthrough {
+        mode, host, path, ..
+    } = &event.data
+    else {
+        panic!("expected a ProxyPassthrough event, got {:?}", event.data);
+    };
+    assert_eq!(*mode, lr_monitor::PassthroughMode::Websocket);
+    assert_eq!(host, HOST);
+    // Query stripped — the destination is shown, its parameters are not.
+    assert_eq!(path.as_deref(), Some("/telemetry/socket"));
+    let json = serde_json::to_string(&event.data).unwrap();
+    assert!(!json.contains("hello"), "frame content leaked: {json}");
+    assert!(!json.contains("secret"), "query leaked: {json}");
 
     let _ = shutdown_tx.send(());
 }

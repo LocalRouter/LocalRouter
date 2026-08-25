@@ -10,12 +10,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lr_monitor::{
     EventStatus, LlmCallSource, LlmProtocol, MonitorEventData, MonitorEventStore, MonitorEventType,
+    PassthroughMode,
 };
 use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
 
 use crate::interceptor::{
     ClientCtx, ClientNameResolver, ConnectDecision, ExchangeSource, ObservedExchange,
-    PricingResolver, ProxyInterceptor, RequestAction, TokenUsage,
+    PassthroughExchange, PricingResolver, ProxyInterceptor, RequestAction, TokenUsage,
 };
 use crate::wire::{self, RequestMeta, ResponseMeta, WireFormat};
 
@@ -211,7 +212,11 @@ impl PassiveInterceptor {
     /// transport threads back so [`complete`](Self::complete) fills in the
     /// response half. Only recognized LLM API calls are recorded.
     pub(crate) fn emit_pending(&self, ex: &ObservedExchange) -> Option<String> {
-        let format = wire::detect(&ex.path)?;
+        let Some(format) = wire::detect(&ex.path) else {
+            // Not an LLM API call: forwarded untouched, recorded as a
+            // passthrough so the stray traffic is at least visible.
+            return self.begin_passthrough(&passthrough_from_observed(ex)?);
+        };
         let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(format, ex);
         let model = req_meta.model.clone().unwrap_or_default();
 
@@ -262,6 +267,9 @@ impl PassiveInterceptor {
     /// (pending → complete/error), recording cost + metrics.
     pub(crate) fn complete(&self, event_id: &str, ex: &ObservedExchange) {
         let Some(format) = wire::detect(&ex.path) else {
+            if let Some(pt) = passthrough_from_observed(ex) {
+                self.end_passthrough(Some(event_id.to_string()), &pt);
+            }
             return;
         };
         let (req_meta, _request_json, _raw_request, _tool_count) = Self::request_parts(format, ex);
@@ -312,6 +320,9 @@ impl PassiveInterceptor {
     /// synthesizes its response without ever contacting the upstream).
     pub(crate) fn record(&self, ex: &ObservedExchange) {
         let Some(format) = wire::detect(&ex.path) else {
+            if let Some(pt) = passthrough_from_observed(ex) {
+                self.end_passthrough(None, &pt);
+            }
             return;
         };
         let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(format, ex);
@@ -363,6 +374,135 @@ impl PassiveInterceptor {
 }
 
 // ---------------------------------------------------------------------------
+// Passthrough (non-LLM) traffic
+// ---------------------------------------------------------------------------
+
+/// The warning every passthrough event carries: why this is here, and the
+/// promise that nothing about its content was kept.
+pub const PASSTHROUGH_WARNING: &str =
+    "`HTTPS_PROXY` applies to a whole process, so a tool pointed at \
+     LocalRouter also sends its unrelated traffic (git, package managers, \
+     telemetry, update checks) here. It is forwarded untouched — no request or \
+     response content is inspected, recorded, or logged. If you did not expect \
+     this destination, narrow where the proxy setting is applied.";
+
+/// The per-mode explanation shown above [`PASSTHROUGH_WARNING`].
+fn passthrough_note(ex: &PassthroughExchange) -> String {
+    let dest = format!("{}:{}", ex.host, ex.port);
+    let what = match ex.mode {
+        PassthroughMode::Tunnel => format!(
+            "Not an LLM call. This connection to {dest} was tunneled through \
+             LocalRouter byte-for-byte; its TLS was never decrypted, so only \
+             the destination is known."
+        ),
+        PassthroughMode::Http => format!(
+            "Not an LLM call. This plain HTTP request was forwarded to {dest} \
+             unchanged."
+        ),
+        PassthroughMode::Inspected => format!(
+            "Not an LLM call. {} is inspected for LLM traffic, but this path is \
+             not an LLM API endpoint, so the request was forwarded unchanged \
+             and its content was not captured.",
+            ex.host
+        ),
+        PassthroughMode::Websocket => format!(
+            "Not an LLM call. This websocket connection to {dest} was relayed \
+             frame-for-frame without inspection."
+        ),
+    };
+    format!("{what}\n\n{PASSTHROUGH_WARNING}")
+}
+
+/// Build the monitor payload for a passthrough exchange. Deliberately carries
+/// destination + volume only — never a body, header, or query string.
+fn passthrough_data(ex: &PassthroughExchange, closed: bool) -> MonitorEventData {
+    MonitorEventData::ProxyPassthrough {
+        mode: ex.mode,
+        host: ex.host.clone(),
+        port: ex.port,
+        method: ex.method.clone(),
+        path: ex.path.clone(),
+        status_code: ex.status,
+        bytes_sent: closed.then_some(ex.bytes_sent),
+        bytes_received: closed.then_some(ex.bytes_received),
+        note: passthrough_note(ex),
+        error: ex.error.clone(),
+    }
+}
+
+/// Project a decrypted-but-unrecognized exchange onto a passthrough record.
+///
+/// Only the MITM proxy produces these: the reverse proxy deliberately wraps a
+/// provider's own port, so its non-LLM paths (`/api/tags`, health checks) are
+/// expected traffic, not accidental egress.
+fn passthrough_from_observed(ex: &ObservedExchange) -> Option<PassthroughExchange> {
+    if ex.source != ExchangeSource::Proxy {
+        return None;
+    }
+    Some(PassthroughExchange {
+        client_id: ex.client_id.clone(),
+        mode: PassthroughMode::Inspected,
+        host: ex.host.clone(),
+        // The MITM path always knows its port; fall back to https.
+        port: if ex.port == 0 { 443 } else { ex.port },
+        method: (!ex.method.is_empty()).then(|| ex.method.clone()),
+        path: Some(PassthroughExchange::strip_query(&ex.path)),
+        status: ex.status,
+        latency_ms: ex.latency_ms,
+        error: ex.error.clone(),
+        ..Default::default()
+    })
+}
+
+impl PassiveInterceptor {
+    /// Open a Pending passthrough event while the connection is in flight.
+    pub(crate) fn open_passthrough(&self, ex: &PassthroughExchange) -> String {
+        self.monitor.push(
+            MonitorEventType::ProxyPassthrough,
+            Some(ex.client_id.clone()),
+            self.client_name(&ex.client_id),
+            None,
+            passthrough_data(ex, false),
+            EventStatus::Pending,
+            None,
+        )
+    }
+
+    /// Close out a passthrough exchange: complete the pending event if one was
+    /// opened, otherwise push a combined one.
+    pub(crate) fn close_passthrough(&self, event_id: Option<String>, ex: &PassthroughExchange) {
+        let status = passthrough_status(ex);
+        let Some(id) = event_id else {
+            self.monitor.push(
+                MonitorEventType::ProxyPassthrough,
+                Some(ex.client_id.clone()),
+                self.client_name(&ex.client_id),
+                None,
+                passthrough_data(ex, true),
+                status,
+                ex.latency_ms,
+            );
+            return;
+        };
+        self.monitor.update(&id, |event| {
+            event.status = status;
+            event.duration_ms = ex.latency_ms;
+            event.data = passthrough_data(ex, true);
+        });
+    }
+}
+
+/// A passthrough failed only if the forward itself broke, or the upstream
+/// answered with an error status we happened to see.
+fn passthrough_status(ex: &PassthroughExchange) -> EventStatus {
+    if ex.error.is_some() || ex.status.is_some_and(|s| s >= 400) {
+        EventStatus::Error
+    } else {
+        EventStatus::Complete
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reverse-proxy bridge
 // ---------------------------------------------------------------------------
 
@@ -380,6 +520,8 @@ fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> ObservedExchan
             .provider_instance
             .clone()
             .unwrap_or_else(|| ex.upstream.clone()),
+        // The reverse proxy identifies its upstream by provider, not host:port.
+        port: 0,
         method: ex.method.clone(),
         path: ex.path.clone(),
         request_body: ex.request_body.clone(),
@@ -496,6 +638,14 @@ impl ProxyInterceptor for PassiveInterceptor {
             // (`record` itself ignores paths that aren't recognized LLM calls.)
             None => self.record(exchange),
         }
+    }
+
+    fn begin_passthrough(&self, exchange: &PassthroughExchange) -> Option<String> {
+        Some(self.open_passthrough(exchange))
+    }
+
+    fn end_passthrough(&self, event_id: Option<String>, exchange: &PassthroughExchange) {
+        self.close_passthrough(event_id, exchange);
     }
 }
 
@@ -653,29 +803,134 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn begin_ignores_non_messages_paths() {
+    async fn non_llm_paths_on_inspected_hosts_record_a_passthrough() {
         let store = Arc::new(MonitorEventStore::new(16));
         let it = PassiveInterceptor::new(store.clone());
+
         let mut ex = exchange();
-        ex.path = "/v1/complete".to_string();
-        assert!(it.begin(&ex).is_none(), "non-messages path opens no event");
-        assert!(store.list(0, 100, None).events.is_empty());
+        ex.path = "/v1/organizations/me?token=secret".to_string();
+        ex.port = 443;
+        let id = it.begin(&ex).expect("passthrough event opens");
+        assert_eq!(store.get(&id).unwrap().status, EventStatus::Pending);
+
+        ex.event_id = Some(id.clone());
+        it.on_response(&ex).await;
+
+        let events = store.list(0, 100, None);
+        assert_eq!(events.events.len(), 1, "completed in place, not duplicated");
+        let full = store.get(&id).unwrap();
+        assert_eq!(full.event_type, MonitorEventType::ProxyPassthrough);
+        assert_eq!(full.status, EventStatus::Complete);
+        match &full.data {
+            MonitorEventData::ProxyPassthrough {
+                mode,
+                host,
+                port,
+                method,
+                path,
+                status_code,
+                note,
+                ..
+            } => {
+                assert_eq!(*mode, PassthroughMode::Inspected);
+                assert_eq!(host, "api.anthropic.com");
+                assert_eq!(*port, 443);
+                assert_eq!(method.as_deref(), Some("POST"));
+                // The query string is dropped — passthrough events never carry
+                // request content of any kind.
+                assert_eq!(path.as_deref(), Some("/v1/organizations/me"));
+                assert_eq!(*status_code, Some(200));
+                assert!(note.contains("Not an LLM call"));
+                assert!(note.contains("HTTPS_PROXY"));
+            }
+            other => panic!("unexpected data: {other:?}"),
+        }
     }
 
     #[tokio::test]
-    async fn ignores_non_messages_paths() {
+    async fn passthrough_events_never_carry_bodies() {
         let store = Arc::new(MonitorEventStore::new(16));
         let it = PassiveInterceptor::new(store.clone());
 
         let mut ex = exchange();
         ex.path = "/v1/complete".to_string();
-        let _ = it.on_response(&ex).await;
+        it.on_response(&ex).await;
 
-        let resp = store.list(0, 100, None);
-        assert!(
-            resp.events.is_empty(),
-            "non-messages paths must not be recorded"
-        );
+        let events = store.list(0, 100, None);
+        assert_eq!(events.events.len(), 1);
+        let full = store.get(&events.events[0].id).unwrap();
+        let json = serde_json::to_string(&full.data).unwrap();
+        assert!(!json.contains("claude-sonnet"), "no request body: {json}");
+        assert!(!json.contains("hello"), "no response body: {json}");
+    }
+
+    #[tokio::test]
+    async fn reverse_proxy_non_llm_paths_are_not_recorded() {
+        // The reverse proxy deliberately wraps a provider's own port, so its
+        // non-LLM paths are expected traffic — not accidental egress.
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone());
+
+        let mut ex = exchange();
+        ex.path = "/api/tags".to_string();
+        ex.source = ExchangeSource::ReverseProxy;
+        assert!(it.begin(&ex).is_none());
+        it.on_response(&ex).await;
+        assert!(store.list(0, 100, None).events.is_empty());
+    }
+
+    #[test]
+    fn tunnels_record_destination_and_volume_only() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone()).with_client_names(Arc::new(StaticNames));
+
+        let mut ex = PassthroughExchange::tunnel("client-1", "github.com", 443);
+        let id = it.begin_passthrough(&ex).expect("tunnel opens an event");
+        assert_eq!(store.get(&id).unwrap().status, EventStatus::Pending);
+
+        ex.bytes_sent = 4096;
+        ex.bytes_received = 65536;
+        ex.latency_ms = Some(1200);
+        it.end_passthrough(Some(id.clone()), &ex);
+
+        let full = store.get(&id).unwrap();
+        assert_eq!(full.status, EventStatus::Complete);
+        assert_eq!(full.duration_ms, Some(1200));
+        assert_eq!(full.client_name.as_deref(), Some("Claude Code"));
+        match &full.data {
+            MonitorEventData::ProxyPassthrough {
+                mode,
+                host,
+                port,
+                method,
+                path,
+                bytes_sent,
+                bytes_received,
+                ..
+            } => {
+                assert_eq!(*mode, PassthroughMode::Tunnel);
+                assert_eq!((host.as_str(), *port), ("github.com", 443));
+                // TLS was never terminated, so nothing inside is knowable.
+                assert_eq!(*method, None);
+                assert_eq!(*path, None);
+                assert_eq!((*bytes_sent, *bytes_received), (Some(4096), Some(65536)));
+            }
+            other => panic!("unexpected data: {other:?}"),
+        }
+        assert!(lr_monitor::generate_summary(&full).contains("github.com"));
+    }
+
+    #[test]
+    fn a_failed_passthrough_is_an_error_event() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone());
+
+        let mut ex = PassthroughExchange::tunnel("c", "unreachable.example", 443);
+        let id = it.begin_passthrough(&ex).unwrap();
+        ex.error = Some("upstream connect: refused".to_string());
+        it.end_passthrough(Some(id.clone()), &ex);
+
+        assert_eq!(store.get(&id).unwrap().status, EventStatus::Error);
     }
 
     #[tokio::test]

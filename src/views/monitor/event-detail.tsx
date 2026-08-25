@@ -224,6 +224,7 @@ export function EventDetail({ event }: EventDetailProps) {
         {type === 'memory_compaction' && <MemoryCompactionDetail data={data} />}
         {type === 'firewall_decision' && <FirewallDecisionDetail data={data} />}
         {type === 'sse_connection' && <SseConnectionDetail data={data} />}
+        {type === 'proxy_passthrough' && <ProxyPassthroughDetail data={data} />}
       </div>
     </div>
   )
@@ -1639,6 +1640,59 @@ function SseConnectionDetail({ data }: { data: EventData }) {
     <div className="grid grid-cols-2 gap-2 text-xs">
       <Field label="Session" value={data.session_id as string} />
       <Field label="Action" value={data.action as string} />
+    </div>
+  )
+}
+
+const PASSTHROUGH_MODES: Record<string, string> = {
+  tunnel: 'Tunneled (encrypted, never decrypted)',
+  http: 'Plain HTTP, forwarded unchanged',
+  inspected: 'Inspected host, but not an LLM endpoint',
+  websocket: 'WebSocket, relayed unchanged',
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** Non-LLM traffic that passed through the proxy untouched. Shows where it went
+ *  and how much moved — deliberately never its content. */
+function ProxyPassthroughDetail({ data }: { data: EventData }) {
+  const host = data.host as string
+  const port = data.port as number
+  const destination = port === 443 || port === 80 ? host : `${host}:${port}`
+  const method = data.method as string | undefined
+  const path = data.path as string | undefined
+  const sent = data.bytes_sent as number | undefined
+  const received = data.bytes_received as number | undefined
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 p-2">
+        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-500" />
+        <p className="whitespace-pre-line text-xs leading-relaxed">{data.note as string}</p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Destination" value={destination} />
+        <Field label="Forwarded as" value={PASSTHROUGH_MODES[data.mode as string] ?? (data.mode as string)} />
+        {method && path && <Field label="Request" value={`${method} ${path}`} />}
+        <Field label="Status" value={data.status_code ? String(data.status_code) : undefined} />
+        <Field label="Sent" value={sent !== undefined && sent !== null ? formatBytes(sent) : undefined} />
+        <Field label="Received" value={received !== undefined && received !== null ? formatBytes(received) : undefined} />
+      </div>
+
+      {data.error != null && (
+        <div className="rounded border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+          {data.error as string}
+        </div>
+      )}
+
+      <p className="text-[11px] italic text-muted-foreground">
+        No request or response content was captured for this event — LocalRouter only inspects LLM calls.
+      </p>
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2, Database } from 'lucide-react'
+import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2, Database, Forward } from 'lucide-react'
 import { ProvidersIcon } from '@/components/icons/category-icons'
 import type { MonitorEventSummary, MonitorEventType, EventStatus } from '@/types/tauri-commands'
 
@@ -20,6 +20,9 @@ const categoryConfig: Record<string, { icon: React.ComponentType<{ className?: s
   memory: { icon: Database, color: 'text-amber-500' },
   firewall: { icon: Shield, color: 'text-red-500' },
   connection: { icon: Link, color: 'text-gray-500' },
+  // Non-LLM traffic that only passed through — muted, and flagged amber
+  // because it is usually accidental.
+  proxy: { icon: Forward, color: 'text-amber-600' },
   auth: { icon: KeyRound, color: 'text-red-500' },
   rate_limit: { icon: Gauge, color: 'text-amber-500' },
   validation: { icon: AlertCircle, color: 'text-yellow-600' },
@@ -38,6 +41,7 @@ function getCategory(type: MonitorEventType): string {
   if (type === 'memory_compaction') return 'memory'
   if (type === 'firewall_decision') return 'firewall'
   if (type === 'sse_connection' || type === 'connection_error') return 'connection'
+  if (type === 'proxy_passthrough') return 'proxy'
   if (type === 'auth_error' || type === 'access_denied' || type === 'oauth_event') return 'auth'
   if (type === 'rate_limit_event') return 'rate_limit'
   if (type === 'validation_error') return 'validation'

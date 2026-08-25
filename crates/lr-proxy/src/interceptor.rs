@@ -84,6 +84,9 @@ pub struct ObservedExchange {
     pub latency_ms: Option<u64>,
     /// Upstream host (e.g. `api.anthropic.com`).
     pub host: String,
+    /// Upstream port. `0` when the capture site doesn't have one (the reverse
+    /// proxy, which identifies its upstream by provider instead).
+    pub port: u16,
     /// Request method (e.g. `POST`).
     pub method: String,
     /// Request path (e.g. `/v1/messages`).
@@ -131,6 +134,58 @@ pub enum ExchangeSource {
     Proxy,
     /// A reverse-proxy listener wrapping a local provider's port.
     ReverseProxy,
+}
+
+/// A connection that passed through the proxy **without** being treated as an
+/// LLM call, handed to the interceptor purely so the user can see it happened.
+///
+/// `HTTPS_PROXY` is process-wide: pointing a tool at LocalRouter also routes
+/// that tool's git, package-manager, telemetry and update traffic here. Such
+/// traffic is forwarded verbatim; this type carries only *where* it went and
+/// how many bytes moved — never any request or response content.
+#[derive(Debug, Clone, Default)]
+pub struct PassthroughExchange {
+    /// The authenticated client whose proxy settings carried this connection.
+    pub client_id: String,
+    /// How it was forwarded.
+    pub mode: lr_monitor::PassthroughMode,
+    /// Destination host.
+    pub host: String,
+    /// Destination port.
+    pub port: u16,
+    /// Request method, only when the request line was visible in cleartext.
+    pub method: Option<String>,
+    /// Request path **with the query string stripped**, only when visible.
+    pub path: Option<String>,
+    /// Upstream status code, when the response head was visible.
+    pub status: Option<u16>,
+    /// Bytes forwarded client → upstream.
+    pub bytes_sent: u64,
+    /// Bytes forwarded upstream → client.
+    pub bytes_received: u64,
+    /// Wall-clock duration once the connection closes.
+    pub latency_ms: Option<u64>,
+    /// Transport failure, if the passthrough could not be completed.
+    pub error: Option<String>,
+}
+
+impl PassthroughExchange {
+    /// A blind `CONNECT` tunnel to a host that is not inspected.
+    pub fn tunnel(client_id: &str, host: &str, port: u16) -> Self {
+        Self {
+            client_id: client_id.to_string(),
+            mode: lr_monitor::PassthroughMode::Tunnel,
+            host: host.to_string(),
+            port,
+            ..Default::default()
+        }
+    }
+
+    /// Drop the query string from a path, so no parameter values are ever
+    /// recorded for passthrough traffic.
+    pub fn strip_query(path: &str) -> String {
+        path.split('?').next().unwrap_or(path).to_string()
+    }
 }
 
 /// Token usage for a single call, for cost computation.
@@ -187,4 +242,17 @@ pub trait ProxyInterceptor: Send + Sync {
     /// (via `exchange.event_id`), or records the exchange in one push when there
     /// is none (e.g. a firewall reject).
     async fn on_response(&self, _exchange: &ObservedExchange) {}
+
+    /// Called when a non-LLM connection starts being forwarded untouched
+    /// (a blind tunnel, or a plain-HTTP proxy request). Returns a monitor event
+    /// id so [`end_passthrough`](Self::end_passthrough) can complete it.
+    fn begin_passthrough(&self, _exchange: &PassthroughExchange) -> Option<String> {
+        None
+    }
+
+    /// Called when a forwarded non-LLM connection closes, with byte counts and
+    /// duration. Completes the event opened by
+    /// [`begin_passthrough`](Self::begin_passthrough), or records a combined one
+    /// when there is none.
+    fn end_passthrough(&self, _event_id: Option<String>, _exchange: &PassthroughExchange) {}
 }

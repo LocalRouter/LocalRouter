@@ -114,6 +114,7 @@ pub enum MonitorEventType {
     MemoryCompaction,
     FirewallDecision,
     SseConnection,
+    ProxyPassthrough,
 }
 
 impl MonitorEventType {
@@ -144,6 +145,7 @@ impl MonitorEventType {
             Self::MemoryCompaction => "Memory Compaction",
             Self::FirewallDecision => "Firewall Decision",
             Self::SseConnection => "SSE Connection",
+            Self::ProxyPassthrough => "Proxy Passthrough",
         }
     }
 
@@ -168,6 +170,7 @@ impl MonitorEventType {
             Self::PromptCompression => "optimization",
             Self::MemoryCompaction => "memory",
             Self::FirewallDecision => "firewall",
+            Self::ProxyPassthrough => "proxy",
         }
     }
 }
@@ -606,6 +609,74 @@ pub enum MonitorEventData {
         /// "opened" or "closed"
         action: String,
     },
+
+    /// Non-LLM traffic that passed through the HTTPS inspection proxy untouched.
+    ///
+    /// `HTTPS_PROXY` is process-wide, so pointing a tool at LocalRouter also
+    /// routes that tool's *other* egress (git, package managers, telemetry,
+    /// update checks) through the proxy. LocalRouter forwards it verbatim and
+    /// records only where it went — never any request or response content.
+    ProxyPassthrough {
+        /// How it was forwarded: `tunnel` (blind CONNECT, TLS never
+        /// terminated), `http` (plain-HTTP proxy request), `inspected`
+        /// (decrypted request on an LLM host but not an LLM API path), or
+        /// `websocket` (relayed upgraded connection).
+        mode: PassthroughMode,
+        /// Destination host (e.g. `github.com`).
+        host: String,
+        /// Destination port.
+        port: u16,
+        /// Request method, only when the request line was visible in cleartext.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        method: Option<String>,
+        /// Request path with the query string stripped, only when visible.
+        /// Never carries a body, headers, or query parameters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// Upstream status code, when the response head was visible.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_code: Option<u16>,
+        /// Bytes forwarded client → upstream (volume only, never content).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_sent: Option<u64>,
+        /// Bytes forwarded upstream → client (volume only, never content).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_received: Option<u64>,
+        /// Why this event exists, shown to the user.
+        note: String,
+        /// Transport failure, if the passthrough could not be completed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+/// How a non-LLM exchange was forwarded through the inspection proxy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PassthroughMode {
+    /// Blind `CONNECT` tunnel — TLS was never terminated, so only the
+    /// destination `host:port` is knowable.
+    #[default]
+    Tunnel,
+    /// A plain-HTTP (absolute-form) proxy request, forwarded to the origin.
+    Http,
+    /// A decrypted request on an inspected LLM host whose path is not a
+    /// recognized LLM API path (auth preflight, model list, telemetry).
+    Inspected,
+    /// An upgraded websocket connection relayed without inspection.
+    Websocket,
+}
+
+impl PassthroughMode {
+    /// Short label for display.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Tunnel => "tunneled",
+            Self::Http => "forwarded",
+            Self::Inspected => "not an LLM call",
+            Self::Websocket => "relayed",
+        }
+    }
 }
 
 /// A flagged safety category from guardrails.

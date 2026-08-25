@@ -3719,6 +3719,7 @@ export type MonitorEventType =
   | 'oauth_event' | 'internal_error' | 'moderation_event'
   | 'connection_error' | 'prompt_compression' | 'memory_compaction'
   | 'firewall_decision' | 'sse_connection'
+  | 'proxy_passthrough'
 
 export type EventStatus = 'pending' | 'complete' | 'error'
 

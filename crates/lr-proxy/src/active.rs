@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::interceptor::{
-    ClientCtx, ConnectDecision, ObservedExchange, ProxyInterceptor, RequestAction,
+    ClientCtx, ConnectDecision, ObservedExchange, PassthroughExchange, ProxyInterceptor,
+    RequestAction,
 };
 use crate::passive::PassiveInterceptor;
 use crate::wire;
@@ -106,6 +107,16 @@ impl ProxyInterceptor for ActiveInterceptor {
             // `record` ignores paths that aren't recognized LLM calls.
             None => self.recorder.record(ex),
         }
+    }
+
+    fn begin_passthrough(&self, ex: &PassthroughExchange) -> Option<String> {
+        // Non-LLM traffic is never subject to the firewall — it is forwarded
+        // untouched and only recorded so the user can see it happened.
+        self.recorder.begin_passthrough(ex)
+    }
+
+    fn end_passthrough(&self, event_id: Option<String>, ex: &PassthroughExchange) {
+        self.recorder.end_passthrough(event_id, ex);
     }
 }
 

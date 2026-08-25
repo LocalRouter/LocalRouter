@@ -31,6 +31,9 @@ const TYPE_GROUPS: { key: string; label: string; types: MonitorEventType[] }[] =
     'moderation_event', 'connection_error',
   ]},
   { key: 'memory', label: 'Memory', types: ['memory_compaction'] },
+  // Non-LLM traffic the HTTPS proxy forwarded untouched — its own group so it
+  // can be hidden, or isolated when hunting for stray egress.
+  { key: 'proxy', label: 'Proxy Passthrough', types: ['proxy_passthrough'] },
   { key: 'other', label: 'Other', types: ['prompt_compression', 'firewall_decision', 'sse_connection'] },
 ]
 

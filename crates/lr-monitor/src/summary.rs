@@ -374,6 +374,28 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
         MonitorEventData::SseConnection { action, session_id } => {
             format!("SSE {}: {}", action, truncate(session_id, 16))
         }
+        MonitorEventData::ProxyPassthrough {
+            mode,
+            host,
+            port,
+            method,
+            path,
+            ..
+        } => {
+            // Destination first — that's what identifies the stray client
+            // ("github.com" → git). Never any body or query content.
+            let dest = if *port == 443 || *port == 80 {
+                host.clone()
+            } else {
+                format!("{host}:{port}")
+            };
+            match (method, path) {
+                (Some(m), Some(p)) => {
+                    format!("passthrough: {} {}{}", m, dest, truncate(p, 48))
+                }
+                _ => format!("passthrough: {} ({})", dest, mode.label()),
+            }
+        }
     }
 }
 

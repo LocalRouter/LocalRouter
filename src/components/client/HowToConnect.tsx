@@ -1235,6 +1235,20 @@ function ProxyLlmSetup({
         </div>
       )}
 
+      {/* The proxy setting is process-wide, which surprises people: a tool
+          configured here also sends its git/npm/telemetry traffic to
+          LocalRouter. Say so up front, and point at where it shows up. */}
+      <div className="flex items-start gap-1.5 rounded-md border p-2.5">
+        <Info className="h-3.5 w-3.5 shrink-0 mt-px text-muted-foreground" />
+        <p className="text-[11px] text-muted-foreground">
+          The proxy setting applies to everything {toolName} connects to, not just its LLM calls.
+          Anything else — git, package managers, telemetry, update checks — is forwarded untouched
+          and never decrypted or captured. Those appear in Monitor as{" "}
+          <span className="font-medium">Proxy Passthrough</span> events showing only the
+          destination, so you can spot traffic you did not intend to route here.
+        </p>
+      </div>
+
       <Tabs value={innerTab} onValueChange={setInnerTab}>
         <TabsList className={`mb-4 grid w-full ${innerGridCols}`}>
           {supportsAuto && (

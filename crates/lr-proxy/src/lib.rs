@@ -11,6 +11,12 @@
 //! Only allow-listed LLM API hosts are intercepted; everything else (auth,
 //! telemetry, arbitrary HTTPS) is blind-tunneled without decryption.
 //!
+//! `HTTPS_PROXY` is process-wide, so a tool pointed here also sends its git,
+//! package-manager and update traffic through the proxy. All of it — including
+//! absolute-form plain HTTP — is forwarded verbatim, and recorded as a
+//! *passthrough* monitor event carrying the destination and byte volume only,
+//! so accidental egress is visible without ever capturing its content.
+//!
 //! ## Module map
 //! - [`cert`] — root CA + on-demand leaf certificate minting.
 //! - [`wire`] — wire-format dispatch + shared SSE event parsing.
