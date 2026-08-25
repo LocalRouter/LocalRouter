@@ -598,10 +598,16 @@ jobs:
   publish-packages:
     name: Publish to Package Managers
     needs: [version-bump, create-release, build-flatpak]
-    # Run even when the flatpak build failed: brew/scoop/AUR/apt/yum must not
-    # be held hostage by a flatpak runtime issue. The flatpak merge steps
-    # below just skip when the artifacts are missing.
-    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    # Disabled for now. Every path in this job needs the PACKAGING_PAT secret —
+    # pushing the brew/scoop/AUR manifests, and checking out LocalRouter/packages
+    # for the APT/YUM/flatpak repos — so with the secret unset the job can only
+    # fail, marking otherwise-good releases red. To re-enable, set PACKAGING_PAT
+    # (and AUR_SSH_PRIVATE_KEY) in the repository secrets and restore:
+    #   if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    # which runs the job even when the flatpak build failed, so brew/scoop/AUR/
+    # apt/yum are not held hostage by a flatpak runtime issue (the flatpak merge
+    # steps below already skip when their artifacts are missing).
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
