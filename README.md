@@ -91,8 +91,12 @@ published.
 ```bash
 git clone https://github.com/LocalRouter/LocalRouter.git
 cd LocalRouter
-cargo tauri dev
+npm install
+npm run tauri -- dev --no-watch
 ```
+
+The Tauri CLI is installed as a project dependency by `npm install`; a global
+`cargo-tauri` installation is not required.
 
 ### Test & Lint
 

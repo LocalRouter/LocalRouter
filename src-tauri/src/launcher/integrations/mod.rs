@@ -172,6 +172,9 @@ mod tests {
 
     #[test]
     fn test_config_file_integrations_configure_permanent() {
+        // Pi is tested through its injectable-path writer in pi.rs. Calling
+        // configure_permanent here would write test credentials to the
+        // developer's real ~/.pi/agent directory.
         for id in &[
             "claude-code",
             "codex",
@@ -179,7 +182,6 @@ mod tests {
             "droid",
             "openclaw",
             "cursor",
-            "pi",
         ] {
             let integration = get_integration(id).unwrap();
             let result = integration.configure_permanent(

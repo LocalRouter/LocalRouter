@@ -157,11 +157,11 @@ fn write_config_at(
             let model_ids = models
                 .cloned()
                 .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| vec!["auto".to_string()]);
+                .unwrap_or_else(|| vec!["localrouter/auto".to_string()]);
             let default_model = model_ids
                 .first()
                 .cloned()
-                .unwrap_or_else(|| "auto".to_string());
+                .unwrap_or_else(|| "localrouter/auto".to_string());
             let model_entries: Vec<serde_json::Value> = model_ids
                 .iter()
                 .map(|id| {
@@ -448,7 +448,7 @@ mod tests {
             "http://localhost:3625",
             "secret",
             true,
-            Some(&vec!["auto".to_string()]),
+            Some(&vec!["localrouter/auto".to_string()]),
         )
         .unwrap();
 
@@ -516,7 +516,7 @@ mod tests {
             "http://localhost:3625",
             "secret",
             true,
-            Some(&vec!["auto".to_string()]),
+            Some(&vec!["localrouter/auto".to_string()]),
         )
         .unwrap();
 
@@ -562,7 +562,7 @@ mod tests {
         assert_eq!(models["customMeta"], true);
         assert_eq!(
             models["providers"]["localrouter"]["models"][0]["id"],
-            "auto"
+            "localrouter/auto"
         );
     }
 }

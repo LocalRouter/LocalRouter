@@ -3818,6 +3818,7 @@ pub async fn configure_app_permanent(
     client_id: String,
     config_manager: State<'_, ConfigManager>,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
 ) -> Result<LaunchResult, String> {
     use crate::launcher;
 
@@ -3843,12 +3844,105 @@ pub async fn configure_app_permanent(
         .map_err(|e| format!("Failed to get client secret: {}", e))?
         .ok_or("Client secret not found in keychain")?;
 
+    if integration.needs_model_list() {
+        let models = if client.llm_mode == LlmMode::Gateway {
+            let strategy = config
+                .strategies
+                .iter()
+                .find(|s| s.id == client.strategy_id);
+            build_integration_model_list(strategy, provider_registry.inner()).await?
+        } else {
+            vec![]
+        };
+        let ctx = launcher::ConfigSyncContext {
+            base_url,
+            client_secret,
+            client_id,
+            models,
+            llm_mode: client.llm_mode,
+            mcp_mode: client.mcp_mode,
+            proxy_url: None,
+            ca_cert_path: None,
+        };
+        return integration.sync_config(&ctx);
+    }
+
     integration.configure_permanent(&base_url, &client_secret, &client_id)
 }
 
 // ============================================================================
 // Config Sync Commands
 // ============================================================================
+
+fn require_integration_models(models: Vec<String>) -> Result<Vec<String>, String> {
+    if models.is_empty() {
+        Err(
+            "No usable models are configured for this client. Configure a provider model or add \
+             prioritized models to auto routing, then try again."
+                .to_string(),
+        )
+    } else {
+        Ok(models)
+    }
+}
+
+fn configured_auto_models(auto_config: &lr_config::AutoModelConfig) -> Option<Vec<String>> {
+    if !auto_config.prioritized_models.is_empty() {
+        let mut models = vec![auto_config.model_name.clone()];
+        for (provider, model) in &auto_config.prioritized_models {
+            models.push(format!("{}/{}", provider, model));
+        }
+        for (provider, model) in &auto_config.available_models {
+            models.push(format!("{}/{}", provider, model));
+        }
+        Some(models)
+    } else if !auto_config.available_models.is_empty() {
+        Some(
+            auto_config
+                .available_models
+                .iter()
+                .map(|(provider, model)| format!("{}/{}", provider, model))
+                .collect(),
+        )
+    } else {
+        None
+    }
+}
+
+/// Build the model catalog written into integrations that need explicit model
+/// entries. Auto routing is only advertised when it has a usable prioritized
+/// route; otherwise expose concrete allowed models instead.
+async fn build_integration_model_list(
+    strategy: Option<&lr_config::Strategy>,
+    provider_registry: &Arc<lr_providers::registry::ProviderRegistry>,
+) -> Result<Vec<String>, String> {
+    let auto_config_active = strategy
+        .and_then(|s| s.auto_config.as_ref())
+        .filter(|ac| ac.permission != lr_config::PermissionState::Off);
+
+    if let Some(auto_config) = auto_config_active {
+        if let Some(models) = configured_auto_models(auto_config) {
+            return require_integration_models(models);
+        }
+    }
+
+    let all_models = provider_registry
+        .list_all_models()
+        .await
+        .map_err(|e| format!("Failed to list models: {}", e))?;
+
+    require_integration_models(
+        all_models
+            .iter()
+            .filter(|m| {
+                strategy
+                    .map(|s| s.is_model_allowed(&m.provider, &m.id))
+                    .unwrap_or(true)
+            })
+            .map(|m| format!("{}/{}", m.provider, m.id))
+            .collect(),
+    )
+}
 
 /// Inner helper to sync a single client's external config.
 /// Returns Ok(Some(result)) if sync was performed, Ok(None) if skipped.
@@ -3887,45 +3981,12 @@ pub async fn sync_client_config_inner(
         .ok_or("Client secret not found in keychain")?;
 
     // Build model list if needed
-    let models = if integration.needs_model_list() {
-        // Get strategy for this client
+    let models = if integration.needs_model_list() && client.llm_mode == LlmMode::Gateway {
         let strategy = config
             .strategies
             .iter()
             .find(|s| s.id == client.strategy_id);
-
-        // If auto router is enabled, only include the auto model + prioritized/available models
-        let auto_config_active = strategy
-            .and_then(|s| s.auto_config.as_ref())
-            .filter(|ac| ac.permission != lr_config::PermissionState::Off);
-
-        if let Some(auto_config) = auto_config_active {
-            let mut models = vec![auto_config.model_name.clone()];
-            for (provider, model) in &auto_config.prioritized_models {
-                models.push(format!("{}/{}", provider, model));
-            }
-            for (provider, model) in &auto_config.available_models {
-                models.push(format!("{}/{}", provider, model));
-            }
-            models
-        } else {
-            // Get all available models
-            let all_models = provider_registry
-                .list_all_models()
-                .await
-                .map_err(|e| format!("Failed to list models: {}", e))?;
-
-            // Filter by strategy and format as "provider/model_id"
-            all_models
-                .iter()
-                .filter(|m| {
-                    strategy
-                        .map(|s| s.is_model_allowed(&m.provider, &m.id))
-                        .unwrap_or(true)
-                })
-                .map(|m| format!("{}/{}", m.provider, m.id))
-                .collect()
-        }
+        build_integration_model_list(strategy, provider_registry).await?
     } else {
         vec![]
     };
@@ -4203,6 +4264,39 @@ mod tests {
             guardrail_details: None,
             secret_scan_details: None,
         }
+    }
+
+    #[test]
+    fn empty_auto_config_does_not_advertise_unusable_auto_model() {
+        assert_eq!(
+            configured_auto_models(&lr_config::AutoModelConfig::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn configured_auto_models_puts_working_auto_route_first() {
+        let auto = lr_config::AutoModelConfig {
+            prioritized_models: vec![("anthropic".into(), "claude-sonnet".into())],
+            available_models: vec![("openai".into(), "gpt-5".into())],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_auto_models(&auto),
+            Some(vec![
+                "auto".to_string(),
+                "anthropic/claude-sonnet".to_string(),
+                "openai/gpt-5".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn empty_integration_model_list_returns_actionable_error() {
+        let error = require_integration_models(vec![]).unwrap_err();
+        assert!(error.contains("No usable models"));
+        assert!(error.contains("prioritized models"));
     }
 
     // =========================================================================

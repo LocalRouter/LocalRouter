@@ -325,7 +325,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     configFile: {
       path: '{{HOME_DIR}}/.pi/agent/models.json',
       jsonSnippet: ({ models }) => {
-        const modelEntries = (models.length > 0 ? models : [{ id: 'auto' }]).map((m) => ({
+        const modelEntries = (models.length > 0 ? models : [{ id: 'localrouter/auto' }]).map((m) => ({
           id: m.id,
           name: m.id,
         }))
