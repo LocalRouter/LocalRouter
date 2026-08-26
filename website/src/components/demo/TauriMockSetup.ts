@@ -437,6 +437,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'configure_app_permanent': (args) => {
     toast.success(`App configured permanently for client ${args?.clientId} (demo)`)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const templateId = (client as unknown as Record<string, unknown> | undefined)?.template_id
+    if (templateId === 'pi') {
+      return {
+        success: true,
+        message: 'Configured Pi: LLM provider + defaults.',
+        modified_files: ['~/.pi/agent/models.json', '~/.pi/agent/settings.json'],
+        backup_files: [],
+      }
+    }
     return {
       success: true,
       message: 'MCP configured in ~/.claude.json. For LLM routing, use env vars at launch time.',
@@ -452,10 +462,15 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     if (args?.enabled) {
       toast.success(`Config sync enabled for client ${args?.clientId} (demo)`)
+      const templateId = (client as unknown as Record<string, unknown> | undefined)?.template_id
+      const modified =
+        templateId === 'pi'
+          ? ['~/.pi/agent/models.json', '~/.pi/agent/settings.json']
+          : ['~/.config/opencode/opencode.json']
       return {
         success: true,
         message: 'Config synced successfully.',
-        modified_files: ['~/.config/opencode/opencode.json'],
+        modified_files: modified,
         backup_files: [],
       }
     }
@@ -464,10 +479,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'sync_client_config': (args) => {
     toast.success(`Config synced for client ${args?.clientId} (demo)`)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const templateId = (client as unknown as Record<string, unknown> | undefined)?.template_id
+    const modified =
+      templateId === 'pi'
+        ? ['~/.pi/agent/models.json', '~/.pi/agent/settings.json']
+        : ['~/.config/opencode/opencode.json']
     return {
       success: true,
       message: 'Config synced successfully.',
-      modified_files: ['~/.config/opencode/opencode.json'],
+      modified_files: modified,
       backup_files: [],
     }
   },
