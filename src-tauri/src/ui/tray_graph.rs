@@ -792,9 +792,9 @@ fn number_metrics(box_height: u32) -> crate::ui::tray_font::FontMetrics {
 fn content_width(content: &PaneContent, layout: PaneLayout) -> u32 {
     match content {
         PaneContent::Graph(_) => PANE_SIZE,
-        // Beside a stacked label the gauge stands upright, like the label
-        PaneContent::UsageBar(_) if layout == PaneLayout::Beside => GAUGE_THICKNESS,
-        PaneContent::UsageBar(_) => GAUGE_LENGTH,
+        // The gauge lies flat only under a label; otherwise it stands upright
+        PaneContent::UsageBar(_) if layout == PaneLayout::Above => GAUGE_LENGTH,
+        PaneContent::UsageBar(_) => GAUGE_THICKNESS,
         PaneContent::Number(text) => {
             number_metrics(content_box_height(layout)).text_width(text) + 2 * NUMBER_PAD
         }
@@ -973,7 +973,7 @@ pub fn generate_multi_pane(
                 image::imageops::replace(&mut img, &pane_img, gx as i64, gy as i64);
             }
             PaneContent::UsageBar(fill) => {
-                if layout == PaneLayout::Beside {
+                if layout != PaneLayout::Above {
                     // Upright gauge spanning the full height
                     let gx = cx + cw.saturating_sub(GAUGE_THICKNESS) / 2;
                     draw_usage_gauge(&mut img, gx, cy, GAUGE_THICKNESS, ch, *fill, config);
@@ -1547,9 +1547,9 @@ mod tests {
         let gauges = vec![labelled("ALL", PaneContent::UsageBar(1.0))];
         assert_eq!(
             multi_pane_width(&gauges, opts(LabelMode::Off)),
-            GAUGE_LENGTH
+            GAUGE_THICKNESS
         );
-        // Beside a stacked label the gauge stands upright
+        // Beside a stacked label the gauge stands upright too
         assert_eq!(
             multi_pane_width(&gauges, opts(LabelMode::Beside)),
             col + PANE_GAP + GAUGE_THICKNESS
