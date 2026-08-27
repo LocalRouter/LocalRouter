@@ -923,6 +923,27 @@ impl TrayStatsConfig {
         self.items.retain(|i| &i.source != source);
     }
 
+    /// Register a newly created client.
+    ///
+    /// Adds its row (enabled) and, when this takes the tray from a single
+    /// panel to two, switches labels on (`Beside`) so the panels can be
+    /// told apart. Only that 1 → 2 transition flips labels — going from
+    /// two to three leaves whatever the user chose, and a user who turned
+    /// labels off with several panels keeps them off.
+    pub fn on_client_created(&mut self, client_id: &str) {
+        let source = TraySource::Client {
+            id: client_id.to_string(),
+        };
+        if self.contains(&source) {
+            return;
+        }
+        let before = self.enabled_items().count();
+        self.items.push(TrayStatsItem::new(source));
+        if before == 1 && self.labels == TrayLabelMode::Off {
+            self.labels = TrayLabelMode::Beside;
+        }
+    }
+
     /// Ensure the `All` row exists (first, if it had to be added).
     pub fn ensure_all_present(&mut self) {
         if !self.contains(&TraySource::All) {
@@ -4605,6 +4626,44 @@ mod tests {
             TraySource::Client { id: "x".into() }.default_label_seed(None),
             "x"
         );
+    }
+
+    #[test]
+    fn tray_stats_new_client_turns_labels_on_only_for_one_to_two() {
+        // Fresh install / upgrade: single global graph, no labels
+        let mut cfg = TrayStatsConfig::default();
+        assert_eq!(cfg.labels, TrayLabelMode::Off);
+        assert_eq!(cfg.enabled_items().count(), 1);
+
+        // First new client: 1 → 2 panels, labels come on
+        cfg.on_client_created("c1");
+        assert_eq!(cfg.enabled_items().count(), 2);
+        assert_eq!(cfg.labels, TrayLabelMode::Beside);
+
+        // User turns them off again; the next client must not re-enable them
+        cfg.labels = TrayLabelMode::Off;
+        cfg.on_client_created("c2");
+        assert_eq!(cfg.enabled_items().count(), 3);
+        assert_eq!(cfg.labels, TrayLabelMode::Off);
+
+        // Registering the same client twice is a no-op
+        cfg.on_client_created("c2");
+        assert_eq!(cfg.items.len(), 3);
+
+        // A user choice other than Off is left alone on the 1 → 2 transition
+        let mut above = TrayStatsConfig {
+            labels: TrayLabelMode::Above,
+            ..Default::default()
+        };
+        above.on_client_created("c1");
+        assert_eq!(above.labels, TrayLabelMode::Above);
+
+        // The transition counts enabled panels: an unchecked All plus a
+        // new client is still one panel, so labels stay off
+        let mut only_new = TrayStatsConfig::default();
+        only_new.items[0].enabled = false;
+        only_new.on_client_created("c1");
+        assert_eq!(only_new.labels, TrayLabelMode::Off);
     }
 
     #[test]

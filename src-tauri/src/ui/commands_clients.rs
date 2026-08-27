@@ -494,6 +494,7 @@ pub async fn clone_client(
         .update(|cfg| {
             cfg.clients.push(new_client.clone());
             cfg.strategies.push(new_strategy);
+            cfg.ui.tray_stats.on_client_created(&new_client.id);
         })
         .map_err(|e| e.to_string())?;
 

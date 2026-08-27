@@ -341,12 +341,10 @@ impl ConfigManager {
         self.update(|cfg| {
             cfg.clients.push(client.clone());
             cfg.strategies.push(strategy.clone());
-            // New clients show up in the tray stats automatically. This is
-            // the single creation choke point, so UI / clone / wizard /
-            // try-it-out paths all get it.
-            cfg.ui.tray_stats.add_source(TraySource::Client {
-                id: client.id.clone(),
-            });
+            // New clients show up in the tray stats automatically (and the
+            // first one turns labels on). Clone has its own push and calls
+            // this too; "Try it out" test clients deliberately don't.
+            cfg.ui.tray_stats.on_client_created(&client.id);
         })?;
 
         Ok((client, strategy))
