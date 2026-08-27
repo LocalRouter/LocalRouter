@@ -3,14 +3,15 @@
 #![allow(dead_code)]
 
 use crate::ui::tray::UpdateNotificationState;
-use crate::ui::tray_format::{headline_value, metric_magnitude, title_text, usage_line};
+use crate::ui::tray_format::{headline_value, metric_magnitude, usage_line};
 use crate::ui::tray_graph::{
-    platform_graph_config, MultiPaneOptions, PaneSpec, StatusDotColors, TrayOverlay, GRAPH_WIDTH,
+    platform_graph_config, GraphConfig, MultiPaneOptions, PaneContent, PaneSpec, StatusDotColors,
+    TrayOverlay, GRAPH_WIDTH,
 };
 use chrono::{DateTime, Duration, Utc};
 use lr_config::{
-    normalize_tray_label, ConfigManager, TrayGraphMetric, TrayLayout, TraySource, TrayStatsConfig,
-    TrayStatsItem, UiConfig,
+    normalize_tray_label, ConfigManager, TrayDisplay, TrayGraphMetric, TrayLayout, TraySource,
+    TrayStatsConfig, TrayStatsItem, UiConfig,
 };
 use lr_monitoring::metrics::{MetricDataPoint, MetricsCollector, UsageTotals};
 use lr_providers::health_cache::AggregateHealthStatus;
@@ -138,9 +139,6 @@ pub struct UsageEntry {
 #[derive(Debug, Clone, Hash)]
 struct TrayPresentation {
     icon: Vec<u8>,
-    /// Text beside the icon; `None` clears it (also on platforms that
-    /// ignore titles, so a layout switch never leaves a stale one behind).
-    title: Option<String>,
     tooltip: String,
 }
 
@@ -680,8 +678,10 @@ impl TrayGraphManager {
                 if let Err(e) = tray.set_icon_as_template(cfg!(target_os = "macos")) {
                     error!("Failed to set tray template mode: {}", e);
                 }
-                if let Err(e) = tray.set_title(p.title.as_deref()) {
-                    error!("Failed to set tray title: {}", e);
+                // Numbers live inside the icon now; make sure no title
+                // text from an earlier build lingers beside it.
+                if let Err(e) = tray.set_title(None::<&str>) {
+                    error!("Failed to clear tray title: {}", e);
                 }
                 if let Err(e) = tray.set_tooltip(Some(&p.tooltip)) {
                     error!("Failed to set tray tooltip: {}", e);
@@ -810,6 +810,129 @@ impl TrayGraphManager {
         }
 
         bars
+    }
+
+    /// Build the pane list for `display_items` under `stats`.
+    fn build_panes(
+        stats: &TrayStatsConfig,
+        display_items: &[(TrayStatsItem, String)],
+        bars: &[Vec<u64>],
+        usage_for: &dyn Fn(&TraySource) -> UsageTotals,
+    ) -> Vec<PaneSpec> {
+        let max_magnitude = display_items
+            .iter()
+            .map(|(i, _)| metric_magnitude(&usage_for(&i.source), stats.usage_metric))
+            .fold(0.0_f64, f64::max);
+
+        display_items
+            .iter()
+            .enumerate()
+            .map(|(idx, (item, label))| {
+                let usage = usage_for(&item.source);
+                let content = match stats.display {
+                    TrayDisplay::Graph => {
+                        PaneContent::Graph(bars.get(idx).cloned().unwrap_or_default())
+                    }
+                    TrayDisplay::UsageBar => PaneContent::UsageBar(if max_magnitude > 0.0 {
+                        (metric_magnitude(&usage, stats.usage_metric) / max_magnitude) as f32
+                    } else {
+                        0.0
+                    }),
+                    TrayDisplay::Number => PaneContent::Number(
+                        headline_value(&usage, stats.usage_metric).to_uppercase(),
+                    ),
+                };
+                PaneSpec {
+                    label: Some(label.clone()),
+                    content,
+                }
+            })
+            .collect()
+    }
+
+    fn pane_options(stats: &TrayStatsConfig, extended: bool) -> MultiPaneOptions {
+        MultiPaneOptions {
+            show_labels: extended && stats.show_labels,
+            units_per_pixel: match stats.graph_metric {
+                TrayGraphMetric::Tokens => Some(crate::ui::tray_graph::TOKENS_PER_PIXEL),
+                TrayGraphMetric::Requests => None,
+            },
+        }
+    }
+
+    /// Render what the tray icon would look like under `stats` (which need
+    /// not be saved), using the live bucket and usage data. Drawn with a
+    /// white or black foreground on transparent for the settings preview.
+    /// Returns PNG bytes; `None` if nothing can be drawn.
+    pub fn render_preview(&self, stats: &TrayStatsConfig, dark_ui: bool) -> Option<Vec<u8>> {
+        let config_manager = self.app_handle.try_state::<ConfigManager>()?;
+        let metrics_collector = self.app_handle.try_state::<Arc<MetricsCollector>>()?;
+        let app_config = config_manager.get();
+        let extended = effective_layout(stats) == TrayLayout::Extended;
+        let items = displayable_items(stats, &app_config.clients);
+        let extended = extended && !items.is_empty();
+        let display_items: Vec<(TrayStatsItem, String)> = if extended {
+            items.into_iter().take(MAX_PANES).collect()
+        } else {
+            vec![(
+                TrayStatsItem::new(TraySource::All),
+                resolve_label(&TrayStatsItem::new(TraySource::All), None),
+            )]
+        };
+
+        // Graph data: current buckets when we have them, else a sample
+        // ramp so the layout is visible before any traffic.
+        let sources = self.sources.read();
+        let bars: Vec<Vec<u64>> = display_items
+            .iter()
+            .enumerate()
+            .map(|(idx, (item, _))| {
+                let live: Vec<u64> = sources
+                    .get(&item.source)
+                    .map(|st| {
+                        st.buckets
+                            .iter()
+                            .map(|b| b.value(stats.graph_metric))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if live.iter().any(|&v| v > 0) {
+                    live
+                } else {
+                    (0..NUM_BUCKETS as u64)
+                        .map(|i| ((i * 37 + idx as u64 * 11) % 23 + 1) * 25)
+                        .collect()
+                }
+            })
+            .collect();
+        drop(sources);
+
+        let window = stats.usage_period.seconds();
+        let usage_map: HashMap<TraySource, UsageTotals> = display_items
+            .iter()
+            .map(|(i, _)| {
+                (
+                    i.source.clone(),
+                    metrics_collector.get_usage_for_type(&i.source.metric_type(), window),
+                )
+            })
+            .collect();
+        let usage_for = |s: &TraySource| usage_map.get(s).copied().unwrap_or_default();
+
+        let panes = Self::build_panes(stats, &display_items, &bars, &usage_for);
+        let fg = if dark_ui { 255 } else { 0 };
+        let config = GraphConfig {
+            foreground: image::Rgba([fg, fg, fg, 255]),
+            background: image::Rgba([0, 0, 0, 0]),
+            template_mode: true,
+        };
+        crate::ui::tray_graph::generate_multi_pane(
+            &panes,
+            Self::pane_options(stats, extended),
+            &config,
+            TrayOverlay::None,
+            dark_ui,
+        )
     }
 
     /// One full update: buckets → usage → render → push to tray (+ menu).
@@ -967,68 +1090,16 @@ impl TrayGraphManager {
                 .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon with overlay"))?
             }
         } else {
-            let show_graph = stats.show_graph || !stats.show_usage_bar; // never render nothing
-            let options = if extended {
-                MultiPaneOptions {
-                    show_labels: stats.show_labels,
-                    show_graph,
-                    show_usage_bar: stats.show_usage_bar,
-                    units_per_pixel: match stats.graph_metric {
-                        TrayGraphMetric::Tokens => Some(crate::ui::tray_graph::TOKENS_PER_PIXEL),
-                        TrayGraphMetric::Requests => None,
-                    },
-                }
-            } else {
-                MultiPaneOptions {
-                    show_labels: false,
-                    show_graph: true,
-                    show_usage_bar: false,
-                    units_per_pixel: Some(crate::ui::tray_graph::TOKENS_PER_PIXEL),
-                }
-            };
-
-            let max_magnitude = display_items
-                .iter()
-                .map(|(i, _)| metric_magnitude(&usage_for(&i.source), stats.usage_metric))
-                .fold(0.0_f64, f64::max);
-
-            let panes: Vec<PaneSpec> = display_items
-                .iter()
-                .zip(bars.iter())
-                .map(|((item, label), bars)| PaneSpec {
-                    label: Some(label.clone()),
-                    bars: bars.clone(),
-                    usage_fill: if max_magnitude > 0.0 {
-                        Some(
-                            (metric_magnitude(&usage_for(&item.source), stats.usage_metric)
-                                / max_magnitude) as f32,
-                        )
-                    } else {
-                        Some(0.0)
-                    },
-                })
-                .collect();
-
+            let panes = Self::build_panes(stats, &display_items, &bars, &usage_for);
             let graph_config = platform_graph_config(dark_mode);
             crate::ui::tray_graph::generate_multi_pane(
                 &panes,
-                options,
+                Self::pane_options(stats, extended),
                 &graph_config,
                 overlay,
                 dark_mode,
             )
             .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?
-        };
-
-        // ---- Title (text beside the icon; Extended layouts only) ----
-        let title = if extended && stats.show_text {
-            let values: Vec<String> = display_items
-                .iter()
-                .map(|(i, _)| headline_value(&usage_for(&i.source), stats.usage_metric))
-                .collect();
-            title_text(&values)
-        } else {
-            None
         };
 
         // ---- Tooltip (legend: every enabled item, not just the panes) ----
@@ -1063,7 +1134,6 @@ impl TrayGraphManager {
 
         let presentation = TrayPresentation {
             icon: icon_bytes,
-            title,
             tooltip,
         };
 

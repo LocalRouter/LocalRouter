@@ -768,6 +768,19 @@ pub fn normalize_tray_label(seed: &str) -> String {
         .collect()
 }
 
+/// What each tray panel shows (one choice for every item).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayDisplay {
+    /// Sparkline of recent throughput.
+    #[default]
+    Graph,
+    /// Outlined gauge: usage over the period relative to the largest item.
+    UsageBar,
+    /// The usage figure drawn as text.
+    Number,
+}
+
 /// Which metric drives the per-panel sparkline.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -835,24 +848,16 @@ pub enum TrayLayout {
 /// Standalone tray statistics configuration (independent of client config).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrayStatsConfig {
-    /// Ordered item list. `All` is always present.
+    /// Ordered item list. `All` is always present; new clients are added
+    /// automatically on creation.
     #[serde(default = "default_tray_stats_items")]
     pub items: Vec<TrayStatsItem>,
-    /// Add newly created clients to `items` automatically.
-    #[serde(default = "default_true")]
-    pub auto_add_clients: bool,
     /// Draw the stacked vertical label beside each panel.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub show_labels: bool,
-    /// Draw the sparkline panel for each item.
-    #[serde(default = "default_true")]
-    pub show_graph: bool,
-    /// Draw the thin relative usage bar beside each panel.
+    /// What each panel shows.
     #[serde(default)]
-    pub show_usage_bar: bool,
-    /// Show usage numbers as text beside the icon (macOS / GNOME only).
-    #[serde(default)]
-    pub show_text: bool,
+    pub display: TrayDisplay,
     #[serde(default)]
     pub graph_metric: TrayGraphMetric,
     #[serde(default)]
@@ -871,11 +876,8 @@ impl Default for TrayStatsConfig {
     fn default() -> Self {
         Self {
             items: default_tray_stats_items(),
-            auto_add_clients: true,
-            show_labels: true,
-            show_graph: true,
-            show_usage_bar: false,
-            show_text: false,
+            show_labels: false,
+            display: TrayDisplay::default(),
             graph_metric: TrayGraphMetric::default(),
             usage_metric: TrayUsageMetric::default(),
             usage_period: TrayUsagePeriod::default(),
@@ -4536,7 +4538,8 @@ mod tests {
             ui.tray_stats.items,
             vec![TrayStatsItem::new(TraySource::All)]
         );
-        assert!(ui.tray_stats.auto_add_clients);
+        assert!(!ui.tray_stats.show_labels);
+        assert_eq!(ui.tray_stats.display, TrayDisplay::Graph);
         assert_eq!(ui.tray_stats.usage_period, TrayUsagePeriod::Day);
     }
 

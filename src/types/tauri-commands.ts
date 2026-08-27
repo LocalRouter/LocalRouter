@@ -1311,6 +1311,7 @@ export interface TrayStatsItem {
   label: string | null
 }
 
+export type TrayDisplay = 'graph' | 'usage_bar' | 'number'
 export type TrayGraphMetric = 'tokens' | 'requests'
 export type TrayUsageMetric = 'tokens' | 'cost' | 'requests'
 export type TrayUsagePeriod = 'hour' | 'day' | 'week' | 'month'
@@ -1319,11 +1320,8 @@ export type TrayLayout = 'auto' | 'extended' | 'compact'
 /** Rust: crates/lr-config/src/types.rs - TrayStatsConfig struct */
 export interface TrayStatsConfig {
   items: TrayStatsItem[]
-  auto_add_clients: boolean
   show_labels: boolean
-  show_graph: boolean
-  show_usage_bar: boolean
-  show_text: boolean
+  display: TrayDisplay
   graph_metric: TrayGraphMetric
   usage_metric: TrayUsageMetric
   usage_period: TrayUsagePeriod
@@ -2844,6 +2842,12 @@ export interface UpdateTrayGraphSettingsParams {
 /** Params for update_tray_stats_config */
 export interface UpdateTrayStatsConfigParams {
   config: TrayStatsConfig
+}
+
+/** Params for render_tray_stats_preview (returns a base64 PNG string) */
+export interface RenderTrayStatsPreviewParams {
+  config: TrayStatsConfig
+  darkUi: boolean
 }
 
 // =============================================================================

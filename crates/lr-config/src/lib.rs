@@ -341,14 +341,12 @@ impl ConfigManager {
         self.update(|cfg| {
             cfg.clients.push(client.clone());
             cfg.strategies.push(strategy.clone());
-            // New clients show up in the tray stats automatically (unless
-            // the user turned that off). This is the single creation choke
-            // point, so UI / clone / wizard / try-it-out paths all get it.
-            if cfg.ui.tray_stats.auto_add_clients {
-                cfg.ui.tray_stats.add_source(TraySource::Client {
-                    id: client.id.clone(),
-                });
-            }
+            // New clients show up in the tray stats automatically. This is
+            // the single creation choke point, so UI / clone / wizard /
+            // try-it-out paths all get it.
+            cfg.ui.tray_stats.add_source(TraySource::Client {
+                id: client.id.clone(),
+            });
         })?;
 
         Ok((client, strategy))

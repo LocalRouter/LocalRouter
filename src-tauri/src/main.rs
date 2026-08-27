@@ -2698,6 +2698,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::update_tray_graph_settings,
             ui::commands::get_tray_stats_settings,
             ui::commands::update_tray_stats_config,
+            ui::commands::render_tray_stats_preview,
             // Sidebar commands
             ui::commands::get_sidebar_expanded,
             ui::commands::set_sidebar_expanded,

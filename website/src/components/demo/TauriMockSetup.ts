@@ -2900,6 +2900,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   'get_tray_graph_settings': () => mockData.trayGraphSettings,
   'get_tray_stats_settings': () => mockData.trayStatsSettings,
+  // 1x1 transparent PNG — the demo has no renderer for the real icon
+  'render_tray_stats_preview': () =>
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
   'update_tray_stats_config': (args) => {
     if (args && args.config) {
       mockData.trayStatsSettings.config = args.config as typeof mockData.trayStatsSettings.config

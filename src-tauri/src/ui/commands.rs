@@ -1531,6 +1531,22 @@ pub async fn update_tray_stats_config(
     Ok(())
 }
 
+/// Render the tray icon as it would look under `config` (unsaved is fine),
+/// using live data. Returns a base64 PNG for the settings preview; drawn
+/// white-on-transparent when `dark_ui` is set, black otherwise.
+#[tauri::command]
+pub fn render_tray_stats_preview(
+    config: lr_config::TrayStatsConfig,
+    dark_ui: bool,
+    tray_graph_manager: State<'_, Arc<crate::ui::tray::TrayGraphManager>>,
+) -> Result<String, String> {
+    use base64::Engine;
+    let png = tray_graph_manager
+        .render_preview(&config, dark_ui)
+        .ok_or_else(|| "Nothing to render".to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(png))
+}
+
 /// Get sidebar expanded state
 #[tauri::command]
 pub fn get_sidebar_expanded(config_manager: State<'_, ConfigManager>) -> Result<bool, String> {

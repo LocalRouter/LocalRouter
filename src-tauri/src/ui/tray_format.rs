@@ -63,15 +63,6 @@ pub fn usage_line(label: &str, usage: &UsageTotals, metric: TrayUsageMetric) -> 
     format!("{:<4}  {}", label, parts.join(" · "))
 }
 
-/// Text beside the icon: one headline value per item, in panel order.
-pub fn title_text(values: &[String]) -> Option<String> {
-    if values.is_empty() {
-        None
-    } else {
-        Some(values.join(" · "))
-    }
-}
-
 /// Header for the tray menu usage section, e.g. `Usage · last 24h`.
 pub fn usage_header(config: &TrayStatsConfig) -> String {
     format!("Usage · {}", config.usage_period.label())
@@ -119,15 +110,6 @@ mod tests {
         assert_eq!(
             usage_line("GPT5", &usage, TrayUsageMetric::Requests),
             "GPT5  31 req · 24k tok · $0.42"
-        );
-    }
-
-    #[test]
-    fn title_joins_values() {
-        assert_eq!(title_text(&[]), None);
-        assert_eq!(
-            title_text(&["1.2M".into(), "24k".into()]).as_deref(),
-            Some("1.2M · 24k")
         );
     }
 }

@@ -409,11 +409,14 @@ const CUTOUT_SIZE: u32 = 13;
 pub const TOKENS_PER_PIXEL: u64 = 5;
 const MAX_BAR_HEIGHT: u32 = GRAPH_HEIGHT;
 
-/// Width of the stacked-label column beside a pane (5px glyph + 1px gap).
-pub const LABEL_COLUMN_WIDTH: u32 = crate::ui::tray_font::GLYPH_WIDTH + 1;
-/// Width of the relative usage bar column (1px gap + 2px bar + 1px gap).
-pub const USAGE_BAR_COLUMN_WIDTH: u32 = 4;
-const USAGE_BAR_WIDTH: u32 = 2;
+/// Gap between panes and between a label column and its content.
+pub const PANE_GAP: u32 = 3;
+/// Width of the outlined usage gauge pane.
+pub const USAGE_GAUGE_WIDTH: u32 = 12;
+/// Glyph height used for number panes.
+pub const NUMBER_GLYPH_HEIGHT: u32 = 11;
+/// Horizontal padding on each side of a number pane's text.
+const NUMBER_PAD: u32 = 2;
 
 /// Pad/truncate a series to exactly `GRAPH_WIDTH` values (most recent last).
 pub fn normalize_series(values: &[u64]) -> Vec<u64> {
@@ -673,95 +676,118 @@ pub fn generate_graph(
     encode_png(&img)
 }
 
-/// One panel of a multi-pane tray icon.
-#[derive(Debug, Clone, Default)]
-pub struct PaneSpec {
-    /// Stacked label drawn left of the pane (already normalized, ≤ 4 chars).
-    pub label: Option<String>,
+/// What one panel shows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PaneContent {
     /// Sparkline values, oldest first (padded/truncated to `GRAPH_WIDTH`).
-    pub bars: Vec<u64>,
-    /// Relative usage `0.0..=1.0` for the usage bar, if shown.
-    pub usage_fill: Option<f32>,
+    Graph(Vec<u64>),
+    /// Outlined vertical gauge, fill `0.0..=1.0`.
+    UsageBar(f32),
+    /// Text drawn horizontally in the bitmap font (e.g. `24K`, `$0.42`).
+    Number(String),
 }
 
-/// Which columns each pane renders.
+impl Default for PaneContent {
+    fn default() -> Self {
+        PaneContent::Graph(Vec::new())
+    }
+}
+
+/// One panel of a multi-pane tray icon.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PaneSpec {
+    /// Stacked label drawn left of the content (already normalized, ≤ 4 chars).
+    pub label: Option<String>,
+    pub content: PaneContent,
+}
+
+/// Icon-wide rendering options.
 #[derive(Debug, Clone, Copy)]
 pub struct MultiPaneOptions {
+    /// Draw the label column (same width for every pane).
     pub show_labels: bool,
-    pub show_graph: bool,
-    pub show_usage_bar: bool,
-    /// Fixed scale for the bars (`Some(TOKENS_PER_PIXEL)` for tokens);
+    /// Fixed scale for graph bars (`Some(TOKENS_PER_PIXEL)` for tokens);
     /// `None` always auto-scales to the shared P95.
     pub units_per_pixel: Option<u64>,
 }
 
-impl MultiPaneOptions {
-    /// Pixel width of one pane with these options.
-    pub fn pane_width(&self) -> u32 {
-        let mut w = 0;
-        if self.show_labels {
-            w += LABEL_COLUMN_WIDTH;
+/// Pixel width of a pane's content.
+fn content_width(content: &PaneContent) -> u32 {
+    match content {
+        PaneContent::Graph(_) => PANE_SIZE,
+        PaneContent::UsageBar(_) => USAGE_GAUGE_WIDTH,
+        PaneContent::Number(text) => {
+            crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT).text_width(text)
+                + 2 * NUMBER_PAD
         }
-        if self.show_graph {
-            w += PANE_SIZE;
-        }
-        if self.show_usage_bar {
-            w += USAGE_BAR_COLUMN_WIDTH;
-        }
-        w
     }
 }
 
-/// Faint version of the foreground used for the usage bar track. Template
-/// icons honour alpha, so a low-alpha foreground reads as a light tint;
-/// opaque (Windows/Linux) icons blend towards the background instead.
-fn track_color(config: &GraphConfig) -> Rgba<u8> {
-    if config.template_mode {
-        Rgba([
-            config.foreground[0],
-            config.foreground[1],
-            config.foreground[2],
-            72,
-        ])
-    } else {
-        let mix = |f: u8, b: u8| ((f as u32 * 3 + b as u32 * 7) / 10) as u8;
-        Rgba([
-            mix(config.foreground[0], config.background[0]),
-            mix(config.foreground[1], config.background[1]),
-            mix(config.foreground[2], config.background[2]),
-            255,
-        ])
+/// Width of the shared label column (widest label wins), or 0 when labels
+/// are off or every label is empty.
+fn label_column_width(panes: &[PaneSpec], options: MultiPaneOptions) -> u32 {
+    if !options.show_labels {
+        return 0;
     }
+    panes
+        .iter()
+        .filter_map(|p| p.label.as_deref())
+        .map(crate::ui::tray_font::vertical_label_width)
+        .max()
+        .unwrap_or(0)
 }
 
-/// Draw the 2px relative usage bar with its column's left edge at `x`.
-fn draw_usage_bar(img: &mut RgbaImage, x: u32, fill: f32, config: &GraphConfig) {
-    let height = img.height();
-    let bar_x = x + 1;
-    let track = track_color(config);
-    for y in 0..height {
-        for dx in 0..USAGE_BAR_WIDTH {
-            img.put_pixel(bar_x + dx, y, track);
-        }
+/// Total icon width for `panes` under `options`.
+pub fn multi_pane_width(panes: &[PaneSpec], options: MultiPaneOptions) -> u32 {
+    if panes.is_empty() {
+        return 0;
     }
+    let label_w = label_column_width(panes, options);
+    let label_w = if label_w > 0 { label_w + PANE_GAP } else { 0 };
+    let content: u32 = panes.iter().map(|p| content_width(&p.content)).sum();
+    content + panes.len() as u32 * label_w + (panes.len() as u32 - 1) * PANE_GAP
+}
+
+/// Draw the outlined usage gauge with its left edge at `x`.
+fn draw_usage_gauge(img: &mut RgbaImage, x: u32, fill: f32, config: &GraphConfig) {
+    let h = img.height();
+    let w = USAGE_GAUGE_WIDTH;
+    // 1px outline with clipped corners
+    for dx in 1..w - 1 {
+        img.put_pixel(x + dx, 0, config.foreground);
+        img.put_pixel(x + dx, h - 1, config.foreground);
+    }
+    for y in 1..h - 1 {
+        img.put_pixel(x, y, config.foreground);
+        img.put_pixel(x + w - 1, y, config.foreground);
+    }
+    // Fill from the bottom, inset 2px from the outline
+    let inner_h = h - 4;
     let fill = fill.clamp(0.0, 1.0);
     let filled = if fill <= 0.0 {
         0
     } else {
-        ((fill * height as f32).round() as u32).clamp(1, height)
+        ((fill * inner_h as f32).round() as u32).clamp(1, inner_h)
     };
-    for y in (height - filled)..height {
-        for dx in 0..USAGE_BAR_WIDTH {
-            img.put_pixel(bar_x + dx, y, config.foreground);
+    for y in (h - 2 - filled)..(h - 2) {
+        for dx in 2..w - 2 {
+            img.put_pixel(x + dx, y, config.foreground);
         }
     }
 }
 
+/// Draw a number pane's text with the pane's left edge at `x`.
+fn draw_number(img: &mut RgbaImage, x: u32, text: &str, config: &GraphConfig) {
+    let m = crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT);
+    let y = (img.height() - m.glyph_height) / 2;
+    crate::ui::tray_font::draw_text(img, x + NUMBER_PAD, y, text, m, config.foreground);
+}
+
 /// Generate a wide tray icon with one labelled pane per item.
 ///
-/// Every pane shares one vertical scale (the P95 across all panes) so bar
-/// heights are comparable between items. The overlay is drawn on the
-/// first pane only. Returns `None` when there is nothing to draw.
+/// Graph panes share one vertical scale (the P95 across all graph panes) so
+/// bar heights are comparable between items. The overlay is drawn on the
+/// first graph pane only. Returns `None` when there is nothing to draw.
 pub fn generate_multi_pane(
     panes: &[PaneSpec],
     options: MultiPaneOptions,
@@ -769,45 +795,56 @@ pub fn generate_multi_pane(
     overlay: TrayOverlay,
     dark_mode: bool,
 ) -> Option<Vec<u8>> {
-    let pane_width = options.pane_width();
-    if panes.is_empty() || pane_width == 0 {
+    let width = multi_pane_width(panes, options);
+    if width == 0 {
         return None;
     }
+    let label_w = label_column_width(panes, options);
 
-    let series: Vec<Vec<u64>> = panes.iter().map(|p| normalize_series(&p.bars)).collect();
-    let scale = scale_reference(series.iter().flatten());
+    let series: Vec<Option<Vec<u64>>> = panes
+        .iter()
+        .map(|p| match &p.content {
+            PaneContent::Graph(bars) => Some(normalize_series(bars)),
+            _ => None,
+        })
+        .collect();
+    let scale = scale_reference(series.iter().flatten().flatten());
 
-    let width = pane_width * panes.len() as u32;
     let mut img = RgbaImage::from_pixel(width, PANE_SIZE, config.background);
+    let mut x = 0;
+    let mut overlay_pending = overlay;
 
-    for (i, (pane, values)) in panes.iter().zip(series.iter()).enumerate() {
-        let mut x = i as u32 * pane_width;
-
-        if options.show_labels {
+    for (pane, values) in panes.iter().zip(series.iter()) {
+        if x > 0 {
+            x += PANE_GAP;
+        }
+        if label_w > 0 {
             if let Some(label) = &pane.label {
-                crate::ui::tray_font::draw_vertical_label(&mut img, x, label, config.foreground);
+                crate::ui::tray_font::draw_vertical_label(
+                    &mut img,
+                    x,
+                    label_w,
+                    label,
+                    config.foreground,
+                );
             }
-            x += LABEL_COLUMN_WIDTH;
+            x += label_w + PANE_GAP;
         }
-
-        if options.show_graph {
-            let heights: Vec<u32> = values
-                .iter()
-                .map(|&v| bar_height_with(v, scale, options.units_per_pixel))
-                .collect();
-            let pane_overlay = if i == 0 {
-                overlay.clone()
-            } else {
-                TrayOverlay::None
-            };
-            let pane_img = render_pane(&heights, config, &pane_overlay, dark_mode);
-            image::imageops::replace(&mut img, &pane_img, x as i64, 0);
-            x += PANE_SIZE;
+        match &pane.content {
+            PaneContent::Graph(_) => {
+                let values = values.as_ref().expect("graph pane has a series");
+                let heights: Vec<u32> = values
+                    .iter()
+                    .map(|&v| bar_height_with(v, scale, options.units_per_pixel))
+                    .collect();
+                let pane_overlay = std::mem::replace(&mut overlay_pending, TrayOverlay::None);
+                let pane_img = render_pane(&heights, config, &pane_overlay, dark_mode);
+                image::imageops::replace(&mut img, &pane_img, x as i64, 0);
+            }
+            PaneContent::UsageBar(fill) => draw_usage_gauge(&mut img, x, *fill, config),
+            PaneContent::Number(text) => draw_number(&mut img, x, text, config),
         }
-
-        if options.show_usage_bar {
-            draw_usage_bar(&mut img, x, pane.usage_fill.unwrap_or(0.0), config);
-        }
+        x += content_width(&pane.content);
     }
 
     encode_png(&img)
@@ -1224,12 +1261,17 @@ mod tests {
             .to_rgba8()
     }
 
-    fn opts(labels: bool, graph: bool, usage: bool) -> MultiPaneOptions {
+    fn opts(labels: bool) -> MultiPaneOptions {
         MultiPaneOptions {
             show_labels: labels,
-            show_graph: graph,
-            show_usage_bar: usage,
             units_per_pixel: Some(TOKENS_PER_PIXEL),
+        }
+    }
+
+    fn graph(bars: Vec<u64>) -> PaneSpec {
+        PaneSpec {
+            label: None,
+            content: PaneContent::Graph(bars),
         }
     }
 
@@ -1285,12 +1327,8 @@ mod tests {
         let single = generate_graph(&data, &config, TrayOverlay::UpdateAvailable, false).unwrap();
         let bars: Vec<u64> = data.iter().map(|d| d.total_tokens).collect();
         let multi = generate_multi_pane(
-            &[PaneSpec {
-                label: None,
-                bars,
-                usage_fill: None,
-            }],
-            opts(false, true, false),
+            &[graph(bars)],
+            opts(false),
             &config,
             TrayOverlay::UpdateAvailable,
             false,
@@ -1300,87 +1338,72 @@ mod tests {
     }
 
     #[test]
-    fn multi_pane_width_follows_options() {
+    fn multi_pane_width_follows_content_and_gaps() {
         let config = GraphConfig::macos(false);
-        let panes = vec![
-            PaneSpec::default(),
-            PaneSpec::default(),
-            PaneSpec::default(),
+        let panes = vec![graph(vec![]), graph(vec![]), graph(vec![])];
+        let png =
+            generate_multi_pane(&panes, opts(false), &config, TrayOverlay::None, false).unwrap();
+        assert_eq!(decode(&png).dimensions(), (3 * 32 + 2 * PANE_GAP, 32));
+        // Labels: shared column = widest label + gap, per pane
+        let labelled = vec![
+            PaneSpec {
+                label: Some("ALL".into()),
+                content: PaneContent::Graph(vec![]),
+            },
+            PaneSpec {
+                label: Some("CLAU".into()),
+                content: PaneContent::UsageBar(0.5),
+            },
+            PaneSpec {
+                label: Some("X".into()),
+                content: PaneContent::Number("24K".into()),
+            },
         ];
-        let png = generate_multi_pane(
-            &panes,
-            opts(false, true, false),
-            &config,
-            TrayOverlay::None,
-            false,
-        )
-        .unwrap();
-        assert_eq!(decode(&png).dimensions(), (96, 32));
-        let png = generate_multi_pane(
-            &panes,
-            opts(true, true, true),
-            &config,
-            TrayOverlay::None,
-            false,
-        )
-        .unwrap();
-        assert_eq!(decode(&png).dimensions(), (3 * (6 + 32 + 4), 32));
-        assert!(generate_multi_pane(
-            &[],
-            opts(true, true, true),
-            &config,
-            TrayOverlay::None,
-            false
-        )
-        .is_none());
-        assert!(generate_multi_pane(
-            &panes,
-            opts(false, false, false),
-            &config,
-            TrayOverlay::None,
-            false
-        )
-        .is_none());
+        // Shared column = the widest label ("X" is a single 14px-tall glyph)
+        let label_w = ["ALL", "CLAU", "X"]
+            .iter()
+            .map(|l| crate::ui::tray_font::vertical_label_width(l))
+            .max()
+            .unwrap();
+        assert_eq!(label_w, crate::ui::tray_font::vertical_label_width("X"));
+        let number_w = crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT)
+            .text_width("24K")
+            + 4;
+        let expected = 3 * (label_w + PANE_GAP) + 32 + USAGE_GAUGE_WIDTH + number_w + 2 * PANE_GAP;
+        assert_eq!(multi_pane_width(&labelled, opts(true)), expected);
+        let png =
+            generate_multi_pane(&labelled, opts(true), &config, TrayOverlay::None, false).unwrap();
+        assert_eq!(decode(&png).dimensions(), (expected, 32));
+        // Labels off → no label columns even though labels are set
+        assert_eq!(
+            multi_pane_width(&labelled, opts(false)),
+            32 + USAGE_GAUGE_WIDTH + number_w + 2 * PANE_GAP
+        );
+        assert!(generate_multi_pane(&[], opts(true), &config, TrayOverlay::None, false).is_none());
     }
 
     #[test]
     fn multi_pane_shares_one_scale() {
         let config = GraphConfig::macos(false);
         // Pane A peaks at 1000 tokens, pane B at 500 → B's bar is half of A's
-        let panes = vec![
-            PaneSpec {
-                bars: vec![1000],
-                ..Default::default()
-            },
-            PaneSpec {
-                bars: vec![500],
-                ..Default::default()
-            },
-        ];
+        let panes = vec![graph(vec![1000]), graph(vec![500])];
         let img = decode(
-            &generate_multi_pane(
-                &panes,
-                opts(false, true, false),
-                &config,
-                TrayOverlay::None,
-                false,
-            )
-            .unwrap(),
+            &generate_multi_pane(&panes, opts(false), &config, TrayOverlay::None, false).unwrap(),
         );
         let col_height = |x: u32| (3..29).filter(|&y| img.get_pixel(x, y)[3] != 0).count();
         let last_bar_x = 3 + GRAPH_WIDTH - 1;
         assert_eq!(col_height(last_bar_x), 26);
-        assert_eq!(col_height(32 + last_bar_x), 13);
+        assert_eq!(col_height(32 + PANE_GAP + last_bar_x), 13);
     }
 
     #[test]
-    fn overlay_only_on_first_pane() {
+    fn overlay_only_on_first_graph_pane() {
         let config = GraphConfig::macos(false);
-        let panes = vec![PaneSpec::default(), PaneSpec::default()];
+        let panes = vec![graph(vec![]), graph(vec![])];
         let img = decode(
             &generate_multi_pane(
                 &panes,
-                opts(false, true, false),
+                opts(false),
                 &config,
                 TrayOverlay::UpdateAvailable,
                 false,
@@ -1389,45 +1412,53 @@ mod tests {
         );
         // Down-arrow stem pixel at (6,3) is set in pane 0 but not pane 1
         assert_ne!(img.get_pixel(6, 3)[3], 0);
-        assert_eq!(img.get_pixel(32 + 6, 3)[3], 0);
+        let x1 = 32 + PANE_GAP;
+        assert_eq!(img.get_pixel(x1 + 6, 3)[3], 0);
         // Pane 1 keeps the convex corner (top border starts at x=6)
-        assert_ne!(img.get_pixel(32 + 6, 0)[3], 0);
+        assert_ne!(img.get_pixel(x1 + 6, 0)[3], 0);
+        // The gap column between panes is empty
+        assert!((0..32).all(|y| img.get_pixel(32, y)[3] == 0));
     }
 
     #[test]
-    fn labels_and_usage_bars_are_drawn() {
+    fn usage_gauge_and_number_panes_draw() {
         let config = GraphConfig::macos(false);
         let panes = vec![
             PaneSpec {
-                label: Some("ALL".into()),
-                bars: vec![],
-                usage_fill: Some(1.0),
+                label: None,
+                content: PaneContent::UsageBar(1.0),
             },
             PaneSpec {
-                label: Some("CLAU".into()),
-                bars: vec![],
-                usage_fill: Some(0.5),
+                label: None,
+                content: PaneContent::UsageBar(0.0),
+            },
+            PaneSpec {
+                label: None,
+                content: PaneContent::Number("1.2M".into()),
             },
         ];
-        let o = opts(true, true, true);
-        let img =
-            decode(&generate_multi_pane(&panes, o, &config, TrayOverlay::None, false).unwrap());
-        let pane_w = o.pane_width();
-        // Label column (x 0..5) has ink in rows 0..23 (3 letters) and none in 24..31 for "ALL"
-        let ink = |x0: u32, y0: u32, y1: u32| {
-            (x0..x0 + 5).any(|x| (y0..y1).any(|y| img.get_pixel(x, y)[3] != 0))
-        };
-        assert!(ink(0, 0, 7));
-        assert!(ink(0, 16, 23));
-        assert!(!ink(0, 24, 32));
-        // "CLAU" fills the 4th row
-        assert!(ink(pane_w, 24, 31));
-        // Usage bar: pane 0 fully opaque top to bottom; pane 1 only lower half
-        let bar_x = 6 + 32 + 1;
-        assert_eq!(img.get_pixel(bar_x, 0)[3], 255);
-        assert_eq!(img.get_pixel(bar_x, 31)[3], 255);
-        assert!(img.get_pixel(pane_w + bar_x, 0)[3] < 255); // track only
-        assert_eq!(img.get_pixel(pane_w + bar_x, 31)[3], 255);
+        let img = decode(
+            &generate_multi_pane(&panes, opts(false), &config, TrayOverlay::None, false).unwrap(),
+        );
+        // Gauge 0: outline on left/right edges, fully filled interior
+        assert_ne!(img.get_pixel(0, 10)[3], 0);
+        assert_ne!(img.get_pixel(USAGE_GAUGE_WIDTH - 1, 10)[3], 0);
+        assert_ne!(img.get_pixel(5, 2)[3], 0);
+        assert_ne!(img.get_pixel(5, 29)[3], 0);
+        // Gauge 1: outline present, interior empty
+        let x1 = USAGE_GAUGE_WIDTH + PANE_GAP;
+        assert_ne!(img.get_pixel(x1, 10)[3], 0);
+        assert_eq!(img.get_pixel(x1 + 5, 16)[3], 0);
+        // Number pane has ink vertically centred
+        let x2 = x1 + USAGE_GAUGE_WIDTH + PANE_GAP;
+        let ink_rows: Vec<u32> = (0..32)
+            .filter(|&y| (x2..img.width()).any(|x| img.get_pixel(x, y)[3] != 0))
+            .collect();
+        assert_eq!(
+            ink_rows.first().copied(),
+            Some((32 - NUMBER_GLYPH_HEIGHT) / 2)
+        );
+        assert_eq!(ink_rows.len() as u32, NUMBER_GLYPH_HEIGHT);
     }
 
     #[test]
@@ -1437,36 +1468,59 @@ mod tests {
         use std::io::Write;
 
         let config = GraphConfig::windows_linux();
-        let panes = vec![
-            PaneSpec {
-                label: Some("ALL".into()),
-                bars: (0..26).map(|i| (i * 40) % 900).collect(),
-                usage_fill: Some(1.0),
-            },
-            PaneSpec {
-                label: Some("CLAU".into()),
-                bars: (0..26).map(|i| (i * 13) % 300).collect(),
-                usage_fill: Some(0.35),
-            },
-            PaneSpec {
-                label: Some("GPT5".into()),
-                bars: (0..26).map(|i| if i % 5 == 0 { 600 } else { 20 }).collect(),
-                usage_fill: Some(0.7),
-            },
+        let variants: [(&str, PaneContent, PaneContent, PaneContent); 3] = [
+            (
+                "graph",
+                PaneContent::Graph((0..26).map(|i| (i * 40) % 900).collect()),
+                PaneContent::Graph((0..26).map(|i| (i * 13) % 300).collect()),
+                PaneContent::Graph((0..26).map(|i| if i % 5 == 0 { 600 } else { 20 }).collect()),
+            ),
+            (
+                "gauge",
+                PaneContent::UsageBar(1.0),
+                PaneContent::UsageBar(0.35),
+                PaneContent::UsageBar(0.7),
+            ),
+            (
+                "number",
+                PaneContent::Number("1.2M".into()),
+                PaneContent::Number("24K".into()),
+                PaneContent::Number("$0.42".into()),
+            ),
         ];
-        let png = generate_multi_pane(
-            &panes,
-            opts(true, true, true),
-            &config,
-            TrayOverlay::FirewallPending,
-            false,
-        )
-        .unwrap();
-        File::create("/tmp/test_tray_multi_pane.png")
-            .unwrap()
-            .write_all(&png)
-            .unwrap();
-        println!("Wrote multi-pane graph to /tmp/test_tray_multi_pane.png");
+        for (name, a, b, c) in variants {
+            let panes = vec![
+                PaneSpec {
+                    label: Some("ALL".into()),
+                    content: a,
+                },
+                PaneSpec {
+                    label: Some("CLAU".into()),
+                    content: b,
+                },
+                PaneSpec {
+                    label: Some("GPT5".into()),
+                    content: c,
+                },
+            ];
+            for labels in [true, false] {
+                let png = generate_multi_pane(
+                    &panes,
+                    opts(labels),
+                    &config,
+                    TrayOverlay::FirewallPending,
+                    false,
+                )
+                .unwrap();
+                let path = format!(
+                    "/tmp/test_tray_multi_pane_{}_{}.png",
+                    name,
+                    if labels { "labels" } else { "nolabels" }
+                );
+                File::create(&path).unwrap().write_all(&png).unwrap();
+                println!("Wrote {}", path);
+            }
+        }
     }
 
     #[test]

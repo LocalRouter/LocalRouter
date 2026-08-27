@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Monitor, BarChart3, ArrowUp, ArrowDown, X } from "lucide-react"
@@ -6,7 +6,6 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/Input"
 import { Button } from "@/components/ui/Button"
 import {
@@ -22,13 +21,14 @@ import type {
   TrayGraphSettings,
   TrayStatsSettings,
   TrayStatsConfig,
-  TrayStatsItem,
   TraySource,
+  TrayDisplay,
   TrayGraphMetric,
   TrayUsageMetric,
   TrayUsagePeriod,
   TrayLayout,
   UpdateTrayStatsConfigParams,
+  RenderTrayStatsPreviewParams,
   ClientInfo,
   ProviderInstanceInfo,
 } from "@/types/tauri-commands"
@@ -132,114 +132,46 @@ function normalizeLabel(seed: string): string {
   return seed.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 4)
 }
 
-/** Static multi-panel preview of the tray icon for the current config */
-function TrayStatsPreview({
-  config,
-  labels,
-}: {
-  config: TrayStatsConfig
-  labels: string[]
-}) {
-  const PANE = 32
-  const LABEL_W = 6
-  const BAR_W = 4
-  const paneW =
-    (config.show_labels ? LABEL_W : 0) +
-    (config.show_graph || !config.show_usage_bar ? PANE : 0) +
-    (config.show_usage_bar ? BAR_W : 0)
-  const count = Math.max(1, Math.min(labels.length, 6))
-  const width = Math.max(paneW * count, PANE)
-  const scale = 1.5
-  const bars = useMemo(
-    () =>
-      Array.from({ length: count }, (_, p) =>
-        Array.from({ length: 26 }, (_, i) => 0.15 + 0.8 * Math.abs(Math.sin((i + 1) * (p + 1.7) * 0.9))),
-      ),
-    [count],
-  )
+/** The actual tray icon, rendered by the backend for the current (unsaved) config */
+function TrayStatsPreview({ config }: { config: TrayStatsConfig }) {
+  const [png, setPng] = useState<string | null>(null)
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null)
+  const darkUi = document.documentElement.classList.contains("dark")
 
+  useEffect(() => {
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      try {
+        const b64 = await invoke<string>("render_tray_stats_preview", {
+          config,
+          darkUi,
+        } satisfies RenderTrayStatsPreviewParams)
+        if (!cancelled) setPng(b64)
+      } catch (error) {
+        console.error("Failed to render tray preview:", error)
+      }
+    }, 150)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [config, darkUi])
+
+  if (!png) return null
+  const scale = 3
   return (
-    <svg
-      width={width * scale}
-      height={PANE * scale}
-      viewBox={`0 0 ${width} ${PANE}`}
-      className="shrink-0"
-      shapeRendering="crispEdges"
-    >
-      {Array.from({ length: count }, (_, p) => {
-        let x = p * paneW
-        const els: React.ReactNode[] = []
-        if (config.show_labels) {
-          const label = (labels[p] ?? "").padEnd(4)
-          els.push(
-            <text
-              key="label"
-              x={x + 2.5}
-              y={0}
-              fontSize={7}
-              fontFamily="ui-monospace, monospace"
-              fill="currentColor"
-              textAnchor="middle"
-            >
-              {label
-                .trim()
-                .split("")
-                .map((ch, i) => (
-                  <tspan key={i} x={x + 2.5} y={6.5 + i * 8}>
-                    {ch}
-                  </tspan>
-                ))}
-            </text>,
-          )
-          x += LABEL_W
-        }
-        if (config.show_graph || !config.show_usage_bar) {
-          els.push(
-            <rect
-              key="frame"
-              x={x + 0.5}
-              y={0.5}
-              width={PANE - 1}
-              height={PANE - 1}
-              rx={5.5}
-              stroke="currentColor"
-              strokeOpacity={0.6}
-              fill="none"
-            />,
-          )
-          bars[p].forEach((h, i) => {
-            const bh = Math.max(1, Math.round(h * 26))
-            els.push(
-              <rect
-                key={`b${i}`}
-                x={x + 3 + i}
-                y={3 + 26 - bh}
-                width={1}
-                height={bh}
-                fill="currentColor"
-                opacity={0.8}
-              />,
-            )
-          })
-          x += PANE
-        }
-        if (config.show_usage_bar) {
-          const fill = Math.max(0.1, 1 - p * 0.35)
-          els.push(
-            <rect key="track" x={x + 1} y={0} width={2} height={PANE} fill="currentColor" opacity={0.25} />,
-            <rect
-              key="fill"
-              x={x + 1}
-              y={PANE - Math.round(fill * PANE)}
-              width={2}
-              height={Math.round(fill * PANE)}
-              fill="currentColor"
-            />,
-          )
-        }
-        return <g key={p}>{els}</g>
-      })}
-    </svg>
+    <div className="inline-flex items-center rounded-md border border-muted bg-muted/30 px-3 py-2">
+      <img
+        src={`data:image/png;base64,${png}`}
+        alt="Tray icon preview"
+        onLoad={(e) => setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+        style={{
+          imageRendering: "pixelated",
+          width: size ? size.w * scale : undefined,
+          height: size ? size.h * scale : 32 * scale,
+        }}
+      />
+    </div>
   )
 }
 
@@ -328,8 +260,6 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
         return normalizeLabel(s.id.split("/").pop() ?? s.id)
     }
   }
-  const effectiveLabel = (item: TrayStatsItem) =>
-    (item.label && normalizeLabel(item.label)) || defaultLabel(item.source) || "?"
 
   const has = (s: TraySource) => config.items.some((i) => sameSource(i.source, s))
   const addable: { group: string; source: TraySource; name: string }[] = [
@@ -360,9 +290,6 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
     })
 
   const extendedHere = (config.layout === "auto" ? platform.default_layout : config.layout) === "extended"
-  const enabledLabels = config.items
-    .filter((i) => i.enabled && sourceExists(i.source))
-    .map(effectiveLabel)
 
   return (
     <Card>
@@ -383,10 +310,12 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
           </p>
         )}
 
-        {extendedHere && graphEnabled && (
-          <div className="flex items-center gap-3 text-foreground">
-            <TrayStatsPreview config={config} labels={enabledLabels} />
-            <p className="text-xs text-muted-foreground">Preview (labels + panels in display order)</p>
+        {graphEnabled && (
+          <div className="flex items-center gap-3">
+            <TrayStatsPreview config={config} />
+            <p className="text-xs text-muted-foreground">
+              Preview — the icon as it will render, with live data (sample bars until there is traffic)
+            </p>
           </div>
         )}
 
@@ -493,46 +422,43 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
                 )}
               </SelectContent>
             </Select>
-            <div className="flex items-center gap-2">
-              <Switch
-                id="tray-auto-add"
-                checked={config.auto_add_clients}
-                onCheckedChange={(v) => updateConfig({ auto_add_clients: v })}
-              />
-              <Label htmlFor="tray-auto-add" className="text-xs cursor-pointer">
-                Automatically add new clients
-              </Label>
-            </div>
+            <p className="text-xs text-muted-foreground">New clients are added automatically.</p>
           </div>
         </div>
 
-        {/* Show */}
-        <div className="space-y-2">
-          <Label>Show</Label>
-          <div className="flex flex-wrap gap-x-5 gap-y-2">
-            {(
-              [
-                ["show_labels", "Labels", "Stacked 4-letter label beside each panel"],
-                ["show_graph", "Graph", "Sparkline panel per item"],
-                ["show_usage_bar", "Usage bar", "Thin bar showing each item's usage relative to the largest item"],
-                ["show_text", "Numbers beside icon", "Usage numbers drawn as text right of the tray icon (macOS / GNOME)"],
-              ] as const
-            )
-              .filter(([k]) => !(k === "show_text" && platform.os === "windows"))
-              .map(([k, label, tip]) => (
-                <div key={k} className="flex items-center gap-2">
-                  <Checkbox
-                    id={`tray-${k}`}
-                    checked={config[k]}
-                    disabled={!extendedHere}
-                    onCheckedChange={(v) => updateConfig({ [k]: v === true } as Partial<TrayStatsConfig>)}
-                  />
-                  <Label htmlFor={`tray-${k}`} className="text-xs cursor-pointer flex items-center gap-1">
-                    {label}
-                    <InfoTooltip content={tip} />
-                  </Label>
-                </div>
-              ))}
+        {/* Display */}
+        <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
+          <div className="space-y-1.5">
+            <Label className="text-xs flex items-center gap-1">
+              Display
+              <InfoTooltip content="What each item's panel shows: a sparkline of recent throughput, an outlined gauge of its usage relative to the largest item, or the usage figure as a number." />
+            </Label>
+            <Select
+              value={config.display}
+              disabled={!extendedHere}
+              onValueChange={(v) => updateConfig({ display: v as TrayDisplay })}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="graph">Graph</SelectItem>
+                <SelectItem value="usage_bar">Usage bar</SelectItem>
+                <SelectItem value="number">Number</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2 pb-2">
+            <Checkbox
+              id="tray-show-labels"
+              checked={config.show_labels}
+              disabled={!extendedHere}
+              onCheckedChange={(v) => updateConfig({ show_labels: v === true })}
+            />
+            <Label htmlFor="tray-show-labels" className="text-xs cursor-pointer flex items-center gap-1">
+              Show labels
+              <InfoTooltip content="Stacked letters beside each panel (up to 4; shorter labels are drawn bigger)." />
+            </Label>
           </div>
         </div>
 
@@ -579,8 +505,8 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
-          The usage period and metric drive the usage bar, the numbers beside the icon and the tray menu lines. The
-          graph itself always shows the recent window set by the refresh rate above.
+          The usage period and metric drive the usage bar, the number panels and the tray menu lines. The graph
+          display always shows the recent window set by the refresh rate above.
         </p>
 
         {platform.os === "linux" && (
