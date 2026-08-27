@@ -145,6 +145,9 @@ const fn glyph(ch: char) -> Option<[u8; 7]> {
         '-' => [
             0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000,
         ],
+        '¢' => [
+            0b00100, 0b01110, 0b10100, 0b10100, 0b10100, 0b01110, 0b00100,
+        ],
         _ => return None,
     })
 }
@@ -287,7 +290,10 @@ mod tests {
 
     #[test]
     fn every_needed_char_has_a_glyph() {
-        for ch in ('A'..='Z').chain('0'..='9').chain(['.', '$', '%', '-']) {
+        for ch in ('A'..='Z')
+            .chain('0'..='9')
+            .chain(['.', '$', '%', '-', '¢'])
+        {
             assert!(glyph(ch).is_some(), "missing glyph for {ch}");
         }
         assert!(glyph(' ').is_none());

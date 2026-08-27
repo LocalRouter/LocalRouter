@@ -38,12 +38,16 @@ pub fn compact_number(n: u64) -> String {
     }
 }
 
-/// Compact cost: `$0` when nothing was spent, otherwise two digits
-/// (`$0.9`, `$1.2`, `$12`, `$0.1k`, `$1.2k`).
+/// Compact cost: `$0` when nothing was spent, whole cents below ten cents
+/// (`1¢` … `9¢`), otherwise dollars with two digits (`$0.1`, `$0.9`,
+/// `$1.2`, `$12`, `$0.1k`).
 pub fn compact_cost(usd: f64) -> String {
     let usd = if usd.is_finite() { usd.max(0.0) } else { 0.0 };
     if usd == 0.0 {
         return "$0".to_string();
+    }
+    if usd < 0.095 {
+        return format!("{}¢", (usd * 100.0).round() as u64);
     }
     format!("${}", compact_two_digits(usd))
 }
@@ -136,9 +140,12 @@ mod tests {
     #[test]
     fn compact_costs() {
         assert_eq!(compact_cost(0.0), "$0");
+        assert_eq!(compact_cost(0.0042), "0¢");
+        assert_eq!(compact_cost(0.01), "1¢");
+        assert_eq!(compact_cost(0.094), "9¢");
+        assert_eq!(compact_cost(0.095), "$0.1");
         assert_eq!(compact_cost(0.87), "$0.9");
         assert_eq!(compact_cost(0.42), "$0.4");
-        assert_eq!(compact_cost(0.0042), "$0.0");
         assert_eq!(compact_cost(1.26), "$1.3");
         assert_eq!(compact_cost(9.96), "$10");
         assert_eq!(compact_cost(12.3), "$12");

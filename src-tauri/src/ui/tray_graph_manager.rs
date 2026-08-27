@@ -915,22 +915,24 @@ impl TrayGraphManager {
             .map(|idx| (0..NUM_BUCKETS as u64).map(|i| sample(i, idx)).collect())
             .collect();
 
-        // Dummy usage totals: proportional to each item's series so gauges
-        // and numbers differ per item and move with the tick.
+        // Dummy usage totals: the first three items show ~$12, a `k` value
+        // and cents (so every formatting shape is visible), the rest vary.
+        // Each tick nudges them up a little so the preview visibly moves.
+        const BASE_COST_USD: [f64; 6] = [12.0, 1_200.0, 0.07, 340.0, 0.5, 85_000.0];
+        const USD_PER_TOKEN: f64 = 0.000_004;
+        let growth = 1.0 + 0.01 * (tick % 30) as f64;
         let usage_map: HashMap<TraySource, UsageTotals> = display_items
             .iter()
-            .zip(bars.iter())
             .enumerate()
-            .map(|(idx, ((item, _), series))| {
-                let sum: u64 = series.iter().sum::<u64>() / unit;
-                let scale = 40 + (idx as u64 * 17) % 50;
-                let tokens = sum * scale * 25;
+            .map(|(idx, (item, _))| {
+                let cost_usd = BASE_COST_USD[idx % BASE_COST_USD.len()] * growth;
+                let tokens = (cost_usd / USD_PER_TOKEN).round() as u64;
                 (
                     item.source.clone(),
                     UsageTotals {
-                        requests: sum * scale / 4,
+                        requests: (tokens / 40).max(1),
                         tokens,
-                        cost_usd: tokens as f64 * 0.000_002,
+                        cost_usd,
                     },
                 )
             })
