@@ -335,6 +335,70 @@ impl MetricsDatabase {
         Ok(result)
     }
 
+    /// Sum requests / tokens / cost for `metric_type` over `[start, end]`
+    /// **without** double-counting across granularities.
+    ///
+    /// The table holds minute rows plus hourly and daily rollups of the
+    /// same traffic, so a plain `SUM` over the window (as
+    /// [`get_aggregated_usage`](Self::get_aggregated_usage) does) counts
+    /// rolled-up periods two or three times. This query takes every daily
+    /// row in the window, then hourly rows only after the last daily row,
+    /// then minute rows only after the last hourly row — so each period
+    /// is counted at exactly one granularity.
+    ///
+    /// Returns `(requests, total_tokens, cost_usd)`.
+    pub fn get_usage_for_type(
+        &self,
+        metric_type: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<(u64, u64, f64)> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "WITH
+               last_day AS (
+                 SELECT COALESCE(MAX(timestamp) + 86400, ?2) AS ts FROM metrics
+                 WHERE metric_type = ?1 AND granularity = 'day'
+                   AND timestamp >= ?2 AND timestamp <= ?3
+               ),
+               last_hour AS (
+                 SELECT COALESCE(MAX(timestamp) + 3600, ?2) AS ts FROM metrics
+                 WHERE metric_type = ?1 AND granularity = 'hour'
+                   AND timestamp >= ?2 AND timestamp <= ?3
+               )
+             SELECT
+               COALESCE(SUM(requests), 0),
+               COALESCE(SUM(input_tokens), 0),
+               COALESCE(SUM(output_tokens), 0),
+               COALESCE(SUM(cost_usd), 0.0)
+             FROM metrics
+             WHERE metric_type = ?1
+               AND timestamp >= ?2 AND timestamp <= ?3
+               AND (
+                    granularity = 'day'
+                 OR (granularity = 'hour'   AND timestamp >= (SELECT ts FROM last_day))
+                 OR (granularity = 'minute' AND timestamp >= (SELECT ts FROM last_hour))
+               )",
+        )?;
+
+        let result = stmt.query_row(
+            params![metric_type, start.timestamp(), end.timestamp()],
+            |row| {
+                let requests: i64 = row.get(0)?;
+                let input_tokens: i64 = row.get(1)?;
+                let output_tokens: i64 = row.get(2)?;
+                let cost: f64 = row.get(3)?;
+                Ok((
+                    requests.max(0) as u64,
+                    (input_tokens + output_tokens).max(0) as u64,
+                    cost,
+                ))
+            },
+        )?;
+
+        Ok(result)
+    }
+
     /// Cleanup old data based on retention policies
     /// - Minute data: older than 24 hours
     /// - Hour data: older than 7 days
@@ -519,6 +583,58 @@ impl MetricsDatabase {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// `get_usage_for_type` must count each period at exactly one
+    /// granularity even when minute rows and their hourly/daily rollups
+    /// coexist (which `get_aggregated_usage` gets wrong).
+    #[test]
+    fn usage_for_type_does_not_double_count_rollups() {
+        let dir = tempdir().unwrap();
+        let db = MetricsDatabase::new(dir.path().join("test.db")).unwrap();
+
+        let now = Utc::now();
+        let hour_start =
+            now.duration_trunc(chrono::Duration::hours(1)).unwrap() - chrono::Duration::hours(2);
+        // Three minute rows in a past hour, then roll that hour up.
+        for m in 0..3 {
+            db.atomic_record_success(
+                "llm_key:c1",
+                hour_start + chrono::Duration::minutes(m),
+                10,
+                100,
+                50,
+                0.01,
+            )
+            .unwrap();
+        }
+        db.aggregate_to_hourly(hour_start).unwrap();
+        // One fresh minute row in the current (un-rolled) hour.
+        db.atomic_record_success(
+            "llm_key:c1",
+            now.duration_trunc(chrono::Duration::minutes(1)).unwrap(),
+            10,
+            100,
+            50,
+            0.01,
+        )
+        .unwrap();
+
+        let start = now - chrono::Duration::days(1);
+        let (requests, tokens, cost) = db.get_usage_for_type("llm_key:c1", start, now).unwrap();
+        assert_eq!(requests, 4);
+        assert_eq!(tokens, 600);
+        assert!((cost - 0.04).abs() < 1e-9);
+
+        // The naive sum sees the rolled-up hour twice.
+        let (naive_requests, _, _) = db.get_aggregated_usage("llm_key:c1", start, now).unwrap();
+        assert_eq!(naive_requests, 7);
+
+        // Unknown types and empty windows are zero, not errors.
+        assert_eq!(
+            db.get_usage_for_type("llm_key:nope", start, now).unwrap(),
+            (0, 0, 0.0)
+        );
+    }
 
     #[test]
     fn test_database_creation() {

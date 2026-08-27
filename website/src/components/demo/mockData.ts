@@ -1024,6 +1024,26 @@ export const mockData = {
     refresh_rate_secs: 10,
   },
 
+  // TrayStatsSettings - matches src/types/tauri-commands.ts
+  trayStatsSettings: {
+    config: {
+      items: [
+        { source: { kind: 'all' as const }, enabled: true, label: null },
+        { source: { kind: 'client' as const, id: 'client-1' }, enabled: true, label: null },
+      ],
+      auto_add_clients: true,
+      show_labels: true,
+      show_graph: true,
+      show_usage_bar: false,
+      show_text: false,
+      graph_metric: 'tokens' as const,
+      usage_metric: 'tokens' as const,
+      usage_period: 'day' as const,
+      layout: 'auto' as const,
+    },
+    platform: { os: 'macos', default_layout: 'extended' as const },
+  },
+
   // Sidebar expanded state - matches UiConfig.sidebar_expanded
   sidebarExpanded: true,
 

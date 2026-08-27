@@ -881,6 +881,10 @@ async fn handle_mcp_via_llm(
         );
     }
 
+    // Keep the client id for the tray recorder below — `auth.api_key_id`
+    // moves into `generation_details`.
+    let tray_client_id = auth.api_key_id.clone();
+
     // Track generation details
     let generation_details = GenerationDetails {
         id: generation_id,
@@ -911,7 +915,12 @@ async fn handle_mcp_via_llm(
     // on_metrics_recorded choke point (which feeds the tray for every other
     // path) doesn't fire here.
     if let Some(recorder) = state.tray_graph_manager.read().as_ref() {
-        recorder.record_tokens(response.usage.total_tokens as u64);
+        recorder.record_request(&lr_types::RecordedRequest {
+            client_id: tray_client_id.clone(),
+            provider: response.provider.clone(),
+            model: response.model.clone(),
+            tokens: response.usage.total_tokens as u64,
+        });
     }
 
     Ok(Json(api_response).into_response())

@@ -302,6 +302,30 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             error!("Failed to emit open-mcp-server event: {}", e);
                         }
                     }
+                    // Handle usage line click: tray_stats_open__<source key>
+                    else if let Some(key) = id.strip_prefix("tray_stats_open__") {
+                        info!("Tray usage line clicked: {}", key);
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        match lr_config::TraySource::from_key(key) {
+                            Some(lr_config::TraySource::Client { id }) => {
+                                if let Err(e) = app.emit("open-client-tab", id) {
+                                    error!("Failed to emit open-client-tab event: {}", e);
+                                }
+                            }
+                            Some(lr_config::TraySource::Provider { .. })
+                            | Some(lr_config::TraySource::Model { .. }) => {
+                                if let Err(e) = app.emit("open-resources-tab", ()) {
+                                    error!("Failed to emit open-resources-tab event: {}", e);
+                                }
+                            }
+                            // "All" (and anything unknown): the main window
+                            // already opens on the dashboard.
+                            _ => {}
+                        }
+                    }
                     // Handle prioritized list: prioritized_list_<client_id>
                     else if let Some(client_id) = id.strip_prefix("prioritized_list_") {
                         info!("Prioritized list requested for client: {}", client_id);

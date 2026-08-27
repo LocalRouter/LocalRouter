@@ -2899,6 +2899,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Tray & UI
   // ============================================================================
   'get_tray_graph_settings': () => mockData.trayGraphSettings,
+  'get_tray_stats_settings': () => mockData.trayStatsSettings,
+  'update_tray_stats_config': (args) => {
+    if (args && args.config) {
+      mockData.trayStatsSettings.config = args.config as typeof mockData.trayStatsSettings.config
+    }
+    return null
+  },
   'update_tray_graph_settings': (args) => {
     if (args) {
       if (typeof args.enabled === 'boolean') {

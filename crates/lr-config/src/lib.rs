@@ -341,6 +341,14 @@ impl ConfigManager {
         self.update(|cfg| {
             cfg.clients.push(client.clone());
             cfg.strategies.push(strategy.clone());
+            // New clients show up in the tray stats automatically (unless
+            // the user turned that off). This is the single creation choke
+            // point, so UI / clone / wizard / try-it-out paths all get it.
+            if cfg.ui.tray_stats.auto_add_clients {
+                cfg.ui.tray_stats.add_source(TraySource::Client {
+                    id: client.id.clone(),
+                });
+            }
         })?;
 
         Ok((client, strategy))
@@ -359,6 +367,11 @@ impl ConfigManager {
 
             // Remove client
             cfg.clients.retain(|c| c.id != client_id);
+
+            // Drop its tray stats row so the icon/menu don't keep a ghost panel
+            cfg.ui.tray_stats.remove_source(&TraySource::Client {
+                id: client_id.to_string(),
+            });
 
             // Cascade delete owned strategies
             cfg.strategies

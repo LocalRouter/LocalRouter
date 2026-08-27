@@ -1293,6 +1293,55 @@ export interface TrayGraphSettings {
   refresh_rate_secs: number
 }
 
+/**
+ * What a tray stats item reports on.
+ * Rust: crates/lr-config/src/types.rs - TraySource enum (tag = "kind")
+ */
+export type TraySource =
+  | { kind: 'all' }
+  | { kind: 'client'; id: string }
+  | { kind: 'provider'; instance: string }
+  | { kind: 'model'; id: string }
+
+/** Rust: crates/lr-config/src/types.rs - TrayStatsItem struct */
+export interface TrayStatsItem {
+  source: TraySource
+  enabled: boolean
+  /** Custom panel label (≤ 4 chars, uppercased); null derives from the name */
+  label: string | null
+}
+
+export type TrayGraphMetric = 'tokens' | 'requests'
+export type TrayUsageMetric = 'tokens' | 'cost' | 'requests'
+export type TrayUsagePeriod = 'hour' | 'day' | 'week' | 'month'
+export type TrayLayout = 'auto' | 'extended' | 'compact'
+
+/** Rust: crates/lr-config/src/types.rs - TrayStatsConfig struct */
+export interface TrayStatsConfig {
+  items: TrayStatsItem[]
+  auto_add_clients: boolean
+  show_labels: boolean
+  show_graph: boolean
+  show_usage_bar: boolean
+  show_text: boolean
+  graph_metric: TrayGraphMetric
+  usage_metric: TrayUsageMetric
+  usage_period: TrayUsagePeriod
+  layout: TrayLayout
+}
+
+/** Rust: src-tauri/src/ui/commands.rs - TrayPlatformInfo struct */
+export interface TrayPlatformInfo {
+  os: string
+  default_layout: TrayLayout
+}
+
+/** Rust: src-tauri/src/ui/commands.rs - TrayStatsSettings struct */
+export interface TrayStatsSettings {
+  config: TrayStatsConfig
+  platform: TrayPlatformInfo
+}
+
 // =============================================================================
 // OAuth Types
 // Rust: src-tauri/src/ui/commands.rs
@@ -2790,6 +2839,11 @@ export interface GetClientMarketplaceEnabledParams {
 export interface UpdateTrayGraphSettingsParams {
   enabled: boolean
   refreshRateSecs: number
+}
+
+/** Params for update_tray_stats_config */
+export interface UpdateTrayStatsConfigParams {
+  config: TrayStatsConfig
 }
 
 // =============================================================================

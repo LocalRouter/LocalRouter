@@ -1456,6 +1456,81 @@ pub async fn update_tray_graph_settings(
     Ok(())
 }
 
+/// Platform facts the tray stats settings UI needs to hide options the
+/// current desktop can't render.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrayPlatformInfo {
+    /// `"macos"`, `"windows"` or `"linux"`.
+    pub os: String,
+    /// What `TrayLayout::Auto` resolves to here.
+    pub default_layout: lr_config::TrayLayout,
+}
+
+/// Tray stats settings response: the stored config plus platform facts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrayStatsSettings {
+    pub config: lr_config::TrayStatsConfig,
+    pub platform: TrayPlatformInfo,
+}
+
+fn tray_platform_info() -> TrayPlatformInfo {
+    TrayPlatformInfo {
+        os: std::env::consts::OS.to_string(),
+        default_layout: crate::ui::tray_graph_manager::platform_default_layout(),
+    }
+}
+
+/// Get the tray stats configuration (items, display options) and platform info.
+#[tauri::command]
+pub fn get_tray_stats_settings(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<TrayStatsSettings, String> {
+    Ok(TrayStatsSettings {
+        config: config_manager.get().ui.tray_stats,
+        platform: tray_platform_info(),
+    })
+}
+
+/// Replace the tray stats configuration.
+#[tauri::command]
+pub async fn update_tray_stats_config(
+    config: lr_config::TrayStatsConfig,
+    config_manager: State<'_, ConfigManager>,
+    tray_graph_manager: State<'_, Arc<crate::ui::tray::TrayGraphManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut config = config;
+    config.ensure_all_present();
+    // Labels are stored normalized (uppercase alphanumerics, ≤ 4 chars);
+    // an empty custom label means "derive from the name".
+    for item in &mut config.items {
+        item.label = item
+            .label
+            .as_deref()
+            .map(lr_config::normalize_tray_label)
+            .filter(|l| !l.is_empty());
+    }
+    // Dedupe sources, keeping the first occurrence.
+    let mut seen = std::collections::HashSet::new();
+    config.items.retain(|i| seen.insert(i.source.clone()));
+
+    config_manager
+        .update(|cfg| {
+            cfg.ui.tray_stats = config.clone();
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    let new_config = config_manager.get().ui.clone();
+    tray_graph_manager.update_config(new_config);
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::warn!("Failed to rebuild tray menu after tray stats update: {}", e);
+    }
+
+    Ok(())
+}
+
 /// Get sidebar expanded state
 #[tauri::command]
 pub fn get_sidebar_expanded(config_manager: State<'_, ConfigManager>) -> Result<bool, String> {

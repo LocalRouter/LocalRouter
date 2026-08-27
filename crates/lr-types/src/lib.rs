@@ -12,7 +12,24 @@ pub use trace::{
     TRACE_HEADER,
 };
 
-/// Trait for recording token usage (used to decouple server from UI)
+/// A completed LLM request as reported to real-time consumers (the tray
+/// activity graph). Carries every dimension the tray can break usage down
+/// by, so one request can move the global, client, provider and model
+/// panels at once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedRequest {
+    /// Client id (the `api_key_name` metrics dimension).
+    pub client_id: String,
+    /// Provider instance name.
+    pub provider: String,
+    /// Model id in the `{provider_instance}/{model_id}` form used by the
+    /// metrics `llm_model:` tier.
+    pub model: String,
+    /// Input + output tokens.
+    pub tokens: u64,
+}
+
+/// Trait for recording request usage (used to decouple server from UI)
 pub trait TokenRecorder: Send + Sync {
-    fn record_tokens(&self, tokens: u64);
+    fn record_request(&self, request: &RecordedRequest);
 }

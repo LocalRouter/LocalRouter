@@ -2350,12 +2350,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // token count here, so Fast/Medium modes see the same traffic the
             // metrics store does without per-path record_tokens plumbing.
             let tray_graph_manager_for_metrics = tray_graph_manager.clone();
-            metrics_collector.set_on_metrics_recorded(move |total_tokens| {
-                if total_tokens > 0 {
-                    tray_graph_manager_for_metrics.record_tokens(total_tokens);
-                } else {
-                    tray_graph_manager_for_metrics.notify_activity();
-                }
+            metrics_collector.set_on_metrics_recorded(move |request| match request {
+                Some(req) => tray_graph_manager_for_metrics.record_request(req),
+                None => tray_graph_manager_for_metrics.notify_activity(),
             });
             info!("Metrics callback registered with tray graph manager");
 
@@ -2699,6 +2696,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Tray graph settings commands
             ui::commands::get_tray_graph_settings,
             ui::commands::update_tray_graph_settings,
+            ui::commands::get_tray_stats_settings,
+            ui::commands::update_tray_stats_config,
             // Sidebar commands
             ui::commands::get_sidebar_expanded,
             ui::commands::set_sidebar_expanded,

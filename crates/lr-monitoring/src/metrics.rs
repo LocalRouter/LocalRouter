@@ -7,7 +7,8 @@
 #![allow(dead_code)]
 //! - Per-day: Last 90 days
 
-use chrono::{DateTime, DurationRound, Utc};
+use chrono::{DateTime, Duration, DurationRound, Utc};
+use lr_types::RecordedRequest;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -149,9 +150,18 @@ impl From<MetricRow> for MetricDataPoint {
     }
 }
 
-/// Callback invoked after metrics are recorded, receiving the total tokens
-/// (input + output) of the recorded request (`0` for token-less events).
-type MetricsRecordedCallback = Box<dyn Fn(u64) + Send + Sync>;
+/// Callback invoked after metrics are recorded. Receives the recorded
+/// request (client / provider / model / tokens), or `None` for token-less
+/// events (feature metrics) that only mean "metrics changed".
+type MetricsRecordedCallback = Box<dyn Fn(Option<&RecordedRequest>) + Send + Sync>;
+
+/// Summed usage for one metric type over a window.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct UsageTotals {
+    pub requests: u64,
+    pub tokens: u64,
+    pub cost_usd: f64,
+}
 
 /// Metrics collector for tracking usage with SQLite persistence
 pub struct MetricsCollector {
@@ -163,11 +173,11 @@ pub struct MetricsCollector {
 
     /// Optional callback to notify when metrics are recorded.
     ///
-    /// Receives the total tokens (input + output) of the recorded request so
-    /// real-time consumers (e.g. the tray activity graph) get their token
-    /// counts from this single choke point instead of every request path
-    /// having to remember a separate `record_tokens` call. `0` means
-    /// "metrics changed, no request tokens" (feature events).
+    /// Receives the recorded request (client, provider, model, tokens) so
+    /// real-time consumers (e.g. the tray activity graph) get their data
+    /// from this single choke point instead of every request path having
+    /// to remember a separate recorder call. `None` means "metrics
+    /// changed, no request" (feature events).
     on_metrics_recorded: parking_lot::RwLock<Option<MetricsRecordedCallback>>,
 }
 
@@ -183,11 +193,11 @@ impl MetricsCollector {
 
     /// Set callback to be called when metrics are recorded.
     ///
-    /// The callback receives the total tokens of the recorded request
-    /// (`0` for token-less events like feature metrics).
+    /// The callback receives the recorded request, or `None` for
+    /// token-less events like feature metrics.
     pub fn set_on_metrics_recorded<F>(&self, callback: F)
     where
-        F: Fn(u64) + Send + Sync + 'static,
+        F: Fn(Option<&RecordedRequest>) + Send + Sync + 'static,
     {
         *self.on_metrics_recorded.write() = Some(Box::new(callback));
     }
@@ -240,10 +250,16 @@ impl MetricsCollector {
         }
 
         // Notify callback that metrics were recorded, passing the request's
-        // token count so real-time consumers (tray graph) stay in sync with
-        // the metrics store no matter which path recorded the request.
+        // dimensions and token count so real-time consumers (tray graph)
+        // stay in sync with the metrics store no matter which path recorded
+        // the request.
         if let Some(ref callback) = *self.on_metrics_recorded.read() {
-            callback(metrics.input_tokens + metrics.output_tokens);
+            callback(Some(&RecordedRequest {
+                client_id: metrics.api_key_name.to_string(),
+                provider: metrics.provider.to_string(),
+                model: metrics.model.to_string(),
+                tokens: metrics.input_tokens + metrics.output_tokens,
+            }));
         }
     }
 
@@ -378,6 +394,25 @@ impl MetricsCollector {
     }
 
     /// Get all API key names
+    /// Requests / tokens / cost recorded for `metric_type` in the rolling
+    /// window ending now, without double-counting across granularities
+    /// (see [`MetricsDatabase::get_usage_for_type`]).
+    pub fn get_usage_for_type(&self, metric_type: &str, window_secs: i64) -> UsageTotals {
+        let end = Utc::now();
+        let start = end - Duration::seconds(window_secs.max(0));
+        match self.db.get_usage_for_type(metric_type, start, end) {
+            Ok((requests, tokens, cost_usd)) => UsageTotals {
+                requests,
+                tokens,
+                cost_usd,
+            },
+            Err(e) => {
+                tracing::warn!("Failed to query usage for {}: {}", metric_type, e);
+                UsageTotals::default()
+            }
+        }
+    }
+
     pub fn get_api_key_names(&self) -> Vec<String> {
         self.db
             .get_metric_types()
@@ -517,7 +552,7 @@ impl MetricsCollector {
         );
 
         if let Some(ref callback) = *self.on_metrics_recorded.read() {
-            callback(0);
+            callback(None);
         }
     }
 
@@ -678,10 +713,12 @@ mod tests {
     fn test_on_metrics_recorded_receives_token_count() {
         let (collector, _dir) = create_test_collector();
 
-        let received = Arc::new(parking_lot::Mutex::new(Vec::<u64>::new()));
+        let received = Arc::new(parking_lot::Mutex::new(
+            Vec::<Option<RecordedRequest>>::new(),
+        ));
         let received_clone = received.clone();
-        collector.set_on_metrics_recorded(move |tokens| {
-            received_clone.lock().push(tokens);
+        collector.set_on_metrics_recorded(move |req| {
+            received_clone.lock().push(req.cloned());
         });
 
         collector.record_success(&RequestMetrics {
@@ -700,8 +737,16 @@ mod tests {
 
         assert_eq!(
             *received.lock(),
-            vec![300, 0],
-            "record_success must report input+output tokens; feature events report 0"
+            vec![
+                Some(RecordedRequest {
+                    client_id: "key1".to_string(),
+                    provider: "openai".to_string(),
+                    model: "gpt-4".to_string(),
+                    tokens: 300,
+                }),
+                None
+            ],
+            "record_success must report dimensions + input+output tokens; feature events report None"
         );
     }
 

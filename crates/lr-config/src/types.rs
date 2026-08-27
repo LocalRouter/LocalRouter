@@ -652,6 +652,269 @@ pub struct UiConfig {
     /// Defaults to true (expanded) on fresh installs.
     #[serde(default = "default_sidebar_expanded")]
     pub sidebar_expanded: bool,
+
+    /// Per-item tray statistics (which clients / LLMs the tray icon and
+    /// tray menu report on, and how).
+    #[serde(default)]
+    pub tray_stats: TrayStatsConfig,
+}
+
+/// What a tray stats item reports on.
+///
+/// Each variant maps 1:1 onto a metrics tier key (see `metric_type`), so
+/// every source type reads from the same store. Variants must never be
+/// renamed or removed — they are persisted in `settings.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum TraySource {
+    /// Every request through LocalRouter (`llm_global`).
+    All,
+    /// A single client (`llm_key:{id}`).
+    Client { id: String },
+    /// A provider instance, e.g. `anthropic` (`llm_provider:{instance}`).
+    Provider { instance: String },
+    /// A single model in the dashboard's `{provider_instance}/{model_id}`
+    /// form (`llm_model:{id}`).
+    Model { id: String },
+}
+
+impl TraySource {
+    /// Metrics tier key for this source.
+    pub fn metric_type(&self) -> String {
+        match self {
+            TraySource::All => "llm_global".to_string(),
+            TraySource::Client { id } => format!("llm_key:{}", id),
+            TraySource::Provider { instance } => format!("llm_provider:{}", instance),
+            TraySource::Model { id } => format!("llm_model:{}", id),
+        }
+    }
+
+    /// Stable string form used in tray menu item ids and the like.
+    pub fn key(&self) -> String {
+        match self {
+            TraySource::All => "all".to_string(),
+            TraySource::Client { id } => format!("client:{}", id),
+            TraySource::Provider { instance } => format!("provider:{}", instance),
+            TraySource::Model { id } => format!("model:{}", id),
+        }
+    }
+
+    /// Parse a string produced by [`TraySource::key`].
+    pub fn from_key(key: &str) -> Option<Self> {
+        if key == "all" {
+            return Some(TraySource::All);
+        }
+        if let Some(id) = key.strip_prefix("client:") {
+            return Some(TraySource::Client { id: id.to_string() });
+        }
+        if let Some(instance) = key.strip_prefix("provider:") {
+            return Some(TraySource::Provider {
+                instance: instance.to_string(),
+            });
+        }
+        if let Some(id) = key.strip_prefix("model:") {
+            return Some(TraySource::Model { id: id.to_string() });
+        }
+        None
+    }
+
+    /// Name to derive the default panel label from (before truncation).
+    /// `client_name` is the resolved client name for `Client` sources.
+    pub fn default_label_seed<'a>(&'a self, client_name: Option<&'a str>) -> &'a str {
+        match self {
+            TraySource::All => "ALL",
+            TraySource::Client { id } => client_name.unwrap_or(id.as_str()),
+            TraySource::Provider { instance } => instance.as_str(),
+            TraySource::Model { id } => id.rsplit('/').next().unwrap_or(id.as_str()),
+        }
+    }
+}
+
+/// One row of the tray stats item list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrayStatsItem {
+    pub source: TraySource,
+    /// Whether the item is currently shown (unchecked rows keep their
+    /// label and position).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// User-provided panel label (≤ 4 chars, uppercased at render time).
+    /// `None` derives one from the item's name.
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+impl TrayStatsItem {
+    pub fn new(source: TraySource) -> Self {
+        Self {
+            source,
+            enabled: true,
+            label: None,
+        }
+    }
+}
+
+/// Maximum characters in a tray panel label (letters are stacked
+/// vertically, one per 8px row, in a 32px-tall icon).
+pub const TRAY_LABEL_MAX_CHARS: usize = 4;
+
+/// Normalize a label seed into a tray panel label: uppercase ASCII
+/// alphanumerics only, at most [`TRAY_LABEL_MAX_CHARS`] characters.
+pub fn normalize_tray_label(seed: &str) -> String {
+    seed.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .take(TRAY_LABEL_MAX_CHARS)
+        .collect()
+}
+
+/// Which metric drives the per-panel sparkline.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayGraphMetric {
+    #[default]
+    Tokens,
+    Requests,
+}
+
+/// Which metric the usage bar, the text beside the icon and the tray menu
+/// lines lead with.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayUsageMetric {
+    #[default]
+    Tokens,
+    Cost,
+    Requests,
+}
+
+/// Rolling window the usage figures are summed over.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayUsagePeriod {
+    Hour,
+    #[default]
+    Day,
+    Week,
+    Month,
+}
+
+impl TrayUsagePeriod {
+    pub fn seconds(&self) -> i64 {
+        match self {
+            TrayUsagePeriod::Hour => 3_600,
+            TrayUsagePeriod::Day => 86_400,
+            TrayUsagePeriod::Week => 7 * 86_400,
+            TrayUsagePeriod::Month => 30 * 86_400,
+        }
+    }
+
+    /// Short human label, e.g. "last 24h".
+    pub fn label(&self) -> &'static str {
+        match self {
+            TrayUsagePeriod::Hour => "last 1h",
+            TrayUsagePeriod::Day => "last 24h",
+            TrayUsagePeriod::Week => "last 7d",
+            TrayUsagePeriod::Month => "last 30d",
+        }
+    }
+}
+
+/// Tray icon layout. `Extended` renders one panel per item in a wide icon
+/// (macOS, GNOME); `Compact` keeps the single global panel (Windows, KDE).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayLayout {
+    /// Decide from the platform / desktop environment.
+    #[default]
+    Auto,
+    Extended,
+    Compact,
+}
+
+/// Standalone tray statistics configuration (independent of client config).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrayStatsConfig {
+    /// Ordered item list. `All` is always present.
+    #[serde(default = "default_tray_stats_items")]
+    pub items: Vec<TrayStatsItem>,
+    /// Add newly created clients to `items` automatically.
+    #[serde(default = "default_true")]
+    pub auto_add_clients: bool,
+    /// Draw the stacked vertical label beside each panel.
+    #[serde(default = "default_true")]
+    pub show_labels: bool,
+    /// Draw the sparkline panel for each item.
+    #[serde(default = "default_true")]
+    pub show_graph: bool,
+    /// Draw the thin relative usage bar beside each panel.
+    #[serde(default)]
+    pub show_usage_bar: bool,
+    /// Show usage numbers as text beside the icon (macOS / GNOME only).
+    #[serde(default)]
+    pub show_text: bool,
+    #[serde(default)]
+    pub graph_metric: TrayGraphMetric,
+    #[serde(default)]
+    pub usage_metric: TrayUsageMetric,
+    #[serde(default)]
+    pub usage_period: TrayUsagePeriod,
+    #[serde(default)]
+    pub layout: TrayLayout,
+}
+
+fn default_tray_stats_items() -> Vec<TrayStatsItem> {
+    vec![TrayStatsItem::new(TraySource::All)]
+}
+
+impl Default for TrayStatsConfig {
+    fn default() -> Self {
+        Self {
+            items: default_tray_stats_items(),
+            auto_add_clients: true,
+            show_labels: true,
+            show_graph: true,
+            show_usage_bar: false,
+            show_text: false,
+            graph_metric: TrayGraphMetric::default(),
+            usage_metric: TrayUsageMetric::default(),
+            usage_period: TrayUsagePeriod::default(),
+            layout: TrayLayout::default(),
+        }
+    }
+}
+
+impl TrayStatsConfig {
+    /// Enabled items in display order. `All` is guaranteed to be present
+    /// in `items`, so this never silently drops the global view unless the
+    /// user unchecked it.
+    pub fn enabled_items(&self) -> impl Iterator<Item = &TrayStatsItem> {
+        self.items.iter().filter(|i| i.enabled)
+    }
+
+    /// Whether `source` already has a row.
+    pub fn contains(&self, source: &TraySource) -> bool {
+        self.items.iter().any(|i| &i.source == source)
+    }
+
+    /// Append a row for `source` if it isn't listed yet.
+    pub fn add_source(&mut self, source: TraySource) {
+        if !self.contains(&source) {
+            self.items.push(TrayStatsItem::new(source));
+        }
+    }
+
+    /// Remove every row for `source`.
+    pub fn remove_source(&mut self, source: &TraySource) {
+        self.items.retain(|i| &i.source != source);
+    }
+
+    /// Ensure the `All` row exists (first, if it had to be added).
+    pub fn ensure_all_present(&mut self) {
+        if !self.contains(&TraySource::All) {
+            self.items.insert(0, TrayStatsItem::new(TraySource::All));
+        }
+    }
 }
 
 /// Update checking mode
@@ -4013,6 +4276,7 @@ impl Default for UiConfig {
             tray_graph_enabled: false, // Static icon by default; user can enable activity graph
             tray_graph_refresh_rate_secs: default_tray_graph_refresh_rate(),
             sidebar_expanded: default_sidebar_expanded(),
+            tray_stats: TrayStatsConfig::default(),
         }
     }
 }
@@ -4261,6 +4525,88 @@ fn default_sidebar_expanded() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_stats_defaults_when_absent_from_yaml() {
+        // Old configs have no `tray_stats` key at all.
+        let ui: UiConfig = serde_yaml::from_str("tray_graph_enabled: true\n").unwrap();
+        assert!(ui.tray_graph_enabled);
+        assert_eq!(ui.tray_stats, TrayStatsConfig::default());
+        assert_eq!(
+            ui.tray_stats.items,
+            vec![TrayStatsItem::new(TraySource::All)]
+        );
+        assert!(ui.tray_stats.auto_add_clients);
+        assert_eq!(ui.tray_stats.usage_period, TrayUsagePeriod::Day);
+    }
+
+    #[test]
+    fn tray_source_serde_and_keys() {
+        let sources = vec![
+            TraySource::All,
+            TraySource::Client { id: "abc".into() },
+            TraySource::Provider {
+                instance: "anthropic".into(),
+            },
+            TraySource::Model {
+                id: "openai/gpt-5".into(),
+            },
+        ];
+        for s in &sources {
+            let yaml = serde_yaml::to_string(s).unwrap();
+            let back: TraySource = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(&back, s);
+            assert_eq!(TraySource::from_key(&s.key()).as_ref(), Some(s));
+        }
+        assert!(serde_yaml::to_string(&sources[1])
+            .unwrap()
+            .contains("kind: client"));
+        assert_eq!(sources[0].metric_type(), "llm_global");
+        assert_eq!(sources[1].metric_type(), "llm_key:abc");
+        assert_eq!(sources[2].metric_type(), "llm_provider:anthropic");
+        assert_eq!(sources[3].metric_type(), "llm_model:openai/gpt-5");
+        assert_eq!(TraySource::from_key("bogus"), None);
+    }
+
+    #[test]
+    fn tray_label_normalization_and_seeds() {
+        assert_eq!(normalize_tray_label("Claude Code"), "CLAU");
+        assert_eq!(normalize_tray_label("gpt-5"), "GPT5");
+        assert_eq!(normalize_tray_label("  ---  "), "");
+        assert_eq!(normalize_tray_label("ab"), "AB");
+        assert_eq!(TraySource::All.default_label_seed(None), "ALL");
+        assert_eq!(
+            TraySource::Model {
+                id: "openai/gpt-5".into()
+            }
+            .default_label_seed(None),
+            "gpt-5"
+        );
+        assert_eq!(
+            TraySource::Client { id: "x".into() }.default_label_seed(Some("Cursor")),
+            "Cursor"
+        );
+        assert_eq!(
+            TraySource::Client { id: "x".into() }.default_label_seed(None),
+            "x"
+        );
+    }
+
+    #[test]
+    fn tray_stats_add_remove_and_ensure_all() {
+        let mut cfg = TrayStatsConfig::default();
+        let c = TraySource::Client { id: "c1".into() };
+        cfg.add_source(c.clone());
+        cfg.add_source(c.clone()); // idempotent
+        assert_eq!(cfg.items.len(), 2);
+        cfg.items[0].enabled = false;
+        assert_eq!(cfg.enabled_items().count(), 1);
+        cfg.remove_source(&c);
+        assert_eq!(cfg.items.len(), 1);
+        cfg.items.clear();
+        cfg.ensure_all_present();
+        assert_eq!(cfg.items[0].source, TraySource::All);
+    }
 
     fn stdio_with_cwd(cwd: Option<&str>) -> McpTransportConfig {
         McpTransportConfig::Stdio {

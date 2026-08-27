@@ -3,12 +3,20 @@
 #![allow(dead_code)]
 
 use crate::ui::tray::UpdateNotificationState;
-use crate::ui::tray_graph::{platform_graph_config, DataPoint, StatusDotColors, TrayOverlay};
+use crate::ui::tray_format::{headline_value, metric_magnitude, title_text, usage_line};
+use crate::ui::tray_graph::{
+    platform_graph_config, MultiPaneOptions, PaneSpec, StatusDotColors, TrayOverlay, GRAPH_WIDTH,
+};
 use chrono::{DateTime, Duration, Utc};
-use lr_config::{ConfigManager, UiConfig};
-use lr_monitoring::metrics::MetricsCollector;
+use lr_config::{
+    normalize_tray_label, ConfigManager, TrayGraphMetric, TrayLayout, TraySource, TrayStatsConfig,
+    TrayStatsItem, UiConfig,
+};
+use lr_monitoring::metrics::{MetricDataPoint, MetricsCollector, UsageTotals};
 use lr_providers::health_cache::AggregateHealthStatus;
+use lr_types::RecordedRequest;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Listener, Manager};
 use tokio::sync::mpsc;
@@ -53,6 +61,89 @@ pub fn determine_overlay(app_handle: &AppHandle, dark_mode: bool) -> TrayOverlay
     TrayOverlay::None
 }
 
+/// Number of bars per pane — matches `GRAPH_WIDTH` in tray_graph.rs.
+const NUM_BUCKETS: usize = GRAPH_WIDTH as usize;
+
+/// Maximum panes rendered into the icon (extra items still appear in the
+/// tooltip and tray menu). Keeps the menu-bar item under ~110pt.
+pub const MAX_PANES: usize = 6;
+
+/// How long a cached usage snapshot stays fresh before the next update
+/// tick re-queries the metrics store.
+const USAGE_REFRESH_SECS: i64 = 10;
+
+/// Minimum spacing between tray-menu rebuilds triggered by usage changes.
+const MENU_REBUILD_THROTTLE_SECS: i64 = 30;
+
+/// While idle (no activity, graph drained) the manager still wakes up at
+/// this interval so rolling usage windows keep aging in the menu/title.
+const IDLE_REFRESH_SECS: u64 = 60;
+
+/// `(tray_graph_enabled, refresh_rate_secs, displayed sources)` — the
+/// combination whose change resets bucket state.
+type ModeKey = (bool, u64, Vec<TraySource>);
+
+/// One graph bucket: traffic in one time slice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Bucket {
+    pub tokens: u64,
+    pub requests: u64,
+}
+
+impl Bucket {
+    fn add(&mut self, other: Bucket) {
+        self.tokens += other.tokens;
+        self.requests += other.requests;
+    }
+
+    fn is_zero(&self) -> bool {
+        self.tokens == 0 && self.requests == 0
+    }
+
+    fn value(&self, metric: TrayGraphMetric) -> u64 {
+        match metric {
+            TrayGraphMetric::Tokens => self.tokens,
+            TrayGraphMetric::Requests => self.requests,
+        }
+    }
+}
+
+/// Per-source sparkline state.
+#[derive(Debug, Clone)]
+struct SourceState {
+    /// Bucket values, oldest first (26 buckets).
+    buckets: Vec<Bucket>,
+    /// Traffic recorded since the last update tick (Fast/Medium modes).
+    accumulated: Bucket,
+}
+
+impl Default for SourceState {
+    fn default() -> Self {
+        Self {
+            buckets: vec![Bucket::default(); NUM_BUCKETS],
+            accumulated: Bucket::default(),
+        }
+    }
+}
+
+/// Cached usage for one displayed item, in display order.
+#[derive(Debug, Clone)]
+pub struct UsageEntry {
+    pub source: TraySource,
+    pub label: String,
+    pub usage: UsageTotals,
+}
+
+/// Everything that gets pushed to the tray in one main-thread hop.
+#[derive(Debug, Clone, Hash)]
+struct TrayPresentation {
+    icon: Vec<u8>,
+    /// Text beside the icon; `None` clears it (also on platforms that
+    /// ignore titles, so a layout switch never leaves a stale one behind).
+    title: Option<String>,
+    tooltip: String,
+}
+
 /// Manager for dynamic tray icon graph updates
 pub struct TrayGraphManager {
     /// App handle for accessing tray and state
@@ -62,13 +153,11 @@ pub struct TrayGraphManager {
     config: Arc<RwLock<UiConfig>>,
 
     /// Last update timestamp for throttling visual redraws (1s)
-    #[allow(dead_code)]
     last_update: Arc<RwLock<Option<DateTime<Utc>>>>,
 
     /// Last bucket shift timestamp for controlling graph movement speed
     /// This is separate from last_update to allow immediate visual updates
     /// while only shifting buckets at the configured rate
-    #[allow(dead_code)]
     last_bucket_shift: Arc<RwLock<Option<DateTime<Utc>>>>,
 
     /// Channel for activity notifications
@@ -77,26 +166,30 @@ pub struct TrayGraphManager {
     /// Last activity timestamp for idle detection
     last_activity: Arc<RwLock<DateTime<Utc>>>,
 
-    /// Current bucket values for Fast/Medium modes (26 buckets)
-    /// For Slow mode, this is not used (queries metrics directly)
-    #[allow(dead_code)]
-    buckets: Arc<RwLock<Vec<u64>>>,
+    /// Sparkline state per displayed source. `All` is always present when
+    /// the graph is enabled; other sources are added as they're configured.
+    sources: Arc<RwLock<HashMap<TraySource, SourceState>>>,
 
-    /// Accumulated tokens since last update (for Fast/Medium modes)
-    /// This receives real-time token counts from completed requests
-    accumulated_tokens: Arc<RwLock<u64>>,
+    /// Rolling-window usage per displayed item (feeds title, tooltip, menu).
+    usage: Arc<RwLock<Vec<UsageEntry>>>,
+    usage_refreshed_at: Arc<RwLock<Option<DateTime<Utc>>>>,
 
-    /// Hash of last generated PNG to skip redundant updates
-    last_png_hash: Arc<RwLock<u64>>,
+    /// Hash of the last applied presentation to skip redundant updates
+    last_presentation_hash: Arc<RwLock<u64>>,
+
+    /// Last tooltip pushed to the menu (usage lines) and when the tray
+    /// menu was last rebuilt because of it.
+    last_menu_text: Arc<RwLock<String>>,
+    last_menu_rebuild: Arc<RwLock<Option<DateTime<Utc>>>>,
 
     /// Debug override for the tray overlay (bypasses determine_overlay)
     debug_overlay_override: Arc<RwLock<Option<TrayOverlay>>>,
 
-    /// Last rendered mode `(tray_graph_enabled, refresh_rate_secs)`.
+    /// Last rendered mode `(tray_graph_enabled, refresh_rate_secs, sources)`.
     /// Bucket contents are only meaningful at the time scale they were
     /// recorded at, so any mode change must reset bucket state — otherwise
     /// switching Fast/Medium/Slow reinterprets old bars at the new scale.
-    last_mode: Arc<RwLock<Option<(bool, u64)>>>,
+    last_mode: Arc<RwLock<Option<ModeKey>>>,
 }
 
 /// Compute how many bucket shifts are due since `last_shift`, and the new
@@ -132,6 +225,173 @@ fn compute_bucket_shifts(
     }
 }
 
+/// Shift buckets left by `shifts`, zero-filling the vacated slots.
+fn shift_buckets(buckets: &mut [Bucket], shifts: usize) {
+    let n = buckets.len();
+    if shifts >= n {
+        buckets.fill(Bucket::default());
+    } else if shifts > 0 {
+        buckets.rotate_left(shifts);
+        for b in &mut buckets[n - shifts..] {
+            *b = Bucket::default();
+        }
+    }
+}
+
+/// Seed Medium-mode buckets (10s each) by spreading each minute metric
+/// forward across 6 buckets.
+fn seed_medium_buckets(buckets: &mut [Bucket], metrics: &[MetricDataPoint], now: DateTime<Utc>) {
+    let n = buckets.len() as i64;
+    let window_secs = n * 10;
+    buckets.fill(Bucket::default());
+
+    for metric in metrics {
+        let age_secs = now.signed_duration_since(metric.timestamp).num_seconds();
+        if age_secs < 0 || age_secs >= window_secs {
+            continue;
+        }
+
+        // Determine how many buckets we can actually place (some might fall outside window)
+        let num_in_window = (0..6)
+            .filter(|&offset| {
+                let bucket_age = age_secs.saturating_sub(offset * 10);
+                bucket_age >= 0 && bucket_age < window_secs
+            })
+            .count() as u64;
+        if num_in_window == 0 {
+            continue;
+        }
+
+        let per_bucket = Bucket {
+            tokens: metric.total_tokens / num_in_window,
+            requests: metric.requests / num_in_window,
+        };
+
+        for offset in 0..6 {
+            // Spread the minute forward in time (subtract offset, not add)
+            let bucket_age_secs = age_secs.saturating_sub(offset * 10);
+            if bucket_age_secs < 0 || bucket_age_secs >= window_secs {
+                continue;
+            }
+            let idx = ((n - 1) - (bucket_age_secs / 10)).clamp(0, n - 1) as usize;
+            buckets[idx].add(per_bucket);
+        }
+    }
+}
+
+/// Fill Slow-mode buckets (1 min each) directly from minute metrics.
+fn fill_slow_buckets(buckets: &mut [Bucket], metrics: &[MetricDataPoint], now: DateTime<Utc>) {
+    let n = buckets.len() as i64;
+    let window_secs = n * 60;
+    buckets.fill(Bucket::default());
+
+    for metric in metrics {
+        let age_secs = now.signed_duration_since(metric.timestamp).num_seconds();
+        if age_secs < 0 || age_secs >= window_secs {
+            continue;
+        }
+        let idx = ((n - 1) - (age_secs / 60)).clamp(0, n - 1) as usize;
+        buckets[idx].add(Bucket {
+            tokens: metric.total_tokens,
+            requests: metric.requests,
+        });
+    }
+}
+
+/// Minute metrics for one source over `[start, end]`.
+fn metrics_for_source(
+    collector: &MetricsCollector,
+    source: &TraySource,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Vec<MetricDataPoint> {
+    match source {
+        TraySource::All => collector.get_global_range(start, end),
+        TraySource::Client { id } => collector.get_key_range(id, start, end),
+        TraySource::Provider { instance } => collector.get_provider_range(instance, start, end),
+        TraySource::Model { id } => collector.get_model_range(id, start, end),
+    }
+}
+
+/// Whether a recorded request counts towards `source`.
+fn source_matches(source: &TraySource, req: &RecordedRequest) -> bool {
+    match source {
+        TraySource::All => true,
+        TraySource::Client { id } => id == &req.client_id,
+        TraySource::Provider { instance } => instance == &req.provider,
+        TraySource::Model { id } => id == &req.model,
+    }
+}
+
+/// Layout the platform can actually render when the user leaves it on Auto.
+///
+/// Wide (multi-pane) icons and title text work on macOS and on GNOME's
+/// AppIndicator extension; Windows squashes non-square icons and ignores
+/// titles, and KDE shrinks wide icons into a square cell.
+pub fn platform_default_layout() -> TrayLayout {
+    if cfg!(target_os = "macos") {
+        TrayLayout::Extended
+    } else if cfg!(target_os = "linux") {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if ["gnome", "unity", "cinnamon"]
+            .iter()
+            .any(|d| desktop.contains(d))
+        {
+            TrayLayout::Extended
+        } else {
+            TrayLayout::Compact
+        }
+    } else {
+        TrayLayout::Compact
+    }
+}
+
+/// Resolve the configured layout to a concrete one.
+pub fn effective_layout(config: &TrayStatsConfig) -> TrayLayout {
+    match config.layout {
+        TrayLayout::Auto => platform_default_layout(),
+        other => other,
+    }
+}
+
+/// Panel label for an item: the user's label if set, else derived from the
+/// item's name. Never empty — falls back to the source key.
+pub fn resolve_label(item: &TrayStatsItem, client_name: Option<&str>) -> String {
+    if let Some(custom) = item.label.as_deref() {
+        let normalized = normalize_tray_label(custom);
+        if !normalized.is_empty() {
+            return normalized;
+        }
+    }
+    let derived = normalize_tray_label(item.source.default_label_seed(client_name));
+    if !derived.is_empty() {
+        return derived;
+    }
+    normalize_tray_label(&item.source.key())
+}
+
+/// Enabled items that can currently be displayed (clients that no longer
+/// exist are skipped), with their resolved labels.
+fn displayable_items(
+    stats: &TrayStatsConfig,
+    clients: &[lr_config::Client],
+) -> Vec<(TrayStatsItem, String)> {
+    stats
+        .enabled_items()
+        .filter_map(|item| {
+            let client_name = match &item.source {
+                TraySource::Client { id } => {
+                    Some(clients.iter().find(|c| &c.id == id)?.name.as_str())
+                }
+                _ => None,
+            };
+            Some((item.clone(), resolve_label(item, client_name)))
+        })
+        .collect()
+}
+
 impl TrayGraphManager {
     /// Create a new tray graph manager
     ///
@@ -140,44 +400,64 @@ impl TrayGraphManager {
     pub fn new(app_handle: AppHandle, config: UiConfig) -> Self {
         let (activity_tx, mut activity_rx) = mpsc::unbounded_channel();
 
-        const NUM_BUCKETS: usize = 26; // Match GRAPH_WIDTH in tray_graph.rs
-
         let config = Arc::new(RwLock::new(config));
         let last_update = Arc::new(RwLock::new(None::<DateTime<Utc>>));
         let last_bucket_shift = Arc::new(RwLock::new(None::<DateTime<Utc>>));
         let last_activity = Arc::new(RwLock::new(Utc::now()));
-        let buckets = Arc::new(RwLock::new(vec![0u64; NUM_BUCKETS]));
-        let accumulated_tokens = Arc::new(RwLock::new(0u64));
-        let last_png_hash = Arc::new(RwLock::new(0u64));
+        let sources = Arc::new(RwLock::new(HashMap::<TraySource, SourceState>::new()));
+        let usage = Arc::new(RwLock::new(Vec::<UsageEntry>::new()));
+        let usage_refreshed_at = Arc::new(RwLock::new(None::<DateTime<Utc>>));
+        let last_presentation_hash = Arc::new(RwLock::new(0u64));
+        let last_menu_text = Arc::new(RwLock::new(String::new()));
+        let last_menu_rebuild = Arc::new(RwLock::new(None::<DateTime<Utc>>));
         let debug_overlay_override = Arc::new(RwLock::new(None::<TrayOverlay>));
-        let last_mode = Arc::new(RwLock::new(None::<(bool, u64)>));
+        let last_mode = Arc::new(RwLock::new(None::<ModeKey>));
 
-        // Clone for background task
-        let app_handle_clone = app_handle.clone();
-        let last_update_clone = last_update.clone();
-        let last_bucket_shift_clone = last_bucket_shift.clone();
-        let last_activity_clone = last_activity.clone();
-        let buckets_clone = buckets.clone();
-        let accumulated_tokens_clone = accumulated_tokens.clone();
-        let last_png_hash_clone = last_png_hash.clone();
-        let debug_overlay_clone = debug_overlay_override.clone();
-        let last_mode_clone = last_mode.clone();
+        let manager = Self {
+            app_handle: app_handle.clone(),
+            config,
+            last_update,
+            last_bucket_shift,
+            activity_tx: activity_tx.clone(),
+            last_activity,
+            sources,
+            usage,
+            usage_refreshed_at,
+            last_presentation_hash,
+            last_menu_text,
+            last_menu_rebuild,
+            debug_overlay_override,
+            last_mode,
+        };
 
         // Spawn background task with idle-aware timer for smooth graph shifting
+        let task = manager.clone_handles();
         tauri::async_runtime::spawn(async move {
             debug!("TrayGraphManager background task started");
 
             const UPDATE_CHECK_INTERVAL_MS: u64 = 500;
 
             loop {
-                // Wait for activity notification
-                if activity_rx.recv().await.is_none() {
-                    debug!("TrayGraphManager: Channel closed, exiting");
-                    break;
+                // Wait for activity — or an idle tick so rolling usage
+                // windows keep aging in the title/tooltip/menu.
+                let idle_tick =
+                    tokio::time::sleep(tokio::time::Duration::from_secs(IDLE_REFRESH_SECS));
+                tokio::select! {
+                    msg = activity_rx.recv() => {
+                        if msg.is_none() {
+                            debug!("TrayGraphManager: Channel closed, exiting");
+                            break;
+                        }
+                        // Activity detected, update timestamp
+                        *task.last_activity.write() = Utc::now();
+                    }
+                    _ = idle_tick => {
+                        if let Err(e) = task.update_once().await {
+                            error!("Failed to refresh tray on idle tick: {}", e);
+                        }
+                        continue;
+                    }
                 }
-
-                // Activity detected, update timestamp
-                *last_activity_clone.write() = Utc::now();
 
                 // Start timer loop for active period
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
@@ -189,7 +469,7 @@ impl TrayGraphManager {
                 loop {
                     // Check for new activity notifications (non-blocking)
                     while let Ok(()) = activity_rx.try_recv() {
-                        *last_activity_clone.write() = Utc::now();
+                        *task.last_activity.write() = Utc::now();
                         debug!(
                             "TrayGraphManager: Activity notification received during update loop"
                         );
@@ -197,22 +477,16 @@ impl TrayGraphManager {
 
                     interval.tick().await;
 
-                    // Dynamic tray graph is always enabled
-                    // (Previously had a toggle, now always on)
-
                     // Stop the update loop once no activity is happening AND
                     // the graph has fully drained (all bars are zero).
-                    // This replaces a fixed timeout — we simply keep shifting
-                    // until there is nothing left to show.
                     let no_recent_activity = {
-                        let last = last_activity_clone.read();
+                        let last = task.last_activity.read();
                         Utc::now().signed_duration_since(*last).num_seconds() >= 5
                     };
                     if no_recent_activity {
-                        let graph_empty = {
-                            let bucket_state = buckets_clone.read();
-                            bucket_state.iter().all(|&t| t == 0)
-                        };
+                        let graph_empty = task.sources.read().values().all(|s| {
+                            s.buckets.iter().all(Bucket::is_zero) && s.accumulated.is_zero()
+                        });
                         if graph_empty {
                             break;
                         }
@@ -222,59 +496,25 @@ impl TrayGraphManager {
                     // Bucket shifting is controlled separately in update_tray_graph_impl
                     const VISUAL_UPDATE_THROTTLE_MS: i64 = 1000;
 
-                    // Check throttle: has enough time passed since last visual update?
-                    let should_update = {
-                        let last_update_read = last_update_clone.read();
-                        match *last_update_read {
-                            None => true, // First update
-                            Some(last_ts) => {
-                                let elapsed = Utc::now().signed_duration_since(last_ts);
-                                elapsed.num_milliseconds() >= VISUAL_UPDATE_THROTTLE_MS
-                            }
+                    let should_update = match *task.last_update.read() {
+                        None => true,
+                        Some(last_ts) => {
+                            Utc::now().signed_duration_since(last_ts).num_milliseconds()
+                                >= VISUAL_UPDATE_THROTTLE_MS
                         }
                     };
-
                     if !should_update {
-                        // Too soon since last update
                         continue;
                     }
 
-                    // Perform update
-                    if let Err(e) = Self::update_tray_graph_impl(
-                        &app_handle_clone,
-                        &buckets_clone,
-                        &accumulated_tokens_clone,
-                        &last_png_hash_clone,
-                        &last_bucket_shift_clone,
-                        &debug_overlay_clone,
-                        &last_mode_clone,
-                    )
-                    .await
-                    {
+                    if let Err(e) = task.update_once().await {
                         error!("Failed to update tray graph: {}", e);
-                    } else {
-                        // Update last update timestamp
-                        *last_update_clone.write() = Some(Utc::now());
                     }
                 }
             }
 
             debug!("TrayGraphManager background task stopped");
         });
-
-        let manager = Self {
-            app_handle: app_handle.clone(),
-            config,
-            last_update,
-            last_bucket_shift,
-            activity_tx: activity_tx.clone(),
-            last_activity,
-            buckets,
-            accumulated_tokens,
-            last_png_hash,
-            debug_overlay_override,
-            last_mode,
-        };
 
         // Subscribe to health status changes to refresh the tray icon
         // when health status changes (even when idle)
@@ -290,6 +530,33 @@ impl TrayGraphManager {
         manager.notify_activity();
 
         manager
+    }
+
+    /// A second handle onto the same shared state for the background task.
+    fn clone_handles(&self) -> Self {
+        Self {
+            app_handle: self.app_handle.clone(),
+            config: self.config.clone(),
+            last_update: self.last_update.clone(),
+            last_bucket_shift: self.last_bucket_shift.clone(),
+            activity_tx: self.activity_tx.clone(),
+            last_activity: self.last_activity.clone(),
+            sources: self.sources.clone(),
+            usage: self.usage.clone(),
+            usage_refreshed_at: self.usage_refreshed_at.clone(),
+            last_presentation_hash: self.last_presentation_hash.clone(),
+            last_menu_text: self.last_menu_text.clone(),
+            last_menu_rebuild: self.last_menu_rebuild.clone(),
+            debug_overlay_override: self.debug_overlay_override.clone(),
+            last_mode: self.last_mode.clone(),
+        }
+    }
+
+    /// Run one update tick and stamp `last_update`.
+    async fn update_once(&self) -> anyhow::Result<()> {
+        self.update_tray_graph_impl().await?;
+        *self.last_update.write() = Some(Utc::now());
+        Ok(())
     }
 
     /// Notify that new activity has occurred (metrics recorded)
@@ -312,49 +579,91 @@ impl TrayGraphManager {
     pub fn set_debug_overlay(&self, overlay: Option<TrayOverlay>) {
         *self.debug_overlay_override.write() = overlay;
         // Reset hash to force an immediate icon update
-        *self.last_png_hash.write() = 0;
+        *self.last_presentation_hash.write() = 0;
         self.notify_activity();
     }
 
-    /// Record tokens from a completed request
+    /// Record a completed request.
     ///
-    /// This accumulates tokens for Fast/Medium modes to display real-time activity
-    /// without querying minute-level metrics.
-    pub fn record_tokens(&self, tokens: u64) {
-        // Accumulate tokens
-        *self.accumulated_tokens.write() += tokens;
+    /// Accumulates tokens/requests for every displayed source the request
+    /// belongs to (global, its client, its provider, its model) so Fast /
+    /// Medium modes show real-time activity without querying minute metrics.
+    pub fn record_request(&self, req: &RecordedRequest) {
+        {
+            let mut sources = self.sources.write();
+            for (source, state) in sources.iter_mut() {
+                if source_matches(source, req) {
+                    state.accumulated.tokens += req.tokens;
+                    state.accumulated.requests += 1;
+                }
+            }
+        }
 
         // Trigger update cycle
         self.notify_activity();
     }
 
-    /// Implementation of tray graph update
-    ///
-    /// Updates the tray graph based on the configured mode:
-    /// - Fast (1s): Uses real-time token accumulation only (no metrics)
-    /// - Medium (10s): Uses metrics for initial load, then real-time accumulation
-    /// - Slow (60s): Always uses minute-level metrics (1:1 mapping)
-    ///
-    /// Visual updates happen every 1 second for responsiveness, but bucket shifting
-    /// only occurs at the configured refresh rate (1s/10s/60s).
-    ///
-    /// Apply a freshly-rendered icon to the tray on the main thread.
+    /// Cached usage snapshot for the displayed items (display order).
+    /// Used by the tray menu; refreshed synchronously if stale so the
+    /// menu never shows nothing on first open.
+    pub fn usage_entries(&self) -> Vec<UsageEntry> {
+        let stale = match *self.usage_refreshed_at.read() {
+            None => true,
+            Some(ts) => Utc::now().signed_duration_since(ts).num_seconds() >= USAGE_REFRESH_SECS,
+        };
+        if stale {
+            self.refresh_usage(Utc::now());
+        }
+        self.usage.read().clone()
+    }
+
+    /// Current stats config.
+    pub fn stats_config(&self) -> TrayStatsConfig {
+        self.config.read().tray_stats.clone()
+    }
+
+    /// Re-query rolling-window usage for every enabled item.
+    fn refresh_usage(&self, now: DateTime<Utc>) {
+        let Some(config_manager) = self.app_handle.try_state::<ConfigManager>() else {
+            return;
+        };
+        let Some(metrics_collector) = self.app_handle.try_state::<Arc<MetricsCollector>>() else {
+            return;
+        };
+        let app_config = config_manager.get();
+        let stats = &app_config.ui.tray_stats;
+        let window = stats.usage_period.seconds();
+
+        let entries: Vec<UsageEntry> = displayable_items(stats, &app_config.clients)
+            .into_iter()
+            .map(|(item, label)| UsageEntry {
+                usage: metrics_collector.get_usage_for_type(&item.source.metric_type(), window),
+                source: item.source,
+                label,
+            })
+            .collect();
+
+        *self.usage.write() = entries;
+        *self.usage_refreshed_at.write() = Some(now);
+    }
+
+    /// Apply a freshly-rendered presentation to the tray on the main thread.
     ///
     /// Tray / menu-bar mutation is AppKit UI work that must run on the main
     /// thread. This manager renders and updates from a background task, and
     /// doing the `set_icon` off-thread made the icon flash "undrawn" while
     /// redrawing the next bucket. Dispatching to the main thread fixes that,
-    /// and bundling `set_icon` + `set_icon_as_template` into a single closure
-    /// makes the two-step update atomic so the menu bar never repaints with a
-    /// half-applied icon in between.
-    fn apply_tray_icon(app_handle: &AppHandle, icon_bytes: Vec<u8>) -> anyhow::Result<()> {
+    /// and bundling `set_icon` + `set_icon_as_template` (+ title + tooltip)
+    /// into a single closure makes the update atomic so the menu bar never
+    /// repaints with a half-applied icon in between.
+    fn apply_presentation(app_handle: &AppHandle, p: TrayPresentation) -> anyhow::Result<()> {
         let app = app_handle.clone();
         app_handle
             .run_on_main_thread(move || {
                 let Some(tray) = app.tray_by_id("main") else {
                     return;
                 };
-                let icon = match tauri::image::Image::from_bytes(&icon_bytes) {
+                let icon = match tauri::image::Image::from_bytes(&p.icon) {
                     Ok(icon) => icon,
                     Err(e) => {
                         error!("Failed to create tray image: {}", e);
@@ -371,22 +680,143 @@ impl TrayGraphManager {
                 if let Err(e) = tray.set_icon_as_template(cfg!(target_os = "macos")) {
                     error!("Failed to set tray template mode: {}", e);
                 }
+                if let Err(e) = tray.set_title(p.title.as_deref()) {
+                    error!("Failed to set tray title: {}", e);
+                }
+                if let Err(e) = tray.set_tooltip(Some(&p.tooltip)) {
+                    error!("Failed to set tray tooltip: {}", e);
+                }
             })
             .map_err(|e| {
                 anyhow::anyhow!("Failed to dispatch tray icon update to main thread: {}", e)
             })
     }
 
-    /// Skips the update if the generated PNG is identical to the previous one.
-    async fn update_tray_graph_impl(
-        app_handle: &AppHandle,
-        buckets: &Arc<RwLock<Vec<u64>>>,
-        accumulated_tokens: &Arc<RwLock<u64>>,
-        last_png_hash: &Arc<RwLock<u64>>,
-        last_bucket_shift: &Arc<RwLock<Option<DateTime<Utc>>>>,
-        debug_overlay_override: &Arc<RwLock<Option<TrayOverlay>>>,
-        last_mode: &Arc<RwLock<Option<(bool, u64)>>>,
-    ) -> Result<(), anyhow::Error> {
+    /// Update sparkline buckets for every displayed source and return the
+    /// bar values per source in `sources` order.
+    ///
+    /// Modes:
+    /// - Fast (1s): real-time accumulation only (no metrics)
+    /// - Medium (10s): metrics for initial load, then real-time accumulation
+    /// - Slow (60s): always minute-level metrics (1:1 mapping)
+    ///
+    /// Visual updates happen every 1 second for responsiveness, but bucket
+    /// shifting only occurs at the configured refresh rate (1s/10s/60s).
+    fn update_buckets(
+        &self,
+        metrics_collector: &MetricsCollector,
+        display_sources: &[TraySource],
+        refresh_rate_secs: u64,
+        mode_changed: bool,
+        graph_metric: TrayGraphMetric,
+        now: DateTime<Utc>,
+    ) -> Vec<Vec<u64>> {
+        let mut sources = self.sources.write();
+
+        // Drop state for sources that are no longer displayed.
+        sources.retain(|s, _| display_sources.contains(s));
+
+        // (Re)initialize bucket state on the first update after startup
+        // and whenever the mode changes.
+        let needs_init = mode_changed || self.last_bucket_shift.read().is_none();
+
+        // Calculate how many bucket shifts are due since the last shift.
+        // During normal operation this is 1; after an idle gap it can be
+        // many, which lets the graph catch up instantly instead of
+        // draining one bar at a time.
+        let interval_ms = refresh_rate_secs.max(1) as i64 * 1000;
+        let (shifts_needed, next_shift_ts) = if needs_init {
+            (0, now)
+        } else {
+            compute_bucket_shifts(
+                *self.last_bucket_shift.read(),
+                now,
+                interval_ms,
+                NUM_BUCKETS,
+            )
+        };
+
+        let mut bars = Vec::with_capacity(display_sources.len());
+
+        for source in display_sources {
+            let state = sources.entry(source.clone()).or_default();
+
+            match refresh_rate_secs {
+                // Fast mode: 1 second per bar, 26 second total.
+                // NO metrics querying - pure real-time tracking.
+                1 => {
+                    if needs_init {
+                        // Start with empty buckets (no historical data) and
+                        // discard any backlog accumulated under the previous
+                        // mode — it would otherwise render as one giant spike.
+                        state.buckets.fill(Bucket::default());
+                        state.accumulated = Bucket::default();
+                    } else {
+                        shift_buckets(&mut state.buckets, shifts_needed);
+                    }
+                    // Always add accumulated traffic to the rightmost bucket
+                    let acc = std::mem::take(&mut state.accumulated);
+                    state.buckets[NUM_BUCKETS - 1].add(acc);
+                }
+
+                // Medium mode: 10 seconds per bar, 260 seconds total.
+                // Initial load interpolates minute data; then in-memory shifting.
+                10 => {
+                    if needs_init {
+                        let window_secs = NUM_BUCKETS as i64 * 10;
+                        let start = now - Duration::seconds(window_secs + 120);
+                        let metrics = metrics_for_source(metrics_collector, source, start, now);
+                        seed_medium_buckets(&mut state.buckets, &metrics, now);
+                        // The interpolated metrics already include recently
+                        // recorded traffic, so drop the accumulator to avoid
+                        // double-counting it in the rightmost bucket.
+                        state.accumulated = Bucket::default();
+                    } else {
+                        shift_buckets(&mut state.buckets, shifts_needed);
+                    }
+                    let acc = std::mem::take(&mut state.accumulated);
+                    state.buckets[NUM_BUCKETS - 1].add(acc);
+                }
+
+                // Slow mode: 1 minute per bar, 26 minute total.
+                // Direct mapping: one minute of metrics → one bar.
+                _ => {
+                    // Slow mode reads the metrics store directly, which
+                    // already contains every recorded request — drain the
+                    // real-time accumulator so it can't pile up and dump a
+                    // giant spike into the graph on a later mode switch.
+                    state.accumulated = Bucket::default();
+                    let window_secs = NUM_BUCKETS as i64 * 60;
+                    let start = now - Duration::seconds(window_secs + 120);
+                    let metrics = metrics_for_source(metrics_collector, source, start, now);
+                    fill_slow_buckets(&mut state.buckets, &metrics, now);
+                }
+            }
+
+            bars.push(
+                state
+                    .buckets
+                    .iter()
+                    .map(|b| b.value(graph_metric))
+                    .collect(),
+            );
+        }
+
+        // Advance the shift clock once for all sources.
+        if needs_init || refresh_rate_secs >= 60 {
+            *self.last_bucket_shift.write() = Some(now);
+        } else if shifts_needed > 0 {
+            *self.last_bucket_shift.write() = Some(next_shift_ts);
+        }
+
+        bars
+    }
+
+    /// One full update: buckets → usage → render → push to tray (+ menu).
+    /// Skips the tray push if nothing changed since the last one.
+    async fn update_tray_graph_impl(&self) -> Result<(), anyhow::Error> {
+        let app_handle = &self.app_handle;
+
         // Get config and metrics collector from state
         let config_manager = app_handle
             .try_state::<ConfigManager>()
@@ -396,227 +826,80 @@ impl TrayGraphManager {
             .try_state::<Arc<MetricsCollector>>()
             .ok_or_else(|| anyhow::anyhow!("MetricsCollector not in app state"))?;
 
-        let ui_config = config_manager.get().ui.clone();
+        let app_config = config_manager.get();
+        let ui_config = app_config.ui.clone();
         let tray_graph_enabled = ui_config.tray_graph_enabled;
         let refresh_rate_secs = ui_config.tray_graph_refresh_rate_secs;
-
-        // Graph has 26 pixels (32 - 2*border - 2*margin*2)
-        const NUM_BUCKETS: i64 = 26;
+        let stats = &ui_config.tray_stats;
+        let extended = effective_layout(stats) == TrayLayout::Extended;
         let now = Utc::now();
 
-        // Detect mode changes (graph toggled or refresh rate switched).
-        // Any change requires re-initializing bucket state, since buckets
-        // recorded at one time scale are meaningless at another.
+        // Items to present. Extended layout shows every enabled item (icon
+        // capped at MAX_PANES); Compact keeps the single global pane.
+        let items = displayable_items(stats, &app_config.clients);
+        // An Extended layout with every item unchecked falls back to the
+        // single global pane rather than rendering nothing.
+        let extended = extended && !items.is_empty();
+        let display_items: Vec<(TrayStatsItem, String)> = if extended {
+            items.iter().take(MAX_PANES).cloned().collect()
+        } else {
+            vec![(
+                TrayStatsItem::new(TraySource::All),
+                resolve_label(&TrayStatsItem::new(TraySource::All), None),
+            )]
+        };
+        let display_sources: Vec<TraySource> = display_items
+            .iter()
+            .map(|(i, _)| i.source.clone())
+            .collect();
+
+        // Detect mode changes (graph toggled, refresh rate switched, or the
+        // displayed source set changed). Any change re-initializes bucket state.
         let mode_changed = {
-            let mut last = last_mode.write();
-            let changed = *last != Some((tray_graph_enabled, refresh_rate_secs));
-            *last = Some((tray_graph_enabled, refresh_rate_secs));
+            let mut last = self.last_mode.write();
+            let current = (
+                tray_graph_enabled,
+                refresh_rate_secs,
+                display_sources.clone(),
+            );
+            let changed = last.as_ref() != Some(&current);
+            *last = Some(current);
             changed
         };
 
-        // Static mode: skip data collection, render empty graph (border + overlay only)
-        let data_points = if !tray_graph_enabled {
-            // Drain accumulated tokens so they don't pile up, and clear the
-            // buckets so the background loop's "graph empty" idle check can
-            // stop the update timer (stale bars would otherwise keep it
-            // spinning forever).
-            *accumulated_tokens.write() = 0;
-            buckets.write().fill(0);
-            vec![]
+        // Sparkline data (only when the graph is on).
+        let bars: Vec<Vec<u64>> = if tray_graph_enabled {
+            self.update_buckets(
+                &metrics_collector,
+                &display_sources,
+                refresh_rate_secs,
+                mode_changed,
+                stats.graph_metric,
+                now,
+            )
         } else {
-            // (Re)initialize bucket state on the first update after startup
-            // and whenever the mode changes.
-            let needs_init = mode_changed || last_bucket_shift.read().is_none();
+            // Static mode: drop any bucket state so the background loop's
+            // "graph empty" idle check can stop the update timer.
+            self.sources.write().clear();
+            Vec::new()
+        };
 
-            // Calculate how many bucket shifts are due since the last shift.
-            // During normal operation this is 1; after an idle gap it can be
-            // many, which lets the graph catch up instantly instead of
-            // draining one bar at a time.
-            let interval_ms = refresh_rate_secs.max(1) as i64 * 1000;
-            let (shifts_needed, next_shift_ts) = if needs_init {
-                (0, now)
-            } else {
-                compute_bucket_shifts(
-                    *last_bucket_shift.read(),
-                    now,
-                    interval_ms,
-                    NUM_BUCKETS as usize,
-                )
+        // Rolling-window usage (title / tooltip / usage bar / menu).
+        let usage_stale = mode_changed
+            || match *self.usage_refreshed_at.read() {
+                None => true,
+                Some(ts) => now.signed_duration_since(ts).num_seconds() >= USAGE_REFRESH_SECS,
             };
-
-            match refresh_rate_secs {
-                // Fast mode: 1 second per bar, 26 second total
-                // NO metrics querying - pure real-time tracking
-                // Starts with empty buckets, accumulates only from live requests
-                1 => {
-                    let mut bucket_state = buckets.write();
-
-                    if needs_init {
-                        // Start with empty buckets (no historical data) and
-                        // discard any backlog accumulated under the previous
-                        // mode — it would otherwise render as one giant spike.
-                        bucket_state.fill(0);
-                        *accumulated_tokens.write() = 0;
-                        *last_bucket_shift.write() = Some(now);
-                    } else if shifts_needed > 0 {
-                        // Shift buckets left, accounting for any missed shifts
-                        let shifts = shifts_needed.min(NUM_BUCKETS as usize);
-                        if shifts >= NUM_BUCKETS as usize {
-                            bucket_state.fill(0);
-                        } else {
-                            bucket_state.rotate_left(shifts);
-                            for i in (NUM_BUCKETS as usize - shifts)..NUM_BUCKETS as usize {
-                                bucket_state[i] = 0;
-                            }
-                        }
-                        *last_bucket_shift.write() = Some(next_shift_ts);
-                    }
-
-                    // Always add accumulated tokens to rightmost bucket (real-time data)
-                    // This happens every visual update, not just on shifts
-                    let tokens = std::mem::take(&mut *accumulated_tokens.write());
-                    bucket_state[NUM_BUCKETS as usize - 1] += tokens;
-
-                    // Convert to DataPoints
-                    bucket_state
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &tokens)| DataPoint {
-                            timestamp: now - Duration::seconds(NUM_BUCKETS - i as i64 - 1),
-                            total_tokens: tokens,
-                        })
-                        .collect::<Vec<_>>()
-                }
-
-                // Medium mode: 10 seconds per bar, 260 seconds total (~4.3 minutes)
-                // Initial load: Interpolate minute data across 6 buckets each
-                // Continuous: Maintain buckets in memory, shift left every 10 seconds
-                // Visual updates happen every 1 second to show new tokens immediately
-                10 => {
-                    let mut bucket_state = buckets.write();
-
-                    if needs_init {
-                        // Initial load: Interpolate from minute-level metrics
-                        let window_secs = NUM_BUCKETS * 10;
-                        let start = now - Duration::seconds(window_secs + 120);
-                        let metrics = metrics_collector.get_global_range(start, now);
-
-                        bucket_state.fill(0);
-
-                        // Interpolate each minute across 6 buckets (60s / 10s = 6)
-                        for metric in metrics.iter() {
-                            let age_secs =
-                                now.signed_duration_since(metric.timestamp).num_seconds();
-                            if age_secs < 0 || age_secs >= window_secs {
-                                continue;
-                            }
-
-                            // Determine how many buckets we can actually place (some might fall outside window)
-                            // Check both that bucket_age_secs >= 0 (not too recent) and < window_secs (not too old)
-                            let num_buckets_in_window = (0..6)
-                                .filter(|&offset| {
-                                    let bucket_age = age_secs.saturating_sub(offset * 10);
-                                    bucket_age >= 0 && bucket_age < window_secs
-                                })
-                                .count()
-                                as u64;
-
-                            if num_buckets_in_window == 0 {
-                                continue;
-                            }
-
-                            let tokens_per_bucket = metric.total_tokens / num_buckets_in_window;
-
-                            for offset in 0..6 {
-                                // Spread the minute forward in time (subtract offset, not add)
-                                // If metric is 100 seconds ago, spread to: 100, 90, 80, 70, 60, 50 seconds ago
-                                let bucket_age_secs = age_secs.saturating_sub(offset * 10);
-                                if bucket_age_secs < 0 || bucket_age_secs >= window_secs {
-                                    continue;
-                                }
-
-                                let bucket_index = (NUM_BUCKETS - 1) - (bucket_age_secs / 10);
-                                let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
-                                bucket_state[bucket_index] += tokens_per_bucket;
-                            }
-                        }
-                        // The interpolated metrics already include recently
-                        // recorded tokens, so drop the accumulator to avoid
-                        // double-counting them in the rightmost bucket.
-                        *accumulated_tokens.write() = 0;
-                        *last_bucket_shift.write() = Some(now);
-                    } else if shifts_needed > 0 {
-                        // Shift buckets, accounting for any missed shifts
-                        let shifts = shifts_needed.min(NUM_BUCKETS as usize);
-                        if shifts >= NUM_BUCKETS as usize {
-                            bucket_state.fill(0);
-                        } else {
-                            bucket_state.rotate_left(shifts);
-                            for i in (NUM_BUCKETS as usize - shifts)..NUM_BUCKETS as usize {
-                                bucket_state[i] = 0;
-                            }
-                        }
-                        *last_bucket_shift.write() = Some(next_shift_ts);
-                    }
-
-                    // Always add accumulated tokens to rightmost bucket (real-time data)
-                    // This happens every visual update (1s), so new requests appear immediately
-                    let tokens = std::mem::take(&mut *accumulated_tokens.write());
-                    bucket_state[NUM_BUCKETS as usize - 1] += tokens;
-
-                    // Convert to DataPoints
-                    bucket_state
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &tokens)| DataPoint {
-                            timestamp: now - Duration::seconds((NUM_BUCKETS - i as i64 - 1) * 10),
-                            total_tokens: tokens,
-                        })
-                        .collect::<Vec<_>>()
-                }
-
-                // Slow mode: 1 minute per bar, 26 minute total (1560 seconds)
-                // Direct mapping: one minute of metrics → one bar (no bucket management)
-                _ => {
-                    // Slow mode reads the metrics store directly, which
-                    // already contains every recorded token — drain the
-                    // real-time accumulator so it can't pile up for the
-                    // whole time Slow mode is active and then dump a giant
-                    // spike into the graph on a later switch to Fast/Medium.
-                    *accumulated_tokens.write() = 0;
-                    *last_bucket_shift.write() = Some(now);
-
-                    let window_secs = NUM_BUCKETS * 60; // 1560 seconds = 26 minutes
-                    let start = now - Duration::seconds(window_secs + 120);
-                    let metrics = metrics_collector.get_global_range(start, now);
-
-                    // Write directly into shared bucket state so the
-                    // background loop's "graph empty" idle check works.
-                    let mut bucket_state = buckets.write();
-                    bucket_state.fill(0);
-
-                    // Direct mapping: each minute metric goes to exactly one bucket
-                    for metric in metrics.iter() {
-                        let age_secs = now.signed_duration_since(metric.timestamp).num_seconds();
-                        if age_secs < 0 || age_secs >= window_secs {
-                            continue;
-                        }
-
-                        let bucket_index = (NUM_BUCKETS - 1) - (age_secs / 60);
-                        let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
-                        bucket_state[bucket_index] += metric.total_tokens;
-                    }
-
-                    bucket_state
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &tokens)| DataPoint {
-                            timestamp: now - Duration::seconds((NUM_BUCKETS - i as i64) * 60),
-                            total_tokens: tokens,
-                        })
-                        .collect::<Vec<_>>()
-                }
-            }
+        if usage_stale {
+            self.refresh_usage(now);
+        }
+        let usage_entries = self.usage.read().clone();
+        let usage_for = |source: &TraySource| -> UsageTotals {
+            usage_entries
+                .iter()
+                .find(|e| &e.source == source)
+                .map(|e| e.usage)
+                .unwrap_or_default()
         };
 
         // Detect if system is in dark mode for color adjustments
@@ -657,7 +940,7 @@ impl TrayGraphManager {
 
         // Determine overlay: debug override takes precedence, then normal priority
         let overlay = {
-            let debug_override = debug_overlay_override.read();
+            let debug_override = self.debug_overlay_override.read();
             if let Some(ref ov) = *debug_override {
                 ov.clone()
             } else {
@@ -665,15 +948,14 @@ impl TrayGraphManager {
             }
         };
 
-        // Static mode: theme-recolored graphic on transparent background
-        // (never the graph frame). On macOS template mode handles
-        // appearance-aware recoloring; on Windows/Linux the bytes are
-        // rendered as-is.
-        if !tray_graph_enabled {
+        // ---- Icon ----
+        let icon_bytes = if !tray_graph_enabled {
+            // Static mode: theme-recolored graphic on transparent background
+            // (never the graph frame). On macOS template mode handles
+            // appearance-aware recoloring; on Windows/Linux the bytes are
+            // rendered as-is.
             const STATIC_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
-
-            // Both paths produce a theme-recolored icon; overlay adds an indicator
-            let icon_bytes = if overlay == TrayOverlay::None {
+            if overlay == TrayOverlay::None {
                 crate::ui::tray_graph::generate_static_icon(STATIC_ICON, dark_mode)
                     .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon"))?
             } else {
@@ -683,58 +965,128 @@ impl TrayGraphManager {
                     dark_mode,
                 )
                 .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon with overlay"))?
+            }
+        } else {
+            let show_graph = stats.show_graph || !stats.show_usage_bar; // never render nothing
+            let options = if extended {
+                MultiPaneOptions {
+                    show_labels: stats.show_labels,
+                    show_graph,
+                    show_usage_bar: stats.show_usage_bar,
+                    units_per_pixel: match stats.graph_metric {
+                        TrayGraphMetric::Tokens => Some(crate::ui::tray_graph::TOKENS_PER_PIXEL),
+                        TrayGraphMetric::Requests => None,
+                    },
+                }
+            } else {
+                MultiPaneOptions {
+                    show_labels: false,
+                    show_graph: true,
+                    show_usage_bar: false,
+                    units_per_pixel: Some(crate::ui::tray_graph::TOKENS_PER_PIXEL),
+                }
             };
 
-            // Hash check to avoid redundant updates
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            icon_bytes.hash(&mut hasher);
-            let current_hash = hasher.finish();
+            let max_magnitude = display_items
+                .iter()
+                .map(|(i, _)| metric_magnitude(&usage_for(&i.source), stats.usage_metric))
+                .fold(0.0_f64, f64::max);
 
-            {
-                let last_hash = *last_png_hash.read();
-                if last_hash == current_hash && last_hash != 0 {
-                    return Ok(());
+            let panes: Vec<PaneSpec> = display_items
+                .iter()
+                .zip(bars.iter())
+                .map(|((item, label), bars)| PaneSpec {
+                    label: Some(label.clone()),
+                    bars: bars.clone(),
+                    usage_fill: if max_magnitude > 0.0 {
+                        Some(
+                            (metric_magnitude(&usage_for(&item.source), stats.usage_metric)
+                                / max_magnitude) as f32,
+                        )
+                    } else {
+                        Some(0.0)
+                    },
+                })
+                .collect();
+
+            let graph_config = platform_graph_config(dark_mode);
+            crate::ui::tray_graph::generate_multi_pane(
+                &panes,
+                options,
+                &graph_config,
+                overlay,
+                dark_mode,
+            )
+            .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?
+        };
+
+        // ---- Title (text beside the icon; Extended layouts only) ----
+        let title = if extended && stats.show_text {
+            let values: Vec<String> = display_items
+                .iter()
+                .map(|(i, _)| headline_value(&usage_for(&i.source), stats.usage_metric))
+                .collect();
+            title_text(&values)
+        } else {
+            None
+        };
+
+        // ---- Tooltip (legend: every enabled item, not just the panes) ----
+        let mut tooltip_lines = vec![format!("LocalRouter · {}", stats.usage_period.label())];
+        tooltip_lines.extend(
+            usage_entries
+                .iter()
+                .map(|e| usage_line(&e.label, &e.usage, stats.usage_metric)),
+        );
+        let tooltip = tooltip_lines.join("\n");
+
+        // ---- Tray menu usage section (throttled) ----
+        {
+            let menu_text: String = tooltip_lines[1..].join("\n");
+            let changed = *self.last_menu_text.read() != menu_text;
+            if changed {
+                let due = match *self.last_menu_rebuild.read() {
+                    None => true,
+                    Some(ts) => {
+                        now.signed_duration_since(ts).num_seconds() >= MENU_REBUILD_THROTTLE_SECS
+                    }
+                };
+                if due {
+                    *self.last_menu_text.write() = menu_text;
+                    *self.last_menu_rebuild.write() = Some(now);
+                    if let Err(e) = crate::ui::tray::rebuild_tray_menu(app_handle) {
+                        error!("Failed to rebuild tray menu with usage: {}", e);
+                    }
                 }
             }
-
-            Self::apply_tray_icon(app_handle, icon_bytes)?;
-            *last_png_hash.write() = current_hash;
-            debug!("Tray icon updated: static mode");
-
-            return Ok(());
         }
 
-        // Generate graph PNG with overlay
-        let graph_config = platform_graph_config(dark_mode);
-        let png_bytes =
-            crate::ui::tray_graph::generate_graph(&data_points, &graph_config, overlay, dark_mode)
-                .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
+        let presentation = TrayPresentation {
+            icon: icon_bytes,
+            title,
+            tooltip,
+        };
 
-        // Calculate simple hash of PNG bytes to detect changes
+        // Skip the (main-thread) tray push if nothing visible changed
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        png_bytes.hash(&mut hasher);
+        presentation.hash(&mut hasher);
         let current_hash = hasher.finish();
-
-        // Skip update if PNG is identical to previous
         {
-            let last_hash = *last_png_hash.read();
+            let last_hash = *self.last_presentation_hash.read();
             if last_hash == current_hash && last_hash != 0 {
-                // No change, skip update
                 return Ok(());
             }
         }
 
-        // Update tray icon (atomically, on the main thread — see apply_tray_icon)
-        Self::apply_tray_icon(app_handle, png_bytes)?;
-
-        // Store the hash for next comparison
-        *last_png_hash.write() = current_hash;
+        Self::apply_presentation(app_handle, presentation)?;
+        *self.last_presentation_hash.write() = current_hash;
 
         debug!(
-            "Tray icon updated with graph ({} buckets)",
-            data_points.len()
+            "Tray icon updated ({} panes, graph={}, extended={})",
+            display_sources.len(),
+            tray_graph_enabled,
+            extended
         );
 
         Ok(())
@@ -743,6 +1095,11 @@ impl TrayGraphManager {
     /// Update configuration and apply immediately
     pub fn update_config(&self, new_config: UiConfig) {
         *self.config.write() = new_config;
+        // Usage labels / period may have changed — refresh on next tick and
+        // let the menu rebuild right away.
+        *self.usage_refreshed_at.write() = None;
+        *self.last_menu_rebuild.write() = None;
+        *self.last_presentation_hash.write() = 0;
 
         // Trigger an immediate update to apply new settings
         self.notify_activity();
@@ -762,8 +1119,8 @@ impl TrayGraphManager {
 }
 
 impl lr_types::TokenRecorder for TrayGraphManager {
-    fn record_tokens(&self, tokens: u64) {
-        self.record_tokens(tokens);
+    fn record_request(&self, request: &RecordedRequest) {
+        self.record_request(request);
     }
 }
 
@@ -796,8 +1153,191 @@ pub fn detect_dark_mode(app_handle: &AppHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::compute_bucket_shifts;
+    use super::*;
     use chrono::{DateTime, Duration, Timelike, Utc};
     use lr_monitoring::metrics::MetricDataPoint;
+
+    fn point(ts: DateTime<Utc>, tokens: u64, requests: u64) -> MetricDataPoint {
+        MetricDataPoint {
+            timestamp: ts,
+            requests,
+            input_tokens: tokens,
+            output_tokens: 0,
+            total_tokens: tokens,
+            cost_usd: 0.0,
+            total_latency_ms: 0,
+            successful_requests: requests,
+            failed_requests: 0,
+            latency_samples: vec![],
+            p50_latency_ms: None,
+            p95_latency_ms: None,
+            p99_latency_ms: None,
+        }
+    }
+
+    #[test]
+    fn shift_buckets_rotates_and_zero_fills() {
+        let mut b: Vec<Bucket> = (1..=4)
+            .map(|i| Bucket {
+                tokens: i,
+                requests: 1,
+            })
+            .collect();
+        shift_buckets(&mut b, 1);
+        assert_eq!(
+            b.iter().map(|x| x.tokens).collect::<Vec<_>>(),
+            vec![2, 3, 4, 0]
+        );
+        shift_buckets(&mut b, 0);
+        assert_eq!(
+            b.iter().map(|x| x.tokens).collect::<Vec<_>>(),
+            vec![2, 3, 4, 0]
+        );
+        shift_buckets(&mut b, 10);
+        assert!(b.iter().all(Bucket::is_zero));
+    }
+
+    #[test]
+    fn slow_buckets_map_minutes_one_to_one() {
+        let now = Utc::now();
+        let mut b = vec![Bucket::default(); NUM_BUCKETS];
+        let metrics = vec![
+            point(now - Duration::seconds(30), 100, 2), // current minute → last bucket
+            point(now - Duration::seconds(90), 50, 1),  // one minute ago
+            point(now - Duration::seconds(NUM_BUCKETS as i64 * 60 + 5), 999, 9), // too old
+        ];
+        fill_slow_buckets(&mut b, &metrics, now);
+        assert_eq!(
+            b[NUM_BUCKETS - 1],
+            Bucket {
+                tokens: 100,
+                requests: 2
+            }
+        );
+        assert_eq!(
+            b[NUM_BUCKETS - 2],
+            Bucket {
+                tokens: 50,
+                requests: 1
+            }
+        );
+        assert_eq!(b.iter().map(|x| x.tokens).sum::<u64>(), 150);
+    }
+
+    #[test]
+    fn medium_buckets_spread_minute_forward_across_six() {
+        let now = Utc::now();
+        let mut b = vec![Bucket::default(); NUM_BUCKETS];
+        // A minute recorded 100s ago spreads to 100,90,...,50s ago
+        fill_medium_for_test(&mut b, &[point(now - Duration::seconds(100), 600, 6)], now);
+        let filled: Vec<usize> = b
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| !x.is_zero())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(filled.len(), 6);
+        assert!(b.iter().all(|x| x.tokens == 0 || x.tokens == 100));
+        assert_eq!(b.iter().map(|x| x.requests).sum::<u64>(), 6);
+        // Newest of the six is 50s ago → bucket index NUM_BUCKETS-1-5
+        assert_eq!(*filled.last().unwrap(), NUM_BUCKETS - 1 - 5);
+    }
+
+    fn fill_medium_for_test(b: &mut [Bucket], m: &[MetricDataPoint], now: DateTime<Utc>) {
+        seed_medium_buckets(b, m, now)
+    }
+
+    #[test]
+    fn source_matching() {
+        let req = RecordedRequest {
+            client_id: "c1".into(),
+            provider: "anthropic".into(),
+            model: "anthropic/claude".into(),
+            tokens: 10,
+        };
+        assert!(source_matches(&TraySource::All, &req));
+        assert!(source_matches(
+            &TraySource::Client { id: "c1".into() },
+            &req
+        ));
+        assert!(!source_matches(
+            &TraySource::Client { id: "c2".into() },
+            &req
+        ));
+        assert!(source_matches(
+            &TraySource::Provider {
+                instance: "anthropic".into()
+            },
+            &req
+        ));
+        assert!(source_matches(
+            &TraySource::Model {
+                id: "anthropic/claude".into()
+            },
+            &req
+        ));
+        assert!(!source_matches(
+            &TraySource::Model {
+                id: "claude".into()
+            },
+            &req
+        ));
+    }
+
+    #[test]
+    fn labels_resolve_custom_then_derived_then_key() {
+        let mut item = TrayStatsItem::new(TraySource::Client {
+            id: "abc-123".into(),
+        });
+        assert_eq!(resolve_label(&item, Some("Claude Code")), "CLAU");
+        assert_eq!(resolve_label(&item, None), "ABC1");
+        item.label = Some("cc".into());
+        assert_eq!(resolve_label(&item, Some("Claude Code")), "CC");
+        item.label = Some("--".into()); // normalizes to empty → derived
+        assert_eq!(resolve_label(&item, Some("Claude Code")), "CLAU");
+        let all = TrayStatsItem::new(TraySource::All);
+        assert_eq!(resolve_label(&all, None), "ALL");
+        // Nothing usable at all falls back to the source key
+        let weird = TrayStatsItem::new(TraySource::Provider {
+            instance: "---".into(),
+        });
+        assert_eq!(resolve_label(&weird, None), "PROV");
+    }
+
+    #[test]
+    fn effective_layout_respects_override() {
+        let mut cfg = TrayStatsConfig {
+            layout: TrayLayout::Compact,
+            ..Default::default()
+        };
+        assert_eq!(effective_layout(&cfg), TrayLayout::Compact);
+        cfg.layout = TrayLayout::Extended;
+        assert_eq!(effective_layout(&cfg), TrayLayout::Extended);
+        cfg.layout = TrayLayout::Auto;
+        assert_eq!(effective_layout(&cfg), platform_default_layout());
+        if cfg!(target_os = "macos") {
+            assert_eq!(platform_default_layout(), TrayLayout::Extended);
+        }
+        if cfg!(target_os = "windows") {
+            assert_eq!(platform_default_layout(), TrayLayout::Compact);
+        }
+    }
+
+    #[test]
+    fn displayable_items_skip_missing_clients_and_disabled() {
+        let mut stats = TrayStatsConfig::default();
+        stats.add_source(TraySource::Client { id: "gone".into() });
+        stats.add_source(TraySource::Client { id: "here".into() });
+        stats.add_source(TraySource::Provider {
+            instance: "openai".into(),
+        });
+        stats.items[3].enabled = false;
+        let mut client = lr_config::Client::new_with_strategy("Cursor".into(), "s".into());
+        client.id = "here".into();
+        let items = displayable_items(&stats, &[client]);
+        let labels: Vec<String> = items.iter().map(|(_, l)| l.clone()).collect();
+        assert_eq!(labels, vec!["ALL", "CURS"]);
+    }
 
     #[test]
     fn test_compute_shifts_none_last_shift() {
