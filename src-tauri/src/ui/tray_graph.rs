@@ -419,14 +419,19 @@ pub const PANE_GAP: u32 = 6;
 const LABEL_ROW_HEIGHT: u32 = crate::ui::tray_font::ABOVE_LABEL_GLYPH_HEIGHT + 3;
 /// Height of a graph pane drawn under a label (≈ 60 % of full size).
 pub const SMALL_GRAPH_HEIGHT: u32 = PANE_SIZE - LABEL_ROW_HEIGHT;
-/// Glyph height used for number panes.
-pub const NUMBER_GLYPH_HEIGHT: u32 = 12;
+/// Vertical margin around a number: the glyph spans the rest of its box.
+const NUMBER_MARGIN: u32 = 3;
+/// Smallest glyph a number pane will use.
+const NUMBER_MIN_GLYPH_HEIGHT: u32 = 12;
 /// Horizontal padding on each side of a number pane's text.
 const NUMBER_PAD: u32 = 2;
-/// Height of the horizontal usage gauge.
-pub const GAUGE_HEIGHT: u32 = 12;
-/// Minimum width of a usage gauge pane.
-pub const GAUGE_MIN_WIDTH: u32 = 36;
+/// Thickness of the usage gauge (height when horizontal, width when vertical).
+pub const GAUGE_THICKNESS: u32 = 16;
+/// Length of a horizontal usage gauge.
+pub const GAUGE_LENGTH: u32 = 36;
+/// Ruler ticks: major at ½ (this long), minor at ¼ and ¾ (half as long),
+/// measured inward from each long edge.
+const GAUGE_MAJOR_TICK: u32 = 4;
 
 /// Pad/truncate a series to exactly `GRAPH_WIDTH` values (most recent last).
 pub fn normalize_series(values: &[u64]) -> Vec<u64> {
@@ -763,21 +768,40 @@ fn label_row_width(pane: &PaneSpec) -> u32 {
         .unwrap_or(0)
 }
 
-/// Width of a pane's content alone.
-fn content_width(content: &PaneContent) -> u32 {
+/// Height of the box a pane's content is drawn in under `layout`.
+fn content_box_height(layout: PaneLayout) -> u32 {
+    match layout {
+        PaneLayout::Above => PANE_SIZE - LABEL_ROW_HEIGHT,
+        _ => PANE_SIZE,
+    }
+}
+
+/// Font used for a number in a content box `box_height` tall: as big as
+/// the box allows (numbers beside a stacked label span the whole icon).
+fn number_metrics(box_height: u32) -> crate::ui::tray_font::FontMetrics {
+    crate::ui::tray_font::FontMetrics::for_height(
+        box_height
+            .saturating_sub(2 * NUMBER_MARGIN)
+            .max(NUMBER_MIN_GLYPH_HEIGHT),
+    )
+}
+
+/// Width of a pane's content alone under `layout`.
+fn content_width(content: &PaneContent, layout: PaneLayout) -> u32 {
     match content {
         PaneContent::Graph(_) => PANE_SIZE,
-        PaneContent::UsageBar(_) => GAUGE_MIN_WIDTH,
+        // Beside a stacked label the gauge stands upright, like the label
+        PaneContent::UsageBar(_) if layout == PaneLayout::Beside => GAUGE_THICKNESS,
+        PaneContent::UsageBar(_) => GAUGE_LENGTH,
         PaneContent::Number(text) => {
-            crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT).text_width(text)
-                + 2 * NUMBER_PAD
+            number_metrics(content_box_height(layout)).text_width(text) + 2 * NUMBER_PAD
         }
     }
 }
 
 /// Pixel width of one pane. `column` is the shared beside-label width.
 fn pane_width(pane: &PaneSpec, options: MultiPaneOptions, column: u32) -> u32 {
-    let content = content_width(&pane.content);
+    let content = content_width(&pane.content, pane_layout(pane, options));
     match pane_layout(pane, options) {
         PaneLayout::Plain => content,
         PaneLayout::Beside => column + PANE_GAP + content,
@@ -806,36 +830,69 @@ fn draw_label_row(img: &mut RgbaImage, x: u32, width: u32, label: &str, config: 
     crate::ui::tray_font::draw_text(img, lx, 0, label, m, config.foreground);
 }
 
-/// Draw the horizontal outlined usage gauge filling `[x, x + width)` at `y`.
+/// Draw an outlined usage gauge with ruler ticks in the box
+/// `(x, y, width, height)`. The long axis is the fill direction: a wide box
+/// fills left-to-right, a tall box bottom-to-top. Ticks sit at ¼ (minor),
+/// ½ (major) and ¾ (minor) of the fill length, cut into the fill where it
+/// covers them so they read like a ruler either way.
 fn draw_usage_gauge(
     img: &mut RgbaImage,
     x: u32,
     y: u32,
     width: u32,
+    height: u32,
     fill: f32,
     config: &GraphConfig,
 ) {
-    let h = GAUGE_HEIGHT;
+    let horizontal = width >= height;
     // 1px outline with clipped corners
     for dx in 1..width - 1 {
         img.put_pixel(x + dx, y, config.foreground);
-        img.put_pixel(x + dx, y + h - 1, config.foreground);
+        img.put_pixel(x + dx, y + height - 1, config.foreground);
     }
-    for dy in 1..h - 1 {
+    for dy in 1..height - 1 {
         img.put_pixel(x, y + dy, config.foreground);
         img.put_pixel(x + width - 1, y + dy, config.foreground);
     }
-    // Fill from the left, inset 2px from the outline
-    let inner_w = width - 4;
+
+    // Fill inset 2px from the outline
+    let (length, thickness) = if horizontal {
+        (width - 4, height - 4)
+    } else {
+        (height - 4, width - 4)
+    };
     let fill = fill.clamp(0.0, 1.0);
     let filled = if fill <= 0.0 {
         0
     } else {
-        ((fill * inner_w as f32).round() as u32).clamp(1, inner_w)
+        ((fill * length as f32).round() as u32).clamp(1, length)
     };
-    for dy in 2..h - 2 {
-        for dx in 2..2 + filled {
-            img.put_pixel(x + dx, y + dy, config.foreground);
+    // `along` runs 0..length in the fill direction, `across` 0..thickness
+    let mut put = |along: u32, across: u32, color: Rgba<u8>| {
+        let (px, py) = if horizontal {
+            (x + 2 + along, y + 2 + across)
+        } else {
+            (x + 2 + across, y + height - 3 - along)
+        };
+        img.put_pixel(px, py, color);
+    };
+    for along in 0..filled {
+        for across in 0..thickness {
+            put(along, across, config.foreground);
+        }
+    }
+
+    // Ruler ticks from both long edges
+    let minor = GAUGE_MAJOR_TICK / 2;
+    for (quarter, len) in [(1, minor), (2, GAUGE_MAJOR_TICK), (3, minor)] {
+        let along = (length * quarter / 4).min(length - 1);
+        let color = if along < filled {
+            config.background
+        } else {
+            config.foreground
+        };
+        for across in (0..len.min(thickness)).chain((thickness.saturating_sub(len))..thickness) {
+            put(along, across, color);
         }
     }
 }
@@ -914,12 +971,19 @@ pub fn generate_multi_pane(
                 image::imageops::replace(&mut img, &pane_img, gx as i64, gy as i64);
             }
             PaneContent::UsageBar(fill) => {
-                let gy = cy + (ch - GAUGE_HEIGHT) / 2;
-                draw_usage_gauge(&mut img, cx, gy, cw, *fill, config);
+                if layout == PaneLayout::Beside {
+                    // Upright gauge spanning the full height
+                    let gx = cx + cw.saturating_sub(GAUGE_THICKNESS) / 2;
+                    draw_usage_gauge(&mut img, gx, cy, GAUGE_THICKNESS, ch, *fill, config);
+                } else {
+                    let gh = GAUGE_THICKNESS.min(ch);
+                    let gy = cy + (ch - gh) / 2;
+                    draw_usage_gauge(&mut img, cx, gy, cw, gh, *fill, config);
+                }
             }
             PaneContent::Number(text) => {
-                let m = crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT);
-                let ty = cy + (ch - m.glyph_height) / 2;
+                let m = number_metrics(ch);
+                let ty = cy + ch.saturating_sub(m.glyph_height) / 2;
                 let tx = cx + cw.saturating_sub(m.text_width(text)) / 2;
                 crate::ui::tray_font::draw_text(&mut img, tx, ty, text, m, config.foreground);
             }
@@ -1439,7 +1503,10 @@ mod tests {
     fn multi_pane_widths_per_layout() {
         let config = GraphConfig::macos(false);
         let am = crate::ui::tray_font::above_label_metrics();
-        let nm = crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT);
+        let big = number_metrics(PANE_SIZE); // numbers with no label / label beside
+        let small = number_metrics(PANE_SIZE - LABEL_ROW_HEIGHT); // under a label
+        assert!(big.glyph_height > small.glyph_height);
+        assert_eq!(big.glyph_height, PANE_SIZE - 2 * NUMBER_MARGIN);
 
         let graphs = vec![
             labelled("ALL", PaneContent::Graph(vec![])),
@@ -1456,50 +1523,52 @@ mod tests {
             multi_pane_width(&graphs, opts(LabelMode::Beside)),
             2 * (col + PANE_GAP + PANE_SIZE) + PANE_GAP
         );
-        // Above: a pane is as wide as its label row or its graph, whichever is wider
-        let above_w = |l: &str| PANE_SIZE.max(am.text_width(l) + 4);
+        // Above: a pane is as wide as its label row or its content, whichever is wider
+        let above_w = |l: &str, content: u32| content.max(am.text_width(l) + 4);
         assert_eq!(
             multi_pane_width(&graphs, opts(LabelMode::Above)),
-            above_w("ALL") + above_w("CLAU") + PANE_GAP
+            above_w("ALL", PANE_SIZE) + above_w("CLAU", PANE_SIZE) + PANE_GAP
         );
 
         let gauges = vec![labelled("ALL", PaneContent::UsageBar(1.0))];
         assert_eq!(
             multi_pane_width(&gauges, opts(LabelMode::Off)),
-            GAUGE_MIN_WIDTH
+            GAUGE_LENGTH
         );
+        // Beside a stacked label the gauge stands upright
         assert_eq!(
             multi_pane_width(&gauges, opts(LabelMode::Beside)),
-            col + PANE_GAP + GAUGE_MIN_WIDTH
+            col + PANE_GAP + GAUGE_THICKNESS
         );
         assert_eq!(
             multi_pane_width(&gauges, opts(LabelMode::Above)),
-            above_w("ALL").max(GAUGE_MIN_WIDTH)
+            above_w("ALL", GAUGE_LENGTH)
         );
 
-        let numbers = vec![labelled("CLAU", PaneContent::Number("$1.23K".into()))];
-        let text_w = nm.text_width("$1.23K") + 4;
-        assert!(text_w > am.text_width("CLAU") + 4);
-        assert_eq!(multi_pane_width(&numbers, opts(LabelMode::Above)), text_w);
+        let numbers = vec![labelled("CLAU", PaneContent::Number("$1.2K".into()))];
+        assert_eq!(
+            multi_pane_width(&numbers, opts(LabelMode::Off)),
+            big.text_width("$1.2K") + 4
+        );
         assert_eq!(
             multi_pane_width(&numbers, opts(LabelMode::Beside)),
-            crate::ui::tray_font::vertical_label_width("CLAU") + PANE_GAP + text_w
-        );
-        let short = vec![labelled("CLAU", PaneContent::Number("7".into()))];
-        assert_eq!(
-            multi_pane_width(&short, opts(LabelMode::Above)),
-            am.text_width("CLAU") + 4
+            crate::ui::tray_font::vertical_label_width("CLAU")
+                + PANE_GAP
+                + big.text_width("$1.2K")
+                + 4
         );
         assert_eq!(
-            multi_pane_width(&short, opts(LabelMode::Off)),
-            nm.text_width("7") + 4
+            multi_pane_width(&numbers, opts(LabelMode::Above)),
+            above_w("CLAU", small.text_width("$1.2K") + 4)
         );
 
         for (panes, mode) in [
             (&graphs, LabelMode::Beside),
             (&graphs, LabelMode::Above),
+            (&gauges, LabelMode::Off),
             (&gauges, LabelMode::Beside),
             (&gauges, LabelMode::Above),
+            (&numbers, LabelMode::Off),
             (&numbers, LabelMode::Beside),
             (&numbers, LabelMode::Above),
         ] {
@@ -1614,7 +1683,7 @@ mod tests {
             .count() as u32;
         assert!(bar_px <= SMALL_GRAPH_HEIGHT - 4);
 
-        // Beside a gauge: column, gap, then a vertically centred gauge
+        // Beside a gauge: column, gap, then an upright gauge spanning the height
         let gauge = vec![labelled("ALL", PaneContent::UsageBar(0.5))];
         let img = decode(
             &generate_multi_pane(
@@ -1626,9 +1695,13 @@ mod tests {
             )
             .unwrap(),
         );
-        let gy = (PANE_SIZE - GAUGE_HEIGHT) / 2;
-        assert_ne!(img.get_pixel(gx, gy + 3)[3], 0); // gauge left edge
-        assert!(!ink_in(&img, gx, img.width(), 0, gy)); // nothing above the gauge
+        assert_ne!(img.get_pixel(gx, 10)[3], 0); // gauge left edge
+        assert_ne!(img.get_pixel(gx + GAUGE_THICKNESS - 1, 10)[3], 0); // gauge right edge
+        assert_ne!(img.get_pixel(gx + 8, 0)[3], 0); // top edge at the very top
+        assert_ne!(img.get_pixel(gx + 8, PANE_SIZE - 1)[3], 0); // bottom edge at the very bottom
+                                                                // Half full from the bottom: lower interior filled, upper empty
+        assert_ne!(img.get_pixel(gx + 8, PANE_SIZE - 5)[3], 0);
+        assert_eq!(img.get_pixel(gx + 8, 5)[3], 0);
     }
 
     #[test]
@@ -1637,7 +1710,7 @@ mod tests {
         let panes = vec![
             labelled("ALL", PaneContent::UsageBar(1.0)),
             labelled("CLAU", PaneContent::UsageBar(0.0)),
-            labelled("GPT5", PaneContent::Number("1.20M".into())),
+            labelled("GPT5", PaneContent::Number("1.2M".into())),
         ];
         let img = decode(
             &generate_multi_pane(
@@ -1651,21 +1724,59 @@ mod tests {
         );
         let lh = crate::ui::tray_font::ABOVE_LABEL_GLYPH_HEIGHT;
         // Labels on top of each pane
-        assert!(ink_in(&img, 0, GAUGE_MIN_WIDTH, 0, lh));
+        assert!(ink_in(&img, 0, GAUGE_LENGTH, 0, lh));
         // Gauge 0: full-width outline in the lower area, interior filled
-        let content_top = lh + 3;
-        let gy = content_top + (PANE_SIZE - content_top - GAUGE_HEIGHT) / 2;
-        assert_ne!(img.get_pixel(0, gy + 5)[3], 0); // left edge
-        assert_ne!(img.get_pixel(GAUGE_MIN_WIDTH - 1, gy + 5)[3], 0); // right edge
-        assert_ne!(img.get_pixel(GAUGE_MIN_WIDTH - 3, gy + 5)[3], 0); // filled to the end
-                                                                      // Gauge 1: outline present, interior empty
-        let x1 = GAUGE_MIN_WIDTH + PANE_GAP;
-        assert_ne!(img.get_pixel(x1, gy + 5)[3], 0);
-        assert_eq!(img.get_pixel(x1 + 10, gy + 5)[3], 0);
+        let content_top = LABEL_ROW_HEIGHT;
+        let gh = GAUGE_THICKNESS.min(PANE_SIZE - content_top);
+        let gy = content_top + (PANE_SIZE - content_top - gh) / 2;
+        let mid = gy + gh / 2;
+        assert_ne!(img.get_pixel(0, mid)[3], 0); // left edge
+        assert_ne!(img.get_pixel(GAUGE_LENGTH - 1, mid)[3], 0); // right edge
+        assert_ne!(img.get_pixel(GAUGE_LENGTH - 3, mid)[3], 0); // filled to the end
+                                                                // Ruler ticks: the major tick at ½ is cut out of a full gauge...
+        let half_x = 2 + (GAUGE_LENGTH - 4) / 2;
+        assert_eq!(img.get_pixel(half_x, gy + 2)[3], 0);
+        assert_ne!(img.get_pixel(half_x, mid)[3], 0); // ...but only near the edges
+                                                      // Gauge 1: its label is wider than the gauge, so the pane (and the
+                                                      // gauge) widen to fit it. Outline present, interior empty, ticks in ink.
+        let x1 = GAUGE_LENGTH + PANE_GAP;
+        let w1 = multi_pane_width(&panes[1..2], opts(LabelMode::Above));
+        assert!(w1 > GAUGE_LENGTH);
+        assert_ne!(img.get_pixel(x1, mid)[3], 0);
+        assert_eq!(img.get_pixel(x1 + 10, mid)[3], 0);
+        let half_x1 = 2 + (w1 - 4) / 2;
+        assert_ne!(img.get_pixel(x1 + half_x1, gy + 2)[3], 0);
         // Number pane: text ink sits in the content area, none in the label gap
-        let x2 = x1 + GAUGE_MIN_WIDTH + PANE_GAP;
+        let x2 = x1 + w1 + PANE_GAP;
         assert!(!ink_in(&img, x2, img.width(), lh, content_top));
         assert!(ink_in(&img, x2, img.width(), content_top, PANE_SIZE));
+
+        // Without labels the number spans (almost) the whole height
+        let big = vec![labelled("X", PaneContent::Number("42".into()))];
+        let img = decode(
+            &generate_multi_pane(
+                &big,
+                opts(LabelMode::Off),
+                &config,
+                TrayOverlay::None,
+                false,
+            )
+            .unwrap(),
+        );
+        assert!(ink_in(
+            &img,
+            0,
+            img.width(),
+            NUMBER_MARGIN,
+            NUMBER_MARGIN + 2
+        ));
+        assert!(ink_in(
+            &img,
+            0,
+            img.width(),
+            PANE_SIZE - NUMBER_MARGIN - 2,
+            PANE_SIZE - NUMBER_MARGIN
+        ));
     }
 
     #[test]
@@ -1690,8 +1801,8 @@ mod tests {
             ),
             (
                 "number",
-                PaneContent::Number("1.20M".into()),
-                PaneContent::Number("24.1K".into()),
+                PaneContent::Number("1.2M".into()),
+                PaneContent::Number("24K".into()),
                 PaneContent::Number("$0.42".into()),
             ),
         ];
