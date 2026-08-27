@@ -24,7 +24,6 @@ import type {
   TraySource,
   TrayDisplay,
   TrayLabelMode,
-  TrayGraphMetric,
   TrayUsageMetric,
   TrayUsagePeriod,
   TrayLayout,
@@ -134,10 +133,17 @@ function normalizeLabel(seed: string): string {
 }
 
 /** The actual tray icon, rendered by the backend for the current (unsaved) config */
-function TrayStatsPreview({ config }: { config: TrayStatsConfig }) {
+function TrayStatsPreview({ config, refreshRateSecs }: { config: TrayStatsConfig; refreshRateSecs: number }) {
   const [png, setPng] = useState<string | null>(null)
   const [size, setSize] = useState<{ w: number; h: number } | null>(null)
+  const [tick, setTick] = useState(0)
   const darkUi = document.documentElement.classList.contains("dark")
+
+  // Dummy data scrolls at the configured refresh rate, like the real graph
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), Math.max(1, refreshRateSecs) * 1000)
+    return () => clearInterval(id)
+  }, [refreshRateSecs])
 
   useEffect(() => {
     let cancelled = false
@@ -146,17 +152,18 @@ function TrayStatsPreview({ config }: { config: TrayStatsConfig }) {
         const b64 = await invoke<string>("render_tray_stats_preview", {
           config,
           darkUi,
+          tick,
         } satisfies RenderTrayStatsPreviewParams)
         if (!cancelled) setPng(b64)
       } catch (error) {
         console.error("Failed to render tray preview:", error)
       }
-    }, 150)
+    }, 100)
     return () => {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [config, darkUi])
+  }, [config, darkUi, tick])
 
   if (!png) return null
   // The menu bar scales the icon to 18pt tall; 18 CSS px is the same size here.
@@ -176,7 +183,7 @@ function TrayStatsPreview({ config }: { config: TrayStatsConfig }) {
   )
 }
 
-function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
+function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolean; refreshRateSecs: number }) {
   const [settings, setSettings] = useState<TrayStatsSettings | null>(null)
   const [clients, setClients] = useState<ClientInfo[]>([])
   const [providers, setProviders] = useState<ProviderInstanceInfo[]>([])
@@ -313,10 +320,8 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
 
         {graphEnabled && (
           <div className="flex items-center gap-3">
-            <TrayStatsPreview config={config} />
-            <p className="text-xs text-muted-foreground">
-              Preview at menu-bar size, with live data (sample bars until there is traffic)
-            </p>
+            <TrayStatsPreview config={config} refreshRateSecs={refreshRateSecs} />
+            <p className="text-xs text-muted-foreground">Preview at menu-bar size</p>
           </div>
         )}
 
@@ -330,10 +335,13 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
             {config.items.map((item, index) => {
               const key = sourceKey(item.source)
               const exists = sourceExists(item.source)
+              const lastEnabled = item.enabled && config.items.filter((i) => i.enabled).length === 1
               return (
                 <div key={key} className={`flex items-center gap-2 px-2 py-1.5 ${exists ? "" : "opacity-60"}`}>
                   <Checkbox
                     checked={item.enabled}
+                    disabled={lastEnabled}
+                    title={lastEnabled ? "At least one item must stay enabled" : undefined}
                     onCheckedChange={(v) =>
                       updateConfig((c) => ({
                         ...c,
@@ -383,7 +391,7 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7"
-                    disabled={item.source.kind === "all"}
+                    disabled={item.source.kind === "all" || lastEnabled}
                     onClick={() =>
                       updateConfig((c) => ({ ...c, items: c.items.filter((i) => !sameSource(i.source, item.source)) }))
                     }
@@ -484,22 +492,29 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
           </div>
         </div>
 
-        {/* Metrics */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {/* Metric & period */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <Label className="text-xs">Graph metric</Label>
-            <Select value={config.graph_metric} onValueChange={(v) => updateConfig({ graph_metric: v as TrayGraphMetric })}>
+            <Label className="text-xs flex items-center gap-1">
+              Metric
+              <InfoTooltip content="What every panel shows: the graph plots it over the recent window, the usage bar and number use its total over the period below, and the menu lines lead with it." />
+            </Label>
+            <Select value={config.metric} onValueChange={(v) => updateConfig({ metric: v as TrayUsageMetric })}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="tokens">Tokens</SelectItem>
                 <SelectItem value="requests">Requests</SelectItem>
+                <SelectItem value="cost">Cost</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs">Usage period</Label>
+            <Label className="text-xs flex items-center gap-1">
+              Usage period
+              <InfoTooltip content="Rolling window the usage bar, number and menu figures are summed over. The graph always shows the recent window set by the refresh rate above." />
+            </Label>
             <Select value={config.usage_period} onValueChange={(v) => updateConfig({ usage_period: v as TrayUsagePeriod })}>
               <SelectTrigger>
                 <SelectValue />
@@ -512,24 +527,7 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs">Usage metric</Label>
-            <Select value={config.usage_metric} onValueChange={(v) => updateConfig({ usage_metric: v as TrayUsageMetric })}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="tokens">Tokens</SelectItem>
-                <SelectItem value="cost">Cost</SelectItem>
-                <SelectItem value="requests">Requests</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
         </div>
-        <p className="text-xs text-muted-foreground">
-          The usage period and metric drive the usage bar, the number panels and the tray menu lines. The graph
-          display always shows the recent window set by the refresh rate above.
-        </p>
 
         {platform.os === "linux" && (
           <div className="space-y-1.5">
@@ -685,7 +683,7 @@ export function AppearanceTab() {
         </CardContent>
       </Card>
 
-      <TrayStatsCard graphEnabled={settings.enabled} />
+      <TrayStatsCard graphEnabled={settings.enabled} refreshRateSecs={settings.refresh_rate_secs} />
     </div>
   )
 }

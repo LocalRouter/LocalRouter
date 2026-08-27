@@ -920,6 +920,9 @@ async fn handle_mcp_via_llm(
             provider: response.provider.clone(),
             model: response.model.clone(),
             tokens: response.usage.total_tokens as u64,
+            // This path has no cost estimate; the Slow-mode metrics query
+            // still reports cost once the minute rolls over.
+            cost_micro_usd: 0,
         });
     }
 

@@ -318,7 +318,7 @@ export function MacOSTrayMenu({ onClose }: MacOSTrayMenuProps) {
 
         {/* Usage section (tray stats): one line per enabled item */}
         <div className="px-3 py-1 text-gray-400 cursor-default text-[13px]">
-          Usage · last 24h
+          Usage
         </div>
         <MenuItem label="ALL   1.2M tok · 843 req · $3.1 · 24h" onClick={onClose} />
         {mockData.clients.slice(0, 2).map((client, i) => (

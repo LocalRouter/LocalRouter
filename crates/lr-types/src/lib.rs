@@ -27,6 +27,19 @@ pub struct RecordedRequest {
     pub model: String,
     /// Input + output tokens.
     pub tokens: u64,
+    /// Cost in millionths of a dollar (integer so the struct stays `Eq`).
+    pub cost_micro_usd: u64,
+}
+
+impl RecordedRequest {
+    /// Convert a dollar amount to the `cost_micro_usd` representation.
+    pub fn micro_usd(cost_usd: f64) -> u64 {
+        if cost_usd.is_finite() && cost_usd > 0.0 {
+            (cost_usd * 1_000_000.0).round() as u64
+        } else {
+            0
+        }
+    }
 }
 
 /// Trait for recording request usage (used to decouple server from UI)

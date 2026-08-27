@@ -1313,7 +1313,6 @@ export interface TrayStatsItem {
 
 export type TrayLabelMode = 'off' | 'beside' | 'above'
 export type TrayDisplay = 'graph' | 'usage_bar' | 'number'
-export type TrayGraphMetric = 'tokens' | 'requests'
 export type TrayUsageMetric = 'tokens' | 'cost' | 'requests'
 export type TrayUsagePeriod = 'hour' | 'day' | 'week' | 'month'
 export type TrayLayout = 'auto' | 'extended' | 'compact'
@@ -1323,8 +1322,7 @@ export interface TrayStatsConfig {
   items: TrayStatsItem[]
   labels: TrayLabelMode
   display: TrayDisplay
-  graph_metric: TrayGraphMetric
-  usage_metric: TrayUsageMetric
+  metric: TrayUsageMetric
   usage_period: TrayUsagePeriod
   layout: TrayLayout
 }
@@ -2849,6 +2847,8 @@ export interface UpdateTrayStatsConfigParams {
 export interface RenderTrayStatsPreviewParams {
   config: TrayStatsConfig
   darkUi: boolean
+  /** Advances the dummy series so repeated renders animate */
+  tick: number
 }
 
 // =============================================================================

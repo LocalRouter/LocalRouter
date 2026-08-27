@@ -10,8 +10,8 @@ use crate::ui::tray_graph::{
 };
 use chrono::{DateTime, Duration, Utc};
 use lr_config::{
-    normalize_tray_label, ConfigManager, TrayDisplay, TrayGraphMetric, TrayLabelMode, TrayLayout,
-    TraySource, TrayStatsConfig, TrayStatsItem, UiConfig,
+    normalize_tray_label, ConfigManager, TrayDisplay, TrayLabelMode, TrayLayout, TraySource,
+    TrayStatsConfig, TrayStatsItem, TrayUsageMetric, UiConfig,
 };
 use lr_monitoring::metrics::{MetricDataPoint, MetricsCollector, UsageTotals};
 use lr_providers::health_cache::AggregateHealthStatus;
@@ -89,22 +89,26 @@ type ModeKey = (bool, u64, Vec<TraySource>);
 pub struct Bucket {
     pub tokens: u64,
     pub requests: u64,
+    /// Millionths of a dollar.
+    pub cost_micro_usd: u64,
 }
 
 impl Bucket {
     fn add(&mut self, other: Bucket) {
         self.tokens += other.tokens;
         self.requests += other.requests;
+        self.cost_micro_usd += other.cost_micro_usd;
     }
 
     fn is_zero(&self) -> bool {
-        self.tokens == 0 && self.requests == 0
+        self.tokens == 0 && self.requests == 0 && self.cost_micro_usd == 0
     }
 
-    fn value(&self, metric: TrayGraphMetric) -> u64 {
+    fn value(&self, metric: TrayUsageMetric) -> u64 {
         match metric {
-            TrayGraphMetric::Tokens => self.tokens,
-            TrayGraphMetric::Requests => self.requests,
+            TrayUsageMetric::Tokens => self.tokens,
+            TrayUsageMetric::Requests => self.requests,
+            TrayUsageMetric::Cost => self.cost_micro_usd,
         }
     }
 }
@@ -263,6 +267,7 @@ fn seed_medium_buckets(buckets: &mut [Bucket], metrics: &[MetricDataPoint], now:
         let per_bucket = Bucket {
             tokens: metric.total_tokens / num_in_window,
             requests: metric.requests / num_in_window,
+            cost_micro_usd: RecordedRequest::micro_usd(metric.cost_usd) / num_in_window,
         };
 
         for offset in 0..6 {
@@ -292,6 +297,7 @@ fn fill_slow_buckets(buckets: &mut [Bucket], metrics: &[MetricDataPoint], now: D
         buckets[idx].add(Bucket {
             tokens: metric.total_tokens,
             requests: metric.requests,
+            cost_micro_usd: RecordedRequest::micro_usd(metric.cost_usd),
         });
     }
 }
@@ -593,6 +599,7 @@ impl TrayGraphManager {
                 if source_matches(source, req) {
                     state.accumulated.tokens += req.tokens;
                     state.accumulated.requests += 1;
+                    state.accumulated.cost_micro_usd += req.cost_micro_usd;
                 }
             }
         }
@@ -708,7 +715,7 @@ impl TrayGraphManager {
         display_sources: &[TraySource],
         refresh_rate_secs: u64,
         mode_changed: bool,
-        graph_metric: TrayGraphMetric,
+        metric: TrayUsageMetric,
         now: DateTime<Utc>,
     ) -> Vec<Vec<u64>> {
         let mut sources = self.sources.write();
@@ -793,13 +800,7 @@ impl TrayGraphManager {
                 }
             }
 
-            bars.push(
-                state
-                    .buckets
-                    .iter()
-                    .map(|b| b.value(graph_metric))
-                    .collect(),
-            );
+            bars.push(state.buckets.iter().map(|b| b.value(metric)).collect());
         }
 
         // Advance the shift clock once for all sources.
@@ -821,7 +822,7 @@ impl TrayGraphManager {
     ) -> Vec<PaneSpec> {
         let max_magnitude = display_items
             .iter()
-            .map(|(i, _)| metric_magnitude(&usage_for(&i.source), stats.usage_metric))
+            .map(|(i, _)| metric_magnitude(&usage_for(&i.source), stats.metric))
             .fold(0.0_f64, f64::max);
 
         display_items
@@ -834,13 +835,13 @@ impl TrayGraphManager {
                         PaneContent::Graph(bars.get(idx).cloned().unwrap_or_default())
                     }
                     TrayDisplay::UsageBar => PaneContent::UsageBar(if max_magnitude > 0.0 {
-                        (metric_magnitude(&usage, stats.usage_metric) / max_magnitude) as f32
+                        (metric_magnitude(&usage, stats.metric) / max_magnitude) as f32
                     } else {
                         0.0
                     }),
-                    TrayDisplay::Number => PaneContent::Number(
-                        headline_value(&usage, stats.usage_metric).to_uppercase(),
-                    ),
+                    TrayDisplay::Number => {
+                        PaneContent::Number(headline_value(&usage, stats.metric).to_uppercase())
+                    }
                 };
                 PaneSpec {
                     label: Some(label.clone()),
@@ -861,20 +862,25 @@ impl TrayGraphManager {
                     TrayLabelMode::Above => LabelMode::Above,
                 }
             },
-            units_per_pixel: match stats.graph_metric {
-                TrayGraphMetric::Tokens => Some(crate::ui::tray_graph::TOKENS_PER_PIXEL),
-                TrayGraphMetric::Requests => None,
+            units_per_pixel: match stats.metric {
+                TrayUsageMetric::Tokens => Some(crate::ui::tray_graph::TOKENS_PER_PIXEL),
+                TrayUsageMetric::Requests | TrayUsageMetric::Cost => None,
             },
         }
     }
 
     /// Render what the tray icon would look like under `stats` (which need
-    /// not be saved), using the live bucket and usage data. Drawn with a
-    /// white or black foreground on transparent for the settings preview.
+    /// not be saved) with dummy data, for the settings preview. `tick`
+    /// advances the dummy series so the preview animates like the real
+    /// graph shifts. Drawn white or black on transparent for the UI theme.
     /// Returns PNG bytes; `None` if nothing can be drawn.
-    pub fn render_preview(&self, stats: &TrayStatsConfig, dark_ui: bool) -> Option<Vec<u8>> {
+    pub fn render_preview(
+        &self,
+        stats: &TrayStatsConfig,
+        dark_ui: bool,
+        tick: u64,
+    ) -> Option<Vec<u8>> {
         let config_manager = self.app_handle.try_state::<ConfigManager>()?;
-        let metrics_collector = self.app_handle.try_state::<Arc<MetricsCollector>>()?;
         let app_config = config_manager.get();
         let extended = effective_layout(stats) == TrayLayout::Extended;
         let items = displayable_items(stats, &app_config.clients);
@@ -888,40 +894,44 @@ impl TrayGraphManager {
             )]
         };
 
-        // Graph data: current buckets when we have them, else a sample
-        // ramp so the layout is visible before any traffic.
-        let sources = self.sources.read();
-        let bars: Vec<Vec<u64>> = display_items
-            .iter()
-            .enumerate()
-            .map(|(idx, (item, _))| {
-                let live: Vec<u64> = sources
-                    .get(&item.source)
-                    .map(|st| {
-                        st.buckets
-                            .iter()
-                            .map(|b| b.value(stats.graph_metric))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if live.iter().any(|&v| v > 0) {
-                    live
-                } else {
-                    (0..NUM_BUCKETS as u64)
-                        .map(|i| ((i * 37 + idx as u64 * 11) % 23 + 1) * 25)
-                        .collect()
-                }
-            })
+        // Dummy traffic: a bumpy, item-specific series that scrolls with
+        // `tick`, in the configured metric's units.
+        let unit: u64 = match stats.metric {
+            TrayUsageMetric::Tokens => 25,
+            TrayUsageMetric::Requests => 1,
+            TrayUsageMetric::Cost => 20_000, // micro-dollars
+        };
+        let sample = |i: u64, idx: u64| -> u64 {
+            let t = i + tick;
+            let wave = ((t * 7 + idx * 5) % 11) + ((t * 3 + idx * 13) % 7);
+            let burst = if (t + idx * 4).is_multiple_of(9) {
+                12
+            } else {
+                0
+            };
+            (wave + burst + 1) * unit
+        };
+        let bars: Vec<Vec<u64>> = (0..display_items.len() as u64)
+            .map(|idx| (0..NUM_BUCKETS as u64).map(|i| sample(i, idx)).collect())
             .collect();
-        drop(sources);
 
-        let window = stats.usage_period.seconds();
+        // Dummy usage totals: proportional to each item's series so gauges
+        // and numbers differ per item and move with the tick.
         let usage_map: HashMap<TraySource, UsageTotals> = display_items
             .iter()
-            .map(|(i, _)| {
+            .zip(bars.iter())
+            .enumerate()
+            .map(|(idx, ((item, _), series))| {
+                let sum: u64 = series.iter().sum::<u64>() / unit;
+                let scale = 40 + (idx as u64 * 17) % 50;
+                let tokens = sum * scale * 25;
                 (
-                    i.source.clone(),
-                    metrics_collector.get_usage_for_type(&i.source.metric_type(), window),
+                    item.source.clone(),
+                    UsageTotals {
+                        requests: sum * scale / 4,
+                        tokens,
+                        cost_usd: tokens as f64 * 0.000_002,
+                    },
                 )
             })
             .collect();
@@ -1005,7 +1015,7 @@ impl TrayGraphManager {
                 &display_sources,
                 refresh_rate_secs,
                 mode_changed,
-                stats.graph_metric,
+                stats.metric,
                 now,
             )
         } else {
@@ -1115,7 +1125,7 @@ impl TrayGraphManager {
         tooltip_lines.extend(
             usage_entries
                 .iter()
-                .map(|e| usage_line(&e.label, &e.usage, stats.usage_metric, stats.usage_period)),
+                .map(|e| usage_line(&e.label, &e.usage, stats.metric, stats.usage_period)),
         );
         let tooltip = tooltip_lines.join("\n");
 
@@ -1259,6 +1269,7 @@ mod tests {
             .map(|i| Bucket {
                 tokens: i,
                 requests: 1,
+                cost_micro_usd: 0,
             })
             .collect();
         shift_buckets(&mut b, 1);
@@ -1289,14 +1300,16 @@ mod tests {
             b[NUM_BUCKETS - 1],
             Bucket {
                 tokens: 100,
-                requests: 2
+                requests: 2,
+                cost_micro_usd: 0,
             }
         );
         assert_eq!(
             b[NUM_BUCKETS - 2],
             Bucket {
                 tokens: 50,
-                requests: 1
+                requests: 1,
+                cost_micro_usd: 0,
             }
         );
         assert_eq!(b.iter().map(|x| x.tokens).sum::<u64>(), 150);
@@ -1332,6 +1345,7 @@ mod tests {
             provider: "anthropic".into(),
             model: "anthropic/claude".into(),
             tokens: 10,
+            cost_micro_usd: 0,
         };
         assert!(source_matches(&TraySource::All, &req));
         assert!(source_matches(

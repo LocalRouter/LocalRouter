@@ -259,6 +259,7 @@ impl MetricsCollector {
                 provider: metrics.provider.to_string(),
                 model: metrics.model.to_string(),
                 tokens: metrics.input_tokens + metrics.output_tokens,
+                cost_micro_usd: RecordedRequest::micro_usd(metrics.cost_usd),
             }));
         }
     }
@@ -743,6 +744,7 @@ mod tests {
                     provider: "openai".to_string(),
                     model: "gpt-4".to_string(),
                     tokens: 300,
+                    cost_micro_usd: 50_000,
                 }),
                 None
             ],

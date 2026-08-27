@@ -794,17 +794,8 @@ pub enum TrayDisplay {
     Number,
 }
 
-/// Which metric drives the per-panel sparkline.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TrayGraphMetric {
-    #[default]
-    Tokens,
-    Requests,
-}
-
-/// Which metric the usage bar, the text beside the icon and the tray menu
-/// lines lead with.
+/// Which metric the panels (graph, gauge, number) and the tray menu lines
+/// report.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TrayUsageMetric {
@@ -881,10 +872,9 @@ pub struct TrayStatsConfig {
     /// What each panel shows.
     #[serde(default)]
     pub display: TrayDisplay,
-    #[serde(default)]
-    pub graph_metric: TrayGraphMetric,
-    #[serde(default)]
-    pub usage_metric: TrayUsageMetric,
+    /// Metric shown by every panel and led with in the menu lines.
+    #[serde(default, alias = "usage_metric")]
+    pub metric: TrayUsageMetric,
     #[serde(default)]
     pub usage_period: TrayUsagePeriod,
     #[serde(default)]
@@ -901,8 +891,7 @@ impl Default for TrayStatsConfig {
             items: default_tray_stats_items(),
             labels: TrayLabelMode::default(),
             display: TrayDisplay::default(),
-            graph_metric: TrayGraphMetric::default(),
-            usage_metric: TrayUsageMetric::default(),
+            metric: TrayUsageMetric::default(),
             usage_period: TrayUsagePeriod::default(),
             layout: TrayLayout::default(),
         }

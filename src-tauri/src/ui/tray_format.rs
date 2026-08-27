@@ -117,9 +117,9 @@ pub fn usage_line(
     format!("{:<4}  {} · {}", label, parts.join(" · "), period.short())
 }
 
-/// Header for the tray menu usage section, e.g. `Usage · last 24h`.
-pub fn usage_header(config: &TrayStatsConfig) -> String {
-    format!("Usage · {}", config.usage_period.label())
+/// Header for the tray menu usage section (the period is on every line).
+pub fn usage_header(_config: &TrayStatsConfig) -> String {
+    "Usage".to_string()
 }
 
 #[cfg(test)]

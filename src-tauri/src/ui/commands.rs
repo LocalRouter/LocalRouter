@@ -1513,6 +1513,16 @@ pub async fn update_tray_stats_config(
     // Dedupe sources, keeping the first occurrence.
     let mut seen = std::collections::HashSet::new();
     config.items.retain(|i| seen.insert(i.source.clone()));
+    // Something must always be shown; fall back to the global view.
+    if config.enabled_items().next().is_none() {
+        if let Some(all) = config
+            .items
+            .iter_mut()
+            .find(|i| i.source == lr_config::TraySource::All)
+        {
+            all.enabled = true;
+        }
+    }
 
     config_manager
         .update(|cfg| {
@@ -1531,18 +1541,20 @@ pub async fn update_tray_stats_config(
     Ok(())
 }
 
-/// Render the tray icon as it would look under `config` (unsaved is fine),
-/// using live data. Returns a base64 PNG for the settings preview; drawn
+/// Render the tray icon as it would look under `config` (unsaved is fine)
+/// with dummy data; `tick` scrolls the dummy series so repeated calls
+/// animate. Returns a base64 PNG for the settings preview; drawn
 /// white-on-transparent when `dark_ui` is set, black otherwise.
 #[tauri::command]
 pub fn render_tray_stats_preview(
     config: lr_config::TrayStatsConfig,
     dark_ui: bool,
+    tick: u64,
     tray_graph_manager: State<'_, Arc<crate::ui::tray::TrayGraphManager>>,
 ) -> Result<String, String> {
     use base64::Engine;
     let png = tray_graph_manager
-        .render_preview(&config, dark_ui)
+        .render_preview(&config, dark_ui, tick)
         .ok_or_else(|| "Nothing to render".to_string())?;
     Ok(base64::engine::general_purpose::STANDARD.encode(png))
 }

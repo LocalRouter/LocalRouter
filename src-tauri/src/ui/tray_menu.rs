@@ -142,7 +142,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                     crate::ui::tray_format::usage_line(
                         &entry.label,
                         &entry.usage,
-                        stats.usage_metric,
+                        stats.metric,
                         stats.usage_period,
                     )
                 );
