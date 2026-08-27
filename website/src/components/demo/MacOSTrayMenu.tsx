@@ -320,7 +320,7 @@ export function MacOSTrayMenu({ onClose }: MacOSTrayMenuProps) {
         <div className="px-3 py-1 text-gray-400 cursor-default text-[13px]">
           Usage
         </div>
-        <MenuItem label="ALL   1.2M tok · 843 req · $3.1 · 24h" onClick={onClose} />
+        <MenuItem label="ALL   1.2M tok · 0.8k req · $3.1 · 24h" onClick={onClose} />
         {mockData.clients.slice(0, 2).map((client, i) => (
           <MenuItem
             key={client.id}
@@ -328,7 +328,7 @@ export function MacOSTrayMenu({ onClose }: MacOSTrayMenuProps) {
               .replace(/[^A-Za-z0-9]/g, '')
               .toUpperCase()
               .slice(0, 4)
-              .padEnd(4)}  ${i === 0 ? '24k tok · 31 req · $0.42 · 24h' : '9.8k tok · 12 req · $0.18 · 24h'}`}
+              .padEnd(4)}  ${i === 0 ? '24k tok · 31 req · $0.4 · 24h' : '9.8k tok · 12 req · $0.2 · 24h'}`}
             onClick={onClose}
           />
         ))}

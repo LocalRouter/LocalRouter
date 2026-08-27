@@ -1823,7 +1823,7 @@ mod tests {
                 "number",
                 PaneContent::Number("1.2M".into()),
                 PaneContent::Number("24K".into()),
-                PaneContent::Number("$0.42".into()),
+                PaneContent::Number("$0.4".into()),
             ),
         ];
         for (name, a, b, c) in variants {
