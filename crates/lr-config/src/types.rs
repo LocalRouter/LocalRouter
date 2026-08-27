@@ -768,6 +768,20 @@ pub fn normalize_tray_label(seed: &str) -> String {
         .collect()
 }
 
+/// Where tray panel labels go.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayLabelMode {
+    /// No labels.
+    #[default]
+    Off,
+    /// Full-size graph with the label stacked beside it (usage bars and
+    /// numbers always carry their label above).
+    Beside,
+    /// Reduced-height graph with the label above it.
+    Above,
+}
+
 /// What each tray panel shows (one choice for every item).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -852,9 +866,9 @@ pub struct TrayStatsConfig {
     /// automatically on creation.
     #[serde(default = "default_tray_stats_items")]
     pub items: Vec<TrayStatsItem>,
-    /// Draw the stacked vertical label beside each panel.
+    /// Where each panel's label goes (or none).
     #[serde(default)]
-    pub show_labels: bool,
+    pub labels: TrayLabelMode,
     /// What each panel shows.
     #[serde(default)]
     pub display: TrayDisplay,
@@ -876,7 +890,7 @@ impl Default for TrayStatsConfig {
     fn default() -> Self {
         Self {
             items: default_tray_stats_items(),
-            show_labels: false,
+            labels: TrayLabelMode::default(),
             display: TrayDisplay::default(),
             graph_metric: TrayGraphMetric::default(),
             usage_metric: TrayUsageMetric::default(),
@@ -4538,7 +4552,7 @@ mod tests {
             ui.tray_stats.items,
             vec![TrayStatsItem::new(TraySource::All)]
         );
-        assert!(!ui.tray_stats.show_labels);
+        assert_eq!(ui.tray_stats.labels, TrayLabelMode::Off);
         assert_eq!(ui.tray_stats.display, TrayDisplay::Graph);
         assert_eq!(ui.tray_stats.usage_period, TrayUsagePeriod::Day);
     }

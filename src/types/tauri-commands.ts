@@ -1311,6 +1311,7 @@ export interface TrayStatsItem {
   label: string | null
 }
 
+export type TrayLabelMode = 'off' | 'beside' | 'above'
 export type TrayDisplay = 'graph' | 'usage_bar' | 'number'
 export type TrayGraphMetric = 'tokens' | 'requests'
 export type TrayUsageMetric = 'tokens' | 'cost' | 'requests'
@@ -1320,7 +1321,7 @@ export type TrayLayout = 'auto' | 'extended' | 'compact'
 /** Rust: crates/lr-config/src/types.rs - TrayStatsConfig struct */
 export interface TrayStatsConfig {
   items: TrayStatsItem[]
-  show_labels: boolean
+  labels: TrayLabelMode
   display: TrayDisplay
   graph_metric: TrayGraphMetric
   usage_metric: TrayUsageMetric

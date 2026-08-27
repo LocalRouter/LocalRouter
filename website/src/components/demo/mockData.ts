@@ -1031,7 +1031,7 @@ export const mockData = {
         { source: { kind: 'all' as const }, enabled: true, label: null },
         { source: { kind: 'client' as const, id: 'client-1' }, enabled: true, label: null },
       ],
-      show_labels: false,
+      labels: 'off' as const,
       display: 'graph' as const,
       graph_metric: 'tokens' as const,
       usage_metric: 'tokens' as const,

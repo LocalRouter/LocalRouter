@@ -5,13 +5,13 @@
 use crate::ui::tray::UpdateNotificationState;
 use crate::ui::tray_format::{headline_value, metric_magnitude, usage_line};
 use crate::ui::tray_graph::{
-    platform_graph_config, GraphConfig, MultiPaneOptions, PaneContent, PaneSpec, StatusDotColors,
-    TrayOverlay, GRAPH_WIDTH,
+    platform_graph_config, GraphConfig, LabelMode, MultiPaneOptions, PaneContent, PaneSpec,
+    StatusDotColors, TrayOverlay, GRAPH_WIDTH,
 };
 use chrono::{DateTime, Duration, Utc};
 use lr_config::{
-    normalize_tray_label, ConfigManager, TrayDisplay, TrayGraphMetric, TrayLayout, TraySource,
-    TrayStatsConfig, TrayStatsItem, UiConfig,
+    normalize_tray_label, ConfigManager, TrayDisplay, TrayGraphMetric, TrayLabelMode, TrayLayout,
+    TraySource, TrayStatsConfig, TrayStatsItem, UiConfig,
 };
 use lr_monitoring::metrics::{MetricDataPoint, MetricsCollector, UsageTotals};
 use lr_providers::health_cache::AggregateHealthStatus;
@@ -852,7 +852,15 @@ impl TrayGraphManager {
 
     fn pane_options(stats: &TrayStatsConfig, extended: bool) -> MultiPaneOptions {
         MultiPaneOptions {
-            show_labels: extended && stats.show_labels,
+            labels: if !extended {
+                LabelMode::Off
+            } else {
+                match stats.labels {
+                    TrayLabelMode::Off => LabelMode::Off,
+                    TrayLabelMode::Beside => LabelMode::Beside,
+                    TrayLabelMode::Above => LabelMode::Above,
+                }
+            },
             units_per_pixel: match stats.graph_metric {
                 TrayGraphMetric::Tokens => Some(crate::ui::tray_graph::TOKENS_PER_PIXEL),
                 TrayGraphMetric::Requests => None,

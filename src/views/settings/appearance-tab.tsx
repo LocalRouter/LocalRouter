@@ -23,6 +23,7 @@ import type {
   TrayStatsConfig,
   TraySource,
   TrayDisplay,
+  TrayLabelMode,
   TrayGraphMetric,
   TrayUsageMetric,
   TrayUsagePeriod,
@@ -158,17 +159,17 @@ function TrayStatsPreview({ config }: { config: TrayStatsConfig }) {
   }, [config, darkUi])
 
   if (!png) return null
-  const scale = 3
+  // The menu bar scales the icon to 18pt tall; 18 CSS px is the same size here.
+  const height = 18
   return (
-    <div className="inline-flex items-center rounded-md border border-muted bg-muted/30 px-3 py-2">
+    <div className="inline-flex items-center rounded-md border border-muted bg-muted/30 px-3 py-1.5">
       <img
         src={`data:image/png;base64,${png}`}
         alt="Tray icon preview"
         onLoad={(e) => setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
         style={{
-          imageRendering: "pixelated",
-          width: size ? size.w * scale : undefined,
-          height: size ? size.h * scale : 32 * scale,
+          width: size ? (size.w * height) / size.h : undefined,
+          height,
         }}
       />
     </div>
@@ -314,7 +315,7 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
           <div className="flex items-center gap-3">
             <TrayStatsPreview config={config} />
             <p className="text-xs text-muted-foreground">
-              Preview — the icon as it will render, with live data (sample bars until there is traffic)
+              Preview at menu-bar size, with live data (sample bars until there is traffic)
             </p>
           </div>
         )}
@@ -405,9 +406,15 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
                 <SelectValue placeholder="Add client, provider or model…" />
               </SelectTrigger>
               <SelectContent>
-                {groups.map((g) => (
+                {groups.map((g, gi) => (
                   <SelectGroup key={g}>
-                    <SelectLabel>{g}</SelectLabel>
+                    <SelectLabel
+                      className={`text-[11px] font-semibold uppercase tracking-wide text-muted-foreground ${
+                        gi > 0 ? "mt-1 border-t border-border pt-2" : ""
+                      }`}
+                    >
+                      {g}
+                    </SelectLabel>
                     {addable
                       .filter((a) => a.group === g)
                       .map((a) => (
@@ -448,17 +455,25 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
               </SelectContent>
             </Select>
           </div>
-          <div className="flex items-center gap-2 pb-2">
-            <Checkbox
-              id="tray-show-labels"
-              checked={config.show_labels}
-              disabled={!extendedHere}
-              onCheckedChange={(v) => updateConfig({ show_labels: v === true })}
-            />
-            <Label htmlFor="tray-show-labels" className="text-xs cursor-pointer flex items-center gap-1">
-              Show labels
-              <InfoTooltip content="Stacked letters beside each panel (up to 4; shorter labels are drawn bigger)." />
+          <div className="space-y-1.5">
+            <Label className="text-xs flex items-center gap-1">
+              Labels
+              <InfoTooltip content="Beside: full-size graph with the label stacked next to it. Above: smaller graph with the label on top. Usage bars and numbers always carry their label above." />
             </Label>
+            <Select
+              value={config.labels}
+              disabled={!extendedHere}
+              onValueChange={(v) => updateConfig({ labels: v as TrayLabelMode })}
+            >
+              <SelectTrigger className="w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="off">Off</SelectItem>
+                <SelectItem value="beside">Beside</SelectItem>
+                <SelectItem value="above">Above</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -573,8 +588,8 @@ export function AppearanceTab() {
   }
 
   const calculateTimeWindow = (refreshRateSecs: number): string => {
-    // 26 bars per panel (see GRAPH_WIDTH in src-tauri/src/ui/tray_graph.rs)
-    const totalSecs = 26 * refreshRateSecs
+    // 30 bars per panel (see GRAPH_WIDTH in src-tauri/src/ui/tray_graph.rs)
+    const totalSecs = 30 * refreshRateSecs
     if (totalSecs < 60) {
       return `${totalSecs} seconds`
     }
@@ -650,9 +665,9 @@ export function AppearanceTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="1">Fast (1s refresh, 26s window)</SelectItem>
-                  <SelectItem value="10">Medium (10s refresh, 4m 20s window)</SelectItem>
-                  <SelectItem value="60">Slow (60s refresh, 26m window)</SelectItem>
+                  <SelectItem value="1">Fast (1s refresh, 30s window)</SelectItem>
+                  <SelectItem value="10">Medium (10s refresh, 5m window)</SelectItem>
+                  <SelectItem value="60">Slow (60s refresh, 30m window)</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
