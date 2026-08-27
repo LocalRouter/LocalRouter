@@ -580,10 +580,15 @@ jobs:
             ./*.snap
 
       - name: Upload to the Snap Store
-        # The first classic upload is held until Canonical's one-time
-        # classic-confinement review (forum store-request) is granted, so a
-        # store rejection must not fail the release — the .snap is already on
-        # the GitHub release either way.
+        # Disabled for now. Every upload is rejected with "confinement
+        # 'classic' not allowed (NEEDS REVIEW)" until Canonical grants the
+        # one-time classic-confinement review (forum store-request), so the
+        # step can only fail and paints otherwise-good releases red. The
+        # .snap stays attached to the GitHub release above and installs with
+        # `snap install --dangerous --classic`. To re-enable once the review
+        # is granted, remove the `if: false` below (SNAPCRAFT_STORE_CREDENTIALS
+        # must be set in the repository secrets).
+        if: false
         continue-on-error: true
         working-directory: /tmp/snap-build
         env:
