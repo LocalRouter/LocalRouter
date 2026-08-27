@@ -775,10 +775,9 @@ pub enum TrayLabelMode {
     /// No labels.
     #[default]
     Off,
-    /// Full-size graph with the label stacked beside it (usage bars and
-    /// numbers always carry their label above).
+    /// Label stacked vertically beside the content (graph at full size).
     Beside,
-    /// Reduced-height graph with the label above it.
+    /// Label above the content (graph at reduced height).
     Above,
 }
 
@@ -833,6 +832,16 @@ impl TrayUsagePeriod {
             TrayUsagePeriod::Day => 86_400,
             TrayUsagePeriod::Week => 7 * 86_400,
             TrayUsagePeriod::Month => 30 * 86_400,
+        }
+    }
+
+    /// Bare window, e.g. "24h" (for per-line suffixes).
+    pub fn short(&self) -> &'static str {
+        match self {
+            TrayUsagePeriod::Hour => "1h",
+            TrayUsagePeriod::Day => "24h",
+            TrayUsagePeriod::Week => "7d",
+            TrayUsagePeriod::Month => "30d",
         }
     }
 

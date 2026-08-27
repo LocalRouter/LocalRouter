@@ -1,6 +1,6 @@
 //! Text formatting shared by the tray title, tooltip and menu usage lines.
 
-use lr_config::{TrayStatsConfig, TrayUsageMetric};
+use lr_config::{TrayStatsConfig, TrayUsageMetric, TrayUsagePeriod};
 use lr_monitoring::metrics::UsageTotals;
 
 /// Round `v` (≥ 0) to at most 3 significant digits and format it with a
@@ -90,8 +90,14 @@ pub fn metric_magnitude(usage: &UsageTotals, metric: TrayUsageMetric) -> f64 {
 }
 
 /// Full usage line for the tray menu / tooltip, e.g.
-/// `CLAU   24.1k tok · 31 req · $0.42`. The configured usage metric leads.
-pub fn usage_line(label: &str, usage: &UsageTotals, metric: TrayUsageMetric) -> String {
+/// `CLAU   24.1k tok · 31 req · $0.42 · 24h`. The configured usage metric
+/// leads; the period the figures cover closes the line.
+pub fn usage_line(
+    label: &str,
+    usage: &UsageTotals,
+    metric: TrayUsageMetric,
+    period: TrayUsagePeriod,
+) -> String {
     let tok = format!("{} tok", compact_number(usage.tokens));
     let req = format!("{} req", compact_number(usage.requests));
     let cost = compact_cost(usage.cost_usd);
@@ -100,7 +106,7 @@ pub fn usage_line(label: &str, usage: &UsageTotals, metric: TrayUsageMetric) -> 
         TrayUsageMetric::Cost => [cost, tok, req],
         TrayUsageMetric::Requests => [req, tok, cost],
     };
-    format!("{:<4}  {}", label, parts.join(" · "))
+    format!("{:<4}  {} · {}", label, parts.join(" · "), period.short())
 }
 
 /// Header for the tray menu usage section, e.g. `Usage · last 24h`.
@@ -158,16 +164,26 @@ mod tests {
             cost_usd: 0.42,
         };
         assert_eq!(
-            usage_line("CLAU", &usage, TrayUsageMetric::Tokens),
-            "CLAU  24.1k tok · 31 req · $0.42"
+            usage_line(
+                "CLAU",
+                &usage,
+                TrayUsageMetric::Tokens,
+                TrayUsagePeriod::Day
+            ),
+            "CLAU  24.1k tok · 31 req · $0.42 · 24h"
         );
         assert_eq!(
-            usage_line("ALL", &usage, TrayUsageMetric::Cost),
-            "ALL   $0.42 · 24.1k tok · 31 req"
+            usage_line("ALL", &usage, TrayUsageMetric::Cost, TrayUsagePeriod::Week),
+            "ALL   $0.42 · 24.1k tok · 31 req · 7d"
         );
         assert_eq!(
-            usage_line("GPT5", &usage, TrayUsageMetric::Requests),
-            "GPT5  31 req · 24.1k tok · $0.42"
+            usage_line(
+                "GPT5",
+                &usage,
+                TrayUsageMetric::Requests,
+                TrayUsagePeriod::Hour
+            ),
+            "GPT5  31 req · 24.1k tok · $0.42 · 1h"
         );
     }
 }

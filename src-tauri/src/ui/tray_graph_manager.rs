@@ -1115,7 +1115,7 @@ impl TrayGraphManager {
         tooltip_lines.extend(
             usage_entries
                 .iter()
-                .map(|e| usage_line(&e.label, &e.usage, stats.usage_metric)),
+                .map(|e| usage_line(&e.label, &e.usage, stats.usage_metric, stats.usage_period)),
         );
         let tooltip = tooltip_lines.join("\n");
 

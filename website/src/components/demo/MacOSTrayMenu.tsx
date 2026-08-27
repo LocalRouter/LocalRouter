@@ -296,25 +296,6 @@ export function MacOSTrayMenu({ onClose }: MacOSTrayMenuProps) {
           LocalRouter on {mockData.serverConfig.host}:{mockData.serverConfig.port}
         </div>
 
-        {/* Usage section (tray stats): one line per enabled item */}
-        <div className="px-3 py-1 text-gray-400 cursor-default text-[13px]">
-          Usage · last 24h
-        </div>
-        <MenuItem label="ALL   1.20M tok · 843 req · $3.12" onClick={onClose} />
-        {mockData.clients.slice(0, 2).map((client, i) => (
-          <MenuItem
-            key={client.id}
-            label={`${client.name
-              .replace(/[^A-Za-z0-9]/g, '')
-              .toUpperCase()
-              .slice(0, 4)
-              .padEnd(4)}  ${i === 0 ? '24.1k tok · 31 req · $0.42' : '9.80k tok · 12 req · $0.18'}`}
-            onClick={onClose}
-          />
-        ))}
-
-        <Separator />
-
         {/* Settings */}
         <MenuItem
           icon={<Settings className="w-3 h-3" />}
@@ -332,6 +313,25 @@ export function MacOSTrayMenu({ onClose }: MacOSTrayMenuProps) {
             )
           }}
         />
+
+        <Separator />
+
+        {/* Usage section (tray stats): one line per enabled item */}
+        <div className="px-3 py-1 text-gray-400 cursor-default text-[13px]">
+          Usage · last 24h
+        </div>
+        <MenuItem label="ALL   1.20M tok · 843 req · $3.12 · 24h" onClick={onClose} />
+        {mockData.clients.slice(0, 2).map((client, i) => (
+          <MenuItem
+            key={client.id}
+            label={`${client.name
+              .replace(/[^A-Za-z0-9]/g, '')
+              .toUpperCase()
+              .slice(0, 4)
+              .padEnd(4)}  ${i === 0 ? '24.1k tok · 31 req · $0.42 · 24h' : '9.80k tok · 12 req · $0.18 · 24h'}`}
+            onClick={onClose}
+          />
+        ))}
 
         <Separator />
 

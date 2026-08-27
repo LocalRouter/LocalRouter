@@ -111,7 +111,13 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
     let app_header = MenuItem::with_id(app, "app_header", &header_text, false, None::<&str>)?;
     menu_builder = menu_builder.item(&app_header);
 
-    // Usage section (tray stats): one line per enabled item, in display
+    // 2. Open dashboard (immediately after header)
+    menu_builder = menu_builder.text("open_dashboard", format!("{ICON_PAD}⌘{ICON_PAD} Open..."));
+
+    // 3. Copy URL (LLM and MCP)
+    menu_builder = menu_builder.text("copy_url", format!("{ICON_PAD}⧉{ICON_PAD} Copy URL"));
+
+    // 4. Usage section (tray stats): one line per enabled item, in display
     // order, leading with the configured usage metric. Works on every
     // platform, including the ones whose tray can't show the wide icon.
     if let Some(tray_graph_manager) =
@@ -120,6 +126,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
         let stats = tray_graph_manager.stats_config();
         let entries = tray_graph_manager.usage_entries();
         if !entries.is_empty() {
+            menu_builder = menu_builder.separator();
             let header = MenuItem::with_id(
                 app,
                 "tray_stats_header",
@@ -135,7 +142,8 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                     crate::ui::tray_format::usage_line(
                         &entry.label,
                         &entry.usage,
-                        stats.usage_metric
+                        stats.usage_metric,
+                        stats.usage_period,
                     )
                 );
                 menu_builder =
@@ -143,12 +151,6 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
             }
         }
     }
-
-    // 2. Open dashboard (immediately after header)
-    menu_builder = menu_builder.text("open_dashboard", format!("{ICON_PAD}⌘{ICON_PAD} Open..."));
-
-    // 3. Copy URL (LLM and MCP)
-    menu_builder = menu_builder.text("copy_url", format!("{ICON_PAD}⧉{ICON_PAD} Copy URL"));
 
     // Add separator before clients
     menu_builder = menu_builder.separator();

@@ -415,10 +415,10 @@ pub const MAX_BAR_HEIGHT: u32 = PANE_SIZE - 2 * (BORDER_WIDTH + INNER_MARGIN); /
 
 /// Gap between panes and between a stacked label and its graph.
 pub const PANE_GAP: u32 = 6;
-/// Height of a graph pane drawn under a label (≈ 60 % of full size).
-pub const SMALL_GRAPH_HEIGHT: u32 = 22;
 /// Height reserved for a label drawn above content (glyph + spacing).
-const LABEL_ROW_HEIGHT: u32 = crate::ui::tray_font::LABEL_GLYPH_HEIGHT + 4;
+const LABEL_ROW_HEIGHT: u32 = crate::ui::tray_font::ABOVE_LABEL_GLYPH_HEIGHT + 3;
+/// Height of a graph pane drawn under a label (≈ 60 % of full size).
+pub const SMALL_GRAPH_HEIGHT: u32 = PANE_SIZE - LABEL_ROW_HEIGHT;
 /// Glyph height used for number panes.
 pub const NUMBER_GLYPH_HEIGHT: u32 = 12;
 /// Horizontal padding on each side of a number pane's text.
@@ -702,10 +702,9 @@ pub struct PaneSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelMode {
     Off,
-    /// Full-size graph with the label stacked beside it. Gauges and
-    /// numbers still get their label above (they are horizontal).
+    /// Label stacked beside the content (full-size graph).
     Beside,
-    /// Smaller graph with the label above it.
+    /// Label above the content (graph at reduced height).
     Above,
 }
 
@@ -721,59 +720,68 @@ pub struct MultiPaneOptions {
 /// How one pane lays out under the current options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaneLayout {
-    /// Full graph, no label.
-    GraphPlain,
-    /// Stacked label column, gap, full graph.
-    GraphBeside,
-    /// Label row, reduced graph underneath.
-    GraphAbove,
-    /// Optional label row, horizontal content underneath.
-    Horizontal { label: bool },
+    /// Content only.
+    Plain,
+    /// Stacked label column (shared width), gap, content.
+    Beside,
+    /// Label row, content underneath (graph at reduced height).
+    Above,
+}
+
+fn has_label(pane: &PaneSpec) -> bool {
+    pane.label.as_deref().is_some_and(|l| !l.is_empty())
 }
 
 fn pane_layout(pane: &PaneSpec, options: MultiPaneOptions) -> PaneLayout {
-    let has_label =
-        options.labels != LabelMode::Off && pane.label.as_deref().is_some_and(|l| !l.is_empty());
-    match (&pane.content, options.labels, has_label) {
-        (PaneContent::Graph(_), _, false) => PaneLayout::GraphPlain,
-        (PaneContent::Graph(_), LabelMode::Beside, true) => PaneLayout::GraphBeside,
-        (PaneContent::Graph(_), _, true) => PaneLayout::GraphAbove,
-        (_, _, label) => PaneLayout::Horizontal { label },
+    match options.labels {
+        _ if !has_label(pane) => PaneLayout::Plain,
+        LabelMode::Off => PaneLayout::Plain,
+        LabelMode::Beside => PaneLayout::Beside,
+        LabelMode::Above => PaneLayout::Above,
     }
+}
+
+/// Width of the shared stacked-label column (widest label wins); 0 unless
+/// labels are beside the content.
+fn beside_column_width(panes: &[PaneSpec], options: MultiPaneOptions) -> u32 {
+    if options.labels != LabelMode::Beside {
+        return 0;
+    }
+    panes
+        .iter()
+        .filter_map(|p| p.label.as_deref())
+        .map(crate::ui::tray_font::vertical_label_width)
+        .max()
+        .unwrap_or(0)
 }
 
 /// Width of a label drawn horizontally above content.
 fn label_row_width(pane: &PaneSpec) -> u32 {
     pane.label
         .as_deref()
-        .map(|l| crate::ui::tray_font::label_metrics().text_width(l))
+        .map(|l| crate::ui::tray_font::above_label_metrics().text_width(l))
         .unwrap_or(0)
 }
 
-/// Pixel width of one pane.
-fn pane_width(pane: &PaneSpec, options: MultiPaneOptions) -> u32 {
+/// Width of a pane's content alone.
+fn content_width(content: &PaneContent) -> u32 {
+    match content {
+        PaneContent::Graph(_) => PANE_SIZE,
+        PaneContent::UsageBar(_) => GAUGE_MIN_WIDTH,
+        PaneContent::Number(text) => {
+            crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT).text_width(text)
+                + 2 * NUMBER_PAD
+        }
+    }
+}
+
+/// Pixel width of one pane. `column` is the shared beside-label width.
+fn pane_width(pane: &PaneSpec, options: MultiPaneOptions, column: u32) -> u32 {
+    let content = content_width(&pane.content);
     match pane_layout(pane, options) {
-        PaneLayout::GraphPlain => PANE_SIZE,
-        PaneLayout::GraphBeside => {
-            crate::ui::tray_font::vertical_label_width() + PANE_GAP + PANE_SIZE
-        }
-        PaneLayout::GraphAbove => PANE_SIZE.max(label_row_width(pane)),
-        PaneLayout::Horizontal { label } => {
-            let content = match &pane.content {
-                PaneContent::UsageBar(_) => GAUGE_MIN_WIDTH,
-                PaneContent::Number(text) => {
-                    crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT)
-                        .text_width(text)
-                        + 2 * NUMBER_PAD
-                }
-                PaneContent::Graph(_) => PANE_SIZE,
-            };
-            if label {
-                content.max(label_row_width(pane) + 2 * NUMBER_PAD)
-            } else {
-                content
-            }
-        }
+        PaneLayout::Plain => content,
+        PaneLayout::Beside => column + PANE_GAP + content,
+        PaneLayout::Above => content.max(label_row_width(pane) + 2 * NUMBER_PAD),
     }
 }
 
@@ -782,12 +790,17 @@ pub fn multi_pane_width(panes: &[PaneSpec], options: MultiPaneOptions) -> u32 {
     if panes.is_empty() {
         return 0;
     }
-    panes.iter().map(|p| pane_width(p, options)).sum::<u32>() + (panes.len() as u32 - 1) * PANE_GAP
+    let column = beside_column_width(panes, options);
+    panes
+        .iter()
+        .map(|p| pane_width(p, options, column))
+        .sum::<u32>()
+        + (panes.len() as u32 - 1) * PANE_GAP
 }
 
 /// Draw a label centred horizontally in `[x, x + width)` at the top.
 fn draw_label_row(img: &mut RgbaImage, x: u32, width: u32, label: &str, config: &GraphConfig) {
-    let m = crate::ui::tray_font::label_metrics();
+    let m = crate::ui::tray_font::above_label_metrics();
     let tw = m.text_width(label);
     let lx = x + width.saturating_sub(tw) / 2;
     crate::ui::tray_font::draw_text(img, lx, 0, label, m, config.foreground);
@@ -854,6 +867,7 @@ pub fn generate_multi_pane(
     let scale = scale_reference(series.iter().flatten().flatten());
 
     let mut img = RgbaImage::from_pixel(width, PANE_SIZE, config.background);
+    let column = beside_column_width(panes, options);
     let mut x = 0;
     let mut overlay_pending = overlay;
 
@@ -861,37 +875,35 @@ pub fn generate_multi_pane(
         if x > 0 {
             x += PANE_GAP;
         }
-        let w = pane_width(pane, options);
+        let w = pane_width(pane, options, column);
         let layout = pane_layout(pane, options);
         let label = pane.label.as_deref().unwrap_or("");
 
-        match (&pane.content, layout) {
-            (PaneContent::Graph(_), layout) => {
+        // Label, and the box the content gets: (left, top, width, height)
+        let (cx, cy, cw, ch) = match layout {
+            PaneLayout::Plain => (x, 0, w, PANE_SIZE),
+            PaneLayout::Beside => {
+                crate::ui::tray_font::draw_vertical_label(
+                    &mut img,
+                    x,
+                    column,
+                    label,
+                    config.foreground,
+                );
+                (x + column + PANE_GAP, 0, w - column - PANE_GAP, PANE_SIZE)
+            }
+            PaneLayout::Above => {
+                draw_label_row(&mut img, x, w, label, config);
+                (x, LABEL_ROW_HEIGHT, w, PANE_SIZE - LABEL_ROW_HEIGHT)
+            }
+        };
+
+        match &pane.content {
+            PaneContent::Graph(_) => {
                 let values = values.as_ref().expect("graph pane has a series");
-                let (gx, gy, gh) = match layout {
-                    PaneLayout::GraphBeside => {
-                        crate::ui::tray_font::draw_vertical_label(
-                            &mut img,
-                            x,
-                            label,
-                            config.foreground,
-                        );
-                        (
-                            x + crate::ui::tray_font::vertical_label_width() + PANE_GAP,
-                            0,
-                            PANE_SIZE,
-                        )
-                    }
-                    PaneLayout::GraphAbove => {
-                        draw_label_row(&mut img, x, w, label, config);
-                        (
-                            x + (w - PANE_SIZE) / 2,
-                            PANE_SIZE - SMALL_GRAPH_HEIGHT,
-                            SMALL_GRAPH_HEIGHT,
-                        )
-                    }
-                    _ => (x, 0, PANE_SIZE),
-                };
+                let gh = ch.min(PANE_SIZE);
+                let gx = cx + cw.saturating_sub(PANE_SIZE) / 2;
+                let gy = cy + ch - gh;
                 let max_bar = gh - 2 * (BORDER_WIDTH + INNER_MARGIN);
                 let heights: Vec<u32> = values
                     .iter()
@@ -901,36 +913,16 @@ pub fn generate_multi_pane(
                 let pane_img = render_pane(&heights, config, &pane_overlay, dark_mode, gh);
                 image::imageops::replace(&mut img, &pane_img, gx as i64, gy as i64);
             }
-            (content, PaneLayout::Horizontal { label: has_label }) => {
-                let content_top = if has_label {
-                    draw_label_row(&mut img, x, w, label, config);
-                    LABEL_ROW_HEIGHT
-                } else {
-                    0
-                };
-                let area_h = PANE_SIZE - content_top;
-                match content {
-                    PaneContent::UsageBar(fill) => {
-                        let cy = content_top + (area_h - GAUGE_HEIGHT) / 2;
-                        draw_usage_gauge(&mut img, x, cy, w, *fill, config);
-                    }
-                    PaneContent::Number(text) => {
-                        let m = crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT);
-                        let cy = content_top + (area_h - m.glyph_height) / 2;
-                        let tx = x + w.saturating_sub(m.text_width(text)) / 2;
-                        crate::ui::tray_font::draw_text(
-                            &mut img,
-                            tx,
-                            cy,
-                            text,
-                            m,
-                            config.foreground,
-                        );
-                    }
-                    PaneContent::Graph(_) => unreachable!("graph panes handled above"),
-                }
+            PaneContent::UsageBar(fill) => {
+                let gy = cy + (ch - GAUGE_HEIGHT) / 2;
+                draw_usage_gauge(&mut img, cx, gy, cw, *fill, config);
             }
-            _ => unreachable!("non-graph content always lays out horizontally"),
+            PaneContent::Number(text) => {
+                let m = crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT);
+                let ty = cy + (ch - m.glyph_height) / 2;
+                let tx = cx + cw.saturating_sub(m.text_width(text)) / 2;
+                crate::ui::tray_font::draw_text(&mut img, tx, ty, text, m, config.foreground);
+            }
         }
         x += w;
     }
@@ -1446,8 +1438,7 @@ mod tests {
     #[test]
     fn multi_pane_widths_per_layout() {
         let config = GraphConfig::macos(false);
-        let lw = crate::ui::tray_font::vertical_label_width();
-        let lm = crate::ui::tray_font::label_metrics();
+        let am = crate::ui::tray_font::above_label_metrics();
         let nm = crate::ui::tray_font::FontMetrics::for_height(NUMBER_GLYPH_HEIGHT);
 
         let graphs = vec![
@@ -1458,14 +1449,18 @@ mod tests {
             multi_pane_width(&graphs, opts(LabelMode::Off)),
             2 * PANE_SIZE + PANE_GAP
         );
+        // Beside: one shared column as wide as the widest (shortest) label
+        let col = crate::ui::tray_font::vertical_label_width("ALL");
+        assert!(col > crate::ui::tray_font::vertical_label_width("CLAU"));
         assert_eq!(
             multi_pane_width(&graphs, opts(LabelMode::Beside)),
-            2 * (lw + PANE_GAP + PANE_SIZE) + PANE_GAP
+            2 * (col + PANE_GAP + PANE_SIZE) + PANE_GAP
         );
-        // Labels above fit inside the graph width, so no extra width
+        // Above: a pane is as wide as its label row or its graph, whichever is wider
+        let above_w = |l: &str| PANE_SIZE.max(am.text_width(l) + 4);
         assert_eq!(
             multi_pane_width(&graphs, opts(LabelMode::Above)),
-            2 * PANE_SIZE + PANE_GAP
+            above_w("ALL") + above_w("CLAU") + PANE_GAP
         );
 
         let gauges = vec![labelled("ALL", PaneContent::UsageBar(1.0))];
@@ -1475,17 +1470,25 @@ mod tests {
         );
         assert_eq!(
             multi_pane_width(&gauges, opts(LabelMode::Beside)),
-            GAUGE_MIN_WIDTH
+            col + PANE_GAP + GAUGE_MIN_WIDTH
+        );
+        assert_eq!(
+            multi_pane_width(&gauges, opts(LabelMode::Above)),
+            above_w("ALL").max(GAUGE_MIN_WIDTH)
         );
 
         let numbers = vec![labelled("CLAU", PaneContent::Number("$1.23K".into()))];
         let text_w = nm.text_width("$1.23K") + 4;
-        assert!(text_w > lm.text_width("CLAU") + 4);
+        assert!(text_w > am.text_width("CLAU") + 4);
         assert_eq!(multi_pane_width(&numbers, opts(LabelMode::Above)), text_w);
+        assert_eq!(
+            multi_pane_width(&numbers, opts(LabelMode::Beside)),
+            crate::ui::tray_font::vertical_label_width("CLAU") + PANE_GAP + text_w
+        );
         let short = vec![labelled("CLAU", PaneContent::Number("7".into()))];
         assert_eq!(
             multi_pane_width(&short, opts(LabelMode::Above)),
-            lm.text_width("CLAU") + 4
+            am.text_width("CLAU") + 4
         );
         assert_eq!(
             multi_pane_width(&short, opts(LabelMode::Off)),
@@ -1495,7 +1498,9 @@ mod tests {
         for (panes, mode) in [
             (&graphs, LabelMode::Beside),
             (&graphs, LabelMode::Above),
+            (&gauges, LabelMode::Beside),
             (&gauges, LabelMode::Above),
+            (&numbers, LabelMode::Beside),
             (&numbers, LabelMode::Above),
         ] {
             let png =
@@ -1567,7 +1572,7 @@ mod tests {
     fn label_beside_and_above_layouts() {
         let config = GraphConfig::macos(false);
         let panes = vec![labelled("ALL", PaneContent::Graph(vec![100; 30]))];
-        let lw = crate::ui::tray_font::vertical_label_width();
+        let lw = crate::ui::tray_font::vertical_label_width("ALL");
 
         // Beside: label column, empty gap, then a full-height frame
         let img = decode(
@@ -1597,21 +1602,10 @@ mod tests {
             )
             .unwrap(),
         );
-        assert!(ink_in(
-            &img,
-            0,
-            PANE_SIZE,
-            0,
-            crate::ui::tray_font::LABEL_GLYPH_HEIGHT
-        ));
+        let lh = crate::ui::tray_font::ABOVE_LABEL_GLYPH_HEIGHT;
+        assert!(ink_in(&img, 0, PANE_SIZE, 0, lh));
         let top = PANE_SIZE - SMALL_GRAPH_HEIGHT;
-        assert!(!ink_in(
-            &img,
-            0,
-            PANE_SIZE,
-            crate::ui::tray_font::LABEL_GLYPH_HEIGHT,
-            top
-        ));
+        assert!(!ink_in(&img, 0, PANE_SIZE, lh, top));
         assert_ne!(img.get_pixel(10, top)[3], 0); // frame top border
         assert_ne!(img.get_pixel(10, PANE_SIZE - 1)[3], 0); // frame bottom border
                                                             // Bars are capped to the small frame
@@ -1619,6 +1613,22 @@ mod tests {
             .filter(|&y| img.get_pixel(3, y)[3] != 0)
             .count() as u32;
         assert!(bar_px <= SMALL_GRAPH_HEIGHT - 4);
+
+        // Beside a gauge: column, gap, then a vertically centred gauge
+        let gauge = vec![labelled("ALL", PaneContent::UsageBar(0.5))];
+        let img = decode(
+            &generate_multi_pane(
+                &gauge,
+                opts(LabelMode::Beside),
+                &config,
+                TrayOverlay::None,
+                false,
+            )
+            .unwrap(),
+        );
+        let gy = (PANE_SIZE - GAUGE_HEIGHT) / 2;
+        assert_ne!(img.get_pixel(gx, gy + 3)[3], 0); // gauge left edge
+        assert!(!ink_in(&img, gx, img.width(), 0, gy)); // nothing above the gauge
     }
 
     #[test]
@@ -1639,11 +1649,11 @@ mod tests {
             )
             .unwrap(),
         );
-        let lh = crate::ui::tray_font::LABEL_GLYPH_HEIGHT;
+        let lh = crate::ui::tray_font::ABOVE_LABEL_GLYPH_HEIGHT;
         // Labels on top of each pane
         assert!(ink_in(&img, 0, GAUGE_MIN_WIDTH, 0, lh));
         // Gauge 0: full-width outline in the lower area, interior filled
-        let content_top = lh + 4;
+        let content_top = lh + 3;
         let gy = content_top + (PANE_SIZE - content_top - GAUGE_HEIGHT) / 2;
         assert_ne!(img.get_pixel(0, gy + 5)[3], 0); // left edge
         assert_ne!(img.get_pixel(GAUGE_MIN_WIDTH - 1, gy + 5)[3], 0); // right edge

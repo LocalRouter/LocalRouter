@@ -458,22 +458,29 @@ function TrayStatsCard({ graphEnabled }: { graphEnabled: boolean }) {
           <div className="space-y-1.5">
             <Label className="text-xs flex items-center gap-1">
               Labels
-              <InfoTooltip content="Beside: full-size graph with the label stacked next to it. Above: smaller graph with the label on top. Usage bars and numbers always carry their label above." />
+              <InfoTooltip content="Beside: label stacked next to the panel (graph at full size). Above: label on top of the panel (graph at reduced height)." />
             </Label>
-            <Select
+            <RadioGroup
               value={config.labels}
               disabled={!extendedHere}
               onValueChange={(v) => updateConfig({ labels: v as TrayLabelMode })}
+              className="flex items-center gap-4 h-9"
             >
-              <SelectTrigger className="w-40">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="off">Off</SelectItem>
-                <SelectItem value="beside">Beside</SelectItem>
-                <SelectItem value="above">Above</SelectItem>
-              </SelectContent>
-            </Select>
+              {(
+                [
+                  ["off", "Off"],
+                  ["beside", "Beside"],
+                  ["above", "Above"],
+                ] as const
+              ).map(([v, l]) => (
+                <div key={v} className="flex items-center gap-1.5">
+                  <RadioGroupItem value={v} id={`tray-labels-${v}`} />
+                  <Label htmlFor={`tray-labels-${v}`} className="text-xs cursor-pointer">
+                    {l}
+                  </Label>
+                </div>
+              ))}
+            </RadioGroup>
           </div>
         </div>
 
