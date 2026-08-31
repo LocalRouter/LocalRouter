@@ -77,6 +77,27 @@ keyring = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
 
+# Talking to the NSStatusItem directly (see ui::tray_graph_manager) so the
+# menu bar icon can be sized before it is installed.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSButton",
+    "NSCell",
+    "NSControl",
+    "NSImage",
+    "NSResponder",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSView",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSData",
+    "NSGeometry",
+] }
+
 [dev-dependencies]
 tempfile = "3.8"
 serial_test = { workspace = true }

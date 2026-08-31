@@ -139,11 +139,50 @@ pub struct UsageEntry {
     pub usage: UsageTotals,
 }
 
-/// Everything that gets pushed to the tray in one main-thread hop.
-#[derive(Debug, Clone, Hash)]
-struct TrayPresentation {
-    icon: Vec<u8>,
-    tooltip: String,
+/// Install `png` as the status item's image, already scaled to `height`
+/// points and flagged as a template so the menu bar recolors it for the
+/// current appearance.
+///
+/// Order matters: the image is sized *before* the button takes it, so the
+/// menu bar never measures the item against the unscaled (2x) image. See
+/// `TrayGraphManager::apply_presentation`.
+#[cfg(target_os = "macos")]
+fn set_status_item_image(
+    status_item: Option<objc2::rc::Retained<objc2_app_kit::NSStatusItem>>,
+    png: &[u8],
+    height: f64,
+) -> anyhow::Result<()> {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSCellImagePosition, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData, NSSize};
+
+    let status_item = status_item.ok_or_else(|| anyhow::anyhow!("no status item"))?;
+    let mtm = MainThreadMarker::new().ok_or_else(|| anyhow::anyhow!("not on the main thread"))?;
+    let button = status_item
+        .button(mtm)
+        .ok_or_else(|| anyhow::anyhow!("status item has no button"))?;
+
+    let data = NSData::with_bytes(png);
+    let image = NSImage::initWithData(NSImage::alloc(), &data)
+        .ok_or_else(|| anyhow::anyhow!("failed to decode tray icon"))?;
+
+    // `size()` is the icon's pixel size; keep its aspect ratio at `height`.
+    let natural = image.size();
+    if natural.height <= 0.0 {
+        return Err(anyhow::anyhow!("tray icon has no height"));
+    }
+    image.setSize(NSSize::new(natural.width * height / natural.height, height));
+    image.setTemplate(true);
+    button.setImage(Some(&image));
+    button.setImagePosition(NSCellImagePosition::ImageLeft);
+    Ok(())
+}
+
+fn hash_of(value: &impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Manager for dynamic tray icon graph updates
@@ -176,8 +215,10 @@ pub struct TrayGraphManager {
     usage: Arc<RwLock<Vec<UsageEntry>>>,
     usage_refreshed_at: Arc<RwLock<Option<DateTime<Utc>>>>,
 
-    /// Hash of the last applied presentation to skip redundant updates
-    last_presentation_hash: Arc<RwLock<u64>>,
+    /// Hashes of the icon and tooltip last pushed to the tray, so each is
+    /// only re-applied when it actually changed. `0` forces the next push.
+    last_icon_hash: Arc<RwLock<u64>>,
+    last_tooltip_hash: Arc<RwLock<u64>>,
 
     /// Last tooltip pushed to the menu (usage lines) and when the tray
     /// menu was last rebuilt because of it.
@@ -411,7 +452,8 @@ impl TrayGraphManager {
         let sources = Arc::new(RwLock::new(HashMap::<TraySource, SourceState>::new()));
         let usage = Arc::new(RwLock::new(Vec::<UsageEntry>::new()));
         let usage_refreshed_at = Arc::new(RwLock::new(None::<DateTime<Utc>>));
-        let last_presentation_hash = Arc::new(RwLock::new(0u64));
+        let last_icon_hash = Arc::new(RwLock::new(0u64));
+        let last_tooltip_hash = Arc::new(RwLock::new(0u64));
         let last_menu_text = Arc::new(RwLock::new(String::new()));
         let last_menu_rebuild = Arc::new(RwLock::new(None::<DateTime<Utc>>));
         let debug_overlay_override = Arc::new(RwLock::new(None::<TrayOverlay>));
@@ -427,7 +469,8 @@ impl TrayGraphManager {
             sources,
             usage,
             usage_refreshed_at,
-            last_presentation_hash,
+            last_icon_hash,
+            last_tooltip_hash,
             last_menu_text,
             last_menu_rebuild,
             debug_overlay_override,
@@ -548,7 +591,8 @@ impl TrayGraphManager {
             sources: self.sources.clone(),
             usage: self.usage.clone(),
             usage_refreshed_at: self.usage_refreshed_at.clone(),
-            last_presentation_hash: self.last_presentation_hash.clone(),
+            last_icon_hash: self.last_icon_hash.clone(),
+            last_tooltip_hash: self.last_tooltip_hash.clone(),
             last_menu_text: self.last_menu_text.clone(),
             last_menu_rebuild: self.last_menu_rebuild.clone(),
             debug_overlay_override: self.debug_overlay_override.clone(),
@@ -583,7 +627,8 @@ impl TrayGraphManager {
     pub fn set_debug_overlay(&self, overlay: Option<TrayOverlay>) {
         *self.debug_overlay_override.write() = overlay;
         // Reset hash to force an immediate icon update
-        *self.last_presentation_hash.write() = 0;
+        *self.last_icon_hash.write() = 0;
+        *self.last_tooltip_hash.write() = 0;
         self.notify_activity();
     }
 
@@ -652,51 +697,87 @@ impl TrayGraphManager {
         *self.usage_refreshed_at.write() = Some(now);
     }
 
-    /// Apply a freshly-rendered presentation to the tray on the main thread.
+    /// Apply the parts of a freshly-rendered presentation that changed
+    /// (`None` means "unchanged, leave it alone") on the main thread.
     ///
     /// Tray / menu-bar mutation is AppKit UI work that must run on the main
     /// thread. This manager renders and updates from a background task, and
     /// doing the `set_icon` off-thread made the icon flash "undrawn" while
     /// redrawing the next bucket. Dispatching to the main thread fixes that,
-    /// and bundling `set_icon` + `set_icon_as_template` (+ title + tooltip)
-    /// into a single closure makes the update atomic so the menu bar never
-    /// repaints with a half-applied icon in between.
-    fn apply_presentation(app_handle: &AppHandle, p: TrayPresentation) -> anyhow::Result<()> {
+    /// and bundling icon + tooltip into a single closure makes the update
+    /// atomic so the menu bar never repaints with a half-applied icon.
+    #[cfg(not(target_os = "macos"))]
+    fn apply_presentation(
+        app_handle: &AppHandle,
+        icon: Option<Vec<u8>>,
+        tooltip: Option<String>,
+    ) -> anyhow::Result<()> {
         let app = app_handle.clone();
         app_handle
             .run_on_main_thread(move || {
                 let Some(tray) = app.tray_by_id("main") else {
                     return;
                 };
-                let icon = match tauri::image::Image::from_bytes(&p.icon) {
-                    Ok(icon) => icon,
-                    Err(e) => {
-                        error!("Failed to create tray image: {}", e);
-                        return;
+                if let Some(bytes) = icon {
+                    match tauri::image::Image::from_bytes(&bytes) {
+                        Ok(image) => {
+                            if let Err(e) = tray.set_icon(Some(image)) {
+                                error!("Failed to set tray icon: {}", e);
+                            }
+                        }
+                        Err(e) => error!("Failed to create tray image: {}", e),
                     }
-                };
-                if let Err(e) = tray.set_icon(Some(icon)) {
-                    error!("Failed to set tray icon: {}", e);
-                    return;
                 }
-                // Each new NSImage defaults to non-template, so the template
-                // flag must be re-applied after every icon swap. On macOS this
-                // lets the menu bar recolor for the current appearance.
-                if let Err(e) = tray.set_icon_as_template(cfg!(target_os = "macos")) {
-                    error!("Failed to set tray template mode: {}", e);
-                }
-                // Numbers live inside the icon now; make sure no title
-                // text from an earlier build lingers beside it.
-                if let Err(e) = tray.set_title(None::<&str>) {
-                    error!("Failed to clear tray title: {}", e);
-                }
-                if let Err(e) = tray.set_tooltip(Some(&p.tooltip)) {
-                    error!("Failed to set tray tooltip: {}", e);
+                if let Some(tooltip) = tooltip {
+                    if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
+                        error!("Failed to set tray tooltip: {}", e);
+                    }
                 }
             })
             .map_err(|e| {
                 anyhow::anyhow!("Failed to dispatch tray icon update to main thread: {}", e)
             })
+    }
+
+    /// macOS variant: talk to the `NSStatusItem` directly instead of going
+    /// through `TrayIcon::set_icon`.
+    ///
+    /// `tray-icon` hands the freshly decoded `NSImage` to the status bar
+    /// button *before* scaling it down to the menu bar's 18pt height. The icon
+    /// is rendered at 2x for crispness, so for one layout pass the menu bar
+    /// measures the item against a double-height image, clamps it to the bar
+    /// height and lays it out ~20% too wide — the item visibly widens and then
+    /// animates back on every icon swap. Sizing the image first and installing
+    /// it afterwards means the menu bar only ever measures the final size.
+    ///
+    /// Must not be called from the main thread: the underlying tray access
+    /// dispatches there and waits for the result.
+    #[cfg(target_os = "macos")]
+    fn apply_presentation(
+        app_handle: &AppHandle,
+        icon: Option<Vec<u8>>,
+        tooltip: Option<String>,
+    ) -> anyhow::Result<()> {
+        /// Height every macOS menu bar icon is scaled to.
+        const MENU_BAR_ICON_HEIGHT: f64 = 18.0;
+
+        let Some(tray) = app_handle.tray_by_id("main") else {
+            return Ok(());
+        };
+        tray.with_inner_tray_icon(move |inner| {
+            if let Some(bytes) = icon {
+                match set_status_item_image(inner.ns_status_item(), &bytes, MENU_BAR_ICON_HEIGHT) {
+                    Ok(()) => {}
+                    Err(e) => error!("Failed to set tray icon: {}", e),
+                }
+            }
+            if let Some(tooltip) = tooltip {
+                if let Err(e) = inner.set_tooltip(Some(&tooltip)) {
+                    error!("Failed to set tray tooltip: {}", e);
+                }
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("Failed to dispatch tray icon update to main thread: {}", e))
     }
 
     /// Update sparkline buckets for every displayed source and return the
@@ -1152,25 +1233,31 @@ impl TrayGraphManager {
             }
         }
 
-        let presentation = TrayPresentation {
-            icon: icon_bytes,
-            tooltip,
+        // Push only the parts that actually changed. Swapping the icon is not
+        // free: the macOS menu bar re-measures the status item on every image
+        // change, so re-pushing an identical icon just to refresh the tooltip
+        // makes the item visibly twitch.
+        let icon_hash = hash_of(&icon_bytes);
+        let tooltip_hash = hash_of(&tooltip);
+        let icon_changed = {
+            let last = *self.last_icon_hash.read();
+            last != icon_hash || last == 0
         };
-
-        // Skip the (main-thread) tray push if nothing visible changed
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        presentation.hash(&mut hasher);
-        let current_hash = hasher.finish();
-        {
-            let last_hash = *self.last_presentation_hash.read();
-            if last_hash == current_hash && last_hash != 0 {
-                return Ok(());
-            }
+        let tooltip_changed = {
+            let last = *self.last_tooltip_hash.read();
+            last != tooltip_hash || last == 0
+        };
+        if !icon_changed && !tooltip_changed {
+            return Ok(());
         }
 
-        Self::apply_presentation(app_handle, presentation)?;
-        *self.last_presentation_hash.write() = current_hash;
+        Self::apply_presentation(
+            app_handle,
+            icon_changed.then_some(icon_bytes),
+            tooltip_changed.then_some(tooltip),
+        )?;
+        *self.last_icon_hash.write() = icon_hash;
+        *self.last_tooltip_hash.write() = tooltip_hash;
 
         debug!(
             "Tray icon updated ({} panes, graph={}, extended={})",
@@ -1189,7 +1276,8 @@ impl TrayGraphManager {
         // let the menu rebuild right away.
         *self.usage_refreshed_at.write() = None;
         *self.last_menu_rebuild.write() = None;
-        *self.last_presentation_hash.write() = 0;
+        *self.last_icon_hash.write() = 0;
+        *self.last_tooltip_hash.write() = 0;
 
         // Trigger an immediate update to apply new settings
         self.notify_activity();
