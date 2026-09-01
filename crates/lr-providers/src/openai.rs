@@ -5,6 +5,7 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, SupportLevel, TokenUsage,
 };
+use crate::oauth::OAuthTokenSource;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
@@ -13,6 +14,7 @@ use lr_types::{AppError, AppResult};
 use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info};
 
@@ -23,12 +25,41 @@ const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 /// against openai/codex: `backend-client/src/client.rs` uses
 /// `https://chatgpt.com/backend-api` as its base.
 const CHATGPT_BACKEND_API_BASE: &str = "https://chatgpt.com/backend-api/codex";
-const OAUTH_KEYCHAIN_SERVICE: &str = "LocalRouter-ProviderTokens";
-const OAUTH_PROVIDER_ID: &str = "openai-codex";
+const OAUTH_KEYCHAIN_SERVICE: &str = crate::oauth::openai_codex::KEYCHAIN_SERVICE;
+const OAUTH_PROVIDER_ID: &str = crate::oauth::openai_codex::PROVIDER_ID;
+
+/// How this provider instance authenticates.
+///
+/// OAuth credentials are resolved per request rather than snapshotted at
+/// construction: the provider instance lives in the registry for the whole
+/// process, while a ChatGPT Plus/Pro access token expires within the hour and
+/// changes again whenever the user reconnects.
+enum ProviderAuth {
+    ApiKey(String),
+    OAuth(Arc<OAuthTokenSource>),
+}
+
+impl ProviderAuth {
+    async fn token(&self) -> AppResult<String> {
+        match self {
+            Self::ApiKey(key) => Ok(key.clone()),
+            Self::OAuth(source) => source.access_token().await,
+        }
+    }
+
+    /// A token to retry with after the upstream rejected `rejected` with a
+    /// 401, or `None` when this instance has nothing better to offer.
+    async fn token_after_unauthorized(&self, rejected: &str) -> Option<String> {
+        match self {
+            Self::ApiKey(_) => None,
+            Self::OAuth(source) => source.refresh_after_unauthorized(rejected).await.ok(),
+        }
+    }
+}
 
 /// OpenAI provider implementation
 pub struct OpenAIProvider {
-    api_key: String,
+    auth: ProviderAuth,
     client: ClientWithMiddleware,
     base_url: String,
 }
@@ -38,7 +69,7 @@ impl OpenAIProvider {
     /// Create a new OpenAI provider with the given API key
     pub fn new(api_key: String) -> Self {
         Self {
-            api_key,
+            auth: ProviderAuth::ApiKey(api_key),
             client: crate::http_client::default_client(),
             base_url: OPENAI_API_BASE.to_string(),
         }
@@ -47,7 +78,7 @@ impl OpenAIProvider {
     /// Create a new OpenAI provider with a custom base URL (for testing)
     pub fn with_base_url(api_key: String, base_url: String) -> AppResult<Self> {
         Ok(Self {
-            api_key,
+            auth: ProviderAuth::ApiKey(api_key),
             client: crate::http_client::default_client(),
             base_url,
         })
@@ -82,8 +113,6 @@ impl OpenAIProvider {
     /// * `Ok(Self)` if either OAuth tokens or API key are available
     /// * `Err(AppError)` if neither OAuth nor API key authentication is available
     pub fn from_oauth_or_key(provider_name: Option<&str>) -> AppResult<Self> {
-        let keychain = CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system());
-
         // Try OAuth first.
         //
         // ChatGPT Plus/Pro OAuth tokens can't call `api.openai.com/v1/*`
@@ -91,17 +120,20 @@ impl OpenAIProvider {
         // backend. Route OAuth-based instances there so health checks,
         // model listings, and eventually completions authenticate
         // successfully.
-        if let Ok(Some(access_token)) = keychain.get(
-            OAUTH_KEYCHAIN_SERVICE,
-            &format!("{}_access_token", OAUTH_PROVIDER_ID),
-        ) {
-            info!("Using OAuth credentials for OpenAI provider");
-            debug!("Loaded OAuth access token from keychain for openai-codex");
-            return Ok(Self {
-                api_key: access_token,
-                client: crate::http_client::default_client(),
-                base_url: CHATGPT_BACKEND_API_BASE.to_string(),
-            });
+        //
+        // Only the *presence* of credentials is decided here; the token
+        // itself is read per request from the shared token source, which
+        // refreshes it and picks up reconnects.
+        if Self::has_oauth_credentials() {
+            if let Some(source) = crate::oauth::token_source(OAUTH_PROVIDER_ID) {
+                info!("Using OAuth credentials for OpenAI provider");
+                debug!("Resolving OAuth access tokens for openai-codex per request");
+                return Ok(Self {
+                    auth: ProviderAuth::OAuth(source),
+                    client: crate::http_client::default_client(),
+                    base_url: CHATGPT_BACKEND_API_BASE.to_string(),
+                });
+            }
         }
 
         // Fall back to API key
@@ -128,8 +160,13 @@ impl OpenAIProvider {
 
     /// True when this instance talks to the ChatGPT Plus/Pro backend
     /// (via the codex_cli OAuth) rather than the public platform API.
+    ///
+    /// Subscription credentials imply that backend — they are rejected by
+    /// `api.openai.com` — so an OAuth-backed instance counts regardless of the
+    /// base URL it was pointed at.
     fn is_chatgpt_backend(&self) -> bool {
-        self.base_url.starts_with(CHATGPT_BACKEND_API_BASE)
+        matches!(self.auth, ProviderAuth::OAuth(_))
+            || self.base_url.starts_with(CHATGPT_BACKEND_API_BASE)
     }
 
     /// Fallback model list for ChatGPT Plus/Pro subscriptions when the
@@ -191,15 +228,16 @@ impl OpenAIProvider {
     /// `ModelInfo`. Returns `None` on any failure so the caller can
     /// fall back to the bundled list.
     async fn fetch_chatgpt_plus_models(&self) -> Option<Vec<ModelInfo>> {
-        let url = format!("{}/models", self.base_url);
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", self.auth_header())
-            .header("OpenAI-Beta", "responses=v1")
-            .send()
-            .await
-            .ok()?;
+        let token = self.auth.token().await.ok()?;
+        let response = match self.get_chatgpt_models(&token).await? {
+            // The catalog is often the first call made after a token goes
+            // stale — refresh and try once more before falling back.
+            response if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                let token = self.auth.token_after_unauthorized(&token).await?;
+                self.get_chatgpt_models(&token).await?
+            }
+            response => response,
+        };
 
         if !response.status().is_success() {
             debug!(
@@ -242,6 +280,17 @@ impl OpenAIProvider {
         }
         models.sort_by(|a, b| a.id.cmp(&b.id));
         Some(models)
+    }
+
+    /// One GET of the Codex backend catalog with the given access token.
+    async fn get_chatgpt_models(&self, access_token: &str) -> Option<reqwest::Response> {
+        self.client
+            .get(format!("{}/models", self.base_url))
+            .bearer_auth(access_token)
+            .header("OpenAI-Beta", "responses=v1")
+            .send()
+            .await
+            .ok()
     }
 
     /// Get pricing information for known OpenAI models
@@ -339,8 +388,8 @@ impl OpenAIProvider {
     }
 
     /// Build authorization header
-    fn auth_header(&self) -> String {
-        format!("Bearer {}", self.api_key)
+    async fn auth_header(&self) -> AppResult<String> {
+        Ok(format!("Bearer {}", self.auth.token().await?))
     }
 }
 
@@ -557,23 +606,44 @@ impl ModelProvider for OpenAIProvider {
         let start = Instant::now();
 
         // The ChatGPT backend-api doesn't expose a cheap GET endpoint we
-        // can probe for health without consuming quota. Treat "we have a
-        // non-expired OAuth token and the base URL is reachable" as
-        // healthy; the real signal will come from an actual request.
+        // can probe for health without consuming quota. Resolving the OAuth
+        // token is the meaningful check instead: it refreshes the token when
+        // it is due and fails when the session needs a reconnect. The rest of
+        // the signal comes from actual requests.
         if self.is_chatgpt_backend() {
-            return ProviderHealth {
-                status: HealthStatus::Healthy,
-                latency_ms: Some(0),
-                last_checked: Utc::now(),
-                error_message: None,
+            return match self.auth.token().await {
+                Ok(_) => ProviderHealth {
+                    status: HealthStatus::Healthy,
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    last_checked: Utc::now(),
+                    error_message: None,
+                },
+                Err(e) => ProviderHealth {
+                    status: HealthStatus::Unhealthy,
+                    latency_ms: None,
+                    last_checked: Utc::now(),
+                    error_message: Some(e.to_string()),
+                },
             };
         }
+
+        let auth_header = match self.auth_header().await {
+            Ok(header) => header,
+            Err(e) => {
+                return ProviderHealth {
+                    status: HealthStatus::Unhealthy,
+                    latency_ms: None,
+                    last_checked: Utc::now(),
+                    error_message: Some(e.to_string()),
+                }
+            }
+        };
 
         // Use /v1/models endpoint for health check
         let result = self
             .client
             .get(format!("{}/models", self.base_url))
-            .header("Authorization", self.auth_header())
+            .header("Authorization", auth_header)
             .send()
             .await;
 
@@ -636,7 +706,7 @@ impl ModelProvider for OpenAIProvider {
         let response = self
             .client
             .get(format!("{}/models", self.base_url))
-            .header("Authorization", self.auth_header())
+            .header("Authorization", self.auth_header().await?)
             .send()
             .await
             .map_err(|e| AppError::Provider(format!("Failed to fetch models: {}", e)))?;
@@ -789,10 +859,31 @@ impl ModelProvider for OpenAIProvider {
         // reply (rather than the 404 they'd get against /chat/completions).
         if self.is_chatgpt_backend() {
             let req = crate::openai_responses::translate_completion_request(&request, false);
+            let token = self.auth.token().await?;
+            let result = crate::openai_responses::create_response(
+                &self.client,
+                &self.base_url,
+                &token,
+                self.name(),
+                req.clone(),
+            )
+            .await;
+
+            let Err(AppError::Unauthorized) = result else {
+                return result;
+            };
+
+            // The token died between resolving it and using it, or was
+            // replaced by a reconnect. Get a live one and try once more.
+            let token = self
+                .auth
+                .token_after_unauthorized(&token)
+                .await
+                .ok_or(AppError::Unauthorized)?;
             return crate::openai_responses::create_response(
                 &self.client,
                 &self.base_url,
-                &self.api_key,
+                &token,
                 self.name(),
                 req,
             )
@@ -827,7 +918,7 @@ impl ModelProvider for OpenAIProvider {
         let response = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", self.auth_header())
+            .header("Authorization", self.auth_header().await?)
             .header("Content-Type", "application/json")
             .json(&openai_request)
             .send()
@@ -893,10 +984,32 @@ impl ModelProvider for OpenAIProvider {
             let model = request.model.clone();
             let mut req = crate::openai_responses::translate_completion_request(&request, false);
             req.stream = true;
+            let token = self.auth.token().await?;
+            let result = crate::openai_responses::stream_response(
+                &self.client,
+                &self.base_url,
+                &token,
+                self.name(),
+                model.clone(),
+                req.clone(),
+            )
+            .await;
+
+            let Err(AppError::Unauthorized) = result else {
+                return result;
+            };
+
+            // Nothing has been streamed to the caller yet (the 401 comes from
+            // the response head), so retrying with a live token is safe.
+            let token = self
+                .auth
+                .token_after_unauthorized(&token)
+                .await
+                .ok_or(AppError::Unauthorized)?;
             return crate::openai_responses::stream_response(
                 &self.client,
                 &self.base_url,
-                &self.api_key,
+                &token,
                 self.name(),
                 model,
                 req,
@@ -932,7 +1045,7 @@ impl ModelProvider for OpenAIProvider {
         let response = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", self.auth_header())
+            .header("Authorization", self.auth_header().await?)
             .header("Content-Type", "application/json")
             .json(&openai_request)
             .send()
@@ -1069,7 +1182,7 @@ impl ModelProvider for OpenAIProvider {
         let response = self
             .client
             .post(format!("{}/embeddings", self.base_url))
-            .header("Authorization", self.auth_header())
+            .header("Authorization", self.auth_header().await?)
             .header("Content-Type", "application/json")
             .json(&openai_request)
             .send()
@@ -1144,7 +1257,7 @@ impl ModelProvider for OpenAIProvider {
         let response = self
             .client
             .post(format!("{}/images/generations", self.base_url))
-            .header("Authorization", self.auth_header())
+            .header("Authorization", self.auth_header().await?)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
@@ -1227,7 +1340,7 @@ impl ModelProvider for OpenAIProvider {
         let response = self
             .client
             .post(format!("{}/audio/transcriptions", self.base_url))
-            .header("Authorization", self.auth_header())
+            .header("Authorization", self.auth_header().await?)
             .multipart(form)
             .send()
             .await
@@ -1285,7 +1398,7 @@ impl ModelProvider for OpenAIProvider {
         let response = self
             .client
             .post(format!("{}/audio/translations", self.base_url))
-            .header("Authorization", self.auth_header())
+            .header("Authorization", self.auth_header().await?)
             .multipart(form)
             .send()
             .await
@@ -1316,7 +1429,7 @@ impl ModelProvider for OpenAIProvider {
         let response = self
             .client
             .post(format!("{}/audio/speech", self.base_url))
-            .header("Authorization", self.auth_header())
+            .header("Authorization", self.auth_header().await?)
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
@@ -1587,10 +1700,173 @@ mod tests {
         assert_eq!(provider.name(), "openai");
     }
 
-    #[test]
-    fn test_auth_header() {
+    #[tokio::test]
+    async fn test_auth_header() {
         let provider = OpenAIProvider::new("sk-test123".to_string());
-        assert_eq!(provider.auth_header(), "Bearer sk-test123");
+        assert_eq!(provider.auth_header().await.unwrap(), "Bearer sk-test123");
+    }
+
+    #[tokio::test]
+    async fn api_key_auth_does_not_retry_on_unauthorized() {
+        // Only OAuth instances have somewhere to go after a 401; an API key
+        // is all this instance will ever have.
+        let provider = OpenAIProvider::new("sk-test123".to_string());
+        assert!(provider
+            .auth
+            .token_after_unauthorized("sk-test123")
+            .await
+            .is_none());
+    }
+
+    /// A ChatGPT-backend provider whose token comes from `source`.
+    fn oauth_provider(source: Arc<OAuthTokenSource>, base_url: String) -> OpenAIProvider {
+        OpenAIProvider {
+            auth: ProviderAuth::OAuth(source),
+            client: crate::http_client::default_client(),
+            base_url,
+        }
+    }
+
+    /// Stands in for both `chatgpt.com/backend-api/codex` and OpenAI's token
+    /// endpoint: `/responses` rejects everything but `new-token`, and
+    /// `/token` hands out `new-token` for the refresh grant. Returns the
+    /// bearer token seen on each `/responses` call.
+    async fn fake_codex_backend() -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let bearers = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&bearers);
+
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let recorded = Arc::clone(&recorded);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 16384];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let bearer = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("authorization: Bearer "))
+                        .map(|v| v.trim().to_string())
+                        .unwrap_or_default();
+
+                    let body = if head.starts_with("POST /token") {
+                        r#"{"access_token":"new-token","token_type":"Bearer","expires_in":3600,"refresh_token":"refresh-2"}"#.to_string()
+                    } else {
+                        recorded.lock().unwrap().push(bearer.clone());
+                        if bearer != "new-token" {
+                            let _ = sock
+                                .write_all(
+                                    b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                                )
+                                .await;
+                            return;
+                        }
+                        r#"{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.5","output":[{"type":"message","id":"m1","role":"assistant","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}"#.to_string()
+                    };
+
+                    let _ = sock
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                                body.len(),
+                                body
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                });
+            }
+        });
+
+        (addr, bearers)
+    }
+
+    fn completion_request() -> CompletionRequest {
+        CompletionRequest {
+            model: "gpt-5.5".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: super::super::ChatMessageContent::Text("hi".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                reasoning_content: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
+            n: None,
+            logit_bias: None,
+            parallel_tool_calls: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
+            pre_computed_routing: None,
+        }
+    }
+
+    /// The bug this guards: a live provider holding an expired token must
+    /// recover on its own instead of 401-ing until it is re-created.
+    #[tokio::test]
+    async fn refreshes_and_retries_once_when_the_chatgpt_backend_returns_401() {
+        let (addr, bearers) = fake_codex_backend().await;
+
+        let keychain = lr_api_keys::CachedKeychain::new(Arc::new(lr_api_keys::MockKeychain::new()));
+        keychain
+            .store(OAUTH_KEYCHAIN_SERVICE, "test-codex_access_token", "expired")
+            .unwrap();
+        keychain
+            .store(
+                OAUTH_KEYCHAIN_SERVICE,
+                "test-codex_refresh_token",
+                "refresh-1",
+            )
+            .unwrap();
+
+        let config = lr_oauth::browser::OAuthFlowConfig {
+            token_url: format!("http://{addr}/token"),
+            account_id: "test-codex".to_string(),
+            ..crate::oauth::openai_codex::refresh_flow_config()
+        };
+        let source = Arc::new(OAuthTokenSource::with_keychain(config, keychain.clone()));
+        let provider = oauth_provider(source, format!("http://{addr}"));
+
+        let response = provider.complete(completion_request()).await.unwrap();
+        assert_eq!(response.choices.len(), 1);
+
+        // First attempt with the dead token, retry with the refreshed one.
+        assert_eq!(
+            *bearers.lock().unwrap(),
+            vec!["expired".to_string(), "new-token".to_string()]
+        );
+        // The refreshed token is what the keychain holds afterwards, so a
+        // restart doesn't fall back to the dead one.
+        assert_eq!(
+            keychain
+                .get(OAUTH_KEYCHAIN_SERVICE, "test-codex_access_token")
+                .unwrap(),
+            Some("new-token".to_string())
+        );
     }
 
     #[test]

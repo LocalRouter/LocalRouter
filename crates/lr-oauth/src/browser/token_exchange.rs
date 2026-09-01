@@ -32,6 +32,13 @@ struct TokenResponse {
     scope: Option<String>,
 }
 
+/// Marker key in [`OAuthFlowConfig::extra_token_params`] that switches the
+/// token request from `application/x-www-form-urlencoded` to a JSON body.
+/// OpenAI's `auth.openai.com/oauth/token` expects JSON on the refresh grant
+/// (this is what codex-rs sends). The marker is stripped from the request —
+/// it is never sent upstream.
+pub const USE_JSON_BODY_PARAM: &str = "_use_json_body";
+
 /// Token exchanger for OAuth flows
 pub struct TokenExchanger {
     client: Client,
@@ -96,9 +103,7 @@ impl TokenExchanger {
 
         // Send token request
         let response = self
-            .client
-            .post(&config.token_url)
-            .form(&params)
+            .token_request(&config.token_url, params)
             .send()
             .await
             .map_err(|e| AppError::OAuthBrowser(format!("Failed to send token request: {}", e)))?;
@@ -182,9 +187,7 @@ impl TokenExchanger {
 
         // Send refresh request
         let response = self
-            .client
-            .post(&config.token_url)
-            .form(&params)
+            .token_request(&config.token_url, params)
             .send()
             .await
             .map_err(|e| {
@@ -232,6 +235,26 @@ impl TokenExchanger {
         Ok(tokens)
     }
 
+    /// Build the POST to the token endpoint, encoding the body the way the
+    /// authorization server expects.
+    ///
+    /// Form encoding is the OAuth 2.0 default; providers that opt in with
+    /// [`USE_JSON_BODY_PARAM`] get a JSON body instead. The marker itself is
+    /// removed either way so it never reaches the server.
+    fn token_request(
+        &self,
+        token_url: &str,
+        mut params: HashMap<String, String>,
+    ) -> reqwest::RequestBuilder {
+        let use_json = params.remove(USE_JSON_BODY_PARAM).is_some();
+        let request = self.client.post(token_url);
+        if use_json {
+            request.json(&params)
+        } else {
+            request.form(&params)
+        }
+    }
+
     /// Store tokens in keychain
     fn store_tokens(
         &self,
@@ -259,6 +282,29 @@ impl TokenExchanger {
                 .map_err(|e| {
                     AppError::OAuthBrowser(format!("Failed to store refresh token: {}", e))
                 })?;
+        }
+
+        // Store the expiry (unix seconds) so consumers can tell a stale access
+        // token from a good one without calling upstream — the access token
+        // itself is opaque for some providers. Missing key = unknown expiry.
+        match tokens.expires_at {
+            Some(expires_at) => {
+                keychain
+                    .store(
+                        &config.keychain_service,
+                        &format!("{}_expires_at", config.account_id),
+                        &expires_at.timestamp().to_string(),
+                    )
+                    .ok();
+            }
+            None => {
+                keychain
+                    .delete(
+                        &config.keychain_service,
+                        &format!("{}_expires_at", config.account_id),
+                    )
+                    .ok();
+            }
         }
 
         debug!("Tokens stored in keychain for: {}", config.account_id);
@@ -297,6 +343,134 @@ mod tests {
         assert_eq!(response.token_type, "Bearer");
         assert_eq!(response.expires_in, Some(3600));
         assert_eq!(response.refresh_token, Some("test_refresh".to_string()));
+    }
+
+    fn test_config() -> OAuthFlowConfig {
+        OAuthFlowConfig {
+            client_id: "client".to_string(),
+            client_secret: None,
+            auth_url: "https://example.test/authorize".to_string(),
+            token_url: "https://example.test/token".to_string(),
+            scopes: vec![],
+            redirect_uri: "http://localhost:1455/auth/callback".to_string(),
+            callback_port: 1455,
+            keychain_service: "LocalRouter-ProviderTokens".to_string(),
+            account_id: "test-provider".to_string(),
+            extra_auth_params: HashMap::new(),
+            extra_token_params: HashMap::new(),
+            expected_issuer: None,
+        }
+    }
+
+    fn body_of(request: reqwest::RequestBuilder) -> (Option<String>, String) {
+        let request = request.build().expect("request builds");
+        let content_type = request
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .map(|v| v.to_str().unwrap().to_string());
+        let body = String::from_utf8(
+            request
+                .body()
+                .and_then(|b| b.as_bytes())
+                .unwrap_or_default()
+                .to_vec(),
+        )
+        .unwrap();
+        (content_type, body)
+    }
+
+    #[test]
+    fn token_request_defaults_to_form_encoding() {
+        let mut params = HashMap::new();
+        params.insert("grant_type".to_string(), "refresh_token".to_string());
+
+        let (content_type, body) =
+            body_of(TokenExchanger::new().token_request("https://example.test/token", params));
+
+        assert_eq!(
+            content_type.as_deref(),
+            Some("application/x-www-form-urlencoded")
+        );
+        assert_eq!(body, "grant_type=refresh_token");
+    }
+
+    #[test]
+    fn token_request_honors_the_json_body_marker_without_sending_it() {
+        let mut params = HashMap::new();
+        params.insert("grant_type".to_string(), "refresh_token".to_string());
+        params.insert(USE_JSON_BODY_PARAM.to_string(), "true".to_string());
+
+        let (content_type, body) =
+            body_of(TokenExchanger::new().token_request("https://example.test/token", params));
+
+        assert_eq!(content_type.as_deref(), Some("application/json"));
+        assert_eq!(body, r#"{"grant_type":"refresh_token"}"#);
+        assert!(!body.contains(USE_JSON_BODY_PARAM));
+    }
+
+    #[test]
+    fn store_tokens_records_the_expiry_next_to_the_tokens() {
+        let keychain = CachedKeychain::new(std::sync::Arc::new(lr_api_keys::MockKeychain::new()));
+        let expires_at = Utc::now() + Duration::seconds(3600);
+        let tokens = OAuthTokens {
+            access_token: "access".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            token_type: "Bearer".to_string(),
+            expires_in: Some(3600),
+            expires_at: Some(expires_at),
+            scope: None,
+            acquired_at: Utc::now(),
+        };
+
+        TokenExchanger::new()
+            .store_tokens(&tokens, &test_config(), &keychain)
+            .unwrap();
+
+        assert_eq!(
+            keychain
+                .get("LocalRouter-ProviderTokens", "test-provider_expires_at")
+                .unwrap(),
+            Some(expires_at.timestamp().to_string())
+        );
+        assert_eq!(
+            keychain
+                .get("LocalRouter-ProviderTokens", "test-provider_refresh_token")
+                .unwrap(),
+            Some("refresh".to_string())
+        );
+    }
+
+    #[test]
+    fn store_tokens_clears_a_stale_expiry_when_the_new_one_is_unknown() {
+        let keychain = CachedKeychain::new(std::sync::Arc::new(lr_api_keys::MockKeychain::new()));
+        keychain
+            .store(
+                "LocalRouter-ProviderTokens",
+                "test-provider_expires_at",
+                "1700000000",
+            )
+            .unwrap();
+
+        let tokens = OAuthTokens {
+            access_token: "access".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_in: None,
+            expires_at: None,
+            scope: None,
+            acquired_at: Utc::now(),
+        };
+
+        TokenExchanger::new()
+            .store_tokens(&tokens, &test_config(), &keychain)
+            .unwrap();
+
+        assert_eq!(
+            keychain
+                .get("LocalRouter-ProviderTokens", "test-provider_expires_at")
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

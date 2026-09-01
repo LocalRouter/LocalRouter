@@ -36,7 +36,7 @@ mod types;
 pub use callback_server::CallbackServerManager;
 pub use flow_manager::OAuthFlowManager;
 pub use pkce::{generate_pkce_challenge, generate_state};
-pub use token_exchange::TokenExchanger;
+pub use token_exchange::{TokenExchanger, USE_JSON_BODY_PARAM};
 pub use types::{
     FlowId, FlowStatus, OAuthFlowConfig, OAuthFlowResult, OAuthFlowStart, OAuthFlowState,
     OAuthTokens,

@@ -33,6 +33,70 @@ const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 pub const CALLBACK_PORT: u16 = 1455;
 
+/// Keychain service every provider token is filed under.
+pub const KEYCHAIN_SERVICE: &str = "LocalRouter-ProviderTokens";
+/// Keychain account (and OAuth provider id) for the ChatGPT Plus/Pro tokens.
+pub const PROVIDER_ID: &str = "openai-codex";
+
+/// Scopes requested for the ChatGPT Plus/Pro subscription.
+///
+/// `offline_access` is what earns a refresh token; the `api.connectors.*`
+/// pair is what unlocks the Responses API for codex-style clients.
+fn scopes() -> Vec<String> {
+    [
+        "openid",
+        "profile",
+        "email",
+        "offline_access",
+        "api.connectors.read",
+        "api.connectors.invoke",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
+}
+
+/// Base OAuth config: client id, endpoints and where the tokens are filed.
+///
+/// The authorization-code exchange uses this as-is (form-encoded, like the
+/// Codex CLI); [`refresh_flow_config`] layers the refresh-grant specifics on
+/// top.
+pub fn token_flow_config() -> OAuthFlowConfig {
+    OAuthFlowConfig {
+        client_id: OPENAI_CLIENT_ID.to_string(),
+        client_secret: None, // OpenAI uses public client (PKCE only)
+        auth_url: OPENAI_AUTHORIZE_URL.to_string(),
+        token_url: OPENAI_TOKEN_URL.to_string(),
+        scopes: scopes(),
+        redirect_uri: REDIRECT_URI.to_string(),
+        callback_port: CALLBACK_PORT,
+        keychain_service: KEYCHAIN_SERVICE.to_string(),
+        account_id: PROVIDER_ID.to_string(),
+        extra_auth_params: std::collections::HashMap::new(),
+        extra_token_params: std::collections::HashMap::new(),
+        expected_issuer: None,
+    }
+}
+
+/// OAuth config for the refresh grant.
+///
+/// Shared by this provider and by [`crate::oauth::token_source`], so the
+/// client id, token URL and keychain location can never drift apart.
+/// OpenAI's token endpoint wants a JSON body on this grant (the same as
+/// codex-rs sends); the marker is stripped before the request goes out.
+pub fn refresh_flow_config() -> OAuthFlowConfig {
+    let mut extra_token_params = std::collections::HashMap::new();
+    extra_token_params.insert(
+        lr_oauth::browser::USE_JSON_BODY_PARAM.to_string(),
+        "true".to_string(),
+    );
+
+    OAuthFlowConfig {
+        extra_token_params,
+        ..token_flow_config()
+    }
+}
+
 /// JWT payload (simplified, for extracting account ID)
 #[derive(Debug, Deserialize)]
 struct JwtPayload {
@@ -91,7 +155,7 @@ impl Default for OpenAICodexOAuthProvider {
 #[async_trait]
 impl OAuthProvider for OpenAICodexOAuthProvider {
     fn provider_id(&self) -> &str {
-        "openai-codex"
+        PROVIDER_ID
     }
 
     fn provider_name(&self) -> &str {
@@ -120,25 +184,8 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
         extra_auth_params.insert("originator".to_string(), "codex_cli_rs".to_string());
 
         let config = OAuthFlowConfig {
-            client_id: OPENAI_CLIENT_ID.to_string(),
-            client_secret: None, // OpenAI uses public client (PKCE only)
-            auth_url: OPENAI_AUTHORIZE_URL.to_string(),
-            token_url: OPENAI_TOKEN_URL.to_string(),
-            scopes: vec![
-                "openid".to_string(),
-                "profile".to_string(),
-                "email".to_string(),
-                "offline_access".to_string(),
-                "api.connectors.read".to_string(),
-                "api.connectors.invoke".to_string(),
-            ],
-            redirect_uri: REDIRECT_URI.to_string(),
-            callback_port: CALLBACK_PORT,
-            keychain_service: "LocalRouter-ProviderTokens".to_string(),
-            account_id: "openai-codex".to_string(),
             extra_auth_params,
-            extra_token_params: std::collections::HashMap::new(),
-            expected_issuer: None,
+            ..token_flow_config()
         };
 
         // Start flow via unified manager
@@ -189,7 +236,7 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
 
                 // Convert to provider credentials format
                 let credentials = OAuthCredentials {
-                    provider_id: "openai-codex".to_string(),
+                    provider_id: PROVIDER_ID.to_string(),
                     access_token: tokens.access_token,
                     refresh_token: tokens.refresh_token,
                     expires_at: tokens.expires_at.map(|dt| dt.timestamp()),
@@ -234,32 +281,7 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
 
         info!("Refreshing OpenAI Codex tokens");
 
-        // Create config for token refresh
-        // Note: OpenAI uses JSON body for token requests instead of form-encoded
-        let mut extra_token_params = std::collections::HashMap::new();
-        extra_token_params.insert("_use_json_body".to_string(), "true".to_string());
-
-        let config = OAuthFlowConfig {
-            client_id: OPENAI_CLIENT_ID.to_string(),
-            client_secret: None,
-            auth_url: OPENAI_AUTHORIZE_URL.to_string(),
-            token_url: OPENAI_TOKEN_URL.to_string(),
-            scopes: vec![
-                "openid".to_string(),
-                "profile".to_string(),
-                "email".to_string(),
-                "offline_access".to_string(),
-                "api.connectors.read".to_string(),
-                "api.connectors.invoke".to_string(),
-            ],
-            redirect_uri: REDIRECT_URI.to_string(),
-            callback_port: CALLBACK_PORT,
-            keychain_service: "LocalRouter-ProviderTokens".to_string(),
-            account_id: "openai-codex".to_string(),
-            extra_auth_params: std::collections::HashMap::new(),
-            extra_token_params,
-            expected_issuer: None,
-        };
+        let config = refresh_flow_config();
 
         // Use unified token exchanger
         let token_exchanger = lr_oauth::browser::TokenExchanger::new();
@@ -277,7 +299,7 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
 
         // Convert to provider credentials format
         let new_credentials = OAuthCredentials {
-            provider_id: "openai-codex".to_string(),
+            provider_id: PROVIDER_ID.to_string(),
             access_token: new_tokens.access_token,
             refresh_token: new_tokens.refresh_token,
             expires_at: new_tokens.expires_at.map(|dt| dt.timestamp()),

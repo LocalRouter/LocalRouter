@@ -20,6 +20,19 @@ pub mod anthropic_claude;
 pub mod github_copilot;
 pub mod openai_codex;
 pub mod storage;
+pub mod token_source;
+
+pub use token_source::{notify_tokens_updated, token_source, OAuthTokenSource};
+
+/// The app's credential store, published so background token refreshes can
+/// keep it in step with the keychain (it is what the settings UI reads).
+static CREDENTIAL_STORE: std::sync::OnceLock<Arc<storage::OAuthStorage>> =
+    std::sync::OnceLock::new();
+
+/// The credential store, once an [`OAuthManager`] has been constructed.
+pub(crate) fn credential_store() -> Option<Arc<storage::OAuthStorage>> {
+    CREDENTIAL_STORE.get().cloned()
+}
 
 /// OAuth authentication credentials
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +127,10 @@ pub struct OAuthManager {
 impl OAuthManager {
     /// Create a new OAuth manager
     pub fn new(storage: Arc<storage::OAuthStorage>) -> Self {
+        // Publish the store so token refreshes that happen outside the UI can
+        // write the new credentials back to it.
+        let _ = CREDENTIAL_STORE.set(Arc::clone(&storage));
+
         Self {
             providers: RwLock::new(HashMap::new()),
             storage,
@@ -160,6 +177,10 @@ impl OAuthManager {
         // If successful, store the credentials
         if let OAuthFlowResult::Success { ref credentials } = result {
             self.storage.store_credentials(credentials).await?;
+            // Provider instances already in the registry hold the token they
+            // read at construction. Drop it so a reconnect takes effect
+            // without re-creating the provider.
+            notify_tokens_updated(provider_id);
         }
 
         Ok(result)
@@ -214,7 +235,9 @@ impl OAuthManager {
 
     /// Delete stored credentials for a provider
     pub async fn delete_credentials(&self, provider_id: &str) -> AppResult<()> {
-        self.storage.delete_credentials(provider_id).await
+        self.storage.delete_credentials(provider_id).await?;
+        notify_tokens_updated(provider_id);
+        Ok(())
     }
 
     /// List all providers with stored credentials
