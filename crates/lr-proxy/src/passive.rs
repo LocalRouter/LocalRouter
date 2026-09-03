@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lr_monitor::{
-    EventStatus, LlmCallSource, LlmProtocol, MonitorEventData, MonitorEventStore, MonitorEventType,
-    PassthroughMode,
+    truncate_json_owned, EventStatus, LlmCallSource, LlmProtocol, MonitorEventData,
+    MonitorEventStore, MonitorEventType, PassthroughMode,
 };
 use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
 
@@ -95,6 +95,8 @@ impl PassiveInterceptor {
             .and_then(|t| t.as_array())
             .map(Vec::len)
             .unwrap_or(0);
+        // Capped only after the metadata above is read off the full body.
+        let request_json = request_json.map(|b| truncate_json_owned(b, PARSED_CAP));
         (req_meta, request_json, raw_request, tool_count)
     }
 
@@ -132,6 +134,8 @@ impl PassiveInterceptor {
             .response_body
             .as_ref()
             .map(|b| cap_raw(&String::from_utf8_lossy(b)));
+        // Capped only after `resp_meta` is read off the full body.
+        let response_json = response_json.map(|b| truncate_json_owned(b, PARSED_CAP));
         (resp_meta, response_json, raw_response)
     }
 
@@ -593,6 +597,20 @@ fn protocol_for(format: WireFormat) -> LlmProtocol {
 /// buffer stays bounded even for large exchanges.
 const RAW_CAP: usize = 256 * 1024;
 
+/// Cap on the *parsed* body stored per event.
+///
+/// Each half of an exchange is kept twice: as raw wire text and as a parsed
+/// JSON tree for structured display. A `serde_json::Value` costs several times
+/// its serialized length in heap, so an uncapped parsed body is by far the
+/// largest thing an event holds — a long-context call runs to megabytes.
+///
+/// This is deliberately far below [`RAW_CAP`]: a body under the cap is kept
+/// whole and renders as structured JSON, while anything larger is a
+/// long-context call whose tree view would be unreadable anyway, and the raw
+/// capture still holds its exact bytes. Together the two caps bound one
+/// event's bodies to well under a megabyte.
+const PARSED_CAP: usize = 64 * 1024;
+
 /// Truncate a raw payload to the cap (on a char boundary), appending a marker.
 fn cap_raw(s: &str) -> String {
     if s.len() <= RAW_CAP {
@@ -701,6 +719,76 @@ mod tests {
             assert_eq!(e.client_name.as_deref(), Some("Claude Code"));
         }
         assert!(events.events.iter().any(|e| e.id == pending_id));
+    }
+
+    #[test]
+    fn oversized_bodies_are_capped_but_metadata_survives() {
+        // A long-context call: the parsed bodies are what used to make one
+        // event cost megabytes.
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone());
+
+        let req = json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": "x".repeat(PARSED_CAP * 2)}],
+            "tools": [{"name": "t"}, {"name": "u"}],
+        });
+        let resp = json!({
+            "content": [{"type": "text", "text": "y".repeat(PARSED_CAP * 2)}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        });
+        let mut ex = exchange();
+        ex.request_body = Some(serde_json::to_vec(&req).unwrap());
+        ex.response_body = Some(serde_json::to_vec(&resp).unwrap());
+
+        it.record(&ex);
+
+        let id = store.list(0, 10, None).events[0].id.clone();
+        let event = store.get(&id).expect("event");
+        let MonitorEventData::LlmCall {
+            model,
+            tool_count,
+            message_count,
+            request_body,
+            response_body,
+            input_tokens,
+            output_tokens,
+            ..
+        } = &event.data
+        else {
+            panic!("expected an LLM call");
+        };
+
+        // Metadata is read off the full body before the cap applies.
+        assert_eq!(model, "claude-sonnet-4-20250514");
+        assert_eq!(*tool_count, 2);
+        assert_eq!(*message_count, 1);
+        assert_eq!(*input_tokens, Some(5));
+        assert_eq!(*output_tokens, Some(3));
+
+        // The bodies themselves are replaced by the truncation marker.
+        assert_eq!(request_body["_truncated"], json!(true));
+        assert_eq!(response_body.as_ref().unwrap()["_truncated"], json!(true));
+        // Two raw captures at RAW_CAP plus two truncation markers at
+        // PARSED_CAP — a fraction of the multi-megabyte event this used to be.
+        assert!(lr_monitor::event_size(&event) < 2 * RAW_CAP + 2 * PARSED_CAP + 8192);
+    }
+
+    #[test]
+    fn bodies_under_the_cap_are_stored_whole() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone());
+
+        it.record(&exchange());
+
+        let id = store.list(0, 10, None).events[0].id.clone();
+        let event = store.get(&id).expect("event");
+        let MonitorEventData::LlmCall { request_body, .. } = &event.data else {
+            panic!("expected an LLM call");
+        };
+        assert_eq!(request_body["model"], json!("claude-sonnet-4-20250514"));
+        assert!(request_body.get("_truncated").is_none());
     }
 
     #[test]

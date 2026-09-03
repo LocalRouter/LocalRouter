@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -1173,9 +1175,28 @@ pub struct GenerationTracker {
     /// Map of generation ID to generation details
     generations: DashMap<String, GenerationDetails>,
 
+    /// Generation IDs in insertion order, so the count cap can drop the oldest
+    /// without scanning or sorting the map.
+    order: parking_lot::Mutex<VecDeque<String>>,
+
     /// Retention period in seconds (default: 7 days)
     retention_period_secs: i64,
+
+    /// Hard ceiling on tracked generations. Retention alone does not bound
+    /// memory: a week of heavy traffic is millions of entries.
+    max_entries: usize,
+
+    /// Unix seconds of the last retention sweep.
+    last_sweep_secs: AtomicI64,
 }
+
+/// How many generations to keep. Entries are small, so this is generous enough
+/// that a lookup of any recent generation still hits.
+const MAX_TRACKED_GENERATIONS: usize = 50_000;
+
+/// How often the retention sweep may run. Sweeping is a full scan, so doing it
+/// per recorded request made the cost of tracking grow with the map itself.
+const GENERATION_SWEEP_INTERVAL_SECS: i64 = 300;
 
 /// Aggregate statistics across all tracked generations
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1190,15 +1211,51 @@ impl GenerationTracker {
     pub fn new() -> Self {
         Self {
             generations: DashMap::new(),
+            order: parking_lot::Mutex::new(VecDeque::new()),
             retention_period_secs: 7 * 24 * 60 * 60, // 7 days
+            max_entries: MAX_TRACKED_GENERATIONS,
+            last_sweep_secs: AtomicI64::new(Utc::now().timestamp()),
         }
     }
 
     /// Record a new generation
     pub fn record(&self, id: String, details: GenerationDetails) {
-        self.generations.insert(id, details);
+        {
+            // Held across the insert so the map and the order queue cannot
+            // disagree about which entries exist.
+            let mut order = self.order.lock();
+            if self.generations.insert(id.clone(), details).is_none() {
+                order.push_back(id);
+            }
+            while order.len() > self.max_entries {
+                match order.pop_front() {
+                    Some(oldest) => {
+                        self.generations.remove(&oldest);
+                    }
+                    None => break,
+                }
+            }
+        }
 
-        // Clean up old generations (simple approach)
+        self.sweep_if_due();
+    }
+
+    /// Run the retention sweep, but at most once per
+    /// [`GENERATION_SWEEP_INTERVAL_SECS`].
+    fn sweep_if_due(&self) {
+        let now = Utc::now().timestamp();
+        let last = self.last_sweep_secs.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < GENERATION_SWEEP_INTERVAL_SECS {
+            return;
+        }
+        // Whichever request wins the swap does the scan; the rest move on.
+        if self
+            .last_sweep_secs
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
         self.cleanup();
     }
 
@@ -1237,6 +1294,11 @@ impl GenerationTracker {
 
         self.generations
             .retain(|_, details| details.created_at.timestamp() > cutoff);
+
+        // Drop the ids the sweep just expired, or the order queue would keep
+        // growing and start evicting live entries on its own.
+        let mut order = self.order.lock();
+        order.retain(|id| self.generations.contains_key(id));
     }
 }
 
@@ -1439,6 +1501,114 @@ mod tests {
         assert_eq!(response.id, "gen-123");
         assert_eq!(response.model, "gpt-4");
         assert_eq!(response.api_key_id, "lr-***123");
+    }
+
+    /// A minimal generation record, timestamped `age_secs` in the past.
+    fn generation(id: &str, age_secs: i64) -> GenerationDetails {
+        GenerationDetails {
+            id: id.to_string(),
+            model: "gpt-4".to_string(),
+            provider: "openai".to_string(),
+            created_at: Utc::now() - chrono::Duration::seconds(age_secs),
+            finish_reason: "stop".to_string(),
+            tokens: TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            },
+            cost: None,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            provider_health: None,
+            api_key_id: "lr-test123".to_string(),
+            user: None,
+            stream: false,
+        }
+    }
+
+    #[test]
+    fn test_generation_tracker_evicts_oldest_past_the_cap() {
+        let tracker = GenerationTracker {
+            generations: DashMap::new(),
+            order: parking_lot::Mutex::new(VecDeque::new()),
+            retention_period_secs: 7 * 24 * 60 * 60,
+            max_entries: 3,
+            last_sweep_secs: AtomicI64::new(Utc::now().timestamp()),
+        };
+
+        for i in 0..5 {
+            let id = format!("gen-{i}");
+            tracker.record(id.clone(), generation(&id, 0));
+        }
+
+        assert_eq!(tracker.generations.len(), 3);
+        assert!(tracker.get("gen-0").is_none());
+        assert!(tracker.get("gen-1").is_none());
+        assert!(tracker.get("gen-4").is_some());
+    }
+
+    #[test]
+    fn test_generation_tracker_rerecording_an_id_does_not_double_count() {
+        let tracker = GenerationTracker::new();
+
+        tracker.record("gen-dup".to_string(), generation("gen-dup", 0));
+        tracker.record("gen-dup".to_string(), generation("gen-dup", 0));
+
+        // A second write for the same id replaces the entry rather than
+        // queueing a second eviction that would drop a live one.
+        assert_eq!(tracker.generations.len(), 1);
+        assert_eq!(tracker.order.lock().len(), 1);
+    }
+
+    #[test]
+    fn test_generation_tracker_sweep_drops_expired_from_map_and_order() {
+        let tracker = GenerationTracker {
+            generations: DashMap::new(),
+            order: parking_lot::Mutex::new(VecDeque::new()),
+            retention_period_secs: 60,
+            max_entries: 100,
+            last_sweep_secs: AtomicI64::new(Utc::now().timestamp()),
+        };
+
+        tracker.record("old".to_string(), generation("old", 3_600));
+        tracker.record("new".to_string(), generation("new", 0));
+        assert_eq!(tracker.generations.len(), 2);
+
+        tracker.cleanup();
+
+        assert!(tracker.get("old").is_none());
+        assert!(tracker.get("new").is_some());
+        // The order queue must shed the expired id too, or it would later
+        // evict a live entry in its place.
+        assert_eq!(tracker.order.lock().len(), 1);
+    }
+
+    #[test]
+    fn test_generation_tracker_sweep_is_rate_limited() {
+        let tracker = GenerationTracker {
+            generations: DashMap::new(),
+            order: parking_lot::Mutex::new(VecDeque::new()),
+            retention_period_secs: 60,
+            max_entries: 100,
+            last_sweep_secs: AtomicI64::new(Utc::now().timestamp()),
+        };
+
+        // Already expired, but recording must not trigger a scan: the sweep
+        // just ran, so this entry survives until the interval elapses.
+        tracker.record("stale".to_string(), generation("stale", 3_600));
+        assert!(tracker.get("stale").is_some());
+
+        // Backdate the last sweep past the interval; the next record sweeps.
+        tracker.last_sweep_secs.store(
+            Utc::now().timestamp() - GENERATION_SWEEP_INTERVAL_SECS - 1,
+            Ordering::Relaxed,
+        );
+        tracker.record("fresh".to_string(), generation("fresh", 0));
+
+        assert!(tracker.get("stale").is_none());
+        assert!(tracker.get("fresh").is_some());
     }
 
     #[test]

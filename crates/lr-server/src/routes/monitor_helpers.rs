@@ -898,17 +898,7 @@ fn resolve_client_ctx(
 /// Truncate a JSON value to approximately max_bytes by converting to string,
 /// truncating, and wrapping in a descriptive object if too large.
 pub fn truncate_json(value: &serde_json::Value, max_bytes: usize) -> serde_json::Value {
-    let serialized = serde_json::to_string(value).unwrap_or_default();
-    if serialized.len() <= max_bytes {
-        value.clone()
-    } else {
-        // Return truncated version with a note
-        serde_json::json!({
-            "_truncated": true,
-            "_original_size": serialized.len(),
-            "_preview": &serialized[..max_bytes.min(serialized.len())],
-        })
-    }
+    lr_monitor::truncate_json(value, max_bytes)
 }
 
 /// Truncate a string to max_len characters (UTF-8 safe).
