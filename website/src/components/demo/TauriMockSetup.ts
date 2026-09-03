@@ -3498,9 +3498,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_monitor_stats': () => ({
     total_events: mockData.monitorEvents.length,
     max_capacity: 1000,
+    total_bytes: mockData.monitorEvents.length * 4096,
+    max_bytes: 128 * 1024 * 1024,
     events_by_type: {},
   }),
   'set_monitor_max_capacity': () => null,
+  'set_monitor_max_bytes': () => null,
   'set_monitor_intercept_rule': () => null,
   'get_monitor_intercept_rule': () => null,
 

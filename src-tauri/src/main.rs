@@ -2905,6 +2905,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_monitor::clear_monitor_events,
             ui::commands_monitor::get_monitor_stats,
             ui::commands_monitor::set_monitor_max_capacity,
+            ui::commands_monitor::set_monitor_max_bytes,
             ui::commands_monitor::set_monitor_intercept_rule,
             ui::commands_monitor::get_monitor_intercept_rule,
         ])

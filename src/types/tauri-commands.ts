@@ -3845,6 +3845,10 @@ export interface MonitorEventListResponse {
 export interface MonitorStats {
   total_events: number
   max_capacity: number
+  /** Approximate heap bytes currently held by the stored events */
+  total_bytes: number
+  /** Memory budget; oldest events are evicted once total_bytes exceeds it */
+  max_bytes: number
   events_by_type: Record<string, number>
 }
 
@@ -3874,6 +3878,11 @@ export interface GetMonitorEventDetailParams {
 /** Params for set_monitor_max_capacity */
 export interface SetMonitorMaxCapacityParams {
   capacity: number
+}
+
+/** Params for set_monitor_max_bytes */
+export interface SetMonitorMaxBytesParams {
+  maxBytes: number
 }
 
 /** Category of requests to intercept from the monitor page */

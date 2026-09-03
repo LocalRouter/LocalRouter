@@ -753,5 +753,10 @@ pub struct MonitorEventListResponse {
 pub struct MonitorStats {
     pub total_events: usize,
     pub max_capacity: usize,
+    /// Approximate heap bytes currently held by the stored events.
+    pub total_bytes: usize,
+    /// Memory budget: events are evicted oldest-first once `total_bytes`
+    /// exceeds this, independently of `max_capacity`.
+    pub max_bytes: usize,
     pub events_by_type: std::collections::HashMap<MonitorEventType, usize>,
 }
