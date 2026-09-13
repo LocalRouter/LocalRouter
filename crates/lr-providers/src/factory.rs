@@ -3804,4 +3804,28 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn openai_compatible_listed_as_generic_in_registry() {
+        // The Custom (OpenAI-Compatible) tab in the Add Provider dialog
+        // finds its form by `providerTypes.find(t => t.category === 'generic')`.
+        // If this contract breaks, the UI silently shows "Generic provider
+        // type not available" and the user cannot add custom providers.
+        let registry = crate::registry::ProviderRegistry::new();
+        for factory in all_factories() {
+            registry.register_factory(factory.into());
+        }
+        let infos = registry.list_provider_types();
+        let generic = infos
+            .iter()
+            .find(|i| i.category == ProviderCategory::Generic)
+            .expect("registry must list at least one generic provider");
+        assert_eq!(
+            generic.provider_type, "openai_compatible",
+            "the generic factory must be openai_compatible so the Custom tab works"
+        );
+        // And the JSON shape must match what the frontend filters on.
+        let json = serde_json::to_value(&generic.category).unwrap();
+        assert_eq!(json, serde_json::json!("generic"));
+    }
 }

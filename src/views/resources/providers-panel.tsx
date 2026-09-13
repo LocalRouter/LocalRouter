@@ -1777,9 +1777,20 @@ export function ProvidersPanel({
                 {(() => {
                   const genericType = providerTypes.find(t => t.category === 'generic')
                   if (!genericType) {
+                    // Distinguish "still loading" from "truly missing" so users
+                    // don't see a misleading "not available" message while the
+                    // async list_provider_types invoke is in flight.
+                    if (providerTypes.length === 0) {
+                      return (
+                        <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>Loading providers…</span>
+                        </div>
+                      )
+                    }
                     return (
-                      <div className="text-center py-8 text-muted-foreground">
-                        <p>Generic provider type not available</p>
+                      <div className="text-center py-8 text-sm text-muted-foreground">
+                        <p>OpenAI-compatible providers are not available in this build.</p>
                       </div>
                     )
                   }
