@@ -46,7 +46,7 @@ interface ProviderFormProps {
   providerType: ProviderType
   initialInstanceName?: string
   initialConfig?: Record<string, string>
-  onSubmit: (instanceName: string, config: Record<string, string>) => Promise<void>
+  onSubmit: (providerType: string, instanceName: string, config: Record<string, string>) => Promise<void>
   onCancel: () => void
   isSubmitting?: boolean
 }
@@ -283,7 +283,7 @@ export default function ProviderForm({
       }
     }
 
-    await onSubmit(instanceName, config)
+    await onSubmit(providerType.provider_type, instanceName, config)
   }
 
   // Check if form can be submitted

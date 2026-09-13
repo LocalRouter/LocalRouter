@@ -738,7 +738,8 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
 
         // Validate base_url format
         if let Some(url) = config.get("base_url") {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
+            let trimmed = url.trim();
+            if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
                 return Err(AppError::Config(
                     "base_url must start with http:// or https://".to_string(),
                 ));
@@ -2998,6 +2999,29 @@ mod tests {
         assert!(factory.validate_config(&config).is_ok());
     }
 
+    #[test]
+    fn test_openai_compatible_validate_accepts_whitespace_base_url() {
+        let factory = OpenAICompatibleProviderFactory;
+        let mut config = HashMap::new();
+        config.insert(
+            "base_url".to_string(),
+            "  https://api.deepseek.com/v1  ".to_string(),
+        );
+        assert!(factory.validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_openai_compatible_create_with_whitespace_base_url() {
+        let factory = OpenAICompatibleProviderFactory;
+        let mut config = HashMap::new();
+        config.insert(
+            "base_url".to_string(),
+            "  http://localhost:4891/v1/\n".to_string(),
+        );
+        let provider = factory.create("custom".to_string(), config).unwrap();
+        assert_eq!(provider.name(), "custom");
+    }
+
     // ==================== Updated defaults tests ====================
 
     #[test]
@@ -3779,5 +3803,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn openai_compatible_listed_as_generic_in_registry() {
+        // The Custom (OpenAI-Compatible) tab in the Add Provider dialog
+        // finds its form by `providerTypes.find(t => t.category === 'generic')`.
+        // If this contract breaks, the UI silently shows "Generic provider
+        // type not available" and the user cannot add custom providers.
+        let registry = crate::registry::ProviderRegistry::new();
+        for factory in all_factories() {
+            registry.register_factory(factory.into());
+        }
+        let infos = registry.list_provider_types();
+        let generic = infos
+            .iter()
+            .find(|i| i.category == ProviderCategory::Generic)
+            .expect("registry must list at least one generic provider");
+        assert_eq!(
+            generic.provider_type, "openai_compatible",
+            "the generic factory must be openai_compatible so the Custom tab works"
+        );
+        // And the JSON shape must match what the frontend filters on.
+        let json = serde_json::to_value(&generic.category).unwrap();
+        assert_eq!(json, serde_json::json!("generic"));
     }
 }
