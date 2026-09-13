@@ -738,7 +738,8 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
 
         // Validate base_url format
         if let Some(url) = config.get("base_url") {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
+            let trimmed = url.trim();
+            if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
                 return Err(AppError::Config(
                     "base_url must start with http:// or https://".to_string(),
                 ));
@@ -2996,6 +2997,29 @@ mod tests {
         );
         config.insert("custom_headers".to_string(), String::new());
         assert!(factory.validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_openai_compatible_validate_accepts_whitespace_base_url() {
+        let factory = OpenAICompatibleProviderFactory;
+        let mut config = HashMap::new();
+        config.insert(
+            "base_url".to_string(),
+            "  https://api.deepseek.com/v1  ".to_string(),
+        );
+        assert!(factory.validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_openai_compatible_create_with_whitespace_base_url() {
+        let factory = OpenAICompatibleProviderFactory;
+        let mut config = HashMap::new();
+        config.insert(
+            "base_url".to_string(),
+            "  http://localhost:4891/v1/\n".to_string(),
+        );
+        let provider = factory.create("custom".to_string(), config).unwrap();
+        assert_eq!(provider.name(), "custom");
     }
 
     // ==================== Updated defaults tests ====================

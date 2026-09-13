@@ -390,12 +390,12 @@ export function ProvidersPanel({
     }
   }
 
-  const handleCreateProvider = async (instanceName: string, config: Record<string, string>) => {
+  const handleCreateProvider = async (providerType: string, instanceName: string, config: Record<string, string>) => {
     setIsSubmitting(true)
     try {
       await invoke("create_provider_instance", {
         instanceName,
-        providerType: selectedProviderType,
+        providerType,
         config,
       })
       toast.success("Provider created")
