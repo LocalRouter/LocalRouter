@@ -263,6 +263,8 @@ Implementation:
 
 ## Phase 2 — Built-in local provider: download and run any Hugging Face model inside LocalRouter (design only; its own follow-up plan)
 
+> **Superseded (2026-09-24):** the detailed Phase 2 plan is in `plan/2026-09-24-LOCAL_MODELS_PHASE2_OVERVIEW.md` and plans A-D. It replaces the in-process runtime design below with supervised engine processes (llama-server, a Laya engine, a Kev engine) installed on demand.
+
 Goal: a first-party **"LocalRouter (built-in)"** provider that lets the user browse or paste a Hugging Face repo, download a model on explicit request, and serve it in-process through the normal endpoints, with no Ollama/LM Studio/llama.cpp server needed. It serves chat, completions, embeddings and System One. It is not limited to decision models.
 
 **What the codebase already has to build on.** Candle 0.8 (Metal on macOS), `hf-hub` 0.4 and `tokenizers` 0.22 are workspace deps. Three crates already download HF weights with progress events, a download lock, a timeout and retries, then run them in-process: `lr-compression` (LLMLingua-2, `downloader.rs`), `lr-embeddings` and `lr-routellm`. The provider trait already has `supports_pull`/`pull_model` with a progress stream and UI (Ollama/LM Studio/LocalAI).
