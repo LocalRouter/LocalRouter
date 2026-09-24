@@ -44,6 +44,8 @@ Configure by setting `firewall: require_approval` on the client's configuration.
 
 Per-model policies trigger approval when requests target specific models. For example, you might require approval for expensive models (GPT-4, Claude Opus) while allowing cheaper models to pass through freely.
 
+Per-model approval applies to System One decision requests (`POST /systemone`) in the same way as to chat requests.
+
 This provides cost control through human oversight.
 
 <!-- @entry policy-per-mcp -->

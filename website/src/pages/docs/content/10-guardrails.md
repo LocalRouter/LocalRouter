@@ -4,6 +4,8 @@ GuardRails scans request and response content for safety threats before forwardi
 
 If any detector flags content above its confidence threshold, the request is blocked with a descriptive error. Scanning adds minimal latency since detectors run concurrently.
 
+System One decision requests (`POST /systemone`) are scanned too, covering the `state`, each question's instructions, and the option and level descriptions.
+
 <!-- @entry detection-types -->
 
 GuardRails supports four primary detection categories, each targeting a different class of safety threat. Multiple detectors can be active simultaneously, and each has independent sensitivity thresholds.

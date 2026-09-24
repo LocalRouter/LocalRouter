@@ -2,7 +2,9 @@
 
 Prompt Compression reduces input token count by 5-14x on multi-turn chat conversations before sending them to LLM providers. It uses LLMLingua-2, an extractive token classification approach that identifies and removes redundant tokens while preserving the original text — no paraphrasing, no hallucination risk.
 
-Compression runs in parallel with guardrails scanning and model routing, adding no latency to the request pipeline. It only applies to `/v1/chat/completions` requests with multiple messages — single-turn completions and embeddings are passed through unmodified.
+Compression runs in parallel with guardrails scanning and model routing, adding no latency to the request pipeline. It applies to `/v1/chat/completions` requests with multiple messages and to the `state` of `/v1/systemone` decision requests. Single-turn completions and embeddings are passed through unmodified.
+
+For `/v1/systemone`, only the `state` is compressed. A text state is compressed as one text. In a structured (JSON) state, each string value is compressed separately, and keys, numbers and the structure are left untouched. Questions, instructions and option descriptions are never compressed. The same enable switches (global and per client), compression rate, minimum word count, quoted-text protection and `[abridged]` notice apply. `min_messages` and `preserve_recent` do not apply, because a decision request has no message history.
 
 **Key benefits:**
 

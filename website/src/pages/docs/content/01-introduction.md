@@ -18,7 +18,7 @@ All data stays on your machine — zero telemetry, zero external assets, and sec
 
 LocalRouter runs an HTTP server on port 3625 that serves two gateways at the same root path:
 
-**OpenAI-compatible gateway.** Exposes standard endpoints (`/chat/completions`, `/models`, `/embeddings`, etc.) that any OpenAI-compatible client can use. The routing engine authenticates the client, checks rate limits, selects a model (via auto-routing or explicit model ID), and dispatches to the appropriate provider.
+**OpenAI-compatible gateway.** Exposes standard endpoints (`/chat/completions`, `/models`, `/embeddings`, `/systemone`, etc.) that any OpenAI-compatible client can use. The routing engine authenticates the client, checks rate limits, selects a model (via auto-routing or explicit model ID), and dispatches to the appropriate provider.
 
 **MCP gateway.** Manages connections to upstream MCP servers, namespaces their tools, and proxies JSON-RPC calls. Clients connect once and gain access to all configured MCP servers.
 

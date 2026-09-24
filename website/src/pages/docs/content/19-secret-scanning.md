@@ -2,6 +2,8 @@
 
 Secret Scanning inspects outbound requests for API keys, tokens, passwords, and other credentials before they are forwarded to LLM providers. This prevents accidental secret leakage when chat messages contain configuration snippets, code samples, or environment variables. The scanner runs locally with zero external dependencies and adds minimal latency to request processing.
 
+System One decision requests (`POST /systemone`) are scanned the same way as chat messages, covering the `state`, question instructions, and option and level descriptions.
+
 <!-- @entry secret-scan-pipeline -->
 
 Detection uses a three-stage pipeline. First, an Aho-Corasick keyword pre-filter performs a fast scan of the message text to identify which rules are candidates (e.g., looking for prefixes like `ghp_`, `sk-`, `AKIA`). Only rules whose keywords match proceed to the second stage: full regex evaluation against the message content. Finally, matched text is passed through a Shannon entropy filter that discards low-entropy placeholder values (like `AKIAIOSFODNN7EXAMPLE`) while retaining high-entropy strings that indicate real secrets.

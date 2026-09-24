@@ -36,6 +36,7 @@ import {
   Network,
   Server,
   Repeat,
+  Scale,
 } from 'lucide-react'
 
 export default function Home() {
@@ -293,7 +294,7 @@ export default function Home() {
                   <Server className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
                   <div>
                     <span className="font-medium">Via Gateway</span>
-                    <p className="text-sm text-muted-foreground">A drop-in <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1</code> API — one base URL and key, routed to 19+ providers</p>
+                    <p className="text-sm text-muted-foreground">A drop-in <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1</code> API — one base URL and key, routed to 19+ providers, plus typed System One decisions on <code className="text-xs bg-muted px-1 py-0.5 rounded">/v1/systemone</code></p>
                     <code className="mt-1.5 block w-fit rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"><span className="text-blue-500">ANTHROPIC_BASE_URL</span>=http://localhost:3625 <span className="text-foreground font-semibold">claude</span></code>
                   </div>
                 </li>
@@ -397,6 +398,131 @@ export default function Home() {
                   <text x="485" y="308" textAnchor="middle" fill="#475569" fontSize="9">apps keep using :11434</text>
                 </svg>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature: System One decisions */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            {/* Visual: state + questions → probability bars */}
+            <div className="relative order-2 lg:order-1 overflow-x-auto">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 p-4 shadow-2xl min-w-[420px]">
+                <svg viewBox="0 0 560 262" className="w-full" role="img" aria-label="A support ticket and three typed questions go into a System One model, which returns probability bars: department billing 85 percent, urgency mostly high, refund requested 95 percent">
+                  {/* State */}
+                  <text x="20" y="18" fill="#a78bfa" fontSize="9" fontWeight="700" letterSpacing="1.5">STATE</text>
+                  <rect x="20" y="26" width="190" height="72" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
+                  <text x="32" y="48" fill="#e2e8f0" fontSize="11">&ldquo;I was charged twice</text>
+                  <text x="32" y="65" fill="#e2e8f0" fontSize="11">this month and need a</text>
+                  <text x="32" y="82" fill="#e2e8f0" fontSize="11">refund before Friday.&rdquo;</text>
+
+                  {/* Questions */}
+                  <text x="20" y="124" fill="#a78bfa" fontSize="9" fontWeight="700" letterSpacing="1.5">QUESTIONS</text>
+                  <rect x="20" y="132" width="190" height="26" rx="13" fill="#1e1b4b" stroke="#6d28d9" strokeWidth="1.2" />
+                  <text x="34" y="149" fill="#c4b5fd" fontSize="10" fontFamily="monospace">choice</text>
+                  <text x="82" y="149" fill="#e2e8f0" fontSize="10">which department?</text>
+                  <rect x="20" y="166" width="190" height="26" rx="13" fill="#1e1b4b" stroke="#6d28d9" strokeWidth="1.2" />
+                  <text x="34" y="183" fill="#c4b5fd" fontSize="10" fontFamily="monospace">score</text>
+                  <text x="82" y="183" fill="#e2e8f0" fontSize="10">how urgent?</text>
+                  <rect x="20" y="200" width="190" height="26" rx="13" fill="#1e1b4b" stroke="#6d28d9" strokeWidth="1.2" />
+                  <text x="34" y="217" fill="#c4b5fd" fontSize="10" fontFamily="monospace">noul</text>
+                  <text x="82" y="217" fill="#e2e8f0" fontSize="10">refund requested?</text>
+
+                  {/* inputs → model */}
+                  <path d="M210,62 C228,62 222,120 238,120" fill="none" stroke="#8b5cf6" strokeWidth="1.5" opacity="0.8" />
+                  <path d="M210,179 C228,179 222,140 238,140" fill="none" stroke="#8b5cf6" strokeWidth="1.5" opacity="0.8" />
+
+                  {/* System One model */}
+                  <rect x="238" y="98" width="82" height="64" rx="12" fill="#2e1065" stroke="#8b5cf6" strokeWidth="1.5" />
+                  <text x="279" y="120" textAnchor="middle" fill="#ede9fe" fontSize="11" fontWeight="600">System One</text>
+                  <text x="279" y="136" textAnchor="middle" fill="#a78bfa" fontSize="9">Jev · Laya · Kev</text>
+                  <text x="279" y="150" textAnchor="middle" fill="#64748b" fontSize="8">or any chat model</text>
+
+                  {/* model → answers */}
+                  <path d="M320,122 C336,122 332,30 350,30" fill="none" stroke="#8b5cf6" strokeWidth="1.5" opacity="0.8" />
+                  <path d="M320,130 C336,130 332,108 350,108" fill="none" stroke="#8b5cf6" strokeWidth="1.5" opacity="0.8" />
+                  <path d="M320,138 C336,138 332,186 350,186" fill="none" stroke="#8b5cf6" strokeWidth="1.5" opacity="0.8" />
+
+                  {/* Answer 1: choice */}
+                  <text x="354" y="33" fill="#f8fafc" fontSize="10" fontWeight="600">department</text>
+                  <text x="354" y="50" fill="#e2e8f0" fontSize="9">billing</text>
+                  <rect x="410" y="43" width="104" height="8" rx="4" fill="#1e293b" />
+                  <rect x="410" y="43" width="88" height="8" rx="4" fill="#8b5cf6" />
+                  <text x="544" y="50" textAnchor="end" fill="#e2e8f0" fontSize="9">85%</text>
+                  <text x="354" y="65" fill="#64748b" fontSize="9">technical</text>
+                  <rect x="410" y="58" width="104" height="8" rx="4" fill="#1e293b" />
+                  <rect x="410" y="58" width="10" height="8" rx="4" fill="#475569" />
+                  <text x="544" y="65" textAnchor="end" fill="#64748b" fontSize="9">10%</text>
+                  <text x="354" y="80" fill="#64748b" fontSize="9">sales</text>
+                  <rect x="410" y="73" width="104" height="8" rx="4" fill="#1e293b" />
+                  <rect x="410" y="73" width="5" height="8" rx="4" fill="#475569" />
+                  <text x="544" y="80" textAnchor="end" fill="#64748b" fontSize="9">5%</text>
+
+                  {/* Answer 2: score */}
+                  <text x="354" y="111" fill="#f8fafc" fontSize="10" fontWeight="600">urgency</text>
+                  <text x="544" y="111" textAnchor="end" fill="#a78bfa" fontSize="9">score 1.6 / 2</text>
+                  <text x="354" y="128" fill="#64748b" fontSize="9">0 · can wait</text>
+                  <rect x="410" y="121" width="104" height="8" rx="4" fill="#1e293b" />
+                  <rect x="410" y="121" width="4" height="8" rx="4" fill="#475569" />
+                  <text x="544" y="128" textAnchor="end" fill="#64748b" fontSize="9">4%</text>
+                  <text x="354" y="143" fill="#64748b" fontSize="9">1 · normal</text>
+                  <rect x="410" y="136" width="104" height="8" rx="4" fill="#1e293b" />
+                  <rect x="410" y="136" width="31" height="8" rx="4" fill="#475569" />
+                  <text x="544" y="143" textAnchor="end" fill="#64748b" fontSize="9">30%</text>
+                  <text x="354" y="158" fill="#e2e8f0" fontSize="9">2 · today</text>
+                  <rect x="410" y="151" width="104" height="8" rx="4" fill="#1e293b" />
+                  <rect x="410" y="151" width="69" height="8" rx="4" fill="#8b5cf6" />
+                  <text x="544" y="158" textAnchor="end" fill="#e2e8f0" fontSize="9">66%</text>
+
+                  {/* Answer 3: yes/no */}
+                  <text x="354" y="189" fill="#f8fafc" fontSize="10" fontWeight="600">refund requested</text>
+                  <text x="354" y="206" fill="#e2e8f0" fontSize="9">yes</text>
+                  <rect x="410" y="199" width="104" height="8" rx="4" fill="#1e293b" />
+                  <rect x="410" y="199" width="99" height="8" rx="4" fill="#8b5cf6" />
+                  <text x="544" y="206" textAnchor="end" fill="#e2e8f0" fontSize="9">95%</text>
+
+                  <text x="449" y="244" textAnchor="middle" fill="#475569" fontSize="9">typed answers · calibrated probabilities</text>
+                </svg>
+              </div>
+            </div>
+
+            {/* Text */}
+            <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <Scale className="h-5 w-5 text-violet-500" />
+                <span className="text-sm font-medium text-violet-500 uppercase tracking-wide">Typed decisions</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                System One decisions
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Ask typed questions about a state (which option, what score, yes or no) and get calibrated probabilities back instead of text to parse. LocalRouter serves TypeSafe&apos;s System One API at <code className="text-sm bg-muted px-1 py-0.5 rounded">/v1/systemone</code>, so the TypeSafe SDK works by changing its base URL.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Scale className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Native decision models</span>
+                    <p className="text-sm text-muted-foreground">TypeSafe&apos;s hosted Jev, or Laya and Kev running on your own machine</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <MessagesSquare className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Any chat model, translated</span>
+                    <p className="text-sm text-muted-foreground">Chat models answer too, with probabilities from token logprobs where the provider returns them and from JSON otherwise</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <ShieldCheck className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Same protections as chat</span>
+                    <p className="text-sm text-muted-foreground">Guardrails, secret scanning, prompt compression and the Monitor all cover decision requests</p>
+                  </div>
+                </li>
+              </ul>
             </div>
           </div>
         </div>

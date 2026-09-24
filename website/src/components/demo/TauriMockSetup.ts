@@ -96,6 +96,67 @@ function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, varia
   }
 }
 
+// Feature support for an OpenAI-like chat provider (base for the other mocks).
+function openaiFeatureSupport(instanceName: string): ProviderFeatureSupport {
+  return {
+    provider_type: 'openai',
+    provider_instance: instanceName,
+    endpoints: [
+      { name: 'Chat Completions', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Send messages and receive AI responses' },
+      { name: 'Completions (legacy)', endpoint: '/v1/completions', support: 'supported', notes: 'Converted to chat completions internally by LocalRouter' },
+      { name: 'Streaming', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Server-sent events for real-time token streaming' },
+      { name: 'Embeddings', endpoint: '/v1/embeddings', support: 'supported', notes: 'Generate vector embeddings for text' },
+      { name: 'Image Generation', endpoint: '/v1/images/generations', support: 'supported', notes: 'DALL-E 3 and DALL-E 2 image generation' },
+      { name: 'Audio Transcription', endpoint: '/v1/audio/transcriptions', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
+      { name: 'Audio Speech (TTS)', endpoint: '/v1/audio/speech', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
+      { name: 'System One Decisions', endpoint: '/v1/systemone', support: 'translated', notes: 'Translated onto chat completions by LocalRouter (logprobs when available, otherwise JSON)' },
+      { name: 'Moderations', endpoint: '/v1/moderations', support: 'not_implemented', notes: 'OpenAI supports natively via text-moderation-latest; LocalRouter proxy not yet built' },
+      { name: 'Responses API', endpoint: '/v1/responses', support: 'not_implemented', notes: 'OpenAI supports natively; LocalRouter proxy not yet built' },
+      { name: 'Batch Processing', endpoint: '/v1/batches', support: 'not_implemented', notes: 'OpenAI supports native async batches; LocalRouter proxy not yet built' },
+      { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'not_implemented', notes: 'WebSocket-based real-time audio/text streaming not yet available in LocalRouter' },
+    ],
+    model_features: [
+      { name: 'Function Calling', support: 'supported', notes: 'GPT-4o, GPT-4 Turbo, and GPT-3.5 Turbo support tool calling' },
+      { name: 'Vision', support: 'supported', notes: 'GPT-4o and GPT-4 Turbo can process images' },
+      { name: 'Structured Outputs', support: 'supported', notes: 'GPT-4o supports strict JSON schema enforcement via response_format' },
+      { name: 'JSON Mode', support: 'supported', notes: 'All GPT-4 and GPT-3.5 Turbo models support JSON output mode' },
+      { name: 'Log Probabilities', support: 'supported', notes: 'Available on GPT-4o and GPT-3.5 Turbo via logprobs parameter' },
+      { name: 'Reasoning Tokens', support: 'partial', notes: 'Only o1-preview and o1-mini models use reasoning tokens; other models do not' },
+      { name: 'Extended Thinking', support: 'not_supported', notes: 'OpenAI does not support extended thinking; this is an Anthropic feature' },
+      { name: 'Thinking Level', support: 'not_supported', notes: 'OpenAI does not support thinking level; this is a Gemini feature' },
+      { name: 'Prompt Caching', support: 'not_supported', notes: 'OpenAI does not support server-side prompt caching' },
+    ],
+    optimization_features: [
+      { name: 'Guardrails', support: 'supported', notes: 'Content safety scanning on chat/completion requests' },
+      { name: 'Prompt Compression', support: 'supported', notes: 'LLMLingua-2 token-level compression for chat requests' },
+      { name: 'JSON Repair', support: 'supported', notes: 'Automatic fix of malformed JSON responses' },
+      { name: 'RouteLLM Routing', support: 'supported', notes: 'Strong/weak model routing based on request complexity' },
+      { name: 'Secret Scanning', support: 'supported', notes: 'Detect potential secrets in outbound requests' },
+      { name: 'Rate Limiting', support: 'supported', notes: 'Available for all endpoints' },
+      { name: 'Model Firewall', support: 'supported', notes: 'Available for all LLM endpoints' },
+      { name: 'Generation Tracking', support: 'supported', notes: 'Available for all endpoints' },
+      { name: 'Cost Calculation', support: 'supported', notes: 'Based on catalog pricing data' },
+    ],
+  }
+}
+
+// Feature support for a decision-only System One provider (Laya, Kev, TypeSafe):
+// it answers /v1/systemone natively and has no chat endpoints.
+function systemOneFeatureSupport(base: ProviderFeatureSupport, providerType: string, instanceName: string): ProviderFeatureSupport {
+  return {
+    ...base,
+    provider_type: providerType,
+    provider_instance: instanceName,
+    endpoints: base.endpoints.map(e => {
+      if (e.name === 'System One Decisions') return { ...e, support: 'supported' as const, notes: 'Typed choice / score / yes-no decisions with calibrated probabilities' }
+      if (e.name === 'Chat Completions' || e.name === 'Completions (legacy)' || e.name === 'Streaming') return { ...e, support: 'not_supported' as const, notes: 'Decision-only provider: answers System One questions, not chat' }
+      if (e.support === 'supported') return { ...e, support: 'not_supported' as const, notes: 'Not offered by this provider' }
+      return e
+    }),
+    model_features: base.model_features.map(f => ({ ...f, support: 'not_supported' as const, notes: 'Chat-model feature; not applicable to decision models' })),
+  }
+}
+
 /**
  * Mock handlers for Tauri commands.
  *
@@ -1639,6 +1700,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'openai-primary': 'openai',
       'anthropic-main': 'anthropic',
       'ollama-local': 'ollama',
+      'laya-local': 'laya',
       'gemini-google': 'gemini',
       'groq-fast': 'groq',
       'openrouter-backup': 'openrouter',
@@ -1656,6 +1718,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'gemini-1.5-flash': ['chat', 'completion', 'vision', 'functioncalling'],
       'text-embedding-3-small': ['embedding'],
       'text-embedding-3-large': ['embedding'],
+      // Laya: System One decision models (no chat)
+      'english': ['decision'],
+      'multilingual': ['decision'],
     }
     return mockData.models.map(m => {
       const pricing = pricingMap[m.id]
@@ -1681,48 +1746,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Feature Support Matrix
   // ============================================================================
-  'get_provider_feature_support': (args): ProviderFeatureSupport => ({
-    provider_type: 'openai',
-    provider_instance: args?.instanceName || 'openai',
-    endpoints: [
-      { name: 'Chat Completions', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Send messages and receive AI responses' },
-      { name: 'Completions (legacy)', endpoint: '/v1/completions', support: 'supported', notes: 'Converted to chat completions internally by LocalRouter' },
-      { name: 'Streaming', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Server-sent events for real-time token streaming' },
-      { name: 'Embeddings', endpoint: '/v1/embeddings', support: 'supported', notes: 'Generate vector embeddings for text' },
-      { name: 'Image Generation', endpoint: '/v1/images/generations', support: 'supported', notes: 'DALL-E 3 and DALL-E 2 image generation' },
-      { name: 'Audio Transcription', endpoint: '/v1/audio/transcriptions', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
-      { name: 'Audio Speech (TTS)', endpoint: '/v1/audio/speech', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
-      { name: 'Moderations', endpoint: '/v1/moderations', support: 'not_implemented', notes: 'OpenAI supports natively via text-moderation-latest; LocalRouter proxy not yet built' },
-      { name: 'Responses API', endpoint: '/v1/responses', support: 'not_implemented', notes: 'OpenAI supports natively; LocalRouter proxy not yet built' },
-      { name: 'Batch Processing', endpoint: '/v1/batches', support: 'not_implemented', notes: 'OpenAI supports native async batches; LocalRouter proxy not yet built' },
-      { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'not_implemented', notes: 'WebSocket-based real-time audio/text streaming not yet available in LocalRouter' },
-    ],
-    model_features: [
-      { name: 'Function Calling', support: 'supported', notes: 'GPT-4o, GPT-4 Turbo, and GPT-3.5 Turbo support tool calling' },
-      { name: 'Vision', support: 'supported', notes: 'GPT-4o and GPT-4 Turbo can process images' },
-      { name: 'Structured Outputs', support: 'supported', notes: 'GPT-4o supports strict JSON schema enforcement via response_format' },
-      { name: 'JSON Mode', support: 'supported', notes: 'All GPT-4 and GPT-3.5 Turbo models support JSON output mode' },
-      { name: 'Log Probabilities', support: 'supported', notes: 'Available on GPT-4o and GPT-3.5 Turbo via logprobs parameter' },
-      { name: 'Reasoning Tokens', support: 'partial', notes: 'Only o1-preview and o1-mini models use reasoning tokens; other models do not' },
-      { name: 'Extended Thinking', support: 'not_supported', notes: 'OpenAI does not support extended thinking; this is an Anthropic feature' },
-      { name: 'Thinking Level', support: 'not_supported', notes: 'OpenAI does not support thinking level; this is a Gemini feature' },
-      { name: 'Prompt Caching', support: 'not_supported', notes: 'OpenAI does not support server-side prompt caching' },
-    ],
-    optimization_features: [
-      { name: 'Guardrails', support: 'supported', notes: 'Content safety scanning on chat/completion requests' },
-      { name: 'Prompt Compression', support: 'supported', notes: 'LLMLingua-2 token-level compression for chat requests' },
-      { name: 'JSON Repair', support: 'supported', notes: 'Automatic fix of malformed JSON responses' },
-      { name: 'RouteLLM Routing', support: 'supported', notes: 'Strong/weak model routing based on request complexity' },
-      { name: 'Secret Scanning', support: 'supported', notes: 'Detect potential secrets in outbound requests' },
-      { name: 'Rate Limiting', support: 'supported', notes: 'Available for all endpoints' },
-      { name: 'Model Firewall', support: 'supported', notes: 'Available for all LLM endpoints' },
-      { name: 'Generation Tracking', support: 'supported', notes: 'Available for all endpoints' },
-      { name: 'Cost Calculation', support: 'supported', notes: 'Based on catalog pricing data' },
-    ],
-  }),
+  'get_provider_feature_support': (args): ProviderFeatureSupport => {
+    const base = openaiFeatureSupport(args?.instanceName || 'openai')
+    const instance = mockData.providers.find(p => p.instance_name === args?.instanceName)
+    const decisionOnlyTypes = ['typesafe', 'laya', 'kev', 'systemone_compatible']
+    return instance && decisionOnlyTypes.includes(instance.provider_type)
+      ? systemOneFeatureSupport(base, instance.provider_type, instance.instance_name)
+      : base
+  },
   'get_all_provider_feature_support': (): ProviderFeatureSupport[] => {
-    const mockHandlerFn = mockHandlers['get_provider_feature_support'] as (args?: InvokeArgs) => ProviderFeatureSupport
-    const openai = mockHandlerFn({ instanceName: 'openai' })
+    const openai = openaiFeatureSupport('openai')
 
     const anthropic: ProviderFeatureSupport = {
       ...openai,
@@ -1791,7 +1824,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       }),
     }
 
-    return [openai, anthropic, gemini, ollama]
+    const laya = systemOneFeatureSupport(openai, 'laya', 'laya')
+
+    return [openai, anthropic, gemini, ollama, laya]
   },
   'get_api_path_support': () => ({
     chat_completions: 'supported' as const,
@@ -3559,6 +3594,26 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
           responses: { '200': { description: 'Successful response' } },
         },
       },
+      '/v1/systemone': {
+        post: {
+          summary: 'System One decisions',
+          description: 'Answer typed choice / score / yes-no questions about a state with calibrated probabilities (TypeSafe Jev wire format). Also served at /systemone.',
+          operationId: 'systemone',
+          tags: ['systemone'],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/SystemOneRequest' } } },
+          },
+          responses: {
+            '200': { description: 'Answers keyed by question id', content: { 'application/json': { schema: { '$ref': '#/components/schemas/SystemOneResponse' } } } },
+            '400': { description: 'Invalid request' },
+            '401': { description: 'Missing or invalid API key' },
+            '403': { description: 'Model not allowed for this client' },
+            '429': { description: 'Rate limited' },
+            '502': { description: 'Provider error' },
+          },
+        },
+      },
       '/health': {
         get: {
           summary: 'Health check',
@@ -3571,6 +3626,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     components: {
       schemas: {
         ChatCompletionRequest: { type: 'object', properties: { model: { type: 'string' }, messages: { type: 'array' } } },
+        SystemOneRequest: { type: 'object', required: ['state', 'questions'], properties: { model: { type: 'string' }, state: {}, questions: { type: 'object', additionalProperties: { type: 'object', properties: { type: { type: 'string', enum: ['choice', 'score', 'noul'] }, instructions: { type: 'string' }, criteria: {} } } } } },
+        SystemOneResponse: { type: 'object', properties: { model: { type: 'string' }, answers: { type: 'object' }, usage: { type: 'object', properties: { input_tokens: { type: 'integer', nullable: true }, output_tokens: { type: 'integer', nullable: true } } } } },
       },
       securitySchemes: {
         BearerAuth: { type: 'http', scheme: 'bearer' },

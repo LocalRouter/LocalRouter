@@ -6,11 +6,24 @@ LocalRouter supports 19 LLM providers out of the box:
 
 **Aggregators**: OpenRouter, Together AI, DeepInfra, Groq, Cerebras
 
-**Local Providers**: Ollama, LM Studio
+**Local Providers**: Ollama, LM Studio, Jan, GPT4All, LocalAI, llama.cpp
+
+**System One (decision) providers**: TypeSafe (Jev), Laya, Kev, and any System One compatible server. These answer `POST /systemone` decision requests only, not chat.
 
 **Generic**: Any OpenAI-compatible endpoint via the generic provider adapter
 
 Provider-specific quirks (auth headers, model ID formats, streaming behavior) are handled internally — you always use the standard OpenAI request format regardless of which provider handles the request.
+
+<!-- @entry systemone-providers -->
+
+System One providers answer typed decisions (`POST /systemone`) with calibrated probabilities. They cannot chat, so their models are only used for System One requests; in model pickers, use the **Decision** filter to find them. Add them in Resources → Providers like any other provider.
+
+- **TypeSafe (Jev)**: TypeSafe's hosted Jev model (`jev-latest`, `jev-preview`, or a pinned version such as `jev-1.13.0`). Create an API key at `https://console.typesafe.ai/keys` and paste it into the provider form. The base URL defaults to `https://api.typesafe.ai`.
+- **Laya**: Convai's open decision model, running on your machine. Install and start it with `pip install "laya[serve]" && laya-serve`. It listens on port 8000, which matches the provider's default base URL (`http://localhost:8000`). Models: `english`, `multilingual`, `typed-decisions`. If you set `LAYA_API_KEY` for the server, enter the same value as the provider's API key.
+- **Kev**: Kev decision models, running locally from a checkout of `github.com/jaredpalmer/kev`: `uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009`. The default base URL is `http://127.0.0.1:8009` and the model is `kev-latest`. Enter an API key only if the server uses `KEV_API_KEY`.
+- **System One compatible**: any other server that implements `POST /v1/systemone`. Enter its base URL (the part before `/v1/systemone`) and an optional Bearer key. Examples include OpenJev, codesoda's `systemone` (`s1 serve`, port 8080), jev-agent.com, and LiteLLM's `/typesafe` passthrough route.
+
+Laya and Kev run locally and are always free. A System One provider is optional: chat providers can also answer `/systemone` through LocalRouter's translation layer (see POST /systemone).
 
 <!-- @entry adding-provider-keys -->
 

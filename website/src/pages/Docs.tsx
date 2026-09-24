@@ -100,6 +100,7 @@ const sections: DocSection[] = [
     icon: <Server className="h-4 w-4" />,
     subsections: [
       { id: 'supported-providers', title: 'Supported Providers' },
+      { id: 'systemone-providers', title: 'System One Providers' },
       { id: 'adding-provider-keys', title: 'Adding Provider API Keys' },
       { id: 'provider-health-checks', title: 'Provider Health Checks', children: [
         { id: 'circuit-breaker', title: 'Circuit Breaker' },
@@ -367,6 +368,7 @@ const sections: DocSection[] = [
       ]},
       { id: 'historical-log-parser', title: 'Historical Log Parser' },
       { id: 'graph-data', title: 'Graph Data Generation' },
+      { id: 'monitor-systemone', title: 'System One Decisions' },
     ],
   },
   {
@@ -409,6 +411,7 @@ const sections: DocSection[] = [
       { id: 'openai-audio-transcriptions', title: 'POST /audio/transcriptions' },
       { id: 'openai-audio-translations', title: 'POST /audio/translations' },
       { id: 'openai-audio-speech', title: 'POST /audio/speech' },
+      { id: 'systemone', title: 'POST /systemone' },
       { id: 'openai-moderations', title: 'POST /moderations' },
       { id: 'openai-image-generations', title: 'POST /images/generations' },
       { id: 'openai-health', title: 'GET /health' },

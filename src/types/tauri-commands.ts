@@ -3782,6 +3782,12 @@ export type MonitorEventType =
 
 export type EventStatus = 'pending' | 'complete' | 'error'
 
+/**
+ * Wire protocol of an `llm_call` event (`data.protocol`).
+ * Rust: crates/lr-monitor/src/types.rs - LlmProtocol
+ */
+export type LlmProtocol = 'openai' | 'anthropic' | 'system_one'
+
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEventSummary */
 export interface MonitorEventSummary {
   id: string

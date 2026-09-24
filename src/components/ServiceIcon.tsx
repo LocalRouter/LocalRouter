@@ -159,6 +159,11 @@ const EMOJI_MAP: Record<string, string> = {
   digitalocean: '🌊',
   opencode_zen: '📝',
   opencode_go: '📝',
+  // System One (decision) providers
+  typesafe: '🎲',
+  laya: '⚖️',
+  kev: '🧭',
+  systemone_compatible: '🔀',
 
   // OAuth Providers
   'github-copilot': '🐙',

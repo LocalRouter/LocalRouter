@@ -134,6 +134,14 @@ export const mockData = {
       base_url: "http://localhost:11434",
     },
     {
+      instance_name: "laya-local",
+      provider_type: "laya",
+      enabled: true,
+      display_name: "Laya (Local)",
+      api_key_set: false,
+      base_url: "http://localhost:8000",
+    },
+    {
       instance_name: "gemini-google",
       provider_type: "gemini",
       enabled: true,
@@ -575,6 +583,67 @@ export const mockData = {
       docs_url: "https://opencode.ai/docs/go/",
       api_key_url: "https://opencode.ai/auth",
     },
+    {
+      provider_type: "typesafe",
+      display_name: "TypeSafe (Jev)",
+      category: "first_party",
+      description: "TypeSafe's hosted Jev System One model: typed choice, score and yes/no decisions with calibrated probabilities",
+      setup_parameters: [
+        { key: "api_key", param_type: "api_key", required: true, description: "TypeSafe API key", sensitive: true },
+        { key: "base_url", param_type: "base_url", required: false, description: "TypeSafe API base URL", default_value: "https://api.typesafe.ai", sensitive: false },
+      ],
+      default_free_tier: { kind: "none" },
+      free_tier_short_text: "",
+      free_tier_long_text: "No free tier available. All API usage is billed.",
+      free_tier_notes: null,
+      docs_url: "https://docs.typesafe.ai",
+      api_key_url: "https://console.typesafe.ai/keys",
+    },
+    {
+      provider_type: "laya",
+      display_name: "Laya",
+      category: "local",
+      description: "Convai's open Laya decision model served locally by laya-serve (pip install \"laya[serve]\")",
+      setup_parameters: [
+        { key: "base_url", param_type: "base_url", required: false, description: "Laya server base URL", default_value: "http://localhost:8000", sensitive: false },
+        { key: "api_key", param_type: "api_key", required: false, description: "API key (only if the server sets LAYA_API_KEY)", sensitive: true },
+      ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
+      docs_url: "https://huggingface.co/convaiinnovations/laya",
+    },
+    {
+      provider_type: "kev",
+      display_name: "Kev",
+      category: "local",
+      description: "Kev decision models (Qwen-based) served locally by kev.serve",
+      setup_parameters: [
+        { key: "base_url", param_type: "base_url", required: false, description: "Kev server base URL", default_value: "http://127.0.0.1:8009", sensitive: false },
+        { key: "api_key", param_type: "api_key", required: false, description: "API key (only if the server sets KEV_API_KEY)", sensitive: true },
+      ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
+      docs_url: "https://github.com/jaredpalmer/kev",
+    },
+    {
+      provider_type: "systemone_compatible",
+      display_name: "System One compatible",
+      category: "generic",
+      description: "Any server implementing TypeSafe's POST /v1/systemone protocol (OpenJev, codesoda systemone, jev-agent, LiteLLM /typesafe passthrough, ...)",
+      setup_parameters: [
+        { key: "base_url", param_type: "base_url", required: true, description: "Server base URL (the part before /v1/systemone)", sensitive: false },
+        { key: "api_key", param_type: "api_key", required: false, description: "API key sent as a Bearer token (optional)", sensitive: true },
+      ],
+      default_free_tier: { kind: "none" },
+      free_tier_short_text: "",
+      free_tier_long_text: "Depends on the upstream service.",
+      free_tier_notes: null,
+      docs_url: "https://docs.typesafe.ai/api",
+    },
 ],
 
   mcpServers: [
@@ -784,6 +853,9 @@ export const mockData = {
     { id: "llama3.2:latest", provider: "ollama-local", display_name: "Llama 3.2 (Local)", context_length: 8192 },
     { id: "codellama:latest", provider: "ollama-local", display_name: "Code Llama (Local)", context_length: 16384 },
     { id: "mistral:latest", provider: "ollama-local", display_name: "Mistral (Local)", context_length: 8192 },
+    // Laya (System One decision models)
+    { id: "english", provider: "laya-local", display_name: "Laya English", context_length: 8192 },
+    { id: "multilingual", provider: "laya-local", display_name: "Laya Multilingual", context_length: 8192 },
   ],
 
   stats: {
@@ -828,6 +900,7 @@ export const mockData = {
       "openai-primary": { status: "healthy" as const, name: "OpenAI (Primary)", latency_ms: 245, last_check: new Date().toISOString() },
       "anthropic-main": { status: "healthy" as const, name: "Anthropic", latency_ms: 312, last_check: new Date().toISOString() },
       "ollama-local": { status: "healthy" as const, name: "Ollama (Local)", latency_ms: 45, last_check: new Date().toISOString() },
+      "laya-local": { status: "healthy" as const, name: "Laya (Local)", latency_ms: 18, last_check: new Date().toISOString() },
       "gemini-google": { status: "healthy" as const, name: "Gemini", latency_ms: 198, last_check: new Date().toISOString() },
       "groq-fast": { status: "healthy" as const, name: "Groq (Fast)", latency_ms: 89, last_check: new Date().toISOString() },
       "openrouter-backup": { status: "unknown" as const, name: "OpenRouter (Backup)", latency_ms: null, last_check: null },
@@ -1106,6 +1179,39 @@ export const mockData = {
       status: "complete", duration_ms: 1180, source: "reverse_proxy", trace_id: "7c1f3a2e-demo-trace", duplicate_hop: 2,
       summary: "ollama/llama3.2 — 1,523 tokens",
       data: { type: "llm_call", endpoint: "/v1/chat/completions", model: "llama3.2", stream: true, message_count: 12, has_tools: true, tool_count: 5, request_body: { model: "llama3.2", messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: "Help me refactor this function." }] }, source: "reverse_proxy", transformations_applied: ["duplicate hop (passthrough, not counted)"], provider: "ollama", status_code: 200, input_tokens: 1200, output_tokens: 323, total_tokens: 1523, cost_usd: 0, latency_ms: 1180, finish_reason: "stop", content_preview: "Here's the implementation you requested...", streamed: true, trace_id: "7c1f3a2e-demo-trace", duplicate_hop: 2 },
+    },
+    {
+      id: "mon-002b", sequence: 5, timestamp: new Date(Date.now() - 2500).toISOString(),
+      event_type: "llm_call", session_id: null, client_id: "client-1", client_name: "Claude Code",
+      status: "complete", duration_ms: 42,
+      summary: "laya/english — department=billing (0.86), urgency=1.62, refund_requested=0.95",
+      data: {
+        type: "llm_call", endpoint: "/v1/systemone", protocol: "system_one", model: "laya/english", stream: false, message_count: 3, has_tools: false, tool_count: 0,
+        request_body: {
+          model: "laya/english",
+          state: {
+            channel: "email",
+            customer_tier: "pro",
+            message: "Hi, I was charged twice for my subscription this month and I need a refund before Friday or I'll dispute it with my bank.",
+          },
+          questions: {
+            department: { type: "choice", instructions: "Which team should handle this ticket?", criteria: { billing: "Payments, invoices and refunds", technical: "Bugs, outages and how-to questions", sales: "Pricing, plans and upgrades" } },
+            urgency: { type: "score", instructions: "How urgent is this ticket?", criteria: ["Can wait", "Normal", "Needs attention today"] },
+            refund_requested: { type: "noul", instructions: "Does the customer ask for a refund?" },
+          },
+        },
+        provider: "laya-local", status_code: 200, input_tokens: 96, output_tokens: 3, total_tokens: 99, cost_usd: 0, latency_ms: 42,
+        content_preview: "department=billing (0.86), urgency=1.62, refund_requested=0.95",
+        response_body: {
+          model: "laya/english",
+          answers: {
+            department: { type: "choice", choice: "billing", confidence: 0.81, probabilities: { billing: 0.86, technical: 0.09, sales: 0.05 } },
+            urgency: { type: "score", score: 1.62, confidence: 0.47, legend: { "0": "Can wait", "1": "Normal", "2": "Needs attention today" }, probabilities: { "0": 0.04, "1": 0.3, "2": 0.66 } },
+            refund_requested: { type: "noul", noul: 0.95 },
+          },
+          usage: { input_tokens: 96, output_tokens: 3 },
+        },
+      },
     },
     {
       id: "mon-003", sequence: 4, timestamp: new Date(Date.now() - 5000).toISOString(),

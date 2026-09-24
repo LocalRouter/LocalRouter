@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 // DEPRECATED: Route unused - Strategy mode hidden
-import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Volume2, Mic, Loader2, ChevronsUpDown, Check, Search, AlertTriangle } from "lucide-react"
+import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Volume2, Mic, Scale, Loader2, ChevronsUpDown, Check, Search, AlertTriangle } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -33,6 +33,7 @@ import { ImagesPanel } from "./images-panel"
 import { EmbeddingsPanel } from "./embeddings-panel"
 import { SpeechPanel } from "./speech-panel"
 import { TranscribePanel } from "./transcribe-panel"
+import { SystemOnePanel } from "./systemone-panel"
 
 interface ServerConfig {
   host: string
@@ -904,6 +905,10 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
             <Mic className="h-3 w-3" />
             Transcribe
           </TabsTrigger>
+          <TabsTrigger value="systemone" className="flex items-center gap-1">
+            <Scale className="h-3 w-3" />
+            System One
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="chat" className="flex-1 min-h-0 mt-4">
@@ -951,6 +956,15 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
         <TabsContent value="transcribe" className="flex-1 min-h-0 mt-4">
           <TranscribePanel
+            key={`${mode}-${selectedClientId}-${selectedProvider}`}
+            openaiClient={openaiClient}
+            isReady={isReady()}
+            selectedModel={getModelWithProvider()}
+          />
+        </TabsContent>
+
+        <TabsContent value="systemone" className="flex-1 min-h-0 mt-4">
+          <SystemOnePanel
             key={`${mode}-${selectedClientId}-${selectedProvider}`}
             openaiClient={openaiClient}
             isReady={isReady()}

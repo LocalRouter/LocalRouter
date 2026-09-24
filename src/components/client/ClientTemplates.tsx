@@ -601,6 +601,40 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     reverseProxy: { listenPort: 8080, upstreamPort: 8082 },
   },
   {
+    id: 'reverse-laya',
+    name: 'Laya',
+    description: 'Wrap laya-serve so its System One decisions run through LocalRouter.',
+    category: 'local_providers',
+    icon: 'laya',
+    defaultMode: 'llm_only',
+    setupType: 'generic',
+    manualInstructions:
+      'Move laya-serve to port 8001, then let LocalRouter listen on 8000. ' +
+      'Apps keep using port 8000 exactly as before.',
+    docsUrl: 'https://huggingface.co/convaiinnovations/laya',
+    supportsMcp: false,
+    supportsLlm: false,
+    supportsReverseProxy: true,
+    reverseProxy: { listenPort: 8000, upstreamPort: 8001 },
+  },
+  {
+    id: 'reverse-kev',
+    name: 'Kev',
+    description: 'Wrap kev.serve so its System One decisions run through LocalRouter.',
+    category: 'local_providers',
+    icon: 'kev',
+    defaultMode: 'llm_only',
+    setupType: 'generic',
+    manualInstructions:
+      'Move kev.serve to port 8010, then let LocalRouter listen on 8009. ' +
+      'Apps keep using port 8009 exactly as before.',
+    docsUrl: 'https://github.com/jaredpalmer/kev',
+    supportsMcp: false,
+    supportsLlm: false,
+    supportsReverseProxy: true,
+    reverseProxy: { listenPort: 8009, upstreamPort: 8010 },
+  },
+  {
     id: 'reverse-custom',
     name: 'Custom / Other',
     description: 'Wrap any local server: you choose the port to take over and the port it moves to.',
