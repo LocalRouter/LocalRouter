@@ -583,6 +583,48 @@ pub struct AppConfig {
     /// conversation state stored by the `/v1/responses` endpoint.
     #[serde(default)]
     pub responses: ResponsesApiConfig,
+
+    /// System One decision endpoint (`/v1/systemone`) settings.
+    #[serde(default)]
+    pub systemone: SystemOneConfig,
+}
+
+/// How `/v1/systemone` handles models whose provider does not speak the
+/// System One protocol natively.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemOneEmulation {
+    /// Translate onto chat completions (token logprobs when the provider
+    /// returns them, otherwise probabilities reported as JSON).
+    #[default]
+    Auto,
+    /// Only native System One providers may answer.
+    Off,
+}
+
+/// Settings for the System One decision endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemOneConfig {
+    /// Whether chat models may answer System One requests by translation.
+    #[serde(default)]
+    pub emulation: SystemOneEmulation,
+    /// Upper bound for `top_logprobs` in letter mode. OpenAI and Ollama cap
+    /// it at 20.
+    #[serde(default = "default_systemone_top_logprobs")]
+    pub letter_top_logprobs: u32,
+}
+
+fn default_systemone_top_logprobs() -> u32 {
+    20
+}
+
+impl Default for SystemOneConfig {
+    fn default() -> Self {
+        Self {
+            emulation: SystemOneEmulation::Auto,
+            letter_top_logprobs: default_systemone_top_logprobs(),
+        }
+    }
 }
 
 /// Retention policy for `/v1/responses` sessions persisted in
@@ -4120,6 +4162,18 @@ pub enum ProviderType {
         alias = "ChatGPTPlus"
     )]
     ChatGPTPlus,
+    /// TypeSafe hosted Jev (System One decisions)
+    #[serde(rename = "typesafe")]
+    TypeSafe,
+    /// Laya decision model via laya-serve (System One decisions)
+    #[serde(rename = "laya")]
+    Laya,
+    /// Kev decision models via kev.serve (System One decisions)
+    #[serde(rename = "kev")]
+    Kev,
+    /// Any server implementing POST /v1/systemone
+    #[serde(rename = "systemone_compatible")]
+    SystemOneCompatible,
     /// Custom provider
     Custom,
 }
@@ -4273,6 +4327,7 @@ impl Default for AppConfig {
             memory: MemoryConfig::default(),
             mcp_gateway: McpGatewaySettings::default(),
             responses: ResponsesApiConfig::default(),
+            systemone: SystemOneConfig::default(),
         }
     }
 }
@@ -5554,6 +5609,10 @@ sampling_permission: "off"
             (ProviderType::DigitalOcean, "digitalocean"),
             (ProviderType::OpenCodeZen, "opencode_zen"),
             (ProviderType::OpenCodeGo, "opencode_go"),
+            (ProviderType::TypeSafe, "typesafe"),
+            (ProviderType::Laya, "laya"),
+            (ProviderType::Kev, "kev"),
+            (ProviderType::SystemOneCompatible, "systemone_compatible"),
         ];
         for (variant, expected_str) in &variants {
             // Serialize to JSON string
@@ -5572,6 +5631,20 @@ sampling_permission: "off"
     }
 
     #[test]
+    fn test_systemone_config_defaults_and_parsing() {
+        // Absent section → defaults.
+        let cfg: SystemOneConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(cfg, SystemOneConfig::default());
+        assert_eq!(cfg.emulation, SystemOneEmulation::Auto);
+        assert_eq!(cfg.letter_top_logprobs, 20);
+        let cfg: SystemOneConfig = serde_yaml::from_str("emulation: off").unwrap();
+        assert_eq!(cfg.emulation, SystemOneEmulation::Off);
+        // Old configs without the section still load.
+        let app: AppConfig = serde_yaml::from_str("{}").unwrap_or_default();
+        assert_eq!(app.systemone, SystemOneConfig::default());
+    }
+
+    #[test]
     fn test_new_provider_type_yaml_roundtrip() {
         let variants = vec![
             ProviderType::GitHubModels,
@@ -5584,6 +5657,10 @@ sampling_permission: "off"
             ProviderType::DigitalOcean,
             ProviderType::OpenCodeZen,
             ProviderType::OpenCodeGo,
+            ProviderType::TypeSafe,
+            ProviderType::Laya,
+            ProviderType::Kev,
+            ProviderType::SystemOneCompatible,
         ];
         for variant in &variants {
             let yaml = serde_yaml::to_string(variant).unwrap();

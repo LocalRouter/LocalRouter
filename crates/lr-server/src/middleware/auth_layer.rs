@@ -85,6 +85,7 @@ where
                 || path == "/responses"
                 || path == "/embeddings"
                 || path == "/moderations"
+                || path == "/systemone"
                 || path == "/models"
                 || path.starts_with("/models/")
                 || path.starts_with("/images/")

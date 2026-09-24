@@ -35,6 +35,9 @@ pub const DEFAULT_PORTS: &[(&str, u16, u16)] = &[
     ("gpt4all", 4891, 4892),
     ("localai", 8080, 8081),
     ("llamacpp", 8080, 8082),
+    // System One decision servers (POST /v1/systemone).
+    ("laya", 8000, 8001),
+    ("kev", 8009, 8010),
 ];
 
 /// The generic "wrap anything" template: the user supplies both ports, and we
@@ -345,6 +348,41 @@ pub fn plan_for(provider_key: &str, listen_port: u16, upstream_port: u16) -> Rev
             ],
             restart_hint: Some(
                 "Relaunch llama-server on the new port, then click Start listener.".to_string(),
+            ),
+            ..Default::default()
+        },
+        "laya" => ReversePlan {
+            provider_label: "Laya".to_string(),
+            oneoff_command: Some(format!(
+                "LAYA_HOST=127.0.0.1 LAYA_PORT={upstream_port} laya-serve"
+            )),
+            manual_steps: vec![
+                format!("Restart laya-serve with `LAYA_PORT={upstream_port}` (keep your other LAYA_* settings)."),
+            ],
+            notes: vec![
+                "laya-serve reads its port from LAYA_PORT at start-up, so LocalRouter can't move                  it for you — restart it on the new port and then start the listener."
+                    .to_string(),
+                format!("Port {listen_port} is a common default for other services; make sure laya-serve is what's actually on it."),
+            ],
+            restart_hint: Some(
+                "Relaunch laya-serve on the new port, then click Start listener.".to_string(),
+            ),
+            ..Default::default()
+        },
+        "kev" => ReversePlan {
+            provider_label: "Kev".to_string(),
+            oneoff_command: Some(format!(
+                "uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port {upstream_port}"
+            )),
+            manual_steps: vec![
+                format!("Restart kev.serve with `--port {upstream_port}` (keep your `--run` checkpoint and other flags)."),
+            ],
+            notes: vec![
+                "kev.serve takes its port on the command line, so LocalRouter can't move it for                  you — restart it on the new port and then start the listener."
+                    .to_string(),
+            ],
+            restart_hint: Some(
+                "Relaunch kev.serve on the new port, then click Start listener.".to_string(),
             ),
             ..Default::default()
         },

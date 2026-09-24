@@ -69,6 +69,7 @@ impl Default for ServerConfig {
 /// - POST /v1/audio/transcriptions (OpenAI)
 /// - POST /v1/audio/translations (OpenAI)
 /// - POST /v1/audio/speech (OpenAI)
+/// - POST /v1/systemone (System One typed decisions, TypeSafe wire format)
 /// - GET /v1/models (OpenAI)
 /// - GET /v1/generation (OpenAI)
 /// - POST / (MCP unified gateway)
@@ -260,6 +261,7 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/v1/moderations", post(routes::moderations))
         .route("/v1/images/generations", post(routes::image_generations))
         .route("/v1/audio/speech", post(routes::audio_speech))
+        .route("/v1/systemone", post(routes::systemone))
         .route("/v1/models", get(routes::list_models))
         .route("/v1/models/{id}", get(routes::get_model))
         .route(
@@ -279,6 +281,7 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/moderations", post(routes::moderations))
         .route("/images/generations", post(routes::image_generations))
         .route("/audio/speech", post(routes::audio_speech))
+        .route("/systemone", post(routes::systemone))
         .route("/models", get(routes::list_models))
         .route("/models/{id}", get(routes::get_model))
         .route(

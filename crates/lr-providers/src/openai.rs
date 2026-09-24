@@ -458,6 +458,10 @@ struct OpenAIChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<super::ResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    logprobs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_logprobs: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     n: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     logit_bias: Option<std::collections::HashMap<String, f32>>,
@@ -903,6 +907,8 @@ impl ModelProvider for OpenAIProvider {
             tools: request.tools,
             tool_choice: request.tool_choice,
             response_format: request.response_format,
+            logprobs: request.logprobs,
+            top_logprobs: request.top_logprobs,
             n: request.n,
             logit_bias: request.logit_bias,
             parallel_tool_calls: request.parallel_tool_calls,
@@ -1030,6 +1036,8 @@ impl ModelProvider for OpenAIProvider {
             tools: request.tools,
             tool_choice: request.tool_choice,
             response_format: request.response_format,
+            logprobs: request.logprobs,
+            top_logprobs: request.top_logprobs,
             n: request.n,
             logit_bias: request.logit_bias,
             parallel_tool_calls: request.parallel_tool_calls,

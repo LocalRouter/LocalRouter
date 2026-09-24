@@ -939,7 +939,7 @@ type GuardrailHandle =
 
 /// Check if a free-tier fallback should be allowed, denied, or needs approval.
 /// Returns Ok(()) if the request should proceed with paid models.
-async fn check_free_tier_fallback(
+pub(crate) async fn check_free_tier_fallback(
     state: &AppState,
     client_id: &str,
     exhausted_models: &[(String, String)],

@@ -16,6 +16,7 @@ pub mod monitor_helpers;
 pub mod oauth;
 pub mod pipeline;
 pub mod responses;
+pub mod systemone;
 
 pub use audio::{audio_speech, audio_transcriptions, audio_translations};
 pub use chat::chat_completions;
@@ -32,3 +33,4 @@ pub use models::{get_model, get_model_pricing, list_models};
 pub use moderations::moderations;
 pub use oauth::token_endpoint;
 pub use responses::create_response;
+pub use systemone::systemone;

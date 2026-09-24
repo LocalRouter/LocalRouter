@@ -148,8 +148,15 @@ pub mod openai_responses;
 pub mod openrouter;
 pub mod perplexity;
 pub mod registry;
+pub mod systemone;
 pub mod togetherai;
 pub mod xai;
+
+pub use indexmap::IndexMap;
+pub use systemone::{
+    SystemOneAnswer, SystemOneBackend, SystemOneQuestion, SystemOneRequest, SystemOneResponse,
+    SystemOneUsage,
+};
 
 /// Common provider trait for all AI model providers
 #[async_trait]
@@ -320,6 +327,33 @@ pub trait ModelProvider: Send + Sync {
         false
     }
 
+    /// Answer typed System One questions (choice / score / noul).
+    ///
+    /// Used by: POST /v1/systemone endpoint
+    ///
+    /// Default implementation returns an error. Providers that speak the
+    /// System One protocol natively override this and `supports_systemone()`.
+    /// Chat-capable providers without native support are served by the
+    /// router's chat translation instead.
+    async fn systemone(&self, _request: SystemOneRequest) -> AppResult<SystemOneResponse> {
+        Err(AppError::Provider(format!(
+            "Provider '{}' does not support system one decisions",
+            self.name()
+        )))
+    }
+
+    /// Whether this provider answers `/v1/systemone` natively.
+    /// Default: false. Override to true in providers that implement systemone().
+    fn supports_systemone(&self) -> bool {
+        false
+    }
+
+    /// Whether this provider serves chat completions.
+    /// Default: true. Decision-only providers override this to false.
+    fn supports_chat(&self) -> bool {
+        true
+    }
+
     /// Returns feature support information for this provider.
     /// Default calls `default_feature_support()`. Override to customize.
     fn get_feature_support(&self, instance_name: &str) -> ProviderFeatureSupport {
@@ -373,28 +407,43 @@ pub fn default_feature_support(
     provider: &(impl ModelProvider + ?Sized),
     instance_name: &str,
 ) -> ProviderFeatureSupport {
-    let has_chat = true;
+    let has_chat = provider.supports_chat();
     let has_embeddings = provider.supports_embeddings();
+    let chat_support = |notes: &str| {
+        if has_chat {
+            (SupportLevel::Supported, notes.to_string())
+        } else {
+            (
+                SupportLevel::NotSupported,
+                "This provider only answers System One decisions".to_string(),
+            )
+        }
+    };
+    let (chat_level, chat_notes) = chat_support("Send messages and receive AI responses");
+    let (legacy_level, legacy_notes) =
+        chat_support("Converted to chat completions internally by LocalRouter");
+    let (stream_level, stream_notes) =
+        chat_support("Server-sent events for real-time token streaming");
     let has_images = provider.supports_image_generation();
 
     let endpoints = vec![
         EndpointSupport {
             name: "Chat Completions".into(),
             endpoint: "/v1/chat/completions".into(),
-            support: SupportLevel::Supported,
-            notes: Some("Send messages and receive AI responses".into()),
+            support: chat_level,
+            notes: Some(chat_notes),
         },
         EndpointSupport {
             name: "Completions (legacy)".into(),
             endpoint: "/v1/completions".into(),
-            support: SupportLevel::Supported,
-            notes: Some("Converted to chat completions internally by LocalRouter".into()),
+            support: legacy_level,
+            notes: Some(legacy_notes),
         },
         EndpointSupport {
             name: "Streaming".into(),
             endpoint: "/v1/chat/completions".into(),
-            support: SupportLevel::Supported,
-            notes: Some("Server-sent events for real-time token streaming".into()),
+            support: stream_level,
+            notes: Some(stream_notes),
         },
         EndpointSupport {
             name: "Embeddings".into(),
@@ -450,6 +499,24 @@ pub fn default_feature_support(
                 "Text-to-speech audio generation".into()
             } else {
                 "Text-to-speech endpoint not yet available in LocalRouter".into()
+            }),
+        },
+        EndpointSupport {
+            name: "System One Decisions".into(),
+            endpoint: "/v1/systemone".into(),
+            support: if provider.supports_systemone() {
+                SupportLevel::Supported
+            } else if has_chat {
+                SupportLevel::Translated
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some(if provider.supports_systemone() {
+                "Typed choice / score / yes-no decisions with calibrated probabilities".into()
+            } else if has_chat {
+                "Translated onto chat completions by LocalRouter (logprobs when available, otherwise JSON)".into()
+            } else {
+                "This provider does not answer System One decisions".into()
             }),
         },
         EndpointSupport {
@@ -641,24 +708,36 @@ pub fn default_feature_support(
         },
     ];
 
+    // Input-side checks also run on System One requests (state, questions),
+    // so decision-only providers get them too.
+    let scans_inputs = has_chat || provider.supports_systemone();
+    let decision_only = !has_chat && provider.supports_systemone();
     let optimization_features = vec![
         FeatureSupport {
             name: "Guardrails".into(),
-            support: if has_chat {
+            support: if scans_inputs {
                 SupportLevel::Supported
             } else {
                 SupportLevel::NotSupported
             },
-            notes: Some("Content safety scanning on chat/completion requests".into()),
+            notes: Some(if decision_only {
+                "Content safety scanning on System One state and questions".into()
+            } else {
+                "Content safety scanning on chat/completion requests".into()
+            }),
         },
         FeatureSupport {
             name: "Prompt Compression".into(),
-            support: if has_chat {
+            support: if scans_inputs {
                 SupportLevel::Supported
             } else {
                 SupportLevel::NotSupported
             },
-            notes: Some("LLMLingua-2 token-level compression for chat requests".into()),
+            notes: Some(if decision_only {
+                "LLMLingua-2 compression of the System One state".into()
+            } else {
+                "LLMLingua-2 token-level compression for chat requests".into()
+            }),
         },
         FeatureSupport {
             name: "JSON Repair".into(),
@@ -680,7 +759,7 @@ pub fn default_feature_support(
         },
         FeatureSupport {
             name: "Secret Scanning".into(),
-            support: if has_chat {
+            support: if scans_inputs {
                 SupportLevel::Supported
             } else {
                 SupportLevel::NotSupported
@@ -880,6 +959,8 @@ pub enum Capability {
     FunctionCalling,
     Audio,
     TextToSpeech,
+    /// Typed System One decisions (choice / score / noul) via /v1/systemone
+    Decision,
 }
 
 /// Core capability categories (for backward compatibility)
@@ -898,6 +979,8 @@ pub enum EndpointType {
     Translation,
     Speech,
     ImageGeneration,
+    /// POST /v1/systemone (native, or translated onto chat)
+    SystemOne,
 }
 
 impl EndpointType {
@@ -918,18 +1001,25 @@ impl EndpointType {
             }
             EndpointType::Speech => capabilities.contains(&Capability::TextToSpeech),
             EndpointType::ImageGeneration => false, // TODO: add ImageGeneration capability
+            // Decision models answer natively; chat models via translation.
+            EndpointType::SystemOne => {
+                capabilities.contains(&Capability::Decision)
+                    || capabilities.contains(&Capability::Chat)
+                    || capabilities.contains(&Capability::Completion)
+            }
         }
     }
 
     /// Check provider-level support for this endpoint type
     pub fn is_supported_by_provider(&self, provider: &dyn ModelProvider) -> bool {
         match self {
-            EndpointType::Chat => true, // All providers support chat
+            EndpointType::Chat => provider.supports_chat(),
             EndpointType::Embedding => provider.supports_embeddings(),
             EndpointType::Transcription => provider.supports_transcription(),
             EndpointType::Translation => provider.supports_audio_translation(),
             EndpointType::Speech => provider.supports_speech(),
             EndpointType::ImageGeneration => provider.supports_image_generation(),
+            EndpointType::SystemOne => provider.supports_systemone() || provider.supports_chat(),
         }
     }
 }
@@ -1211,6 +1301,43 @@ pub struct CompletionRequest {
     pub pre_computed_routing: Option<PreComputedRouting>,
 }
 
+impl CompletionRequest {
+    /// A non-streaming request with only a model and messages set.
+    pub fn new(model: impl Into<String>, messages: Vec<ChatMessage>) -> Self {
+        Self {
+            model: model.into(),
+            messages,
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
+            n: None,
+            logit_bias: None,
+            parallel_tool_calls: None,
+            service_tier: None,
+            store: None,
+            metadata: None,
+            modalities: None,
+            audio: None,
+            prediction: None,
+            reasoning_effort: None,
+            pre_computed_routing: None,
+        }
+    }
+}
+
 /// Tool definition for function calling
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Tool {
@@ -1461,6 +1588,64 @@ pub struct Logprobs {
     /// List of message content tokens with log probability information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<TokenLogprob>>,
+}
+
+impl Logprobs {
+    /// Parse `choices[].logprobs` from a provider response.
+    ///
+    /// Accepts the OpenAI chat format (`{"content": [{token, logprob,
+    /// top_logprobs: [{token, logprob}]}]}`) and the legacy/completions
+    /// format used by Together and others (`{"tokens": [..],
+    /// "token_logprobs": [..], "top_logprobs": [{token: logprob}, ..]}`).
+    /// Returns `None` for null, empty, or unrecognized values.
+    pub fn from_wire(value: &serde_json::Value) -> Option<Self> {
+        if value.is_null() {
+            return None;
+        }
+        if value.get("content").is_some() {
+            return serde_json::from_value::<Logprobs>(value.clone())
+                .ok()
+                .filter(|l| l.content.as_ref().is_some_and(|c| !c.is_empty()));
+        }
+        let tokens = value.get("tokens")?.as_array()?;
+        let token_logprobs = value.get("token_logprobs").and_then(|v| v.as_array());
+        let top = value.get("top_logprobs").and_then(|v| v.as_array());
+        let content: Vec<TokenLogprob> = tokens
+            .iter()
+            .enumerate()
+            .filter_map(|(i, tok)| {
+                let token = tok.as_str()?.to_string();
+                let logprob = token_logprobs
+                    .and_then(|l| l.get(i))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let top_logprobs = top
+                    .and_then(|t| t.get(i))
+                    .and_then(|m| m.as_object())
+                    .map(|m| {
+                        m.iter()
+                            .filter_map(|(t, lp)| {
+                                Some(TopLogprob {
+                                    token: t.clone(),
+                                    logprob: lp.as_f64()?,
+                                    bytes: None,
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(TokenLogprob {
+                    token,
+                    logprob,
+                    bytes: None,
+                    top_logprobs,
+                })
+            })
+            .collect();
+        (!content.is_empty()).then_some(Logprobs {
+            content: Some(content),
+        })
+    }
 }
 
 /// Log probability information for a single token
@@ -2223,6 +2408,41 @@ pub fn build_feature_endpoint_matrix() -> FeatureEndpointMatrix {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn logprobs_from_wire_openai_format() {
+        let v = serde_json::json!({"content": [
+            {"token": "A", "logprob": -0.1, "top_logprobs": [{"token": "A", "logprob": -0.1}, {"token": "B", "logprob": -2.3}]}
+        ]});
+        let l = Logprobs::from_wire(&v).unwrap();
+        let c = l.content.unwrap();
+        assert_eq!(c[0].token, "A");
+        assert_eq!(c[0].top_logprobs.len(), 2);
+    }
+
+    #[test]
+    fn logprobs_from_wire_together_format() {
+        let v = serde_json::json!({
+            "tokens": ["B"],
+            "token_logprobs": [-0.2],
+            "top_logprobs": [{"B": -0.2, "A": -1.8}]
+        });
+        let c = Logprobs::from_wire(&v).unwrap().content.unwrap();
+        assert_eq!(c[0].token, "B");
+        assert_eq!(c[0].logprob, -0.2);
+        assert!(c[0]
+            .top_logprobs
+            .iter()
+            .any(|t| t.token == "A" && t.logprob == -1.8));
+    }
+
+    #[test]
+    fn logprobs_from_wire_rejects_empty_and_unknown() {
+        assert!(Logprobs::from_wire(&serde_json::Value::Null).is_none());
+        assert!(Logprobs::from_wire(&serde_json::json!({"content": []})).is_none());
+        assert!(Logprobs::from_wire(&serde_json::json!({"something": 1})).is_none());
+    }
+
     use super::*;
 
     #[test]

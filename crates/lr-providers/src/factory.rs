@@ -2851,6 +2851,199 @@ impl ProviderFactory for OpenCodeGoProviderFactory {
 
 // ==================== LOCAL PROVIDER DISCOVERY ====================
 
+// ==================== SYSTEM ONE (DECISION) PROVIDERS ====================
+
+/// Factory for providers that speak the System One protocol
+/// (`POST /v1/systemone`) natively: TypeSafe (hosted Jev), Laya, Kev, and any
+/// other Jev-compatible server.
+///
+/// These are deliberately not auto-discovered on first launch: ports 8000
+/// and 8080 are too common to identify reliably.
+pub struct SystemOneProviderFactory {
+    flavor: crate::systemone::SystemOneFlavor,
+}
+
+impl SystemOneProviderFactory {
+    /// TypeSafe's hosted Jev API.
+    pub const TYPESAFE: Self = Self {
+        flavor: crate::systemone::SystemOneFlavor::TypeSafe,
+    };
+    /// Convai's Laya via `laya-serve`.
+    pub const LAYA: Self = Self {
+        flavor: crate::systemone::SystemOneFlavor::Laya,
+    };
+    /// Kev via `python -m kev.serve`.
+    pub const KEV: Self = Self {
+        flavor: crate::systemone::SystemOneFlavor::Kev,
+    };
+    /// Any other server that implements `POST /v1/systemone`.
+    pub const GENERIC: Self = Self {
+        flavor: crate::systemone::SystemOneFlavor::Generic,
+    };
+
+    /// All System One factories, for registration.
+    pub fn all() -> [Self; 4] {
+        [Self::TYPESAFE, Self::LAYA, Self::KEV, Self::GENERIC]
+    }
+}
+
+impl ProviderFactory for SystemOneProviderFactory {
+    fn provider_type(&self) -> &str {
+        self.flavor.provider_type()
+    }
+
+    fn display_name(&self) -> &str {
+        self.flavor.display_name()
+    }
+
+    fn category(&self) -> ProviderCategory {
+        use crate::systemone::SystemOneFlavor::*;
+        match self.flavor {
+            TypeSafe => ProviderCategory::FirstParty,
+            Laya | Kev => ProviderCategory::Local,
+            Generic => ProviderCategory::Generic,
+        }
+    }
+
+    fn description(&self) -> &str {
+        use crate::systemone::SystemOneFlavor::*;
+        match self.flavor {
+            TypeSafe => "TypeSafe's hosted Jev System One model: typed choice, score and yes/no decisions with calibrated probabilities",
+            Laya => "Convai's open Laya decision model served locally by laya-serve (pip install \"laya[serve]\")",
+            Kev => "Kev decision models (Qwen-based) served locally by kev.serve",
+            Generic => "Any server implementing TypeSafe's POST /v1/systemone protocol (OpenJev, codesoda systemone, jev-agent, LiteLLM /typesafe passthrough, ...)",
+        }
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        match self.flavor {
+            crate::systemone::SystemOneFlavor::Laya | crate::systemone::SystemOneFlavor::Kev => {
+                FreeTierKind::AlwaysFreeLocal
+            }
+            _ => FreeTierKind::None,
+        }
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        use crate::systemone::SystemOneFlavor::*;
+        match self.flavor {
+            TypeSafe => vec![
+                SetupParameter::required(
+                    "api_key",
+                    ParameterType::ApiKey,
+                    "TypeSafe API key",
+                    true,
+                ),
+                SetupParameter::optional(
+                    "base_url",
+                    ParameterType::BaseUrl,
+                    "TypeSafe API base URL",
+                    self.flavor.default_base_url(),
+                    false,
+                ),
+            ],
+            Laya | Kev => vec![
+                SetupParameter::optional(
+                    "base_url",
+                    ParameterType::BaseUrl,
+                    format!("{} server base URL", self.flavor.display_name()),
+                    self.flavor.default_base_url(),
+                    false,
+                ),
+                SetupParameter::optional(
+                    "api_key",
+                    ParameterType::ApiKey,
+                    format!(
+                        "API key (only if the server sets {})",
+                        if self.flavor == Laya {
+                            "LAYA_API_KEY"
+                        } else {
+                            "KEV_API_KEY"
+                        }
+                    ),
+                    None::<String>,
+                    true,
+                ),
+            ],
+            Generic => vec![
+                SetupParameter::required(
+                    "base_url",
+                    ParameterType::BaseUrl,
+                    "Server base URL (the part before /v1/systemone)",
+                    false,
+                ),
+                SetupParameter::optional(
+                    "api_key",
+                    ParameterType::ApiKey,
+                    "API key sent as a Bearer token (optional)",
+                    None::<String>,
+                    true,
+                ),
+            ],
+        }
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+        Ok(Arc::new(crate::systemone::SystemOneProvider::new(
+            self.flavor,
+            config.get("base_url").cloned(),
+            config.get("api_key").cloned(),
+        )?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        use crate::systemone::SystemOneFlavor::*;
+        let non_empty = |k: &str| config.get(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
+        if self.flavor == TypeSafe && !non_empty("api_key") {
+            return Err(AppError::Config("TypeSafe requires an api_key".to_string()));
+        }
+        if self.flavor == Generic && !non_empty("base_url") {
+            return Err(AppError::Config(
+                "A System One compatible provider requires a base_url".to_string(),
+            ));
+        }
+        if let Some(url) = config.get("base_url").filter(|u| !u.trim().is_empty()) {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        // None of these models are in models.dev; pricing comes from the provider.
+        None
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        use crate::systemone::SystemOneFlavor::*;
+        Some(match self.flavor {
+            TypeSafe => "https://docs.typesafe.ai",
+            Laya => "https://huggingface.co/convaiinnovations/laya",
+            Kev => "https://github.com/jaredpalmer/kev",
+            Generic => "https://docs.typesafe.ai/api",
+        })
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        match self.flavor {
+            crate::systemone::SystemOneFlavor::TypeSafe => Some("https://console.typesafe.ai/keys"),
+            _ => None,
+        }
+    }
+}
+
 /// Discovered local provider information
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveredProvider {
@@ -3643,7 +3836,86 @@ mod tests {
             Box::new(OpenCodeGoProviderFactory),
             Box::new(GitHubCopilotProviderFactory),
             Box::new(OpenAICodexProviderFactory),
+            Box::new(SystemOneProviderFactory::TYPESAFE),
+            Box::new(SystemOneProviderFactory::LAYA),
+            Box::new(SystemOneProviderFactory::KEV),
+            Box::new(SystemOneProviderFactory::GENERIC),
         ]
+    }
+
+    // --- System One (decision) providers ---
+
+    #[test]
+    fn systemone_factories_metadata() {
+        let types: Vec<_> = SystemOneProviderFactory::all()
+            .iter()
+            .map(|f| f.provider_type().to_string())
+            .collect();
+        assert_eq!(
+            types,
+            vec!["typesafe", "laya", "kev", "systemone_compatible"]
+        );
+        for f in SystemOneProviderFactory::all() {
+            assert!(f.catalog_provider_id().is_none());
+        }
+        assert_eq!(
+            SystemOneProviderFactory::TYPESAFE.category(),
+            ProviderCategory::FirstParty
+        );
+        assert_eq!(
+            SystemOneProviderFactory::LAYA.category(),
+            ProviderCategory::Local
+        );
+        assert_eq!(
+            SystemOneProviderFactory::GENERIC.category(),
+            ProviderCategory::Generic
+        );
+        assert_eq!(
+            SystemOneProviderFactory::KEV.default_free_tier(),
+            FreeTierKind::AlwaysFreeLocal
+        );
+    }
+
+    #[test]
+    fn systemone_factories_validate_and_create() {
+        // TypeSafe needs a key.
+        assert!(SystemOneProviderFactory::TYPESAFE
+            .validate_config(&HashMap::new())
+            .is_err());
+        let mut ts = HashMap::new();
+        ts.insert("api_key".to_string(), "k".to_string());
+        let p = SystemOneProviderFactory::TYPESAFE
+            .create("ts".into(), ts)
+            .unwrap();
+        assert_eq!(p.name(), "typesafe");
+        assert!(p.supports_systemone());
+        assert!(!p.supports_chat());
+
+        // Laya and Kev work with no config at all.
+        for f in [
+            SystemOneProviderFactory::LAYA,
+            SystemOneProviderFactory::KEV,
+        ] {
+            assert!(f.create("local".into(), HashMap::new()).is_ok());
+        }
+
+        // Generic needs a base URL, and it must be http(s).
+        assert!(SystemOneProviderFactory::GENERIC
+            .validate_config(&HashMap::new())
+            .is_err());
+        let mut bad = HashMap::new();
+        bad.insert("base_url".to_string(), "localhost:8080".to_string());
+        assert!(SystemOneProviderFactory::GENERIC
+            .validate_config(&bad)
+            .is_err());
+        let mut good = HashMap::new();
+        good.insert(
+            "base_url".to_string(),
+            "http://localhost:8080/v1".to_string(),
+        );
+        assert!(SystemOneProviderFactory::GENERIC
+            .create("g".into(), good)
+            .is_ok());
     }
 
     #[test]

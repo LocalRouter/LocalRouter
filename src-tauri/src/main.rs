@@ -27,8 +27,8 @@ use lr_providers::factory::{
     Llm7ProviderFactory, LocalAIProviderFactory, MistralProviderFactory, NvidiaNimProviderFactory,
     OllamaProviderFactory, OpenAICodexProviderFactory, OpenAICompatibleProviderFactory,
     OpenAIProviderFactory, OpenCodeGoProviderFactory, OpenCodeZenProviderFactory,
-    OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
-    XAIProviderFactory, ZhipuProviderFactory,
+    OpenRouterProviderFactory, PerplexityProviderFactory, SystemOneProviderFactory,
+    TogetherAIProviderFactory, XAIProviderFactory, ZhipuProviderFactory,
 };
 use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;
@@ -328,6 +328,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(DigitalOceanProviderFactory));
     provider_registry.register_factory(Arc::new(OpenCodeZenProviderFactory));
     provider_registry.register_factory(Arc::new(OpenCodeGoProviderFactory));
+    // System One decision providers (TypeSafe Jev, Laya, Kev, compatible)
+    for factory in SystemOneProviderFactory::all() {
+        provider_registry.register_factory(Arc::new(factory));
+    }
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -403,6 +407,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::OpenCodeZen => "opencode_zen",
             config::ProviderType::OpenCodeGo => "opencode_go",
             config::ProviderType::ChatGPTPlus => "openai-chatgpt-plus",
+            config::ProviderType::TypeSafe => "typesafe",
+            config::ProviderType::Laya => "laya",
+            config::ProviderType::Kev => "kev",
+            config::ProviderType::SystemOneCompatible => "systemone_compatible",
             config::ProviderType::Custom => "openai_compatible",
         };
 

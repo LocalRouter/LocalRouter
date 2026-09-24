@@ -120,11 +120,19 @@ pub fn emit_llm_call(
 ) -> LlmCallGuard {
     let (client_id, client_name) = resolve_client(state, client_auth);
 
-    let message_count = request_body
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+    // System One requests carry `state` + a `questions` map instead of
+    // `messages`; count questions so the monitor list shows something useful.
+    let systemone_questions = request_body.get("questions").and_then(|q| q.as_object());
+    let is_systemone = systemone_questions.is_some() && request_body.get("state").is_some();
+    let message_count = if is_systemone {
+        systemone_questions.map(|q| q.len()).unwrap_or(0)
+    } else {
+        request_body
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    };
 
     let tools = request_body.get("tools").and_then(|t| t.as_array());
     let has_tools = tools.is_some_and(|t| !t.is_empty());
@@ -147,7 +155,11 @@ pub fn emit_llm_call(
             tool_count,
             request_body: truncate_json(request_body, 10_000),
             source: lr_monitor::LlmCallSource::Api,
-            protocol: lr_monitor::LlmProtocol::Openai,
+            protocol: if is_systemone {
+                lr_monitor::LlmProtocol::SystemOne
+            } else {
+                lr_monitor::LlmProtocol::Openai
+            },
             raw_request: None,
             raw_response: None,
             transformed_body: None,

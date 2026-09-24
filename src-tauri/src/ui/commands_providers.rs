@@ -512,6 +512,10 @@ fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
         "opencode_zen" => lr_config::ProviderType::OpenCodeZen,
         "opencode_go" => lr_config::ProviderType::OpenCodeGo,
         "openai-chatgpt-plus" => lr_config::ProviderType::ChatGPTPlus,
+        "typesafe" => lr_config::ProviderType::TypeSafe,
+        "laya" => lr_config::ProviderType::Laya,
+        "kev" => lr_config::ProviderType::Kev,
+        "systemone_compatible" => lr_config::ProviderType::SystemOneCompatible,
         "openai_compatible" => lr_config::ProviderType::Custom,
         _ => lr_config::ProviderType::Custom,
     }
@@ -1357,7 +1361,7 @@ pub async fn list_all_models_detailed(
             // Skip pricing for local/free providers unless there's an override
             let is_local_provider = matches!(
                 provider_type.as_str(),
-                "ollama" | "lmstudio" | "openai_compatible" | "localai"
+                "ollama" | "lmstudio" | "openai_compatible" | "localai" | "laya" | "kev"
             );
 
             let config = config_manager.get();

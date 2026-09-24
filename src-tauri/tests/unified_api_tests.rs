@@ -389,6 +389,9 @@ async fn test_all_api_routes_require_auth() {
         ("POST", "/v1/audio/transcriptions"),
         ("POST", "/audio/translations"),
         ("POST", "/v1/audio/translations"),
+        // System One decisions
+        ("POST", "/systemone"),
+        ("POST", "/v1/systemone"),
         // Models
         ("GET", "/models"),
         ("GET", "/v1/models"),

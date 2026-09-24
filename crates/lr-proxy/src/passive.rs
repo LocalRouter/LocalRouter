@@ -590,6 +590,7 @@ fn protocol_for(format: WireFormat) -> LlmProtocol {
         // Ollama's native dialect is closest to the OpenAI shape for the
         // monitor's purposes (messages + content + token counts).
         WireFormat::Ollama(_) => LlmProtocol::Openai,
+        WireFormat::SystemOne => LlmProtocol::SystemOne,
     }
 }
 

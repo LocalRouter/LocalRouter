@@ -135,6 +135,61 @@ impl CompressionService {
         model.compress_text(&text_owned, rate, protected_mask.as_deref())
     }
 
+    /// Compress independent texts, holding the model once for the batch.
+    ///
+    /// Texts with fewer than `min_words` words are left unchanged (`None`).
+    /// With `compression_notice`, each compressed text is prefixed with
+    /// `[abridged] `, as chat messages are.
+    pub async fn compress_texts(
+        &self,
+        texts: &[String],
+        rate: f32,
+        min_words: u32,
+        preserve_quoted: bool,
+        compression_notice: bool,
+    ) -> Result<TextsCompression, String> {
+        let start = Instant::now();
+        {
+            let guard = self.model.lock().await;
+            if guard.is_none() {
+                drop(guard);
+                self.load().await?;
+            }
+        }
+        let guard = self.model.lock().await;
+        let model = guard.as_ref().ok_or("Model not loaded")?;
+
+        let mut outputs = Vec::with_capacity(texts.len());
+        let mut original_tokens = 0usize;
+        let mut compressed_tokens = 0usize;
+        for text in texts {
+            let words: Vec<&str> = text.split_whitespace().collect();
+            original_tokens += words.len();
+            if words.len() < min_words as usize {
+                compressed_tokens += words.len();
+                outputs.push(None);
+                continue;
+            }
+            let protected_mask =
+                preserve_quoted.then(|| protection::detect_protected_words(&words));
+            let (compressed_text, _orig, comp, _kept, _protected) =
+                model.compress_text(text, rate, protected_mask.as_deref())?;
+            if compression_notice {
+                compressed_tokens += comp + 1;
+                outputs.push(Some(format!("[abridged] {}", compressed_text)));
+            } else {
+                compressed_tokens += comp;
+                outputs.push(Some(compressed_text));
+            }
+        }
+        Ok(TextsCompression {
+            outputs,
+            original_tokens,
+            compressed_tokens,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
     /// Compress chat messages for the pipeline
     pub async fn compress_messages(
         &self,

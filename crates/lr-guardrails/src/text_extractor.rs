@@ -126,7 +126,75 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
         _ => {}
     }
 
+    // System One decisions (`/v1/systemone`): the `state` being evaluated
+    // plus each question's instructions and option/level descriptions.
+    if let Some(questions) = body.get("questions").and_then(|q| q.as_object()) {
+        if let Some(state) = body.get("state") {
+            push_value_text(state, "System One state", &mut texts);
+        }
+        for (id, question) in questions {
+            if let Some(instructions) = question.get("instructions") {
+                push_value_text(
+                    instructions,
+                    &format!("System One question '{}' instructions", id),
+                    &mut texts,
+                );
+            }
+            match question.get("criteria") {
+                Some(serde_json::Value::Object(options)) => {
+                    for (key, description) in options {
+                        let text = match description {
+                            serde_json::Value::Null => key.clone(),
+                            serde_json::Value::String(d) => format!("{}: {}", key, d),
+                            other => format!(
+                                "{}: {}",
+                                key,
+                                serde_json::to_string(other).unwrap_or_default()
+                            ),
+                        };
+                        push_text(
+                            text,
+                            &format!("System One question '{}' option", id),
+                            &mut texts,
+                        );
+                    }
+                }
+                Some(serde_json::Value::Array(levels)) => {
+                    for level in levels {
+                        push_value_text(
+                            level,
+                            &format!("System One question '{}' level", id),
+                            &mut texts,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     texts
+}
+
+/// Push a JSON value as text: strings as-is, anything else as pretty JSON.
+fn push_value_text(value: &serde_json::Value, label: &str, texts: &mut Vec<ExtractedText>) {
+    let text = match value {
+        serde_json::Value::Null => return,
+        serde_json::Value::String(s) => s.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    };
+    push_text(text, label, texts);
+}
+
+fn push_text(text: String, label: &str, texts: &mut Vec<ExtractedText>) {
+    if !text.is_empty() {
+        texts.push(ExtractedText {
+            text,
+            message_index: None,
+            label: label.to_string(),
+            role: "user".to_string(),
+        });
+    }
 }
 
 /// Push text from a system-prompt field that may be a plain string or an
@@ -300,6 +368,56 @@ pub fn extract_snippet(text: &str, start: usize, end: usize, context_chars: usiz
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_extract_systemone_request() {
+        let body = json!({
+            "model": "laya/english",
+            "state": {"body": "my key is AKIAIOSFODNN7EXAMPLE", "priority": 2},
+            "questions": {
+                "dept": {"type": "choice", "instructions": "Which team?",
+                    "criteria": {"billing": "refunds", "tech": null, "ops": {"definition": "servers"}}},
+                "urgency": {"type": "score", "instructions": {"question": "How urgent?"},
+                    "criteria": ["low", "high"]},
+                "human": {"type": "noul", "instructions": "Needs a human?",
+                    "criteria": {"true": "escalate", "false": "self-serve"}}
+            }
+        });
+        let texts = extract_request_text(&body);
+        let labels: Vec<&str> = texts.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels[0], "System One state");
+        // Structured state is rendered as JSON so nested values are scanned.
+        assert!(texts[0].text.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(texts.iter().any(|t| t.text == "Which team?"));
+        assert!(texts.iter().any(|t| t.text == "billing: refunds"));
+        assert!(texts.iter().any(|t| t.text == "tech"));
+        assert!(texts
+            .iter()
+            .any(|t| t.text.starts_with("ops: ") && t.text.contains("servers")));
+        assert!(texts.iter().any(|t| t.text.contains("How urgent?")));
+        assert!(texts
+            .iter()
+            .any(|t| t.text == "high" && t.label.contains("level")));
+        assert!(texts.iter().any(|t| t.text == "true: escalate"));
+        // Nothing is labelled as a system prompt, so secret scanning never skips it.
+        assert!(texts.iter().all(|t| !t.label.starts_with("system")));
+        assert!(texts.iter().all(|t| t.role == "user"));
+    }
+
+    #[test]
+    fn test_extract_systemone_string_state() {
+        let body = json!({"state": "plain text", "questions": {"q": {"type": "noul", "instructions": "?"}}});
+        let texts = extract_request_text(&body);
+        assert_eq!(texts[0].text, "plain text");
+        assert_eq!(texts.len(), 2);
+    }
+
+    #[test]
+    fn test_state_without_questions_is_ignored() {
+        // Only System One bodies (with a questions map) contribute `state`.
+        let body = json!({"state": "not a system one request"});
+        assert!(extract_request_text(&body).is_empty());
+    }
 
     #[test]
     fn test_extract_request_text_simple() {

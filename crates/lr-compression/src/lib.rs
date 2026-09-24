@@ -13,4 +13,4 @@ pub mod types;
 
 pub use downloader::{is_downloaded, repo_id_for_model};
 pub use engine::CompressionService;
-pub use types::{CompressedMessage, CompressionResult, CompressionStatus};
+pub use types::{CompressedMessage, CompressionResult, CompressionStatus, TextsCompression};

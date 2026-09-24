@@ -310,8 +310,6 @@ pub(crate) async fn apply_model_access_checks(
                             lr_mcp::gateway::firewall::InterceptCategory::Llm,
                         ))
                 {
-                    use lr_mcp::gateway::firewall::FirewallApprovalAction;
-
                     let is_mcp_via_llm = client.is_mcp_via_llm();
 
                     let mut request_json = serde_json::to_value(&request)
@@ -359,87 +357,31 @@ pub(crate) async fn apply_model_access_checks(
                         }
                     }
 
-                    let models_preview = auto_config
-                        .prioritized_models
-                        .iter()
-                        .take(5)
-                        .map(|(p, m)| format!("{}/{}", p, m))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-
-                    let auto_full_args = serde_json::json!({
-                        "candidate_models": auto_config.prioritized_models.iter()
-                            .map(|(p, m)| format!("{}/{}", p, m))
-                            .collect::<Vec<_>>(),
-                        "request": request_json,
-                    });
-
-                    let response = state
-                        .mcp_gateway
-                        .firewall_manager
-                        .request_auto_router_approval(
-                            client.id.clone(),
-                            client.name.clone(),
-                            models_preview,
-                            Some(auto_full_args),
-                            is_mcp_via_llm,
-                        )
-                        .await
-                        .map_err(|e| {
-                            ApiErrorResponse::internal_error(format!(
-                                "Auto-router approval failed: {}",
-                                e
-                            ))
-                        })
-                        .map_err(|e| llm_guard.capture_err(e))?;
-
-                    let ar_action_str = format!("{:?}", response.action);
-                    super::monitor_helpers::emit_firewall_decision(
+                    if let Some(req_edits) = request_auto_router_popup(
                         state,
-                        client_auth.map(|e| &e.0),
-                        Some(session_id),
-                        "auto_router",
-                        &auto_config.model_name,
-                        &ar_action_str,
-                        None,
-                    );
+                        auth,
+                        client_auth,
+                        session_id,
+                        &client,
+                        auto_config,
+                        request_json,
+                        is_mcp_via_llm,
+                        "/v1/chat/completions",
+                        llm_guard,
+                    )
+                    .await?
+                    {
+                        apply_firewall_request_edits(request, &req_edits);
 
-                    match response.action {
-                        FirewallApprovalAction::AllowOnce
-                        | FirewallApprovalAction::AllowSession
-                        | FirewallApprovalAction::Allow1Minute
-                        | FirewallApprovalAction::Allow1Hour
-                        | FirewallApprovalAction::AllowPermanent => {
-                            if let Some(ref edits) = response.edited_arguments {
-                                let req_edits = edits.get("request").unwrap_or(edits);
-                                apply_firewall_request_edits(request, req_edits);
-
-                                let selected_model =
-                                    req_edits.get("model").and_then(|v| v.as_str());
-                                if let Some(model) = selected_model {
-                                    if model != "localrouter/auto" {
-                                        tracing::info!(
-                                            "Auto-routing overridden by user: using model '{}'",
-                                            model
-                                        );
-                                        request.model = model.to_string();
-                                    }
-                                }
+                        let selected_model = req_edits.get("model").and_then(|v| v.as_str());
+                        if let Some(model) = selected_model {
+                            if model != "localrouter/auto" {
+                                tracing::info!(
+                                    "Auto-routing overridden by user: using model '{}'",
+                                    model
+                                );
+                                request.model = model.to_string();
                             }
-                        }
-                        _ => {
-                            super::monitor_helpers::emit_access_denied_for_client(
-                                state,
-                                &auth.api_key_id,
-                                Some(session_id),
-                                "auto_routing_denied",
-                                "/v1/chat/completions",
-                                "Auto-routing denied by user",
-                                403,
-                            );
-                            return Err(llm_guard.capture_err(ApiErrorResponse::forbidden(
-                                "Auto-routing denied by user",
-                            )));
                         }
                     }
                 }
@@ -507,6 +449,93 @@ pub(crate) async fn apply_model_access_checks(
     Ok(())
 }
 
+/// Show the auto-router approval popup for a request to `localrouter/auto`.
+///
+/// `request_json` is what the popup shows and lets the user edit. Returns
+/// `Ok(Some(edits))` with the (possibly edited) request fields when the user
+/// approves with edits, `Ok(None)` when approved unchanged, and a 403 when
+/// denied. Shared by chat, responses and System One.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn request_auto_router_popup(
+    state: &AppState,
+    auth: &AuthContext,
+    client_auth: Option<&Extension<ClientAuthContext>>,
+    session_id: &str,
+    client: &lr_config::Client,
+    auto_config: &lr_config::AutoModelConfig,
+    request_json: serde_json::Value,
+    is_mcp_via_llm: bool,
+    endpoint: &str,
+    llm_guard: &mut super::monitor_helpers::LlmCallGuard,
+) -> ApiResult<Option<serde_json::Value>> {
+    use lr_mcp::gateway::firewall::FirewallApprovalAction;
+
+    let models_preview = auto_config
+        .prioritized_models
+        .iter()
+        .take(5)
+        .map(|(p, m)| format!("{}/{}", p, m))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let auto_full_args = serde_json::json!({
+        "candidate_models": auto_config.prioritized_models.iter()
+            .map(|(p, m)| format!("{}/{}", p, m))
+            .collect::<Vec<_>>(),
+        "request": request_json,
+    });
+
+    let response = state
+        .mcp_gateway
+        .firewall_manager
+        .request_auto_router_approval(
+            client.id.clone(),
+            client.name.clone(),
+            models_preview,
+            Some(auto_full_args),
+            is_mcp_via_llm,
+        )
+        .await
+        .map_err(|e| {
+            ApiErrorResponse::internal_error(format!("Auto-router approval failed: {}", e))
+        })
+        .map_err(|e| llm_guard.capture_err(e))?;
+
+    let ar_action_str = format!("{:?}", response.action);
+    super::monitor_helpers::emit_firewall_decision(
+        state,
+        client_auth.map(|e| &e.0),
+        Some(session_id),
+        "auto_router",
+        &auto_config.model_name,
+        &ar_action_str,
+        None,
+    );
+
+    match response.action {
+        FirewallApprovalAction::AllowOnce
+        | FirewallApprovalAction::AllowSession
+        | FirewallApprovalAction::Allow1Minute
+        | FirewallApprovalAction::Allow1Hour
+        | FirewallApprovalAction::AllowPermanent => Ok(response
+            .edited_arguments
+            .as_ref()
+            .map(|edits| edits.get("request").unwrap_or(edits).clone())),
+        _ => {
+            super::monitor_helpers::emit_access_denied_for_client(
+                state,
+                &auth.api_key_id,
+                Some(session_id),
+                "auto_routing_denied",
+                endpoint,
+                "Auto-routing denied by user",
+                403,
+            );
+            Err(llm_guard.capture_err(ApiErrorResponse::forbidden("Auto-routing denied by user")))
+        }
+    }
+}
+
 /// Check model firewall permission for LLM access
 ///
 /// This enforces the model_permissions firewall for clients. When a model
@@ -516,6 +545,43 @@ pub(crate) async fn check_model_firewall_permission(
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
     mcp_via_llm_tools: Option<serde_json::Value>,
+    strategy_permission: Option<lr_config::PermissionState>,
+) -> ApiResult<Option<serde_json::Value>> {
+    let is_mcp_via_llm = mcp_via_llm_tools.is_some();
+    check_model_firewall_for(
+        state,
+        client_context,
+        &request.model,
+        || {
+            let mut full_request =
+                serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(obj) = full_request.as_object_mut() {
+                obj.remove("stream"); // not user-editable
+                                      // Merge MCP via LLM tools into the request so the popup shows the augmented request
+                if let Some(tools) = mcp_via_llm_tools {
+                    obj.insert("tools".to_string(), tools);
+                }
+            }
+            full_request
+        },
+        is_mcp_via_llm,
+        strategy_permission,
+    )
+    .await
+}
+
+/// Per-model firewall check for any request shape.
+///
+/// `model` is the requested model (`provider/model` or a bare id);
+/// `build_request` produces the body shown (and editable) in the approval
+/// popup, and is only called when a popup is needed. Returns the user's
+/// edits, if any.
+pub(crate) async fn check_model_firewall_for(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+    model: &str,
+    build_request: impl FnOnce() -> serde_json::Value,
+    is_mcp_via_llm: bool,
     strategy_permission: Option<lr_config::PermissionState>,
 ) -> ApiResult<Option<serde_json::Value>> {
     use lr_mcp::gateway::access_control;
@@ -535,12 +601,12 @@ pub(crate) async fn check_model_firewall_permission(
     }
 
     // Skip firewall for localrouter/auto (handled during routing)
-    if request.model == "localrouter/auto" {
+    if model == "localrouter/auto" {
         return Ok(None);
     }
 
     // Extract provider and model from request
-    let (provider, model_id) = if let Some((prov, model)) = request.model.split_once('/') {
+    let (provider, model_id) = if let Some((prov, model)) = model.split_once('/') {
         (prov.to_string(), model.to_string())
     } else {
         // No provider specified - need to find which provider has this model
@@ -549,7 +615,7 @@ pub(crate) async fn check_model_firewall_permission(
         // Collect all matching models to handle duplicates across providers
         let matching_models: Vec<_> = all_models
             .iter()
-            .filter(|m| m.id.eq_ignore_ascii_case(&request.model))
+            .filter(|m| m.id.eq_ignore_ascii_case(model))
             .collect();
 
         // Get model_permissions from the client's strategy for provider disambiguation
@@ -568,7 +634,7 @@ pub(crate) async fn check_model_firewall_permission(
             .find(|m| strat_perms.resolve_model(&m.provider, &m.id).is_enabled())
             .or(matching_models.first())
             .ok_or_else(|| {
-                ApiErrorResponse::not_found(format!("Model not found: {}", request.model))
+                ApiErrorResponse::not_found(format!("Model not found: {}", model))
                     .with_param("model")
             })?;
 
@@ -619,7 +685,7 @@ pub(crate) async fn check_model_firewall_permission(
                 if sp.requires_approval() {
                     tracing::info!(
                         "Strategy permission override: Allow → Ask for model {} (client={})",
-                        request.model,
+                        model,
                         client.id
                     );
                     r = FirewallCheckResult::Ask;
@@ -636,7 +702,7 @@ pub(crate) async fn check_model_firewall_permission(
         {
             tracing::info!(
                 "Monitor intercept: overriding Allow → Ask for model {} (client={})",
-                request.model,
+                model,
                 client.id
             );
             FirewallCheckResult::Ask
@@ -647,43 +713,26 @@ pub(crate) async fn check_model_firewall_permission(
 
     match result {
         FirewallCheckResult::Allow => {
-            tracing::debug!(
-                "Model firewall: {} allowed for client {}",
-                request.model,
-                client.id
-            );
+            tracing::debug!("Model firewall: {} allowed for client {}", model, client.id);
             Ok(None)
         }
         FirewallCheckResult::Deny => {
-            tracing::warn!(
-                "Model firewall: {} denied for client {}",
-                request.model,
-                client.id
-            );
+            tracing::warn!("Model firewall: {} denied for client {}", model, client.id);
             Err(ApiErrorResponse::forbidden(format!(
                 "Access denied: Model '{}' is not allowed for this client",
-                request.model
+                model
             ))
             .with_param("model"))
         }
         FirewallCheckResult::Ask => {
             tracing::info!(
                 "Model firewall: {} requires approval for client {}",
-                request.model,
+                model,
                 client.id
             );
 
             // Capture the full request for the edit mode popup
-            let is_mcp_via_llm = mcp_via_llm_tools.is_some();
-            let mut full_request =
-                serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({}));
-            if let Some(obj) = full_request.as_object_mut() {
-                obj.remove("stream"); // not user-editable
-                                      // Merge MCP via LLM tools into the request so the popup shows the augmented request
-                if let Some(tools) = mcp_via_llm_tools {
-                    obj.insert("tools".to_string(), tools);
-                }
-            }
+            let full_request = build_request();
 
             // Request approval from the firewall manager
             let response = state
@@ -714,7 +763,7 @@ pub(crate) async fn check_model_firewall_permission(
                 | FirewallApprovalAction::AllowCategories => {
                     tracing::info!(
                         "Model firewall: {} approved ({:?}) for client {}",
-                        request.model,
+                        model,
                         response.action,
                         client.id
                     );
@@ -728,12 +777,12 @@ pub(crate) async fn check_model_firewall_permission(
                 | FirewallApprovalAction::DisableClient => {
                     tracing::warn!(
                         "Model firewall: {} denied by user for client {}",
-                        request.model,
+                        model,
                         client.id
                     );
                     Err(ApiErrorResponse::forbidden(format!(
                         "Access denied: Model '{}' was denied by user",
-                        request.model
+                        model
                     ))
                     .with_param("model"))
                 }
@@ -804,19 +853,7 @@ pub(crate) async fn run_prompt_compression(
 
     let config = state.config_manager.get();
 
-    // Resolve effective enabled: per-client override wins (Some(true)/Some(false)), else global.
-    let effective_enabled = if let Some(client_ctx) = client_context {
-        match state.client_manager.get_client(&client_ctx.client_id) {
-            Some(client) => client
-                .prompt_compression
-                .enabled
-                .unwrap_or(config.prompt_compression.enabled),
-            None => return Ok(None), // Unknown client
-        }
-    } else {
-        config.prompt_compression.enabled
-    };
-    if !effective_enabled {
+    if compression_enabled_for(state, client_context) != Some(true) {
         return Ok(None);
     }
 
@@ -890,6 +927,157 @@ pub(crate) async fn run_prompt_compression(
     );
 
     Ok(Some(result))
+}
+
+/// Whether prompt compression applies to this request: the per-client
+/// override (`Some(true)`/`Some(false)`) wins over the global switch.
+/// `None` when the client is unknown.
+pub(crate) fn compression_enabled_for(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+) -> Option<bool> {
+    let config = state.config_manager.get();
+    match client_context {
+        Some(client_ctx) => state
+            .client_manager
+            .get_client(&client_ctx.client_id)
+            .map(|client| {
+                client
+                    .prompt_compression
+                    .enabled
+                    .unwrap_or(config.prompt_compression.enabled)
+            }),
+        None => Some(config.prompt_compression.enabled),
+    }
+}
+
+/// Mutable references to every string value in a JSON document, in document
+/// order. Keys, numbers, booleans and structure are never touched.
+pub(crate) fn json_string_leaves(value: &mut serde_json::Value) -> Vec<&mut String> {
+    fn walk<'a>(v: &'a mut serde_json::Value, out: &mut Vec<&'a mut String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for (_, item) in map.iter_mut() {
+                    walk(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, &mut out);
+    out
+}
+
+/// Token savings from compressing a System One `state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StateCompressionStats {
+    pub original_tokens: u64,
+    pub compressed_tokens: u64,
+    pub duration_ms: u64,
+}
+
+/// Compress the text in a System One request's `state` with LLMLingua-2.
+///
+/// Only `state` is compressed: question instructions and option/level
+/// descriptions define the decision and are left verbatim. A string state is
+/// compressed as one text; in a structured state each string value is
+/// compressed on its own, so keys, numbers and nesting survive. Uses the
+/// same enable switches and settings as chat compression; the chat-only
+/// `min_messages` / `preserve_recent` settings do not apply.
+///
+/// Returns `Ok(None)` when compression is off or nothing changed. On error
+/// the request is left untouched.
+pub(crate) async fn run_systemone_state_compression(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+    request: &mut lr_providers::SystemOneRequest,
+) -> Result<Option<StateCompressionStats>, String> {
+    let Some(engine) = state.compression_service.read().clone() else {
+        return Ok(None);
+    };
+    if compression_enabled_for(state, client_context) != Some(true) {
+        return Ok(None);
+    }
+    let settings = state.config_manager.get().prompt_compression.clone();
+
+    let mut leaves = json_string_leaves(&mut request.state);
+    if leaves.is_empty() {
+        return Ok(None);
+    }
+    let texts: Vec<String> = leaves.iter().map(|s| (**s).clone()).collect();
+    let result = engine
+        .compress_texts(
+            &texts,
+            settings.default_rate,
+            settings.min_message_words,
+            settings.preserve_quoted_text,
+            settings.compression_notice,
+        )
+        .await?;
+
+    let stats = apply_state_compression(
+        &mut leaves,
+        result.outputs,
+        result.original_tokens,
+        result.compressed_tokens,
+        result.duration_ms,
+    );
+    if let Some(stats) = stats {
+        let reduction_pct = if stats.original_tokens > 0 {
+            (1.0 - stats.compressed_tokens as f64 / stats.original_tokens as f64) * 100.0
+        } else {
+            0.0
+        };
+        super::monitor_helpers::emit_prompt_compression(
+            state,
+            client_context,
+            None,
+            stats.original_tokens,
+            stats.compressed_tokens,
+            reduction_pct,
+            stats.duration_ms,
+            "llmlingua",
+        );
+        if stats.original_tokens > stats.compressed_tokens {
+            state.metrics_collector.record_feature_event(
+                "feature_compression",
+                stats.original_tokens - stats.compressed_tokens,
+                0.0,
+            );
+        }
+    }
+    Ok(stats)
+}
+
+/// Write compressed outputs back into the string leaves. Returns stats only
+/// when at least one leaf changed and the result is not longer than before.
+pub(crate) fn apply_state_compression(
+    leaves: &mut [&mut String],
+    outputs: Vec<Option<String>>,
+    original_tokens: usize,
+    compressed_tokens: usize,
+    duration_ms: u64,
+) -> Option<StateCompressionStats> {
+    if compressed_tokens >= original_tokens || outputs.iter().all(Option::is_none) {
+        return None;
+    }
+    for (leaf, out) in leaves.iter_mut().zip(outputs) {
+        if let Some(text) = out {
+            **leaf = text;
+        }
+    }
+    Some(StateCompressionStats {
+        original_tokens: original_tokens as u64,
+        compressed_tokens: compressed_tokens as u64,
+        duration_ms,
+    })
 }
 
 pub(crate) async fn run_guardrails_scan(
@@ -2268,6 +2456,58 @@ pub(crate) async fn run_turn_pipeline(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn json_string_leaves_visits_only_strings() {
+        let mut v = serde_json::json!({
+            "subject": "Refund", "priority": 2, "tags": ["a", {"note": "b"}], "flag": true
+        });
+        let leaves = json_string_leaves(&mut v);
+        let texts: Vec<String> = leaves.iter().map(|s| (**s).clone()).collect();
+        assert_eq!(texts, vec!["Refund", "a", "b"]);
+
+        let mut plain = serde_json::json!("just text");
+        assert_eq!(json_string_leaves(&mut plain).len(), 1);
+        let mut num = serde_json::json!(3);
+        assert!(json_string_leaves(&mut num).is_empty());
+    }
+
+    #[test]
+    fn state_compression_rewrites_only_compressed_leaves() {
+        let mut v = serde_json::json!({"body": "long text here", "id": 7, "short": "hi"});
+        let mut leaves = json_string_leaves(&mut v);
+        let stats = apply_state_compression(
+            &mut leaves,
+            vec![Some("[abridged] long text".to_string()), None],
+            5,
+            4,
+            12,
+        )
+        .unwrap();
+        assert_eq!(stats.original_tokens, 5);
+        assert_eq!(stats.compressed_tokens, 4);
+        assert_eq!(v["body"], "[abridged] long text");
+        assert_eq!(v["short"], "hi");
+        assert_eq!(v["id"], 7);
+    }
+
+    #[test]
+    fn state_compression_that_saves_nothing_leaves_state_alone() {
+        let mut v = serde_json::json!({"body": "text"});
+        let mut leaves = json_string_leaves(&mut v);
+        assert!(apply_state_compression(
+            &mut leaves,
+            vec![Some("[abridged] text".into())],
+            1,
+            2,
+            1
+        )
+        .is_none());
+        assert_eq!(v["body"], "text");
+        let mut leaves = json_string_leaves(&mut v);
+        assert!(apply_state_compression(&mut leaves, vec![None], 1, 1, 1).is_none());
+    }
+
     use super::*;
 
     /// Compose the extractor + engine exactly as `scan_request_for_secrets`
